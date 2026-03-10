@@ -167,33 +167,14 @@ Write-Host "  Connecting to $ServerUser@$ServerIP ..."
 Write-Host "  ==========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# ── Upload setup.sh from local repo, then run ────────────────────────────────
-# Priority: scp local file (works for private repos) -> GitHub -> jsDelivr
+# ── Prepare remote script ─────────────────────────────────────────────────────
+# Here-strings must start at column 0 — define them at top level, not in blocks.
 
-# Find setup.sh relative to this script's location
-$ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot    = Split-Path -Parent (Split-Path -Parent $ScriptDir)  # ../../
-$LocalSetup  = Join-Path $RepoRoot "setup.sh"
+# Script used when setup.sh is uploaded via scp (private repo / local copy)
+$ScriptRunOnly = "chmod +x /tmp/vpn-setup.sh && echo '=== Running setup.sh ===' && sudo bash /tmp/vpn-setup.sh 2>&1 | tee /tmp/vpn-setup.log"
 
-if (Test-Path $LocalSetup) {
-    Write-Host "  Uploading setup.sh from local repo..." -NoNewline
-    & scp -i $SshKey -P $SshPort -o StrictHostKeyChecking=accept-new `
-          $LocalSetup "${ServerUser}@${ServerIP}:/tmp/vpn-setup.sh"
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host " OK" -ForegroundColor Green
-        $Script = @'
-chmod +x /tmp/vpn-setup.sh
-echo "=== Running setup.sh ==="
-sudo bash /tmp/vpn-setup.sh 2>&1 | tee /tmp/vpn-setup.log
-'@
-    } else {
-        Write-Host " FAILED (will try download)" -ForegroundColor Yellow
-    }
-}
-
-if (-not (Test-Path $LocalSetup) -or $LASTEXITCODE -ne 0) {
-    Write-Host "  Local setup.sh not found or scp failed — downloading..."
-    $Script = @'
+# Script used when setup.sh must be downloaded (public repo)
+$ScriptDownload = @'
 set -e
 command -v curl >/dev/null 2>&1 || sudo apt-get install -y -qq curl
 echo "=== Downloading setup.sh ==="
@@ -214,15 +195,35 @@ for url in "${URLS[@]}"; do
 done
 if [ "$downloaded" -eq 0 ]; then
   echo "[ERROR] Could not download setup.sh."
-  echo "  Repo is private or GitHub/jsDelivr unreachable."
-  echo "  Make repo public on GitHub, or re-run from the repo folder."
+  echo "  Repo may be private. Run from repo folder or make repo public."
   exit 1
 fi
 chmod +x /tmp/vpn-setup.sh
 echo "=== Running setup.sh ==="
 sudo bash /tmp/vpn-setup.sh 2>&1 | tee /tmp/vpn-setup.log
 '@
+
+# ── Upload setup.sh from local repo if available ──────────────────────────────
+$ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot   = Split-Path -Parent (Split-Path -Parent $ScriptDir)
+$LocalSetup = Join-Path $RepoRoot "setup.sh"
+$ScpOk      = $false
+
+if (Test-Path $LocalSetup) {
+    Write-Host "  Uploading setup.sh from local repo..." -NoNewline
+    & scp -i $SshKey -P $SshPort -o StrictHostKeyChecking=accept-new `
+          $LocalSetup "${ServerUser}@${ServerIP}:/tmp/vpn-setup.sh" 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host " OK" -ForegroundColor Green
+        $ScpOk = $true
+    } else {
+        Write-Host " FAILED (will try download)" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  setup.sh not found locally — will download on server."
 }
+
+$Script = if ($ScpOk) { $ScriptRunOnly } else { $ScriptDownload }
 
 $Encoded   = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Script))
 $RemoteCmd = "echo $Encoded | base64 -d | bash"
