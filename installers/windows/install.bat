@@ -111,29 +111,36 @@ if /i "!CONFIRM!" neq "y" (
 )
 echo.
 
-:: --- upload setup.sh if available locally, else download on server ---
+:: --- upload scripts if available locally, else download on server ---
 set SETUP_UPLOADED=0
-set LOCAL_SETUP=%~dp0..\..\setup.sh
+set REPO_ROOT=%~dp0..\..
 
-if not exist "!LOCAL_SETUP!" goto download_setup
+if not exist "!REPO_ROOT!\setup.sh" goto download_setup
 
-echo  Uploading setup.sh from local repo...
-scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "!LOCAL_SETUP!" !SERVER_USER!@!SERVER_IP!:/tmp/vpn-setup.sh
-if %errorlevel% equ 0 (
-    echo  [OK] Uploaded.
-    set SETUP_UPLOADED=1
-) else (
-    echo  Upload failed - will download on server.
+echo  Uploading scripts from local repo...
+scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "!REPO_ROOT!\setup.sh" !SERVER_USER!@!SERVER_IP!:/tmp/vpn-setup.sh
+if %errorlevel% neq 0 (
+    echo  Upload of setup.sh failed - will download on server.
+    goto download_setup
 )
+scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "!REPO_ROOT!\install-home.sh" !SERVER_USER!@!SERVER_IP!:/tmp/install-home.sh
+if %errorlevel% neq 0 (
+    echo  Upload of install-home.sh failed - will download on server.
+    goto download_setup
+)
+if exist "!REPO_ROOT!\install-vps.sh" (
+    scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "!REPO_ROOT!\install-vps.sh" !SERVER_USER!@!SERVER_IP!:/tmp/install-vps.sh
+)
+echo  [OK] Uploaded.
+set SETUP_UPLOADED=1
+goto run_setup
 
 :download_setup
-if !SETUP_UPLOADED! equ 1 goto run_setup
-
-echo  Downloading setup.sh on server...
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "curl -sf https://cdn.jsdelivr.net/gh/Cyrillicspb/vpn-infra@master/setup.sh -o /tmp/vpn-setup.sh || curl -sf https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/setup.sh -o /tmp/vpn-setup.sh"
+echo  Downloading scripts on server...
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "curl -sf https://cdn.jsdelivr.net/gh/Cyrillicspb/vpn-infra@master/setup.sh -o /tmp/vpn-setup.sh && curl -sf https://cdn.jsdelivr.net/gh/Cyrillicspb/vpn-infra@master/install-home.sh -o /tmp/install-home.sh && curl -sf https://cdn.jsdelivr.net/gh/Cyrillicspb/vpn-infra@master/install-vps.sh -o /tmp/install-vps.sh || (curl -sf https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/setup.sh -o /tmp/vpn-setup.sh && curl -sf https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install-home.sh -o /tmp/install-home.sh && curl -sf https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install-vps.sh -o /tmp/install-vps.sh)"
 if %errorlevel% neq 0 (
     echo.
-    echo  ERROR: Could not download setup.sh.
+    echo  ERROR: Could not download scripts.
     echo  Make the GitHub repo public, or run from the repo folder.
     echo.
     pause
