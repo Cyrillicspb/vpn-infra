@@ -4,7 +4,8 @@ After=network-online.target docker.service dnsmasq.service
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 User=root
 WorkingDirectory=/opt/vpn/watchdog
 ExecStart=/opt/vpn/watchdog/venv/bin/python watchdog.py
@@ -14,8 +15,8 @@ StartLimitBurst=5
 StartLimitIntervalSec=300
 WatchdogSec=30
 
-# Логирование
-StandardOutput=append:/var/log/vpn-watchdog.log
+# Логирование (watchdog пишет сам в LOG_FILE, stderr — для критических ошибок до старта)
+StandardOutput=null
 StandardError=append:/var/log/vpn-watchdog.log
 
 # Окружение
