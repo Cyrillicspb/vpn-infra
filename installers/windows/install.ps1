@@ -168,23 +168,41 @@ Write-Host "  ==========================================" -ForegroundColor Cyan
 Write-Host ""
 
 # ── Run setup.sh on server ────────────────────────────────────────────────────
+# Pass command via base64 to avoid all quoting/newline issues with SSH.
+# GitHub may be blocked from Russian servers — jsDelivr CDN as fallback.
 
-$RemoteCmd = @'
-bash -lc "
-  set -e
-  if ! command -v curl >/dev/null 2>&1; then sudo apt-get install -y curl; fi
-  echo '=== Downloading setup.sh ==='
-  if curl -sf --max-time 30 https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/setup.sh -o /tmp/vpn-setup.sh; then
-    echo '[OK] Downloaded from GitHub'
+$Script = @'
+set -e
+command -v curl >/dev/null 2>&1 || sudo apt-get install -y -qq curl
+echo "=== Downloading setup.sh ==="
+URLS=(
+  "https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/setup.sh"
+  "https://cdn.jsdelivr.net/gh/Cyrillicspb/vpn-infra@master/setup.sh"
+)
+downloaded=0
+for url in "${URLS[@]}"; do
+  echo "Trying: $url"
+  if curl -sf --max-time 30 "$url" -o /tmp/vpn-setup.sh; then
+    echo "[OK] Downloaded"
+    downloaded=1
+    break
   else
-    echo '[ERROR] GitHub not available'
-    exit 1
+    echo "[WARN] Failed: $url"
   fi
-  chmod +x /tmp/vpn-setup.sh
-  echo '=== Running setup.sh ==='
-  sudo bash /tmp/vpn-setup.sh 2>&1 | tee /tmp/vpn-setup.log
-"
+done
+if [ "$downloaded" -eq 0 ]; then
+  echo "[ERROR] Could not download setup.sh from any source."
+  echo "  GitHub and jsDelivr are both unreachable."
+  echo "  Manual option: scp setup.sh to /tmp/vpn-setup.sh and re-run."
+  exit 1
+fi
+chmod +x /tmp/vpn-setup.sh
+echo "=== Running setup.sh ==="
+sudo bash /tmp/vpn-setup.sh 2>&1 | tee /tmp/vpn-setup.log
 '@
+
+$Encoded  = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Script))
+$RemoteCmd = "echo $Encoded | base64 -d | bash"
 
 & ssh -i $SshKey `
       -o StrictHostKeyChecking=accept-new `
