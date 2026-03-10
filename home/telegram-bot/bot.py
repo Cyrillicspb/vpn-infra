@@ -2,109 +2,219 @@
 """
 bot.py — Telegram-бот VPN Infrastructure v4.0
 
-Двухрежимный бот:
-- Администратор: полный доступ к управлению
-- Клиенты: самообслуживание (устройства, конфиги)
-- Незарегистрированные: игнор (кроме /start)
+Двухрежимный:
+  - Администратор (ADMIN_CHAT_ID): полный доступ
+  - Клиенты (зарегистрированные): самообслуживание
+  - Незарегистрированные: игнор (кроме /start)
 
-Использует: aiogram 3.x, SQLite (WAL), watchdog HTTP API
+FSM middleware:
+  - Таймаут 10 мин: при истечении очищает состояние и уведомляет
+  - Любая команда при активном FSM → очистить FSM → выполнить команду
 """
+from __future__ import annotations
+
 import asyncio
 import logging
-import os
 import sys
+import time
+from typing import Any, Awaitable, Callable
 
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import Message, Update
 
 from config import config
 from database import Database
 from handlers.admin import router as admin_router
+from handlers.alerts import start_notify_server
 from handlers.client import router as client_router
-from handlers.alerts import router as alerts_router
 from handlers.requests import router as requests_router
+from services.autodist import AutoDist
+from services.config_builder import ConfigBuilder
 
-# ---------------------------------------------------------------------------
-# Логирование
-# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-    ],
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Инициализация
-# ---------------------------------------------------------------------------
-bot = Bot(
-    token=config.telegram_bot_token,
-    default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
-)
+FSM_TIMEOUT = config.fsm_timeout_minutes * 60   # 600 сек
 
-dp = Dispatcher(storage=MemoryStorage())
 
-# Подключаем роутеры
-dp.include_router(admin_router)
-dp.include_router(client_router)
-dp.include_router(alerts_router)
-dp.include_router(requests_router)
+# ---------------------------------------------------------------------------
+# FSM Control Middleware
+# ---------------------------------------------------------------------------
+class FSMControlMiddleware:
+    """
+    Outer middleware (регистрируется на dp.update.outer_middleware).
+    Выполняется ДО выбора хендлера — позволяет сбросить FSM
+    перед тем как роутер начнёт матчинг.
+
+    Поведение:
+      1. Если пользователь в FSM И отправил команду → очистить FSM → дать хендлеру отработать
+      2. Если пользователь в FSM И таймаут истёк → очистить FSM → уведомить → остановить
+    """
+
+    async def __call__(
+        self,
+        handler: Callable[[Update, dict[str, Any]], Awaitable[Any]],
+        event: Update,
+        data: dict[str, Any],
+    ) -> Any:
+        message: Message | None = event.message
+        if not message or not message.text:
+            return await handler(event, data)
+
+        state: FSMContext | None = data.get("state")
+        if not state:
+            return await handler(event, data)
+
+        current = await state.get_state()
+        if current is None:
+            return await handler(event, data)
+
+        # Есть активное FSM-состояние
+        fsm_data = await state.get_data()
+        last_ts  = fsm_data.get("_fsm_ts", 0.0)
+        now      = time.time()
+
+        # 1. Таймаут истёк
+        if last_ts > 0 and now - last_ts > FSM_TIMEOUT:
+            # Снимаем резерв invite-кода если он был
+            db: Database | None = data.get("db")
+            if db:
+                await db.release_invite_reservation(str(message.from_user.id))
+            await state.clear()
+            if message.text.startswith("/"):
+                # Команда — продолжаем обработку
+                return await handler(event, data)
+            await message.answer("⏱ Время ввода истекло. Начните заново.")
+            return None
+
+        # 2. Пришла команда — очищаем FSM и продолжаем
+        if message.text.startswith("/"):
+            db: Database | None = data.get("db")
+            if db:
+                await db.release_invite_reservation(str(message.from_user.id))
+            await state.clear()
+            return await handler(event, data)
+
+        # 3. Обычный текст — обновляем timestamp и продолжаем
+        await state.update_data(_fsm_ts=now)
+        return await handler(event, data)
+
+
+# ---------------------------------------------------------------------------
+# Middleware: инжектим зависимости в хендлеры
+# ---------------------------------------------------------------------------
+class DependencyMiddleware:
+    """Добавляет db, bot, autodist в kwargs хендлеров."""
+
+    def __init__(self, db: Database, bot: Bot, autodist: AutoDist) -> None:
+        self.db       = db
+        self.bot      = bot
+        self.autodist = autodist
+
+    async def __call__(
+        self,
+        handler: Callable[[Message, dict], Awaitable],
+        event: Message,
+        data: dict,
+    ) -> Any:
+        data["db"]       = self.db
+        data["bot"]      = self.bot
+        data["autodist"] = self.autodist
+        return await handler(event, data)
+
+
+# ---------------------------------------------------------------------------
+# Задача: напоминания о необновлённых конфигах
+# ---------------------------------------------------------------------------
+async def reminder_loop(autodist: AutoDist) -> None:
+    """Каждые 6 часов отправляем напоминания клиентам с устаревшими конфигами."""
+    while True:
+        await asyncio.sleep(6 * 3600)
+        try:
+            await autodist.send_reminders()
+        except Exception as exc:
+            logger.error(f"reminder_loop: {exc}")
+
 
 # ---------------------------------------------------------------------------
 # Startup / Shutdown
 # ---------------------------------------------------------------------------
-async def on_startup():
-    """Инициализация при старте."""
+async def on_startup(bot: Bot, dp: Dispatcher, db: Database, autodist: AutoDist) -> None:
     logger.info("Telegram-бот запускается...")
 
-    # Инициализируем базу данных
-    db = Database(config.db_path)
     await db.init()
 
-    # Сохраняем в dp для доступа из хендлеров
-    dp["db"] = db
-    dp["config"] = config
+    # Авторегистрация администратора (при первом запуске)
+    admin = await db.get_client(config.admin_chat_id)
+    if not admin:
+        await db.register_admin(config.admin_chat_id)
+        logger.info(f"Администратор зарегистрирован: {config.admin_chat_id}")
 
-    # Авторегистрация администратора
-    if config.admin_chat_id:
-        existing = await db.get_client_by_chat_id(config.admin_chat_id)
-        if not existing:
-            await db.register_admin(config.admin_chat_id)
-            logger.info(f"Администратор зарегистрирован: {config.admin_chat_id}")
+    # Notify-сервер для алертов от watchdog
+    asyncio.create_task(start_notify_server(bot, db), name="notify-server")
 
-    # Уведомляем администратора о запуске
+    # Напоминания о конфигах
+    asyncio.create_task(reminder_loop(autodist), name="reminder-loop")
+
     try:
         await bot.send_message(config.admin_chat_id, "✅ *Бот запущен* и готов к работе.")
     except Exception as e:
         logger.warning(f"Не удалось уведомить администратора: {e}")
 
-    logger.info("Бот готов к работе")
+    logger.info("Бот готов")
 
 
-async def on_shutdown():
-    """Завершение работы."""
+async def on_shutdown(bot: Bot) -> None:
     logger.info("Бот завершается...")
+    try:
+        await bot.send_message(config.admin_chat_id, "⚠️ *Бот завершается.*")
+    except Exception:
+        pass
     await bot.session.close()
 
 
 # ---------------------------------------------------------------------------
 # Главная функция
 # ---------------------------------------------------------------------------
-async def main():
-    # Регистрируем обработчики startup/shutdown
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
+async def main() -> None:
+    bot = Bot(
+        token=config.telegram_bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
+    )
 
-    logger.info(f"Запуск polling (admin_chat_id={config.admin_chat_id})")
+    storage = MemoryStorage()
+    dp = Dispatcher(storage=storage)
 
-    # Удаляем webhook если был
+    # Инициализируем зависимости
+    db      = Database(config.db_path)
+    builder = ConfigBuilder()
+    autodist = AutoDist(bot, db, builder)
+
+    # Регистрируем middlewares
+    dep_mw = DependencyMiddleware(db, bot, autodist)
+    dp.update.outer_middleware(FSMControlMiddleware())
+    dp.message.middleware(dep_mw)
+    dp.callback_query.middleware(dep_mw)
+
+    # Роутеры (порядок важен: admin → client → requests)
+    dp.include_router(admin_router)
+    dp.include_router(client_router)
+    dp.include_router(requests_router)
+
+    # Lifecycle
+    dp.startup.register(lambda: on_startup(bot, dp, db, autodist))
+    dp.shutdown.register(lambda: on_shutdown(bot))
+
+    logger.info(f"Запуск polling (admin={config.admin_chat_id})")
     await bot.delete_webhook(drop_pending_updates=True)
-
-    # Запускаем polling
     await dp.start_polling(bot)
 
 

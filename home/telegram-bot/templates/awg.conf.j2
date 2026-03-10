@@ -1,22 +1,21 @@
 [Interface]
-PrivateKey = {{PRIVATE_KEY}}
-Address = {{CLIENT_IP}}/32
-DNS = {{DNS}}
-MTU = {{MTU}}
-
-# AmneziaWG параметры обфускации
-Jc = {{Jc}}
-Jmin = {{Jmin}}
-Jmax = {{Jmax}}
-S1 = {{S1}}
-S2 = {{S2}}
-H1 = {{H1}}
-H2 = {{H2}}
-H3 = {{H3}}
-H4 = {{H4}}
+PrivateKey = {{ private_key }}
+Address = {{ ip_address }}/32
+DNS = {{ dns }}
+MTU = {{ mtu }}
+Jc = {{ jc }}
+Jmin = {{ jmin }}
+Jmax = {{ jmax }}
+S1 = {{ s1 }}
+S2 = {{ s2 }}
+H1 = {{ h1 }}
+H2 = {{ h2 }}
+H3 = {{ h3 }}
+H4 = {{ h4 }}
 
 [Peer]
-PublicKey = {{SERVER_PUBLIC_KEY}}
-AllowedIPs = {{ALLOWED_IPS}}
-Endpoint = {{ENDPOINT}}
-PersistentKeepalive = {{KEEPALIVE}}
+PublicKey = {{ server_public_key }}
+{% if preshared_key %}PresharedKey = {{ preshared_key }}
+{% endif %}AllowedIPs = {{ allowed_ips | join(", ") }}
+Endpoint = {{ endpoint }}
+PersistentKeepalive = {{ persistent_keepalive }}

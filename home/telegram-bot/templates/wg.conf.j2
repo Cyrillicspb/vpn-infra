@@ -1,11 +1,12 @@
 [Interface]
-PrivateKey = {{PRIVATE_KEY}}
-Address = {{CLIENT_IP}}/32
-DNS = {{DNS}}
-MTU = {{MTU}}
+PrivateKey = {{ private_key }}
+Address = {{ ip_address }}/32
+DNS = {{ dns }}
+MTU = {{ mtu }}
 
 [Peer]
-PublicKey = {{SERVER_PUBLIC_KEY}}
-AllowedIPs = {{ALLOWED_IPS}}
-Endpoint = {{ENDPOINT}}
-PersistentKeepalive = {{KEEPALIVE}}
+PublicKey = {{ server_public_key }}
+{% if preshared_key %}PresharedKey = {{ preshared_key }}
+{% endif %}AllowedIPs = {{ allowed_ips | join(", ") }}
+Endpoint = {{ endpoint }}
+PersistentKeepalive = {{ persistent_keepalive }}

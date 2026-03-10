@@ -1,37 +1,79 @@
 """
-handlers/alerts.py — Обработка входящих алертов от watchdog
+handlers/alerts.py — Внешний HTTP-сервер для приёма алертов от watchdog
 
-Watchdog отправляет алерты через HTTP POST /notify → бот рассылает клиентам.
+Watchdog вызывает POST /notify → бот рассылает сообщение клиентам.
+Запускается в отдельной asyncio-задаче при старте бота.
 """
+from __future__ import annotations
+
 import logging
-from aiogram import Router
-from aiogram.types import Message
-from aiogram.filters import Command
+from typing import TYPE_CHECKING
+
+from aiohttp import web
+
+if TYPE_CHECKING:
+    from aiogram import Bot
+    from database import Database
 
 logger = logging.getLogger(__name__)
-router = Router()
 
-# Алерты приходят не через команды, а через сервис alerts
-# Этот модуль содержит хелперы для отправки алертов клиентам
+NOTIFY_PORT = 8090
+router = None   # не используется как aiogram Router
 
 
-async def send_alert_to_admin(bot, admin_chat_id: str, message: str):
-    """Отправка алерта администратору."""
+async def _handle_notify(request: web.Request) -> web.Response:
+    """POST /notify — рассылка уведомления клиентам."""
+    bot: "Bot"      = request.app["bot"]
+    db: "Database"  = request.app["db"]
+
     try:
-        await bot.send_message(admin_chat_id, f"🚨 *Алерт*\n\n{message}")
-    except Exception as e:
-        logger.error(f"Не удалось отправить алерт: {e}")
+        data    = await request.json()
+        message = data.get("message", "")
+        target  = data.get("target", "admin")  # "admin" | "all" | chat_id
+    except Exception:
+        return web.json_response({"error": "bad json"}, status=400)
 
+    if not message:
+        return web.json_response({"error": "empty message"}, status=400)
 
-async def send_alert_to_all_clients(bot, db, message: str):
-    """Уведомление всех клиентов (например, все стеки down)."""
-    try:
+    if target == "admin":
+        from config import config
+        try:
+            await bot.send_message(config.admin_chat_id, message, parse_mode="Markdown")
+        except Exception as exc:
+            logger.warning(f"Алерт→admin: {exc}")
+
+    elif target == "all":
         clients = await db.get_all_clients()
-        for client in clients:
-            if not client.get("is_disabled"):
+        sent = 0
+        for c in clients:
+            if not c.get("is_disabled"):
                 try:
-                    await bot.send_message(client["chat_id"], f"⚠️ {message}")
+                    await bot.send_message(c["chat_id"], message, parse_mode="Markdown")
+                    sent += 1
                 except Exception:
                     pass
-    except Exception as e:
-        logger.error(f"Ошибка рассылки алерта: {e}")
+        logger.info(f"Broadcast алерт: {sent} клиентам")
+
+    else:
+        # Конкретный chat_id
+        try:
+            await bot.send_message(str(target), message, parse_mode="Markdown")
+        except Exception as exc:
+            logger.warning(f"Алерт→{target}: {exc}")
+
+    return web.json_response({"status": "ok"})
+
+
+async def start_notify_server(bot: "Bot", db: "Database") -> None:
+    """Запускает лёгкий HTTP-сервер для приёма алертов от watchdog."""
+    app = web.Application()
+    app["bot"] = bot
+    app["db"]  = db
+    app.router.add_post("/notify", _handle_notify)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", NOTIFY_PORT)
+    await site.start()
+    logger.info(f"Notify server запущен на 127.0.0.1:{NOTIFY_PORT}")

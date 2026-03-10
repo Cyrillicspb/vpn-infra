@@ -1,146 +1,146 @@
 """
-services/config_builder.py — Генератор конфигурационных файлов WireGuard/AmneziaWG
+services/config_builder.py — Генератор WireGuard / AmneziaWG конфигов
 
-Версия конфига = хеш содержимого (не инкрементальная)
-QR-код только если AllowedIPs <= 50 записей
+Алгоритм:
+  1. Загружает AllowedIPs из /etc/vpn-routes/combined.cidr
+  2. Вычитает excludes устройства
+  3. Рендерит Jinja2-шаблон (.conf.j2)
+  4. Считает версию по SHA256 содержимого (первые 8 символов)
+  5. Генерирует QR-код если AllowedIPs ≤ 50 записей
 """
+from __future__ import annotations
+
 import hashlib
 import io
 import logging
 import os
+import random
+import subprocess
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
+
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
-COMBINED_CIDR = "/etc/vpn-routes/combined.cidr"
+COMBINED_CIDR = Path("/etc/vpn-routes/combined.cidr")
+QR_MAX_IPS    = int(os.getenv("QR_MAX_ALLOWED_IPS", "50"))
 
-# AmneziaWG параметры обфускации
-AWG_PARAMS = {
-    "Jc": 4,
-    "Jmin": 50,
-    "Jmax": 1000,
-    "S1": 30,
-    "S2": 40,
-}
+# Параметры протоколов (CLAUDE.md)
+AWG_PARAMS = {"Jc": 4, "Jmin": 50, "Jmax": 1000, "S1": 30, "S2": 40,
+              "PersistentKeepalive": 25, "MTU": 1320}
+WG_PARAMS  = {"PersistentKeepalive": 25, "MTU": 1320}
 
 
-class ConfigBuilder:
-    def __init__(self):
-        self.wg_host = os.getenv("WG_HOST", "")
-        self.awg_port = os.getenv("WG_AWG_PORT", "51820")
-        self.wg_port = os.getenv("WG_WG_PORT", "51821")
-        self.mtu = os.getenv("WG_MTU", "1320")
+def wg_genkey() -> tuple[str, str]:
+    """Генерация пары ключей wg. Возвращает (private_key, public_key)."""
+    privkey = subprocess.check_output(["wg", "genkey"], text=True).strip()
+    pubkey  = subprocess.check_output(["wg", "pubkey"], input=privkey, text=True).strip()
+    return privkey, pubkey
 
-    async def build(self, device: dict) -> Tuple[str, Optional[bytes]]:
-        """
-        Генерация конфига для устройства.
-        Возвращает (conf_text, qr_bytes_or_None).
-        """
-        protocol = device.get("protocol", "awg")
-        template_file = TEMPLATES_DIR / ("awg.conf.j2" if protocol == "awg" else "wg.conf.j2")
 
-        if not template_file.exists():
-            raise FileNotFoundError(f"Шаблон не найден: {template_file}")
+def _rand32() -> int:
+    return random.randint(1, 2 ** 32 - 1)
 
-        # Загружаем AllowedIPs
-        allowed_ips = self._load_allowed_ips(device)
 
-        # Загружаем шаблон
-        template = template_file.read_text()
+def _load_allowed_ips(protocol: str, excludes: list[str]) -> list[str]:
+    dns_entries = [
+        "10.177.1.1/32" if protocol == "awg" else "10.177.3.1/32",
+        "1.1.1.1/32",
+    ]
+    if not COMBINED_CIDR.exists():
+        logger.warning(f"combined.cidr не найден: {COMBINED_CIDR}")
+        return dns_entries + ["0.0.0.0/0"]
 
-        # Получаем ключи устройства
-        private_key = device.get("private_key", "<PRIVATE_KEY_PLACEHOLDER>")
-        server_public_key = self._get_server_public_key(protocol)
+    lines = COMBINED_CIDR.read_text().splitlines()
+    allowed = [ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")]
 
-        # Подставляем переменные
-        context = {
-            "PRIVATE_KEY": private_key,
-            "SERVER_PUBLIC_KEY": server_public_key,
-            "CLIENT_IP": device.get("ip_address", "10.177.1.2"),
-            "DNS": "10.177.1.1, 1.1.1.1" if protocol == "awg" else "10.177.3.1, 1.1.1.1",
-            "MTU": self.mtu,
-            "ENDPOINT": f"{self.wg_host}:{self.awg_port if protocol == 'awg' else self.wg_port}",
-            "ALLOWED_IPS": ", ".join(allowed_ips),
-            "KEEPALIVE": "25",
-        }
+    if excludes:
+        allowed = [ip for ip in allowed if ip not in excludes]
 
-        # AWG-специфичные параметры
-        if protocol == "awg":
-            for key, val in AWG_PARAMS.items():
-                context[key] = str(val)
-            # H1-H4: генерируем из device peer_id для детерминированности
-            import random
-            seed = hash(device.get("peer_id", device.get("device_name", "default")))
-            rng = random.Random(seed)
-            for h in ["H1", "H2", "H3", "H4"]:
-                context[h] = str(rng.randint(1, 2**32 - 1))
+    result = dns_entries[:]
+    for ip in allowed:
+        if ip not in result:
+            result.append(ip)
+    return result
 
-        conf_text = template
-        for key, val in context.items():
-            conf_text = conf_text.replace(f"{{{{{key}}}}}", val)
 
-        # Версия конфига = хеш содержимого
-        version = hashlib.sha256(conf_text.encode()).hexdigest()[:12]
+def _render(device: dict, allowed_ips: list[str]) -> str:
+    protocol = device.get("protocol", "awg")
+    template_name = "awg.conf.j2" if protocol == "awg" else "wg.conf.j2"
 
-        # QR-код только если AllowedIPs <= 50
-        qr_bytes = None
-        if len(allowed_ips) <= 50:
-            try:
-                qr_bytes = self._generate_qr(conf_text)
-            except Exception as e:
-                logger.warning(f"QR-код не сгенерирован: {e}")
+    env = Environment(
+        loader=FileSystemLoader(str(TEMPLATES_DIR)),
+        autoescape=select_autoescape([]),
+        keep_trailing_newline=True,
+    )
+    tmpl = env.get_template(template_name)
+    pubkey_env = "WG_SERVER_PUBKEY_AWG" if protocol == "awg" else "WG_SERVER_PUBKEY_WG"
+    host = os.getenv("WG_HOST", "")
+    port = os.getenv("WG_AWG_PORT", "51820") if protocol == "awg" else os.getenv("WG_WG_PORT", "51821")
 
-        return conf_text, qr_bytes
+    return tmpl.render(
+        private_key      = device.get("private_key", "REPLACE_ME"),
+        ip_address       = device.get("ip_address", "10.177.1.2"),
+        dns              = "10.177.1.1" if protocol == "awg" else "10.177.3.1",
+        mtu              = AWG_PARAMS["MTU"] if protocol == "awg" else WG_PARAMS["MTU"],
+        protocol         = protocol,
+        server_public_key= os.getenv(pubkey_env, ""),
+        preshared_key    = device.get("preshared_key", ""),
+        allowed_ips      = allowed_ips,
+        endpoint         = f"{host}:{port}",
+        persistent_keepalive = AWG_PARAMS["PersistentKeepalive"],
+        # AWG-specific
+        jc=AWG_PARAMS["Jc"], jmin=AWG_PARAMS["Jmin"], jmax=AWG_PARAMS["Jmax"],
+        s1=AWG_PARAMS["S1"], s2=AWG_PARAMS["S2"],
+        h1=_rand32(), h2=_rand32(), h3=_rand32(), h4=_rand32(),
+    )
 
-    def _load_allowed_ips(self, device: dict) -> list:
-        """Загрузка AllowedIPs из combined.cidr с учётом исключений."""
-        allowed = []
 
-        # Базовые маршруты
-        allowed.append("10.177.1.1/32")   # DNS
-        allowed.append("1.1.1.1/32")       # Резервный DNS
+def _version(content: str) -> str:
+    return hashlib.sha256(content.encode()).hexdigest()[:8]
 
-        # Загружаем из combined.cidr
-        if os.path.exists(COMBINED_CIDR):
-            with open(COMBINED_CIDR) as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#"):
-                        allowed.append(line)
-        else:
-            # Fallback: минимальный набор
-            allowed.extend([
-                "8.8.8.8/32",
-                "8.8.4.4/32",
-            ])
 
-        # Убираем исключения устройства
-        excludes = device.get("excludes", [])
-        if excludes:
-            allowed = [ip for ip in allowed if ip not in excludes]
-
-        return list(dict.fromkeys(allowed))  # Дедупликация
-
-    def _get_server_public_key(self, protocol: str) -> str:
-        """Получение публичного ключа сервера."""
-        key_file = f"/etc/wireguard/wg0-server.pub" if protocol == "awg" else "/etc/wireguard/wg1-server.pub"
-        try:
-            return Path(key_file).read_text().strip()
-        except Exception:
-            return "<SERVER_PUBLIC_KEY>"
-
-    def _generate_qr(self, conf_text: str) -> bytes:
-        """Генерация QR-кода."""
-        import qrcode
-        qr = qrcode.QRCode(version=1, box_size=10, border=4)
-        qr.add_data(conf_text)
+def _make_qr(content: str) -> Optional[bytes]:
+    try:
+        import qrcode  # type: ignore
+        qr = qrcode.QRCode(version=None,
+                           error_correction=qrcode.constants.ERROR_CORRECT_L,
+                           box_size=6, border=2)
+        qr.add_data(content)
         qr.make(fit=True)
         img = qr.make_image(fill_color="black", back_color="white")
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return buf.getvalue()
+    except Exception as exc:
+        logger.debug(f"QR: {exc}")
+        return None
 
-    def config_version(self, conf_text: str) -> str:
-        return hashlib.sha256(conf_text.encode()).hexdigest()[:12]
+
+class ConfigBuilder:
+    """Строит .conf + опционально QR для устройства."""
+
+    async def ensure_keys(self, device: dict) -> dict:
+        """Если у устройства нет ключей — генерируем. Возвращает обновлённый dict."""
+        if device.get("private_key"):
+            return device
+        privkey, pubkey = wg_genkey()
+        return {**device, "private_key": privkey, "public_key": pubkey}
+
+    async def build(
+        self,
+        device: dict,
+        excludes: Optional[list[str]] = None,
+    ) -> tuple[str, Optional[bytes], str]:
+        """
+        Возвращает (conf_text, qr_png_or_None, version_hash).
+        """
+        excludes   = excludes or []
+        protocol   = device.get("protocol", "awg")
+        allowed    = _load_allowed_ips(protocol, excludes)
+        conf_text  = _render(device, allowed)
+        version    = _version(conf_text)
+        qr: Optional[bytes] = _make_qr(conf_text) if len(allowed) <= QR_MAX_IPS else None
+        return conf_text, qr, version
