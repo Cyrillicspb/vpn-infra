@@ -111,48 +111,55 @@ if /i "!CONFIRM!" neq "y" (
 )
 echo.
 
-:: --- upload scripts if available locally, else download on server ---
-set SETUP_UPLOADED=0
+:: --- upload scripts (all in one scp call to /tmp/) ---
 set REPO_ROOT=%~dp0..\..
 
-if not exist "!REPO_ROOT!\setup.sh" goto download_setup
-
-echo  Uploading scripts from local repo...
-scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "!REPO_ROOT!\setup.sh" !SERVER_USER!@!SERVER_IP!:/tmp/vpn-setup.sh
-if %errorlevel% neq 0 (
-    echo  Upload of setup.sh failed - will download on server.
-    goto download_setup
-)
-scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "!REPO_ROOT!\install-home.sh" !SERVER_USER!@!SERVER_IP!:/tmp/install-home.sh
-if %errorlevel% neq 0 (
-    echo  Upload of install-home.sh failed - will download on server.
-    goto download_setup
-)
-if exist "!REPO_ROOT!\install-vps.sh" (
-    scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "!REPO_ROOT!\install-vps.sh" !SERVER_USER!@!SERVER_IP!:/tmp/install-vps.sh
-)
-echo  [OK] Uploaded.
-set SETUP_UPLOADED=1
-goto run_setup
-
-:download_setup
-echo  Downloading scripts on server...
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "curl -sf https://cdn.jsdelivr.net/gh/Cyrillicspb/vpn-infra@master/setup.sh -o /tmp/vpn-setup.sh && curl -sf https://cdn.jsdelivr.net/gh/Cyrillicspb/vpn-infra@master/install-home.sh -o /tmp/install-home.sh && curl -sf https://cdn.jsdelivr.net/gh/Cyrillicspb/vpn-infra@master/install-vps.sh -o /tmp/install-vps.sh || (curl -sf https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/setup.sh -o /tmp/vpn-setup.sh && curl -sf https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install-home.sh -o /tmp/install-home.sh && curl -sf https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install-vps.sh -o /tmp/install-vps.sh)"
-if %errorlevel% neq 0 (
-    echo.
-    echo  ERROR: Could not download scripts.
-    echo  Make the GitHub repo public, or run from the repo folder.
+echo  Checking local scripts...
+if not exist "!REPO_ROOT!\setup.sh" (
+    echo  ERROR: setup.sh not found at !REPO_ROOT!
+    echo  Run install.bat from the repo folder ^(installers\windows\^).
     echo.
     pause
     exit /b 1
 )
+if not exist "!REPO_ROOT!\install-home.sh" (
+    echo  ERROR: install-home.sh not found at !REPO_ROOT!
+    echo  Run install.bat from the repo folder ^(installers\windows\^).
+    echo.
+    pause
+    exit /b 1
+)
+
+echo  Uploading scripts to server /tmp/ ...
+scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "!REPO_ROOT!\setup.sh" "!REPO_ROOT!\install-home.sh" !SERVER_USER!@!SERVER_IP!:/tmp/
+if %errorlevel% neq 0 (
+    echo.
+    echo  ERROR: Upload failed. Check SSH connection.
+    echo.
+    pause
+    exit /b 1
+)
+if exist "!REPO_ROOT!\install-vps.sh" (
+    scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "!REPO_ROOT!\install-vps.sh" !SERVER_USER!@!SERVER_IP!:/tmp/
+)
+
+echo  Verifying files on server...
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "ls /tmp/setup.sh /tmp/install-home.sh"
+if %errorlevel% neq 0 (
+    echo.
+    echo  ERROR: Files not found on server after upload.
+    echo.
+    pause
+    exit /b 1
+)
+echo  [OK] Uploaded.
 
 :run_setup
 echo.
 echo  Running setup.sh on server...
 echo  ==========================================
 echo.
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! "sudo bash /tmp/vpn-setup.sh 2>&1 | tee /tmp/vpn-setup.log; exit ${PIPESTATUS[0]}"
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! "sudo bash /tmp/setup.sh 2>&1 | tee /tmp/vpn-setup.log; exit ${PIPESTATUS[0]}"
 set RESULT=!errorlevel!
 
 echo.
