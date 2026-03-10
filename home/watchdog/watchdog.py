@@ -386,8 +386,8 @@ async def ping_vps(target: str = "") -> tuple[bool, float]:
                 try:
                     avg_rtt = float(line.split("=")[1].strip().split("/")[1])
                     return True, avg_rtt
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(f"ping_vps: не удалось распарсить RTT из '{line}': {exc}")
         return True, 0.0
     return False, 0.0
 
@@ -410,8 +410,8 @@ async def _measure_throughput(url: str, proxy: str = "") -> float:
         try:
             bytes_per_sec = float(out.strip())
             return round(bytes_per_sec * 8 / 1_000_000, 2)   # Mbps
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(f"_measure_throughput: не удалось распарсить вывод curl '{out.strip()}': {exc}")
     return 0.0
 
 
@@ -464,8 +464,8 @@ async def check_wg_peers() -> None:
                 if ts > 0 and age > PEER_STALE_SECONDS:
                     logger.warning(f"Stale peer {pubkey[:16]}… на {iface} ({age}s)")
                     alert(f"⚠️ WireGuard peer устарел: `{pubkey[:20]}…` на {iface} ({age}s без handshake)")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"check_wg_peers: не удалось распарсить строку '{line}': {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -689,15 +689,24 @@ async def check_certs() -> None:
         if rc == 0 and "notAfter=" in out:
             try:
                 date_str = out.split("=", 1)[1].strip()
-                expiry = datetime.strptime(date_str, "%b %d %H:%M:%S %Y %Z")
+                # openssl может вернуть "Jan  1 00:00:00 2026 GMT" или "Jan 1 00:00:00 2026 GMT"
+                for fmt in ("%b %d %H:%M:%S %Y %Z", "%b  %d %H:%M:%S %Y %Z"):
+                    try:
+                        expiry = datetime.strptime(date_str, fmt)
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    logger.warning(f"check_certs: не удалось распарсить дату '{date_str}' для {label}")
+                    continue
                 days_left = (expiry - datetime.utcnow()).days
                 if days_left <= warn_days:
                     alert(
                         f"⚠️ Сертификат *{label}* истекает через *{days_left} дн.*\n"
                         f"Путь: `{path}`\nИспользуйте /renew-cert или /renew-ca"
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(f"check_certs: ошибка проверки {label} ({path}): {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -1359,12 +1368,14 @@ async def _service_update_task(service: str) -> None:
         else:
             alert(f"⚠️ Ошибка обновления образов:\n`{err[:300]}`")
     else:
+        compose = ["-f", "/opt/vpn/docker-compose.yml"]
         rc, _, err = await run_cmd(
-            ["docker", "compose", "-f", "/opt/vpn/docker-compose.yml",
-             "pull", service, "&&",
-             "docker", "compose", "up", "-d", service],
-            timeout=120,
+            ["docker", "compose", *compose, "pull", service], timeout=120
         )
+        if rc == 0:
+            rc, _, err = await run_cmd(
+                ["docker", "compose", *compose, "up", "-d", service], timeout=60
+            )
         alert(f"{'✅' if rc == 0 else '⚠️'} Обновление *{service}*: {'OK' if rc == 0 else err[:200]}")
 
 
