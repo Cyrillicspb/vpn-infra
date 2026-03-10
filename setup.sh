@@ -646,7 +646,7 @@ phase3() {
 
         # Конфиг Tier-2 на VPS
         vps_exec "sudo mkdir -p /etc/wireguard && \
-            printf '[Interface]\nAddress = 10.177.2.2/30\nPrivateKey = %s\nListenPort = 51822\n\n[Peer]\nPublicKey = %s\nAllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 25\n' \
+            printf '[Interface]\nAddress = 10.177.2.2/30\nPrivateKey = %s\nListenPort = 51822\n\n[Peer]\nPublicKey = %s\nAllowedIPs = 10.177.1.0/24,10.177.3.0/24,10.177.2.1/32\nPersistentKeepalive = 25\n' \
                 '${VPS_PRIV}' '${AWG_PUB}' | sudo tee /etc/wireguard/wg-tier2.conf > /dev/null && \
             sudo chmod 600 /etc/wireguard/wg-tier2.conf"
 
