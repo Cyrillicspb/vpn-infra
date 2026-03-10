@@ -468,7 +468,7 @@ table inet vpn {
         udp dport 51821 drop
         tcp dport 22 ct state new accept
         ip saddr 172.20.0.0/24 tcp dport 8080 accept
-        ip saddr 127.0.0.1 tcp dport 8090 accept
+        ip saddr { 127.0.0.1, 10.177.2.0/30 } tcp dport 8090 accept
         iifname { "wg0", "wg1" } udp dport 53 accept
         iifname { "wg0", "wg1" } tcp dport 53 accept
         icmp type echo-request limit rate 10/second accept

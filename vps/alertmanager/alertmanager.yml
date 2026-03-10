@@ -18,9 +18,8 @@ global:
   http_config:
     follow_redirects: true
 
-# ── Шаблоны сообщений ─────────────────────────────────────────────────────────
-templates:
-  - /etc/alertmanager/templates/*.tmpl
+# Шаблоны не используются: форматирование алертов выполняется в alerts.py (Python).
+# Alertmanager отправляет сырой webhook JSON → alerts.py → Telegram Markdown.
 
 # ── Главный маршрут ───────────────────────────────────────────────────────────
 route:
