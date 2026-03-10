@@ -656,11 +656,11 @@ else
 # Не логировать DNS-запросы (privacy)
 # log-queries
 
-# Слушать только на VPN-интерфейсах и loopback
-listen-address=127.0.0.1,10.177.1.1,10.177.3.1
+# Слушать только на loopback (WireGuard-интерфейсы добавятся после их поднятия)
+listen-address=127.0.0.1
 bind-interfaces
 
-# Отключить DNS-сервер DHCP (используем только как DNS)
+# Отключить DHCP
 no-dhcp-interface=
 
 # Кэш
@@ -692,8 +692,12 @@ EOF
     fi
 
     systemctl enable dnsmasq
-    systemctl restart dnsmasq \
-        || log_warn "dnsmasq не запустился — проверьте: journalctl -u dnsmasq"
+    if ! systemctl restart dnsmasq 2>/dev/null; then
+        log_warn "dnsmasq не запустился — используем 8.8.8.8 как временный DNS"
+        # Обеспечить DNS на время установки (dnsmasq поднимется после wg-интерфейсов)
+        printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" > /etc/resolv.conf
+        log_warn "dnsmasq не запустился — проверьте: journalctl -u dnsmasq"
+    fi
 
     log_ok "dnsmasq настроен"
     step_done "step21_configure_dnsmasq"
