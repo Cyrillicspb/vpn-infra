@@ -1,0 +1,272 @@
+{
+  "title": "VPN — Clients & Peers",
+  "uid": "vpn-clients",
+  "description": "Статистика клиентов: пиры WG/AWG, handshake, трафик. Используется /graph clients",
+  "version": 1,
+  "schemaVersion": 39,
+  "refresh": "60s",
+  "time": {"from": "now-24h", "to": "now"},
+  "timezone": "browser",
+  "tags": ["vpn", "clients", "peers"],
+  "panels": [
+
+    {
+      "id": 1,
+      "title": "Активных пиров",
+      "type": "stat",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 3},
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        }
+      },
+      "targets": [
+        {"expr": "sum(vpn_peer_count)", "legendFormat": "Всего пиров"}
+      ]
+    },
+
+    {
+      "id": 2,
+      "title": "AWG пиры (wg0)",
+      "type": "stat",
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 3},
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        }
+      },
+      "targets": [
+        {"expr": "vpn_peer_count{interface='wg0'}", "legendFormat": "AWG пиры"}
+      ]
+    },
+
+    {
+      "id": 3,
+      "title": "WG пиры (wg1)",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 3},
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        }
+      },
+      "targets": [
+        {"expr": "vpn_peer_count{interface='wg1'}", "legendFormat": "WG пиры"}
+      ]
+    },
+
+    {
+      "id": 4,
+      "title": "Stale пиров (handshake > 3 мин)",
+      "type": "stat",
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 3},
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "red",   "value": 1}
+          ]}
+        }
+      },
+      "targets": [
+        {"expr": "count(vpn_peer_last_handshake > 180) or vector(0)",
+         "legendFormat": "Stale пиры"}
+      ]
+    },
+
+    {
+      "id": 10,
+      "title": "Количество пиров (история)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 3, "w": 12, "h": 8},
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "list", "placement": "bottom"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"lineWidth": 2, "fillOpacity": 20, "spanNulls": true},
+          "min": 0
+        }
+      },
+      "targets": [
+        {"expr": "vpn_peer_count{interface='wg0'}", "legendFormat": "AWG (wg0)"},
+        {"expr": "vpn_peer_count{interface='wg1'}", "legendFormat": "WG (wg1)"},
+        {"expr": "sum(vpn_peer_count)",             "legendFormat": "Всего"}
+      ]
+    },
+
+    {
+      "id": 11,
+      "title": "Последний handshake (секунды назад)",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 3, "w": 12, "h": 8},
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "list", "placement": "right"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {"lineWidth": 1, "spanNulls": false},
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 60},
+            {"color": "red",   "value": 180}
+          ]}
+        }
+      },
+      "targets": [
+        {"expr": "vpn_peer_last_handshake",
+         "legendFormat": "{{interface}}/{{peer}}"}
+      ]
+    },
+
+    {
+      "id": 20,
+      "title": "Трафик через WireGuard-интерфейсы",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 11, "w": 24, "h": 8},
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "right",
+                   "calcs": ["mean", "max", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "binBps",
+          "custom": {"lineWidth": 2, "fillOpacity": 10}
+        }
+      },
+      "targets": [
+        {
+          "expr": "irate(node_network_receive_bytes_total{instance='home',device='wg0'}[5m])",
+          "legendFormat": "AWG wg0 RX"
+        },
+        {
+          "expr": "irate(node_network_transmit_bytes_total{instance='home',device='wg0'}[5m])",
+          "legendFormat": "AWG wg0 TX"
+        },
+        {
+          "expr": "irate(node_network_receive_bytes_total{instance='home',device='wg1'}[5m])",
+          "legendFormat": "WG wg1 RX"
+        },
+        {
+          "expr": "irate(node_network_transmit_bytes_total{instance='home',device='wg1'}[5m])",
+          "legendFormat": "WG wg1 TX"
+        }
+      ]
+    },
+
+    {
+      "id": 30,
+      "title": "Суммарный трафик за 24ч (домашний сервер)",
+      "type": "bargauge",
+      "gridPos": {"x": 0, "y": 19, "w": 12, "h": 6},
+      "options": {
+        "orientation": "horizontal",
+        "reduceOptions": {"calcs": ["sum"]},
+        "displayMode": "gradient"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        }
+      },
+      "targets": [
+        {
+          "expr": "increase(node_network_receive_bytes_total{instance='home',device='wg0'}[24h])",
+          "legendFormat": "AWG RX"
+        },
+        {
+          "expr": "increase(node_network_transmit_bytes_total{instance='home',device='wg0'}[24h])",
+          "legendFormat": "AWG TX"
+        },
+        {
+          "expr": "increase(node_network_receive_bytes_total{instance='home',device='wg1'}[24h])",
+          "legendFormat": "WG RX"
+        },
+        {
+          "expr": "increase(node_network_transmit_bytes_total{instance='home',device='wg1'}[24h])",
+          "legendFormat": "WG TX"
+        }
+      ]
+    },
+
+    {
+      "id": 31,
+      "title": "dnsmasq статус",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 19, "w": 6, "h": 6},
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}}},
+            {"type": "value", "options": {"1": {"text": "UP",   "color": "green"}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null},
+            {"color": "green", "value": 1}
+          ]}
+        }
+      },
+      "targets": [
+        {"expr": "vpn_dnsmasq_up", "legendFormat": "dnsmasq"}
+      ]
+    },
+
+    {
+      "id": 32,
+      "title": "Upload-утилизация",
+      "type": "gauge",
+      "gridPos": {"x": 18, "y": 19, "w": 6, "h": 6},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0, "max": 100,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green",  "value": null},
+            {"color": "yellow", "value": 60},
+            {"color": "orange", "value": 80},
+            {"color": "red",    "value": 95}
+          ]}
+        }
+      },
+      "targets": [
+        {"expr": "vpn_tunnel_upload_util_pct", "legendFormat": "Upload %"}
+      ]
+    }
+  ]
+}

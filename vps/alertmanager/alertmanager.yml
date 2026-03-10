@@ -1,22 +1,107 @@
+# alertmanager.yml — Маршрутизация алертов → Telegram
+# =============================================================================
+# Архитектура:
+#   Prometheus → Alertmanager → watchdog /notify (port 8090)
+#   watchdog/handlers/alerts.py принимает POST /notify и шлёт в Telegram
+#
+# Маршруты:
+#   critical → немедленно, repeat 1h
+#   warning  → группировка 2м, repeat 4h
+#   security → repeat 24h
+#
+# Подавление: critical алерт подавляет warning для того же компонента/инстанса
+# =============================================================================
+
 global:
   resolve_timeout: 5m
+  # HTTP-таймауты для webhook
+  http_config:
+    follow_redirects: true
 
+# ── Шаблоны сообщений ─────────────────────────────────────────────────────────
+templates:
+  - /etc/alertmanager/templates/*.tmpl
+
+# ── Главный маршрут ───────────────────────────────────────────────────────────
 route:
-  group_by: ['alertname', 'instance']
-  group_wait: 30s
-  group_interval: 5m
+  receiver: 'watchdog-notify'
+  group_by: ['alertname', 'instance', 'component']
+  group_wait:      30s
+  group_interval:  5m
   repeat_interval: 4h
-  receiver: 'telegram'
 
+  routes:
+
+    # Critical: немедленно, повтор каждый час
+    - match:
+        severity: critical
+      receiver: 'watchdog-notify'
+      group_wait:      10s
+      group_interval:  1m
+      repeat_interval: 1h
+      continue: false
+
+    # Warning: группировать 2 мин, повтор каждые 4 часа
+    - match:
+        severity: warning
+      receiver: 'watchdog-notify'
+      group_wait:      2m
+      group_interval:  5m
+      repeat_interval: 4h
+      continue: false
+
+    # Security (certs, DKMS): повтор раз в 24ч
+    - match:
+        component: security
+      receiver: 'watchdog-notify'
+      group_wait:      1m
+      group_interval:  10m
+      repeat_interval: 24h
+      continue: false
+
+# ── Получатели ────────────────────────────────────────────────────────────────
 receivers:
-  - name: 'telegram'
-    webhook_configs:
-      - url: 'http://10.177.2.1:8080/notify-clients'
-        send_resolved: true
 
+  # Основной: watchdog alerts endpoint (home server port 8090)
+  # handlers/alerts.py принимает Prometheus webhook и шлёт в Telegram
+  - name: 'watchdog-notify'
+    webhook_configs:
+      - url: 'http://10.177.2.1:8090/notify'
+        send_resolved: true
+        http_config:
+          bearer_token_file: /etc/alertmanager/watchdog-token
+        # Таймаут на один вызов
+        timeout: 15s
+        # Повторить при ошибке (не поддерживается в v0.27, но на всякий случай)
+        max_alerts: 10
+
+# ── Правила подавления ────────────────────────────────────────────────────────
 inhibit_rules:
-  - source_match:
-      severity: 'critical'
-    target_match:
-      severity: 'warning'
-    equal: ['alertname', 'instance']
+
+  # Critical подавляет Warning для одного компонента и инстанса
+  - source_matchers:
+      - 'severity = critical'
+    target_matchers:
+      - 'severity = warning'
+    equal: ['component', 'instance']
+
+  # HomeServerDown подавляет все алерты с instance=home
+  - source_matchers:
+      - 'alertname = HomeServerDown'
+    target_matchers:
+      - 'instance = home'
+    equal: ['instance']
+
+  # WatchdogDown подавляет tunnel/peer/routes/dns алерты
+  - source_matchers:
+      - 'alertname = WatchdogDown'
+    target_matchers:
+      - 'component =~ tunnel|wireguard|routes|dns|docker'
+    equal: []
+
+  # AllStacksDown подавляет TunnelDown, TunnelHighLatency и т.д.
+  - source_matchers:
+      - 'alertname = AllStacksDown'
+    target_matchers:
+      - 'alertname =~ TunnelDown|TunnelHighLatency|TunnelPacketLoss|TunnelLowBandwidth'
+    equal: []

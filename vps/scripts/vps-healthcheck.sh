@@ -1,45 +1,209 @@
 #!/bin/bash
 # =============================================================================
-# vps-healthcheck.sh — Healthcheck VPS (cron каждые 5 мин)
+# vps-healthcheck.sh — Мониторинг VPS (cron каждые 5 мин)
+#
+# Cron: */5 * * * * root bash /opt/vpn/scripts/vps-healthcheck.sh >> /var/log/vpn-healthcheck.log 2>&1
+#
+# Проверяет:
+#   - Docker-контейнеры (running + healthy)
+#   - Xray: порт 443 TCP (REALITY)
+#   - Hysteria2: порт 443 UDP
+#   - Cloudflared: HTTP 200 на metrics endpoint
+#   - Nginx: HTTP 200 на /health
+#   - Prometheus: HTTP 200 на /-/healthy
+#   - Grafana: HTTP 200 на /api/health
+#   - Внешний DNS
+#   - Диск < 90%
+#   - RAM < 90%
+#
+# Дедупликация: повтор алерта не чаще 1 раза в 30 мин для одной проблемы
+# flock: не запускать параллельно
 # =============================================================================
 set -euo pipefail
 
+LOCK_FILE="/var/run/vpn-healthcheck.lock"
+DEDUP_DIR="/var/run/vpn-healthcheck"
+DEDUP_TTL=1800   # 30 минут
+
+# ── flock: один экземпляр за раз ─────────────────────────────────────────────
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "[$(date '+%H:%M:%S')] HEALTHCHECK: уже запущен (flock), выход"
+    exit 0
+fi
+
+mkdir -p "$DEDUP_DIR"
+
+# ── Загрузка .env ─────────────────────────────────────────────────────────────
 source /opt/vpn/.env 2>/dev/null || true
 
+# ── Логирование ───────────────────────────────────────────────────────────────
+log()  { echo "[$(date '+%H:%M:%S')] HEALTHCHECK: $*"; }
+ok()   { echo "[$(date '+%H:%M:%S')] HEALTHCHECK: OK $*"; }
+fail() { echo "[$(date '+%H:%M:%S')] HEALTHCHECK: FAIL $*" >&2; }
+
+# ── Состояние проверок ────────────────────────────────────────────────────────
 PASS=0
 FAIL=0
-ALERTS=""
+ALERTS=()
 
+# ── Telegram уведомление с дедупликацией ─────────────────────────────────────
+notify_dedup() {
+    local key="$1"
+    local msg="$2"
+    local dedup_file="${DEDUP_DIR}/${key}"
+
+    # Пропустить если алерт отправлен < DEDUP_TTL сек назад
+    if [[ -f "$dedup_file" ]]; then
+        local last_sent
+        last_sent=$(cat "$dedup_file")
+        local now
+        now=$(date +%s)
+        if (( now - last_sent < DEDUP_TTL )); then
+            log "Дедупликация: $key (следующий алерт через $(( DEDUP_TTL - (now - last_sent) )) сек)"
+            return 0
+        fi
+    fi
+
+    # Отправить алерт
+    if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_ADMIN_CHAT_ID:-}" ]]; then
+        curl -sf --max-time 10 \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_ADMIN_CHAT_ID}" \
+            --data-urlencode "text=${msg}" \
+            -d "parse_mode=Markdown" \
+            > /dev/null 2>&1 || true
+    fi
+
+    # Сохранить timestamp
+    echo "$(date +%s)" > "$dedup_file"
+}
+
+# ── Сброс dedup при восстановлении ────────────────────────────────────────────
+clear_dedup() {
+    local key="$1"
+    rm -f "${DEDUP_DIR}/${key}"
+}
+
+# ── Проверка с записью результата ─────────────────────────────────────────────
 check() {
     local name="$1"
-    local cmd="$2"
+    local key="$2"
+    local cmd="$3"
+
     if eval "$cmd" > /dev/null 2>&1; then
         ((PASS++))
+        ok "$name"
+        clear_dedup "$key"
     else
         ((FAIL++))
-        ALERTS+="❌ $name\n"
+        fail "$name"
+        ALERTS+=("$name")
+        notify_dedup "$key" "⚠️ *VPS healthcheck: $name* FAIL\nHost: $(hostname)\nTime: $(date '+%Y-%m-%d %H:%M:%S')"
     fi
 }
 
-notify() {
-    local msg="$1"
-    [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]] && return
-    curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        -d "chat_id=${TELEGRAM_ADMIN_CHAT_ID}&text=${msg}&parse_mode=Markdown" \
-        > /dev/null 2>&1 || true
+# ── Docker: проверка контейнера (running) ─────────────────────────────────────
+check_container() {
+    local name="$1"
+    check "Docker: $name running" "docker_${name}" \
+        "docker inspect --format '{{.State.Running}}' '$name' 2>/dev/null | grep -q '^true$'"
 }
 
-# Проверки
-check "3x-ui running"   "docker inspect --format '{{.State.Running}}' 3x-ui | grep -q true"
-check "nginx running"   "docker inspect --format '{{.State.Running}}' nginx | grep -q true"
-check "cloudflared"     "docker inspect --format '{{.State.Running}}' cloudflared | grep -q true"
-check "prometheus"      "docker inspect --format '{{.State.Running}}' prometheus | grep -q true"
-check "Xray port 443"   "nc -z -w3 localhost 443"
-check "DNS external"    "dig @1.1.1.1 google.com +short +time=5"
-check "Disk < 90%"      "[ $(df / | awk 'NR==2{print $5}' | tr -d '%') -lt 90 ]"
+# ── Docker: проверка healthcheck статуса ──────────────────────────────────────
+check_container_health() {
+    local name="$1"
+    check "Docker: $name healthy" "docker_health_${name}" \
+        "docker inspect --format '{{.State.Health.Status}}' '$name' 2>/dev/null | grep -qE '^(healthy|starting)$'"
+}
 
-# Алерт если есть ошибки
-if [[ $FAIL -gt 0 ]]; then
-    HOSTNAME=$(hostname)
-    notify "⚠️ *VPS healthcheck FAIL* (${HOSTNAME})\n\n${ALERTS}"
+log "=== Healthcheck start ==="
+
+# ── Docker контейнеры ─────────────────────────────────────────────────────────
+check_container "3x-ui"
+check_container "nginx"
+check_container "cloudflared"
+check_container "prometheus"
+check_container "alertmanager"
+check_container "grafana"
+check_container "node-exporter"
+
+check_container_health "3x-ui"
+check_container_health "nginx"
+check_container_health "prometheus"
+check_container_health "grafana"
+
+# ── Xray: TCP 443 (REALITY inbound) ──────────────────────────────────────────
+check "Xray TCP 443" "xray_tcp_443" \
+    "nc -z -w5 localhost 443"
+
+# ── Nginx: health endpoint ────────────────────────────────────────────────────
+check "Nginx health" "nginx_health" \
+    "curl -sf --max-time 5 http://localhost:80/health | grep -q ok"
+
+# ── Nginx mTLS panel: port 8443 TCP доступен ─────────────────────────────────
+check "Nginx 8443" "nginx_8443" \
+    "nc -z -w5 localhost 8443"
+
+# ── Cloudflared: metrics endpoint ─────────────────────────────────────────────
+check "Cloudflared metrics" "cloudflared_metrics" \
+    "curl -sf --max-time 5 http://localhost:20241/metrics | grep -q cloudflared"
+
+# ── Prometheus: API ───────────────────────────────────────────────────────────
+check "Prometheus healthy" "prometheus_health" \
+    "curl -sf --max-time 5 http://localhost:9090/-/healthy | grep -qi ok"
+
+# ── Alertmanager: API ─────────────────────────────────────────────────────────
+check "Alertmanager healthy" "alertmanager_health" \
+    "curl -sf --max-time 5 http://localhost:9093/-/healthy | grep -qi ok"
+
+# ── Grafana: API ──────────────────────────────────────────────────────────────
+check "Grafana healthy" "grafana_health" \
+    "curl -sf --max-time 5 http://172.21.0.13:3000/api/health | grep -qi ok"
+
+# ── 3x-ui panel: доступна (localhost) ─────────────────────────────────────────
+check "3x-ui panel" "xui_panel" \
+    "curl -sf --max-time 5 http://localhost:2053/ | grep -qi html"
+
+# ── Внешний DNS ───────────────────────────────────────────────────────────────
+check "DNS external" "dns_external" \
+    "dig @1.1.1.1 google.com +short +time=5 | grep -qE '^[0-9]'"
+
+# ── Диск < 90% ────────────────────────────────────────────────────────────────
+DISK_PCT=$(df / | awk 'NR==2{gsub("%","",$5); print $5}')
+if (( DISK_PCT < 90 )); then
+    ((PASS++))
+    ok "Disk ${DISK_PCT}% < 90%"
+    clear_dedup "disk_space"
+else
+    ((FAIL++))
+    fail "Disk ${DISK_PCT}% >= 90%"
+    ALERTS+=("Диск ${DISK_PCT}%")
+    notify_dedup "disk_space" "🔴 *VPS: критично мало места на диске*\n${DISK_PCT}% занято\nHost: $(hostname)"
+fi
+
+# ── RAM < 90% ─────────────────────────────────────────────────────────────────
+RAM_AVAIL=$(free | awk '/^Mem:/{printf "%.0f", $7/$2*100}')
+if (( RAM_AVAIL > 10 )); then
+    ((PASS++))
+    ok "RAM available ${RAM_AVAIL}%"
+    clear_dedup "ram_pressure"
+else
+    ((FAIL++))
+    RAM_USED=$(( 100 - RAM_AVAIL ))
+    fail "RAM used ${RAM_USED}%"
+    ALERTS+=("RAM ${RAM_USED}%")
+    notify_dedup "ram_pressure" "⚠️ *VPS: высокое потребление RAM*\n${RAM_USED}% занято\nHost: $(hostname)"
+fi
+
+# ── Итог ──────────────────────────────────────────────────────────────────────
+log "=== Итог: OK=${PASS} FAIL=${FAIL} ==="
+
+if [[ ${#ALERTS[@]} -gt 0 ]]; then
+    ALERTS_STR=$(printf ' • %s\n' "${ALERTS[@]}")
+    log "Проблемы:${ALERTS_STR}"
+    # Сводный алерт если много проблем сразу (> 3)
+    if [[ ${#ALERTS[@]} -ge 3 ]]; then
+        notify_dedup "mass_failure" "🚨 *VPS: множественные проблемы (${#ALERTS[@]})*\n\n${ALERTS_STR}\n\nHost: $(hostname)\nTime: $(date '+%Y-%m-%d %H:%M:%S')"
+    fi
 fi

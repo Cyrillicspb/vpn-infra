@@ -1,7 +1,22 @@
 # prometheus.yml — VPS
+# =============================================================================
+# Источники метрик:
+#   vps-node  : node-exporter на VPS           (localhost:9100)
+#   home-node : node-exporter домашнего сервера (туннель 10.177.2.1:9100)
+#   watchdog  : watchdog custom metrics         (туннель 10.177.2.1:8080/metrics)
+#   alertmanager: сам Alertmanager              (alertmanager:9093)
+#
+# Watchdog Bearer-токен: файл /etc/prometheus/watchdog-token
+# (генерируется install-vps.sh из /opt/vpn/.env → WATCHDOG_API_TOKEN)
+# =============================================================================
+
 global:
-  scrape_interval: 30s
+  scrape_interval:     30s
+  scrape_timeout:      10s
   evaluation_interval: 30s
+  external_labels:
+    project: 'vpn-infra'
+    env:     'production'
 
 rule_files:
   - /etc/prometheus/rules/*.yml
@@ -10,26 +25,48 @@ alerting:
   alertmanagers:
     - static_configs:
         - targets: ['alertmanager:9093']
+      timeout: 10s
+      api_version: v2
 
 scrape_configs:
-  # VPS сам (node-exporter)
+
+  # ── VPS: node-exporter (network_mode: host → localhost) ─────────────────────
   - job_name: 'vps-node'
     static_configs:
       - targets: ['localhost:9100']
         labels:
           instance: 'vps'
+          role:     'vps'
 
-  # Домашний сервер через туннель
+  # ── Домашний сервер: node-exporter (через Tier-2 туннель) ───────────────────
+  # 10.177.2.1 = home-side Tier-2 WireGuard IP
   - job_name: 'home-node'
+    scrape_interval: 30s
+    scrape_timeout:  15s
     static_configs:
       - targets: ['10.177.2.1:9100']
         labels:
           instance: 'home'
+          role:     'home'
 
-  # Watchdog метрики
+  # ── Watchdog: VPN-специфичные метрики (Bearer auth) ─────────────────────────
+  # Экспонирует: vpn_tunnel_*, vpn_peer_*, vpn_routes_*, vpn_cert_*, vpn_docker_*
   - job_name: 'watchdog'
+    scrape_interval: 30s
+    scrape_timeout:  15s
+    metrics_path: '/metrics'
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/watchdog-token
     static_configs:
       - targets: ['10.177.2.1:8080']
         labels:
           instance: 'home'
-    metrics_path: '/metrics'
+          role:     'home'
+
+  # ── Alertmanager self-metrics ────────────────────────────────────────────────
+  - job_name: 'alertmanager'
+    static_configs:
+      - targets: ['alertmanager:9093']
+        labels:
+          instance: 'vps'

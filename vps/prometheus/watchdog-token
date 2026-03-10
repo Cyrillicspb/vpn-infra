@@ -1,0 +1,2 @@
+# Этот файл генерируется install-vps.sh из WATCHDOG_API_TOKEN в /opt/vpn/.env
+# На сервере: echo "$WATCHDOG_API_TOKEN" > /opt/vpn/vps/prometheus/watchdog-token && chmod 600 /opt/vpn/vps/prometheus/watchdog-token

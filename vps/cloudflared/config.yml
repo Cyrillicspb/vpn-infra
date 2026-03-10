@@ -1,12 +1,39 @@
-# cloudflared config — VPS
-# Туннель: CDN Cloudflare → локальный Xray WebSocket
+# cloudflared config — VPS (серверная сторона CDN-стека)
+# =============================================================================
+# Режим запуска: cloudflared tunnel run --token $CF_TUNNEL_TOKEN
+#
+# При использовании --token:
+#   - Туннель создан в Cloudflare Dashboard
+#   - Ingress-правила задаются В DASHBOARD (не здесь)
+#   - Этот файл используется для метрик и дополнительных опций
+#
+# Архитектура CDN-стека:
+#   Cloudflare CDN
+#     → cloudflared tunnel (VPS, этот сервис)
+#       → Xray VLESS+WebSocket inbound (localhost:8080, path /vpn)
+#         ← клиент: cloudflared access → Xray client → tun2socks
+#
+# Xray WS inbound настраивается в 3x-ui:
+#   Protocol: VLESS, Network: ws, Security: none
+#   Listen: 127.0.0.1, Port: 8080, Path: /vpn
+#   UUID: $XRAY_UUID (тот же что для REALITY)
+#
+# Для --token режима ingress-правила в Dashboard:
+#   Hostname: <your-domain.com>   →   http://localhost:8080
+# =============================================================================
 
-# Запускается с: cloudflared tunnel run --token $CF_TUNNEL_TOKEN
-# Или через docker-compose с переменной CF_TUNNEL_TOKEN
-
-ingress:
-  # Перенаправляем CDN трафик на Xray WebSocket inbound (localhost)
-  - service: http://localhost:8080
-
-# Метрики
+# Метрики cloudflared (Prometheus scrape)
 metrics: 127.0.0.1:20241
+
+# Логирование
+loglevel: info
+
+# Fallback: если Xray WS недоступен → HTTP 503
+# (используется только если config.yml управляет ingress, не Dashboard)
+ingress:
+  # CDN-трафик → Xray VLESS+WS (без TLS, TLS терминируется Cloudflare)
+  - hostname: ""       # задаётся в Cloudflare Dashboard при использовании token
+    service: http://localhost:8080
+
+  # Обязательный fallback
+  - service: http_status:404

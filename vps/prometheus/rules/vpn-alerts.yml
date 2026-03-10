@@ -1,51 +1,413 @@
+# vpn-alerts.yml — Все правила алертов VPN-инфраструктуры
+# =============================================================================
+# Метрики watchdog (кастомные, prefix vpn_*):
+#   vpn_tunnel_up               1=активен, 0=упал
+#   vpn_tunnel_rtt_ms           RTT до VPS через тун (мс)
+#   vpn_tunnel_rtt_baseline_ms  7-дневный baseline RTT
+#   vpn_tunnel_packet_loss_pct  потери пакетов (%)
+#   vpn_tunnel_download_mbps    скорость скачивания (Мбит/с)
+#   vpn_tunnel_upload_mbps      скорость отдачи (Мбит/с)
+#   vpn_tunnel_upload_util_pct  утилизация upload-канала (%)
+#   vpn_active_stack            текущий стек {stack="reality|grpc|cdn|hysteria2"}
+#   vpn_stacks_all_down         1 если все 4 стека упали
+#   vpn_peer_last_handshake{interface,peer}  секунды с последнего handshake
+#   vpn_peer_count{interface}   кол-во активных пиров
+#   vpn_heartbeat_last_ok_ts    unix timestamp последнего успешного heartbeat
+#   vpn_routes_cache_age_sec    возраст кэша маршрутов (секунды)
+#   vpn_dnsmasq_up              1=dnsmasq отвечает, 0=нет
+#   vpn_cert_days{cert}         дней до истечения сертификата {cert="client|ca"}
+#   vpn_docker_healthy{container} 1=healthy, 0=unhealthy/exited
+#   vpn_failover_total          счётчик failover переключений
+#   vpn_blocked_sites_reachable 1=заблокированные сайты доступны через тун
+#   vpn_dkms_ok                 1=DKMS модуль собран, 0=нет
+#   vpn_external_ip_changed_ts  unix timestamp последней смены внешнего IP
+# =============================================================================
+
 groups:
-  - name: vpn-alerts
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Доступность инфраструктуры
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: vpn.availability
     interval: 30s
     rules:
-      # Домашний сервер недоступен
+
+      # Домашний сервер недоступен (node-exporter не отвечает)
       - alert: HomeServerDown
         expr: up{job="home-node"} == 0
         for: 2m
         labels:
           severity: critical
+          component: infrastructure
         annotations:
           summary: "Домашний сервер недоступен"
-          description: "Нет данных от home-node более 2 минут"
+          description: "node-exporter не отвечает более 2 минут. Проверьте туннель и сервер."
 
-      # Высокая нагрузка CPU
-      - alert: HighCPU
-        expr: 100 - (avg by(instance)(irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
-        for: 10m
+      # VPS node-exporter недоступен
+      - alert: VpsNodeDown
+        expr: up{job="vps-node"} == 0
+        for: 2m
         labels:
-          severity: warning
+          severity: critical
+          component: infrastructure
         annotations:
-          summary: "Высокая нагрузка CPU на {{ $labels.instance }}"
-          description: "CPU > 85% в течение 10 минут"
+          summary: "VPS недоступен (node-exporter)"
+          description: "VPS node-exporter не отвечает более 2 минут."
 
-      # Мало места на диске
-      - alert: DiskSpaceLow
-        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 20
-        for: 5m
+      # Watchdog недоступен (метрики не поступают)
+      - alert: WatchdogDown
+        expr: up{job="watchdog"} == 0
+        for: 2m
         labels:
-          severity: warning
+          severity: critical
+          component: watchdog
         annotations:
-          summary: "Мало места на диске: {{ $labels.instance }}"
-          description: "Свободно менее 20%"
+          summary: "Watchdog недоступен"
+          description: "Метрики от watchdog не поступают более 2 минут. Проверьте сервис watchdog."
 
-      # Критически мало места
-      - alert: DiskSpaceCritical
-        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 5
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Туннель и протоколы
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: vpn.tunnel
+    interval: 30s
+    rules:
+
+      # Туннель упал
+      - alert: TunnelDown
+        expr: vpn_tunnel_up == 0
         for: 1m
         labels:
           severity: critical
+          component: tunnel
         annotations:
-          summary: "Критически мало места: {{ $labels.instance }}"
+          summary: "VPN-туннель недоступен"
+          description: "Туннель не отвечает более 1 минуты. Идёт failover."
 
-      # Высокое потребление RAM
-      - alert: HighMemory
-        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+      # Все стеки недоступны
+      - alert: AllStacksDown
+        expr: vpn_stacks_all_down == 1
+        for: 5m
+        labels:
+          severity: critical
+          component: tunnel
+        annotations:
+          summary: "Все VPN-стеки недоступны"
+          description: "Ни один из 4 стеков не работает более 5 минут. Клиенты без VPN."
+
+      # Высокий RTT
+      - alert: TunnelHighLatency
+        expr: vpn_tunnel_rtt_ms > 500
+        for: 3m
+        labels:
+          severity: warning
+          component: tunnel
+        annotations:
+          summary: "Высокая задержка туннеля: {{ $value | printf \"%.0f\" }} мс"
+          description: "RTT > 500ms в течение 3 минут. Текущий стек может деградировать."
+
+      # RTT > 3x от baseline (детекция деградации)
+      - alert: TunnelLatencyDegradation
+        expr: |
+          vpn_tunnel_rtt_ms > (vpn_tunnel_rtt_baseline_ms * 3)
+          and vpn_tunnel_rtt_baseline_ms > 0
+        for: 2m
+        labels:
+          severity: warning
+          component: tunnel
+        annotations:
+          summary: "Деградация RTT: {{ $value | printf \"%.0f\" }} мс (baseline × 3)"
+          description: "RTT превысил 3× от 7-дневного baseline. Возможна блокировка текущего стека."
+
+      # Потери пакетов > 5%
+      - alert: TunnelPacketLoss
+        expr: vpn_tunnel_packet_loss_pct > 5
+        for: 3m
+        labels:
+          severity: warning
+          component: tunnel
+        annotations:
+          summary: "Потери пакетов: {{ $value | printf \"%.1f\" }}%"
+          description: "Packet loss > 5% в течение 3 минут."
+
+      # Низкая пропускная способность
+      - alert: TunnelLowBandwidth
+        expr: vpn_tunnel_download_mbps < 5
         for: 5m
         labels:
           severity: warning
+          component: tunnel
         annotations:
-          summary: "Высокое потребление RAM: {{ $labels.instance }}"
+          summary: "Низкая скорость туннеля: {{ $value | printf \"%.1f\" }} Мбит/с"
+          description: "Download < 5 Мбит/с более 5 минут. Возможен шейпинг."
+
+      # Детекция объёмного шейпинга (расхождение small/large speedtest)
+      - alert: VolumeShapingDetected
+        expr: |
+          vpn_tunnel_download_mbps < (
+            avg_over_time(vpn_tunnel_download_mbps[6h]) * 0.5
+          )
+        for: 10m
+        labels:
+          severity: warning
+          component: tunnel
+        annotations:
+          summary: "Детекция объёмного шейпинга"
+          description: "Текущая скорость < 50% от 6-часового среднего. Провайдер может применять DPI-шейпинг."
+
+      # Заблокированные сайты недоступны через тун
+      - alert: BlockedSitesUnreachable
+        expr: vpn_blocked_sites_reachable == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: tunnel
+        annotations:
+          summary: "Заблокированные сайты недоступны через туннель"
+          description: "Тест curl через туннель не проходит. VPN не обеспечивает обход блокировок."
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Peers (WireGuard)
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: vpn.peers
+    interval: 60s
+    rules:
+
+      # WG peer не отвечает (stale handshake > 180 сек)
+      - alert: WgPeerStale
+        expr: vpn_peer_last_handshake > 180
+        for: 0m
+        labels:
+          severity: warning
+          component: wireguard
+        annotations:
+          summary: "WG peer не отвечает: {{ $labels.peer }} ({{ $labels.interface }})"
+          description: "Последний handshake {{ $value | printf \"%.0f\" }} сек назад (> 180с)."
+
+      # Нет активных пиров на интерфейсе
+      - alert: WgNoPeers
+        expr: vpn_peer_count == 0
+        for: 5m
+        labels:
+          severity: warning
+          component: wireguard
+        annotations:
+          summary: "Нет активных пиров на {{ $labels.interface }}"
+          description: "WireGuard-интерфейс {{ $labels.interface }} не имеет пиров более 5 минут."
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Heartbeat / Connectivity
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: vpn.heartbeat
+    interval: 60s
+    rules:
+
+      # Heartbeat от watchdog потерян > 5 мин
+      - alert: HeartbeatLost
+        expr: (time() - vpn_heartbeat_last_ok_ts) > 300
+        for: 0m
+        labels:
+          severity: critical
+          component: watchdog
+        annotations:
+          summary: "Heartbeat от watchdog потерян"
+          description: "Последний heartbeat {{ $value | printf \"%.0f\" }} сек назад (> 5 мин)."
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Маршруты и DNS
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: vpn.routes
+    interval: 300s
+    rules:
+
+      # Кэш маршрутов устарел > 3 дней
+      - alert: RoutesCacheStale
+        expr: vpn_routes_cache_age_sec > 259200
+        for: 0m
+        labels:
+          severity: warning
+          component: routes
+        annotations:
+          summary: "Кэш маршрутов РКН устарел: {{ $value | printf \"%.0f\" }} сек"
+          description: "Базы РКН не обновлялись более 3 суток. Проверьте cron и источники."
+
+      # dnsmasq не отвечает
+      - alert: DnsmasqDown
+        expr: vpn_dnsmasq_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: dns
+        annotations:
+          summary: "dnsmasq не отвечает"
+          description: "DNS-сервер домашнего сервера недоступен. Split tunneling по домену не работает."
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Сертификаты
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: vpn.certs
+    interval: 3600s
+    rules:
+
+      # Клиентский mTLS сертификат истекает ≤ 14 дней
+      - alert: ClientCertExpiringSoon
+        expr: vpn_cert_days{cert="client"} <= 14
+        for: 0m
+        labels:
+          severity: warning
+          component: security
+        annotations:
+          summary: "Клиентский mTLS сертификат истекает: {{ $value }} дней"
+          description: "Выполните /renew-cert в Telegram-боте для обновления клиентского сертификата."
+
+      # CA сертификат истекает ≤ 30 дней
+      - alert: CaCertExpiringSoon
+        expr: vpn_cert_days{cert="ca"} <= 30
+        for: 0m
+        labels:
+          severity: critical
+          component: security
+        annotations:
+          summary: "CA-сертификат истекает: {{ $value }} дней"
+          description: "Срочно выполните /renew-ca. Истечение CA сломает всю mTLS-инфраструктуру."
+
+      # Клиентский сертификат истекает ≤ 3 дня (критично)
+      - alert: ClientCertExpiryCritical
+        expr: vpn_cert_days{cert="client"} <= 3
+        for: 0m
+        labels:
+          severity: critical
+          component: security
+        annotations:
+          summary: "Клиентский сертификат истекает ЧЕРЕЗ {{ $value }} ДНЯ"
+          description: "Немедленно выполните /renew-cert. Панели управления скоро станут недоступны."
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Docker-контейнеры
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: vpn.docker
+    interval: 60s
+    rules:
+
+      # Docker-контейнер unhealthy или exited
+      - alert: ContainerUnhealthy
+        expr: vpn_docker_healthy == 0
+        for: 2m
+        labels:
+          severity: warning
+          component: docker
+        annotations:
+          summary: "Контейнер нездоров: {{ $labels.container }}"
+          description: "Docker-контейнер {{ $labels.container }} unhealthy/exited более 2 минут."
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Системные ресурсы
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: vpn.system
+    interval: 60s
+    rules:
+
+      # Диск > 85%
+      - alert: DiskSpaceWarning
+        expr: |
+          (1 - (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"}
+              / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"})) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "Диск {{ $labels.instance }}: {{ $value | printf \"%.1f\" }}% заполнен"
+          description: "Заполнение диска > 85%. Watchdog начнёт автоочистку."
+
+      # Диск > 90% (критично)
+      - alert: DiskSpaceCritical
+        expr: |
+          (1 - (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"}
+              / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"})) * 100 > 90
+        for: 1m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Критично: диск {{ $labels.instance }}: {{ $value | printf \"%.1f\" }}%"
+          description: "Диск > 90%. Watchdog запускает docker prune и удаление старых бэкапов."
+
+      # Диск > 95% (аварийное)
+      - alert: DiskSpaceEmergency
+        expr: |
+          (1 - (node_filesystem_avail_bytes{mountpoint="/",fstype!="tmpfs"}
+              / node_filesystem_size_bytes{mountpoint="/",fstype!="tmpfs"})) * 100 > 95
+        for: 0m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "АВАРИЙНО: диск {{ $labels.instance }}: {{ $value | printf \"%.1f\" }}%"
+          description: "Диск > 95%. Watchdog останавливает некритичные сервисы."
+
+      # CPU > 85% более 10 мин
+      - alert: HighCPU
+        expr: |
+          100 - (avg by(instance)(
+            irate(node_cpu_seconds_total{mode="idle"}[5m])
+          ) * 100) > 85
+        for: 10m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "Высокая нагрузка CPU: {{ $labels.instance }} {{ $value | printf \"%.1f\" }}%"
+          description: "CPU > 85% в течение 10 минут."
+
+      # RAM > 90%
+      - alert: HighMemory
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "Высокое потребление RAM: {{ $labels.instance }} {{ $value | printf \"%.1f\" }}%"
+          description: "Использование RAM > 90% более 5 минут."
+
+      # Upload-канал утилизирован > 80%
+      - alert: UploadChannelSaturated
+        expr: vpn_tunnel_upload_util_pct > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: network
+        annotations:
+          summary: "Upload-канал насыщен: {{ $value | printf \"%.1f\" }}%"
+          description: "Утилизация upload > 80% более 5 минут. Возможна деградация скорости у клиентов."
+
+      # Высокая нагрузка на сеть (домашний сервер > 100 MB/s)
+      - alert: HighNetworkThroughput
+        expr: |
+          irate(node_network_transmit_bytes_total{instance="home",device="eth0"}[5m]) > 104857600
+        for: 5m
+        labels:
+          severity: warning
+          component: network
+        annotations:
+          summary: "Высокий исходящий трафик домашнего сервера: {{ $value | humanize }}B/s"
+          description: "Исходящий трафик > 100 MB/s — возможно насыщение канала."
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Безопасность / DKMS
+  # ═══════════════════════════════════════════════════════════════════════════
+  - name: vpn.security
+    interval: 3600s
+    rules:
+
+      # DKMS модуль AmneziaWG не собран
+      - alert: DkmsModuleMissing
+        expr: vpn_dkms_ok == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: security
+        annotations:
+          summary: "DKMS модуль AmneziaWG не собран"
+          description: "После обновления ядра DKMS не пересобрал модуль. WG клиенты могут отвалиться."
