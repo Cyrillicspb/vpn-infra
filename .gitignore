@@ -13,6 +13,9 @@ vps/.env
 *.conf
 !.env.example
 !home/dnsmasq/dnsmasq.conf
+!home/dnsmasq/dnsmasq.d/*.conf
+!home/nftables/nftables.conf
+!home/nftables/nftables-blocked-static.conf
 !home/xray/config-reality.json
 !home/xray/config-grpc.json
 !home/cloudflared/config.yml

@@ -1,0 +1,31 @@
+[Unit]
+Description=Restore nft blocked_static set after boot
+Documentation=https://github.com/Cyrillicspb/vpn-infra/blob/main/docs/ARCHITECTURE.md
+# КРИТИЧНО: выполнять ПОСЛЕ nftables (иначе таблица/set не существуют)
+# и ДО dnsmasq (dnsmasq при старте начнёт добавлять в blocked_dynamic,
+# static должен быть уже загружен)
+After=nftables.service
+Before=dnsmasq.service vpn-routes.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Проверяем что файл существует и непустой
+ExecStartPre=/bin/test -s /etc/nftables-blocked-static.conf
+
+# Атомарная загрузка set (flush set + add element = одна kernel-транзакция)
+ExecStart=/usr/sbin/nft -f /etc/nftables-blocked-static.conf
+
+# Логируем количество элементов после загрузки
+ExecStartPost=/bin/sh -c 'COUNT=$(nft list set inet vpn blocked_static 2>/dev/null | grep -c "elements =") && logger -t vpn-sets-restore "blocked_static загружен"'
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vpn-sets-restore
+
+# Если файл не найден — не блокируем загрузку, просто предупреждение
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

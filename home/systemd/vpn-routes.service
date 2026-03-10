@@ -1,0 +1,23 @@
+[Unit]
+Description=VPN Policy Routing (fwmark + table 200/100)
+Documentation=https://github.com/Cyrillicspb/vpn-infra/blob/main/docs/ARCHITECTURE.md
+After=network-online.target nftables.service wg-quick@wg0.service wg-quick@wg1.service
+Wants=network-online.target
+Before=watchdog.service docker.service dnsmasq.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/vpn/scripts/vpn-policy-routing.sh up
+ExecStop=/opt/vpn/scripts/vpn-policy-routing.sh down
+ExecReload=/opt/vpn/scripts/vpn-policy-routing.sh up
+
+# При смене активного tun — watchdog вызывает:
+# /opt/vpn/scripts/vpn-policy-routing.sh update <new-tun>
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vpn-routes
+
+[Install]
+WantedBy=multi-user.target
