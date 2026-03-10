@@ -532,7 +532,50 @@ phase1() {
         die "Файл install-home.sh не найден в ${REPO_DIR}"
     fi
 
+    # При INSTALL_CLAUDE_CODE=true клонируем репозиторий в /opt/vpn ДО начала
+    # установки — чтобы конфиги брались из git и работал deploy.sh (git pull).
+    if [[ "${INSTALL_CLAUDE_CODE:-false}" == "true" ]]; then
+        if [[ ! -d /opt/vpn/.git ]]; then
+            log_info "INSTALL_CLAUDE_CODE=true: клонируем репозиторий в /opt/vpn..."
+            mkdir -p /opt/vpn
+            # VPS-зеркало предпочтительнее GitHub (может быть заблокирован)
+            cloned=false
+            if [[ -n "${VPS_IP:-}" ]]; then
+                vps_mirror="ssh://sysadmin@${VPS_IP}/opt/vpn/vpn-repo.git"
+                log_info "Пробуем VPS-зеркало: $vps_mirror"
+                if git clone "$vps_mirror" /opt/vpn 2>/dev/null; then
+                    log_ok "Клонировано из VPS-зеркала."
+                    cloned=true
+                else
+                    log_warn "VPS-зеркало недоступно. Пробуем GitHub..."
+                fi
+            fi
+            if [[ "$cloned" == false ]]; then
+                github_url="${GITHUB_REPO_URL:-https://github.com/your-org/vpn-infra.git}"
+                log_info "Клонируем из GitHub: $github_url"
+                git clone "$github_url" /opt/vpn || \
+                    log_warn "git clone не удался — /opt/vpn будет создан из REPO_DIR"
+            fi
+        else
+            log_info "Репозиторий уже клонирован в /opt/vpn. git pull..."
+            git -C /opt/vpn pull --ff-only 2>/dev/null || \
+                log_warn "git pull не удался — используем текущую версию"
+        fi
+    fi
+
     STEP=8 bash "${REPO_DIR}/install-home.sh"
+
+    # Claude Code — установка инструмента (Node.js + npm package)
+    if [[ "${INSTALL_CLAUDE_CODE:-false}" == "true" ]]; then
+        if is_done "step_install_claude_code"; then
+            log_info "Пропуск (уже выполнено): Claude Code"
+        else
+            log_info "Установка Claude Code..."
+            bash /opt/vpn/scripts/install-claude-code.sh --skip-clone && \
+                echo "step_install_claude_code" >> "$STATE_FILE" || \
+                log_warn "install-claude-code.sh завершился с ошибкой (некритично)"
+        fi
+    fi
 }
 
 # ── Фаза 2: VPS ─────────────────────────────────────────────────────────────

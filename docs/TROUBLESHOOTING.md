@@ -14,6 +14,7 @@
 - [Ошибки установки](#ошибки-установки)
 - [Проблемы с VPS](#проблемы-с-vps)
 - [Конфликт с офисным VPN](#конфликт-с-офисным-vpn)
+- [Отладка с Claude Code](#отладка-с-claude-code)
 
 ---
 
@@ -502,3 +503,110 @@ ip route show | grep tun
 При установке setup.sh автоматически обнаруживает конфликт и предлагает альтернативную подсеть `172.29.177.0/24`.
 
 Если уже установлено — обратитесь к администратору для переконфигурации подсетей.
+
+---
+
+## Отладка с Claude Code
+
+Claude Code — интерактивный AI-агент для работы с кодом в терминале. Полезен для диагностики проблем прямо на сервере: анализ логов, чтение конфигов, поиск причин сбоев.
+
+### Установка
+
+```bash
+# Автоматически при INSTALL_CLAUDE_CODE=true в .env (через setup.sh):
+bash /opt/vpn/scripts/install-claude-code.sh
+
+# Или вручную:
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+sudo npm install -g @anthropic-ai/claude-code
+```
+
+Требования: Node.js 18+, аккаунт Anthropic (claude.ai).
+
+### Запуск
+
+```bash
+cd /opt/vpn
+claude
+```
+
+При первом запуске откроется браузер для авторизации (или введите API-ключ).
+Репозиторий `/opt/vpn` уже клонирован — Claude видит все конфиги и скрипты.
+
+### Примеры диагностических команд
+
+Можно сказать Claude:
+
+- **«Проверь статус всех VPN-сервисов»**
+```bash
+# Claude выполнит:
+systemctl status watchdog wg-quick@wg0 wg-quick@wg1 hysteria2 dnsmasq
+systemctl is-failed '*'
+```
+
+- **«Покажи последние ошибки watchdog»**
+```bash
+journalctl -u watchdog -n 100 --no-pager
+journalctl -u watchdog --since "1 hour ago" -p err
+```
+
+- **«Что сейчас с туннелями?»**
+```bash
+wg show all
+ip route show table 200
+ip rule list
+```
+
+- **«Проверь nftables»**
+```bash
+nft list table inet vpn
+nft list set inet vpn blocked_static | head -20
+nft list set inet vpn blocked_dynamic | wc -l
+```
+
+- **«Проверь доступность заблокированного сайта через туннель»**
+```bash
+# Найти активный tun-интерфейс:
+ip link show type tun
+# Проверить curl:
+curl -v --interface tun0 --max-time 10 https://www.youtube.com/ 2>&1 | head -20
+```
+
+- **«Проверь DNS»**
+```bash
+dig @127.0.0.1 youtube.com
+dig @127.0.0.1 google.com
+systemctl status dnsmasq
+```
+
+- **«Что в базе данных бота?»**
+```bash
+sqlite3 /opt/vpn/telegram-bot/data/vpn_bot.db "SELECT * FROM clients;"
+sqlite3 /opt/vpn/telegram-bot/data/vpn_bot.db ".tables"
+```
+
+- **«Watchdog API работает?»**
+```bash
+source /opt/vpn/.env
+curl -s -H "Authorization: Bearer $WATCHDOG_API_TOKEN" http://localhost:8080/status | python3 -m json.tool
+```
+
+- **«Покажи логи Docker-контейнеров»**
+```bash
+docker logs telegram-bot --tail 50
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.RunningFor}}"
+```
+
+### Советы
+
+- Claude читает файлы в `/opt/vpn/` и понимает архитектуру проекта — можно задавать вопросы на русском
+- Для анализа проблемы дайте Claude вывод `systemctl status` или `journalctl` и спросите «что здесь не так?»
+- Claude не делает деструктивных действий без явного подтверждения
+- Сессия не сохраняется: каждый запуск `claude` начинается заново
+
+### Ограничения
+
+- Требует интернет-соединение для API Anthropic
+- Не заменяет мониторинг: используйте Grafana и алерты бота для оперативного реагирования
+- При недоступности Telegram API — используйте Claude Code как резервный канал диагностики
