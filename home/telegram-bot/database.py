@@ -532,6 +532,17 @@ class Database:
             finally:
                 conn.close()
 
+    async def get_request_by_id(self, request_id: int) -> Optional[dict]:
+        async with self._lock:
+            conn = self._conn()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM domain_requests WHERE id = ?", (request_id,)
+                ).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+
     async def reject_request(self, request_id: int) -> None:
         async with self._lock:
             conn = self._conn()

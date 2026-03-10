@@ -599,6 +599,7 @@ async def cmd_requests(message: Message, state: FSMContext, **kw):
 
 @router.callback_query(F.data.startswith("dev_approve_"))
 async def cb_dev_approve(cb: CallbackQuery, **kw):
+    from handlers.requests import notify_device_approved, safe_edit
     device_id = int(cb.data.split("_")[-1])
     db: Database = kw.get("db")
     device = await db.approve_device(device_id)
@@ -614,55 +615,64 @@ async def cb_dev_approve(cb: CallbackQuery, **kw):
             pass
         bot: "Bot" = kw.get("bot")
         if bot:
-            client = await db.get_device_by_id(device_id)
-            if client:
-                from services.config_builder import ConfigBuilder
-                from services.autodist import AutoDist
-                autodist: AutoDist = kw.get("autodist")
-                if autodist:
-                    asyncio.create_task(
-                        autodist.send_to_device(
-                            cb.message.chat.id,  # будет переопределён
-                            device,
-                            "Устройство одобрено",
-                        )
-                    )
-    await cb.message.edit_text(f"✅ Устройство `{device_id}` одобрено.")
+            asyncio.create_task(
+                notify_device_approved(
+                    bot, db, device, autodist=kw.get("autodist")
+                )
+            )
+    name = device["device_name"] if device else device_id
+    await safe_edit(cb, f"✅ Устройство `{name}` одобрено.")
 
 
 @router.callback_query(F.data.startswith("dev_reject_"))
 async def cb_dev_reject(cb: CallbackQuery, **kw):
+    from handlers.requests import notify_device_rejected, safe_edit
     device_id = int(cb.data.split("_")[-1])
     db: Database = kw.get("db")
+    device = await db.get_device_by_id(device_id)
     await db.delete_device(device_id)
-    await cb.message.edit_text(f"❌ Устройство `{device_id}` отклонено.")
+    bot: "Bot" = kw.get("bot")
+    if bot and device:
+        asyncio.create_task(
+            notify_device_rejected(bot, str(device["chat_id"]), device["device_name"])
+        )
+    name = device["device_name"] if device else device_id
+    await safe_edit(cb, f"❌ Устройство `{name}` отклонено.")
 
 
 @router.callback_query(F.data.startswith("req_approve_"))
 async def cb_req_approve(cb: CallbackQuery, **kw):
+    from handlers.requests import notify_request_approved, safe_edit
     req_id = int(cb.data.split("_")[-1])
     db: Database = kw.get("db")
     req = await db.approve_request(req_id)
     if req:
-        # Добавляем домен в соответствующий файл и обновляем маршруты
+        # Добавляем домен в соответствующий файл и запускаем обновление маршрутов
         target = MANUAL_VPN if req["direction"] == "vpn" else MANUAL_DIRECT
         _file_add_line(target, req["domain"])
         try:
             await _wc().update_routes()
         except Exception:
             pass
-        autodist = kw.get("autodist")
-        if autodist:
-            autodist.trigger(f"одобрен запрос: {req['domain']}")
-    await cb.message.edit_text(f"✅ Запрос #{req_id} одобрен.")
+        bot: "Bot" = kw.get("bot")
+        if bot:
+            asyncio.create_task(
+                notify_request_approved(bot, req, autodist=kw.get("autodist"))
+            )
+    await safe_edit(cb, f"✅ Запрос #{req_id} одобрен.")
 
 
 @router.callback_query(F.data.startswith("req_reject_"))
 async def cb_req_reject(cb: CallbackQuery, **kw):
+    from handlers.requests import notify_request_rejected, safe_edit
     req_id = int(cb.data.split("_")[-1])
     db: Database = kw.get("db")
+    req = await db.get_request_by_id(req_id)
     await db.reject_request(req_id)
-    await cb.message.edit_text(f"❌ Запрос #{req_id} отклонён.")
+    bot: "Bot" = kw.get("bot")
+    if bot and req:
+        asyncio.create_task(notify_request_rejected(bot, req))
+    await safe_edit(cb, f"❌ Запрос #{req_id} отклонён.")
 
 
 # ---------------------------------------------------------------------------
