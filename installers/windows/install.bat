@@ -111,48 +111,44 @@ if /i "!CONFIRM!" neq "y" (
 )
 echo.
 
-:: --- upload scripts (all in one scp call to /tmp/) ---
+:: --- upload scripts from local repo if available, else download on server ---
 set REPO_ROOT=%~dp0..\..
 
-echo  Checking local scripts...
-if not exist "!REPO_ROOT!\setup.sh" (
-    echo  ERROR: setup.sh not found at !REPO_ROOT!
-    echo  Run install.bat from the repo folder ^(installers\windows\^).
-    echo.
-    pause
-    exit /b 1
-)
-if not exist "!REPO_ROOT!\install-home.sh" (
-    echo  ERROR: install-home.sh not found at !REPO_ROOT!
-    echo  Run install.bat from the repo folder ^(installers\windows\^).
-    echo.
-    pause
-    exit /b 1
-)
+if not exist "!REPO_ROOT!\setup.sh" goto download_scripts
+if not exist "!REPO_ROOT!\install-home.sh" goto download_scripts
 
 echo  Uploading scripts to server /tmp/ ...
 scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "!REPO_ROOT!\setup.sh" "!REPO_ROOT!\install-home.sh" !SERVER_USER!@!SERVER_IP!:/tmp/
-if %errorlevel% neq 0 (
-    echo.
-    echo  ERROR: Upload failed. Check SSH connection.
-    echo.
-    pause
-    exit /b 1
-)
+if %errorlevel% neq 0 goto download_scripts
 if exist "!REPO_ROOT!\install-vps.sh" (
     scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "!REPO_ROOT!\install-vps.sh" !SERVER_USER!@!SERVER_IP!:/tmp/
 )
+echo  [OK] Uploaded from local repo.
+goto verify_scripts
 
-echo  Verifying files on server...
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "ls /tmp/setup.sh /tmp/install-home.sh"
+:download_scripts
+echo  Downloading scripts on server...
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "cd /tmp && curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/setup.sh -o setup.sh && curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install-home.sh -o install-home.sh && curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install-vps.sh -o install-vps.sh"
 if %errorlevel% neq 0 (
     echo.
-    echo  ERROR: Files not found on server after upload.
+    echo  ERROR: Could not download scripts from GitHub.
     echo.
     pause
     exit /b 1
 )
-echo  [OK] Uploaded.
+echo  [OK] Downloaded from GitHub.
+
+:verify_scripts
+echo  Verifying files on server...
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "ls -lh /tmp/setup.sh /tmp/install-home.sh"
+if %errorlevel% neq 0 (
+    echo.
+    echo  ERROR: Files missing on server.
+    echo.
+    pause
+    exit /b 1
+)
+echo  [OK] Files verified.
 
 :run_setup
 echo.
