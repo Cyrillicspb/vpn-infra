@@ -11,7 +11,7 @@ pydantic==2.7.1
 slowapi==0.1.9
 
 # Системный мониторинг
-psutil==5.9.8
+psutil==7.2.2
 
 # YAML (плагины)
 PyYAML==6.0.1
