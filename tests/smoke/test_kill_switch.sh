@@ -1,47 +1,114 @@
-#!/bin/bash
-# Тест: Kill switch — nftables правила (table inet vpn, не inet filter/mangle)
-set -euo pipefail
+#!/usr/bin/env bash
+# Smoke test: Kill switch — nftables правила защиты от утечек
+# Проверяет что заблокированный трафик не может утечь через eth0 при падении tun.
+set -uo pipefail
 
-FAIL=0
-ok()   { echo "  [OK]   $1"; }
-fail() { echo "  [FAIL] $1"; ((FAIL++)); }
-warn() { echo "  [WARN] $1"; }
+PASS=0; FAIL=0; WARN=0
+TEST_NAME="KILL_SWITCH"
 
-# forward chain в table inet vpn
-FORWARD=$(nft list chain inet vpn forward 2>/dev/null) || {
-    fail "chain inet vpn forward не найдена"
-    echo "Kill switch: FAIL"; exit 1
-}
+pass() { echo "  [PASS] $1"; (( PASS++ )); }
+fail() { echo "  [FAIL] $1"; (( FAIL++ )); }
+warn() { echo "  [WARN] $1"; (( WARN++ )); }
 
-# Kill switch: blocked sets проверяются в forward
-echo "$FORWARD" | grep -q "blocked_static" \
-    && ok "kill switch blocked_static в forward" \
-    || fail "blocked_static не найден в forward chain"
+echo "=== ${TEST_NAME} ==="
 
-echo "$FORWARD" | grep -q "blocked_dynamic" \
-    && ok "kill switch blocked_dynamic в forward" \
-    || fail "blocked_dynamic не найден в forward chain"
+# 1. table inet vpn существует
+if nft list table inet vpn &>/dev/null; then
+    pass "nft table inet vpn существует"
+else
+    fail "nft table inet vpn не найдена — kill switch не работает"
+    echo "Итог ${TEST_NAME}: PASS=$PASS FAIL=$FAIL WARN=$WARN"
+    exit 1
+fi
 
-# DROP правило
-echo "$FORWARD" | grep -qi "drop" \
-    && ok "DROP правило в forward" \
-    || fail "DROP не найден в forward chain"
+# 2. forward chain существует
+FORWARD_CHAIN=$(nft list chain inet vpn forward 2>/dev/null || true)
+if [[ -n "$FORWARD_CHAIN" ]]; then
+    pass "Цепочка inet vpn forward существует"
+else
+    fail "Цепочка inet vpn forward не найдена"
+fi
 
-# prerouting в table inet vpn (fwmark — в нашей таблице, не в mangle)
-PREROUTING=$(nft list chain inet vpn prerouting 2>/dev/null) || {
-    fail "chain inet vpn prerouting не найдена"
-    echo "Kill switch: FAIL"; exit 1
-}
+# 3. Kill switch: правило DROP для заблокированного через не-tun
+if echo "$FORWARD_CHAIN" | grep -qiE "drop"; then
+    pass "DROP правило в forward chain"
+else
+    fail "DROP правило не найдено в forward chain"
+fi
 
-echo "$PREROUTING" | grep -q "mark set 0x1" \
-    && ok "fwmark 0x1 в prerouting" \
-    || fail "mark set 0x1 не найден в prerouting"
+# 4. blocked_static в forward chain
+if echo "$FORWARD_CHAIN" | grep -q "blocked_static"; then
+    pass "blocked_static проверяется в forward chain"
+else
+    fail "blocked_static НЕ проверяется в forward chain (утечка данных!)"
+fi
 
-# ip rule: fwmark → table 200
-ip rule show | grep -q "fwmark 0x1 lookup 200" \
-    && ok "ip rule fwmark 0x1 → table 200" \
-    || fail "ip rule fwmark 0x1 lookup 200 не настроен"
+# 5. blocked_dynamic в forward chain
+if echo "$FORWARD_CHAIN" | grep -q "blocked_dynamic"; then
+    pass "blocked_dynamic проверяется в forward chain"
+else
+    fail "blocked_dynamic НЕ проверяется в forward chain"
+fi
+
+# 6. Kill switch проверяется ПЕРЕД ct state established для VPN-трафика
+# Правильный порядок: kill switch → ct state established/related
+CHAIN_TEXT="$FORWARD_CHAIN"
+KS_LINE=$(echo "$CHAIN_TEXT" | grep -n "blocked_static\|blocked_dynamic" | head -1 | cut -d: -f1)
+CT_LINE=$(echo "$CHAIN_TEXT" | grep -n "ct state established" | head -1 | cut -d: -f1)
+if [[ -n "$KS_LINE" && -n "$CT_LINE" ]]; then
+    if (( KS_LINE < CT_LINE )); then
+        pass "Kill switch (строка $KS_LINE) до ct state established (строка $CT_LINE)"
+    else
+        warn "Kill switch порядок: kill switch после ct state established (потенциальная утечка)"
+    fi
+fi
+
+# 7. prerouting chain с fwmark
+PREROUTING=$(nft list chain inet vpn prerouting 2>/dev/null || true)
+if [[ -n "$PREROUTING" ]]; then
+    pass "Цепочка inet vpn prerouting существует"
+    if echo "$PREROUTING" | grep -q "mark set 0x1"; then
+        pass "fwmark 0x1 устанавливается в prerouting"
+    else
+        fail "mark set 0x1 не найден в prerouting"
+    fi
+else
+    fail "Цепочка inet vpn prerouting не найдена"
+fi
+
+# 8. ip rule: fwmark → table 200 с UNREACHABLE при падении tun
+if ip rule show 2>/dev/null | grep -q "fwmark 0x1.*lookup 200"; then
+    pass "ip rule: fwmark 0x1 → table 200"
+else
+    fail "ip rule: fwmark 0x1 → table 200 не найден (kill switch через policy routing не работает)"
+fi
+
+# 9. nftables правила для rate limiting (защита от UDP flood)
+INPUT_CHAIN=$(nft list chain inet vpn input 2>/dev/null || \
+              nft list chain inet vpn INPUT 2>/dev/null || true)
+if echo "$INPUT_CHAIN" | grep -qiE "limit rate|udp dport 5182[01]"; then
+    pass "Rate limiting для UDP портов WireGuard в input chain"
+else
+    warn "Rate limiting для UDP 51820/51821 не найден в input chain"
+fi
+
+# 10. IPv6 отключён (защита от утечки через IPv6)
+IPV6_STATUS=$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo "?")
+if [[ "$IPV6_STATUS" == "1" ]]; then
+    pass "IPv6 отключён системно (нет утечки через IPv6)"
+else
+    warn "IPv6 включён — возможна утечка через IPv6 (disable_ipv6=$IPV6_STATUS)"
+fi
+
+# 11. Проверка masquerade для VPN-трафика
+POSTROUTING=$(nft list chain inet vpn postrouting 2>/dev/null || \
+              nft list chain inet vpn POSTROUTING 2>/dev/null || true)
+if echo "$POSTROUTING" | grep -qi "masquerade"; then
+    pass "MASQUERADE для VPN трафика настроен"
+else
+    warn "MASQUERADE не найден (VPN-трафик может не выходить в интернет)"
+fi
 
 echo ""
-[[ $FAIL -eq 0 ]] && { echo "Kill switch: OK"; exit 0; } \
-    || { echo "Kill switch: FAIL ($FAIL)"; exit 1; }
+echo "Итог ${TEST_NAME}: PASS=$PASS FAIL=$FAIL WARN=$WARN"
+[[ $FAIL -eq 0 ]] && exit 0 || exit 1

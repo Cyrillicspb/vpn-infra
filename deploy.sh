@@ -236,20 +236,35 @@ apply_migrations() {
     touch "$MIGRATIONS_LOG"
 
     local count=0
+    local db_file="/opt/vpn/telegram-bot/data/vpn_bot.db"
     while IFS= read -r -d '' migration; do
-        local name; name="$(basename "$migration" .sh)"
+        local name; name="$(basename "$migration")"
         if grep -qxF "$name" "$MIGRATIONS_LOG" 2>/dev/null; then
             continue  # уже применена
         fi
         log_info "Миграция: $name"
-        if bash "$migration" >> "$LOG_FILE" 2>&1; then
+        local ok=0
+        case "$migration" in
+            *.sql)
+                if [[ -f "$db_file" ]]; then
+                    sqlite3 "$db_file" < "$migration" >> "$LOG_FILE" 2>&1 && ok=1
+                else
+                    log_warn "Миграция $name пропущена: БД не найдена ($db_file)"
+                    continue
+                fi
+                ;;
+            *.sh)
+                bash "$migration" >> "$LOG_FILE" 2>&1 && ok=1
+                ;;
+        esac
+        if [[ $ok -eq 1 ]]; then
             echo "$name" >> "$MIGRATIONS_LOG"
             log_ok "Миграция $name применена"
             ((count++))
         else
             log_warn "Миграция $name не выполнилась — продолжаем"
         fi
-    done < <(find "$dir" -name "*.sh" -print0 | sort -z)
+    done < <(find "$dir" \( -name "*.sh" -o -name "*.sql" \) -print0 | sort -z)
 
     [[ $count -gt 0 ]] && log_info "Применено миграций: $count"
     return 0
