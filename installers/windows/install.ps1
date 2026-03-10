@@ -167,11 +167,33 @@ Write-Host "  Connecting to $ServerUser@$ServerIP ..."
 Write-Host "  ==========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# ── Run setup.sh on server ────────────────────────────────────────────────────
-# Pass command via base64 to avoid all quoting/newline issues with SSH.
-# GitHub may be blocked from Russian servers — jsDelivr CDN as fallback.
+# ── Upload setup.sh from local repo, then run ────────────────────────────────
+# Priority: scp local file (works for private repos) -> GitHub -> jsDelivr
 
-$Script = @'
+# Find setup.sh relative to this script's location
+$ScriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot    = Split-Path -Parent (Split-Path -Parent $ScriptDir)  # ../../
+$LocalSetup  = Join-Path $RepoRoot "setup.sh"
+
+if (Test-Path $LocalSetup) {
+    Write-Host "  Uploading setup.sh from local repo..." -NoNewline
+    & scp -i $SshKey -P $SshPort -o StrictHostKeyChecking=accept-new `
+          $LocalSetup "${ServerUser}@${ServerIP}:/tmp/vpn-setup.sh"
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host " OK" -ForegroundColor Green
+        $Script = @'
+chmod +x /tmp/vpn-setup.sh
+echo "=== Running setup.sh ==="
+sudo bash /tmp/vpn-setup.sh 2>&1 | tee /tmp/vpn-setup.log
+'@
+    } else {
+        Write-Host " FAILED (will try download)" -ForegroundColor Yellow
+    }
+}
+
+if (-not (Test-Path $LocalSetup) -or $LASTEXITCODE -ne 0) {
+    Write-Host "  Local setup.sh not found or scp failed — downloading..."
+    $Script = @'
 set -e
 command -v curl >/dev/null 2>&1 || sudo apt-get install -y -qq curl
 echo "=== Downloading setup.sh ==="
@@ -191,17 +213,18 @@ for url in "${URLS[@]}"; do
   fi
 done
 if [ "$downloaded" -eq 0 ]; then
-  echo "[ERROR] Could not download setup.sh from any source."
-  echo "  GitHub and jsDelivr are both unreachable."
-  echo "  Manual option: scp setup.sh to /tmp/vpn-setup.sh and re-run."
+  echo "[ERROR] Could not download setup.sh."
+  echo "  Repo is private or GitHub/jsDelivr unreachable."
+  echo "  Make repo public on GitHub, or re-run from the repo folder."
   exit 1
 fi
 chmod +x /tmp/vpn-setup.sh
 echo "=== Running setup.sh ==="
 sudo bash /tmp/vpn-setup.sh 2>&1 | tee /tmp/vpn-setup.log
 '@
+}
 
-$Encoded  = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Script))
+$Encoded   = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Script))
 $RemoteCmd = "echo $Encoded | base64 -d | bash"
 
 & ssh -i $SshKey `
