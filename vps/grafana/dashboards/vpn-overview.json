@@ -1,0 +1,61 @@
+{
+  "title": "VPN Infrastructure Overview",
+  "uid": "vpn-overview",
+  "version": 1,
+  "schemaVersion": 36,
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "CPU Usage",
+      "type": "gauge",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+      "targets": [
+        {
+          "expr": "100 - (avg(irate(node_cpu_seconds_total{mode='idle',instance='home'}[5m])) * 100)",
+          "legendFormat": "Home CPU %"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Memory Usage",
+      "type": "gauge",
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+      "targets": [
+        {
+          "expr": "(1 - (node_memory_MemAvailable_bytes{instance='home'} / node_memory_MemTotal_bytes{instance='home'})) * 100",
+          "legendFormat": "Home RAM %"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Disk Usage",
+      "type": "gauge",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+      "targets": [
+        {
+          "expr": "(1 - (node_filesystem_avail_bytes{instance='home',mountpoint='/'} / node_filesystem_size_bytes{instance='home',mountpoint='/'})) * 100",
+          "legendFormat": "Disk %"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Network Traffic",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 4, "w": 24, "h": 8},
+      "targets": [
+        {
+          "expr": "irate(node_network_transmit_bytes_total{instance='home',device='wg0'}[5m]) * 8",
+          "legendFormat": "AWG Upload (bps)"
+        },
+        {
+          "expr": "irate(node_network_receive_bytes_total{instance='home',device='wg0'}[5m]) * 8",
+          "legendFormat": "AWG Download (bps)"
+        }
+      ]
+    }
+  ]
+}

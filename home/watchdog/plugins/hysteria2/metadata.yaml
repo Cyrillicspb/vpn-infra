@@ -1,0 +1,11 @@
+name: hysteria2
+display_name: "Hysteria2 (QUIC+Salamander)"
+resilience: 1          # 1=lowest, 4=highest
+protocol: quic
+transport: udp
+port: 443
+obfs: salamander
+requires:
+  - hysteria2-binary
+  - udp-443-open
+description: "Быстрый QUIC-протокол с обфускацией Salamander. Легко блокируется."

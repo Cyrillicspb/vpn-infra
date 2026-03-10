@@ -1,0 +1,25 @@
+# Cloudflare CDN стек — серверная сторона (VPS)
+# Xray WebSocket inbound + cloudflared tunnel наружу
+
+# Xray inbound (в 3x-ui):
+xray_inbound:
+  protocol: vless
+  port: 8080  # localhost only, cloudflared проксирует
+  listen: "127.0.0.1"
+  settings:
+    clients:
+      - id: "${CF_VLESS_UUID}"
+        flow: ""
+    decryption: none
+  streamSettings:
+    network: ws
+    security: none
+    wsSettings:
+      path: "/vless"
+
+# cloudflared tunnel: трафик из CDN → 127.0.0.1:8080
+cloudflared_vps:
+  tunnel_name: vpn-tunnel
+  ingress:
+    - hostname: "${CF_TUNNEL_HOSTNAME}"
+      service: "http://localhost:8080"

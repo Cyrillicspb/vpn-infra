@@ -1,0 +1,7 @@
+# VLESS+REALITY client config
+# Управляется через xray-client Docker контейнер
+# Основной конфиг: home/xray/config-reality.json
+
+stack: reality
+socks_port: 1080
+tun_interface: tun-reality

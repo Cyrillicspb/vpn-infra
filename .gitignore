@@ -1,0 +1,69 @@
+# Секреты и конфиги с реальными данными
+.env
+home/.env
+vps/.env
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*.gpg
+
+# WireGuard ключи
+*.conf
+!.env.example
+!home/dnsmasq/dnsmasq.conf
+!home/xray/config-reality.json
+!home/xray/config-grpc.json
+!home/cloudflared/config.yml
+!vps/nginx/conf.d/default.conf
+
+# База данных бота
+home/telegram-bot/data/
+
+# Бэкапы
+backups/
+*.backup
+*.tar.gz
+*.tar.gz.gpg
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Логи
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Временные файлы
+*.tmp
+*.bak
+.setup-state
+.deploy-snapshot/
+
+# 3x-ui база
+vps/3x-ui/
+
+# Grafana/Prometheus данные
+vps/grafana/data/
+vps/prometheus/data/

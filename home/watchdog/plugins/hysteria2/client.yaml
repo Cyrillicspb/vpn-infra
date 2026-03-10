@@ -1,0 +1,34 @@
+# Hysteria2 client config
+# Генерируется setup.sh из .env
+
+server: "${HYSTERIA2_SERVER}:443"
+
+auth: "${HYSTERIA2_AUTH}"
+
+obfs:
+  type: salamander
+  salamander:
+    password: "${HYSTERIA2_OBFS_PASSWORD}"
+
+quic:
+  keepAlivePeriod: 20s
+
+bandwidth:
+  up: 50 mbps
+  down: 200 mbps
+
+tun:
+  name: tun-hysteria2
+  mtu: 1500
+  address:
+    ipv4: 172.16.0.1/30
+  route:
+    # Маршруты управляются watchdog через ip rule/route
+    strict: false
+
+socks5:
+  listen: 127.0.0.1:1083
+
+# Логи
+log:
+  level: warn

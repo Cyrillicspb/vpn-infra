@@ -1,0 +1,108 @@
+# docker-compose.yml — домашний сервер
+# Заполняется setup.sh из .env
+version: "3.9"
+
+networks:
+  vpn-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+services:
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.1.2
+    container_name: socket-proxy
+    restart: always
+    environment:
+      CONTAINERS: 1
+      SERVICES: 1
+      NETWORKS: 1
+      TASKS: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      vpn-net:
+        ipv4_address: 172.20.0.10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  telegram-bot:
+    build: ./telegram-bot
+    container_name: telegram-bot
+    restart: always
+    env_file: .env
+    environment:
+      - WATCHDOG_URL=http://host.docker.internal:8080
+      - DOCKER_HOST=tcp://socket-proxy:2375
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./telegram-bot/data:/app/data
+    networks:
+      - vpn-net
+    depends_on:
+      - socket-proxy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  xray-client:
+    image: teddysun/xray:1.8.11
+    container_name: xray-client
+    restart: always
+    volumes:
+      - ./xray/config-reality.json:/etc/xray/config.json:ro
+    network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  xray-client-2:
+    image: teddysun/xray:1.8.11
+    container_name: xray-client-2
+    restart: always
+    volumes:
+      - ./xray/config-grpc.json:/etc/xray/config.json:ro
+    network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cloudflared:
+    image: cloudflare/cloudflared:2024.2.1
+    container_name: cloudflared
+    restart: always
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared:/etc/cloudflared:ro
+    network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: node-exporter
+    restart: always
+    command:
+      - '--path.rootfs=/host'
+    volumes:
+      - /:/host:ro,rslave
+    network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

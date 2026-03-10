@@ -1,0 +1,10 @@
+name: cloudflare-cdn
+display_name: "VLESS+WebSocket через Cloudflare CDN"
+resilience: 4          # highest resilience
+protocol: vless
+transport: ws
+port: 443
+requires:
+  - cloudflared
+  - cloudflare-account
+description: "Через Cloudflare CDN туннель. Максимальная устойчивость, немного медленнее."

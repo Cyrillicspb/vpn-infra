@@ -1,0 +1,13 @@
+name: reality-grpc
+display_name: "VLESS+REALITY+gRPC (cdn.jsdelivr.net)"
+resilience: 2
+protocol: vless
+transport: grpc
+port: 443
+flow: ""        # flow пустой — vision несовместим с gRPC
+fingerprint: chrome
+dest: cdn.jsdelivr.net
+requires:
+  - xray-client-2
+  - tcp-443-open
+description: "Маскировка под gRPC-сервис cdn.jsdelivr.net. Очень устойчив."

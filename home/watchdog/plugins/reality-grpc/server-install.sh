@@ -1,0 +1,17 @@
+#!/bin/bash
+# Настройка VLESS+REALITY+gRPC в 3x-ui на VPS
+echo "=== Настройка VLESS+REALITY+gRPC ==="
+echo ""
+echo "Настраивается через панель 3x-ui:"
+echo "  - Протокол: vless"
+echo "  - Порт: 443 (отдельный inbound)"
+echo "  - Transport: gRPC"
+echo "  - gRPC Service Name: grpc"
+echo "  - Security: Reality"
+echo "  - Dest: cdn.jsdelivr.net:443"
+echo "  - SNI: cdn.jsdelivr.net"
+echo "  - Flow: ПУСТОЙ (vision несовместим с gRPC!)"
+echo "  - Fingerprint: chrome"
+echo ""
+echo "Скопируйте Public Key → XRAY_GRPC_PUBLIC_KEY"
+echo "Скопируйте UUID → XRAY_GRPC_UUID"

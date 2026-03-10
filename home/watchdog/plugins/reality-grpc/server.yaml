@@ -1,0 +1,26 @@
+# VLESS+REALITY+gRPC server config — настраивается в 3x-ui
+
+inbound:
+  protocol: vless
+  port: 443
+  settings:
+    clients:
+      - id: "${XRAY_GRPC_UUID}"
+        flow: ""    # ВАЖНО: flow пустой, vision несовместим с gRPC
+    decryption: none
+
+  streamSettings:
+    network: grpc
+    security: reality
+    grpcSettings:
+      serviceName: "grpc"
+      multiMode: false
+    realitySettings:
+      show: false
+      dest: "cdn.jsdelivr.net:443"
+      xver: 0
+      serverNames:
+        - cdn.jsdelivr.net
+      privateKey: "${XRAY_GRPC_PRIVATE_KEY}"
+      shortIds:
+        - ""

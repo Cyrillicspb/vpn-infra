@@ -1,0 +1,38 @@
+---
+# Homepage services config
+# https://gethomepage.dev/
+
+- VPN:
+    - Watchdog:
+        icon: mdi-shield-check
+        href: http://localhost:8080/status
+        description: VPN агент
+        widget:
+          type: customapi
+          url: http://host.docker.internal:8080/status
+          refreshInterval: 10000
+          mappings:
+            - field: status
+              label: Статус
+            - field: active_stack
+              label: Стек
+
+    - Tunnel Status:
+        icon: mdi-tunnel
+        description: Активный туннель
+        widget:
+          type: customapi
+          url: http://host.docker.internal:8080/metrics
+          refreshInterval: 30000
+
+- Docker:
+    - Portainer:
+        icon: portainer
+        href: http://localhost:9000
+        description: Docker управление
+
+- Monitoring:
+    - Grafana:
+        icon: grafana
+        href: http://${VPS_IP}:3000
+        description: Метрики

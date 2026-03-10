@@ -1,0 +1,13 @@
+name: reality
+display_name: "VLESS+REALITY (microsoft.com)"
+resilience: 3
+protocol: vless
+transport: tcp
+port: 443
+flow: xtls-rprx-vision
+fingerprint: chrome
+dest: microsoft.com
+requires:
+  - xray-client
+  - tcp-443-open
+description: "Маскировка под HTTPS к Microsoft. Устойчив к DPI."

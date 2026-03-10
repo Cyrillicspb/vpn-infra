@@ -1,0 +1,8 @@
+# Cloudflare CDN стек — клиентская сторона
+# Поток: xray-client (SOCKS5 :1080) ← cloudflared access ← CDN ← cloudflared tunnel ← VPS Xray
+
+stack: cloudflare-cdn
+socks_port: 1080
+tun_interface: tun-cloudflare-cdn
+container_home: cloudflared       # на домашнем сервере
+container_vps: cloudflared        # на VPS

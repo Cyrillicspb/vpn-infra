@@ -1,0 +1,25 @@
+[Unit]
+Description=VPN Watchdog — центральный агент управления
+After=network-online.target docker.service dnsmasq.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vpn/watchdog
+ExecStart=/opt/vpn/watchdog/venv/bin/python watchdog.py
+Restart=always
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=300
+WatchdogSec=30
+
+# Логирование
+StandardOutput=append:/var/log/vpn-watchdog.log
+StandardError=append:/var/log/vpn-watchdog.log
+
+# Окружение
+EnvironmentFile=/opt/vpn/.env
+
+[Install]
+WantedBy=multi-user.target

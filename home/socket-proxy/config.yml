@@ -1,0 +1,16 @@
+# Docker Socket Proxy config
+# Минимальные права для telegram-bot
+
+# Разрешённые эндпоинты Docker API
+CONTAINERS: 1   # GET /containers/...
+SERVICES: 1     # GET /services/...
+NETWORKS: 1     # GET /networks/...
+TASKS: 1        # GET /tasks/...
+IMAGES: 0       # Запрещено
+INFO: 1         # GET /info
+VERSION: 1      # GET /version
+PING: 1         # GET /_ping
+
+# Запись запрещена
+POST: 0
+DELETE: 0

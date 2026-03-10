@@ -1,0 +1,12 @@
+# cloudflared config — VPS
+# Туннель: CDN Cloudflare → локальный Xray WebSocket
+
+# Запускается с: cloudflared tunnel run --token $CF_TUNNEL_TOKEN
+# Или через docker-compose с переменной CF_TUNNEL_TOKEN
+
+ingress:
+  # Перенаправляем CDN трафик на Xray WebSocket inbound (localhost)
+  - service: http://localhost:8080
+
+# Метрики
+metrics: 127.0.0.1:20241

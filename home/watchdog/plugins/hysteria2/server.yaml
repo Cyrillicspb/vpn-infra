@@ -1,0 +1,35 @@
+# Hysteria2 server config — устанавливается на VPS через server-install.sh
+
+listen: :443
+
+tls:
+  cert: /etc/hysteria/server.crt
+  key: /etc/hysteria/server.key
+
+auth:
+  type: password
+  password: "${HYSTERIA2_AUTH}"
+
+obfs:
+  type: salamander
+  salamander:
+    password: "${HYSTERIA2_OBFS_PASSWORD}"
+
+quic:
+  keepAlivePeriod: 20s
+  maxIdleTimeout: 60s
+  maxIncomingStreams: 1024
+
+bandwidth:
+  up: 1 gbps
+  down: 1 gbps
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://news.ycombinator.com/
+    rewriteHost: true
+
+# Логи
+log:
+  level: warn
