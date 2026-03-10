@@ -26,7 +26,7 @@
 
 ```bash
 # На домашнем сервере (Ubuntu 24.04):
-curl -fsSL https://raw.githubusercontent.com/your-repo/vpn-infra/main/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/main/setup.sh | bash
 ```
 
 Или для Windows/macOS — запустите `installers/windows/install.bat` / `installers/macos/install.command`.

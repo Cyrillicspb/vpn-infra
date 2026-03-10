@@ -34,7 +34,7 @@ sudo bash setup.sh
 ### 4. Запуск установки
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/your-repo/vpn-infra/main/setup.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/main/setup.sh | sudo bash
 ```
 
 Скрипт спросит:

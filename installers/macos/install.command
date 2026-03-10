@@ -14,7 +14,7 @@ ssh -t "$SSH_USER@$SERVER_IP" "
     if [ -f /opt/vpn/setup.sh ]; then
         cd /opt/vpn && bash setup.sh
     else
-        curl -fsSL https://raw.githubusercontent.com/your-repo/vpn-infra/main/setup.sh -o /tmp/setup.sh
+        curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/main/setup.sh -o /tmp/setup.sh
         bash /tmp/setup.sh
     fi
 "

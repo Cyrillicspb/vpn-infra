@@ -31,7 +31,7 @@ npm install -g @anthropic-ai/claude-code
 2. Repository name: `vpn-infra`
 3. Private (приватный!)
 4. Create repository
-5. Скопировать URL: `https://github.com/ТВОЙ_USERNAME/vpn-infra.git`
+5. Скопировать URL: `https://github.com/Cyrillicspb/vpn-infra.git`
 
 ## Шаг 3: Настроить локальный проект
 
@@ -42,7 +42,7 @@ cd vpn-infra
 
 # Инициализировать git
 git init
-git remote add origin https://github.com/ТВОЙ_USERNAME/vpn-infra.git
+git remote add origin https://github.com/Cyrillicspb/vpn-infra.git
 
 # Скопировать CLAUDE.md в корень проекта
 # (файл CLAUDE.md из этого чата — скачай и положи сюда)
