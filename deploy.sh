@@ -1,233 +1,435 @@
 #!/bin/bash
 # =============================================================================
-# deploy.sh — Обновление VPN Infrastructure
-# Получает обновления из git-зеркала на VPS (не напрямую из GitHub)
+# deploy.sh — Обновление VPN Infrastructure с auto-rollback
+#
+# Использование:
+#   sudo bash deploy.sh             — проверить обновления и применить
+#   sudo bash deploy.sh --force     — применить даже если версия не изменилась
+#   sudo bash deploy.sh --check     — только проверить, не применять
+#   sudo bash deploy.sh --rollback  — откатиться к последнему снапшоту
+#   sudo bash deploy.sh --status    — состояние последнего деплоя
+#
+# Логика:
+#   1. git pull из VPS-зеркала (не из GitHub — может быть заблокирован)
+#   2. create_snapshot (tar.gz ключей + .env + БД)
+#   3. apply_migrations (идемпотентно)
+#   4. docker compose pull + up -d
+#   5. Если watchdog.py изменился — setsid restart (переживает собственный рестарт)
+#   6. deploy_vps через SSH
+#   7. smoke_tests с таймаутом → FAIL → auto-rollback + Telegram алерт
+#   8. Очистка старых снапшотов (хранить последние 5)
 # =============================================================================
 set -euo pipefail
 
+# ── Константы ─────────────────────────────────────────────────────────────────
 REPO_DIR="/opt/vpn"
-SNAPSHOT_DIR="/opt/vpn/.deploy-snapshot"
-VPN_ENV="$REPO_DIR/.env"
+ENV_FILE="$REPO_DIR/.env"
+SNAPSHOT_DIR="$REPO_DIR/.deploy-snapshot"
+MIGRATIONS_LOG="$REPO_DIR/.migrations-applied"
 LOG_FILE="/var/log/vpn-deploy.log"
+LOCK_FILE="/var/run/vpn-deploy.lock"
+SSH_KEY="/root/.ssh/vpn_id_ed25519"
+SMOKE_TIMEOUT=120   # секунд на все smoke-тесты
+SNAPSHOT_KEEP=5     # сколько снапшотов хранить
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
-log_info() { echo -e "${BLUE}[INFO]${NC} $*" | tee -a "$LOG_FILE"; }
-log_ok()   { echo -e "${GREEN}[OK]${NC}   $*" | tee -a "$LOG_FILE"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $*" | tee -a "$LOG_FILE"; }
-log_error(){ echo -e "${RED}[ERROR]${NC} $*" | tee -a "$LOG_FILE"; }
+# ── Цвета и логирование ───────────────────────────────────────────────────────
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
-source "$VPN_ENV" 2>/dev/null || true
+_log() { echo -e "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
+log_info()  { _log "${BLUE}[INFO]${NC}  $*"; }
+log_ok()    { _log "${GREEN}[✓]${NC}    $*"; }
+log_warn()  { _log "${YELLOW}[!]${NC}    $*"; }
+log_error() { _log "${RED}[✗]${NC}    $*"; }
+log_step()  { _log "${CYAN}${BOLD}━━━ $* ━━━${NC}"; }
 
-notify_telegram() {
+# ── Telegram уведомления ──────────────────────────────────────────────────────
+notify() {
     local msg="$1"
-    [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]] && return
-    curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        -d "chat_id=${TELEGRAM_ADMIN_CHAT_ID}&text=${msg}&parse_mode=Markdown" \
+    [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]] && return 0
+    curl -sf --max-time 10 \
+        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d "chat_id=${TELEGRAM_ADMIN_CHAT_ID}" \
+        --data-urlencode "text=${msg}" \
+        -d "parse_mode=Markdown" \
         > /dev/null 2>&1 || true
 }
 
-# ---------------------------------------------------------------------------
-# Функция: создание снапшота (для rollback)
-# ---------------------------------------------------------------------------
-create_snapshot() {
-    log_info "Создание снапшота..."
-    mkdir -p "$SNAPSHOT_DIR"
-    SNAPSHOT_ID="$(date +%Y%m%d_%H%M%S)"
-    SNAPSHOT_PATH="$SNAPSHOT_DIR/$SNAPSHOT_ID"
-    mkdir -p "$SNAPSHOT_PATH"
-
-    # Копируем важные файлы
-    cp -r "$REPO_DIR/home" "$SNAPSHOT_PATH/" 2>/dev/null || true
-    cp "$REPO_DIR/.env" "$SNAPSHOT_PATH/" 2>/dev/null || true
-    sqlite3 /opt/vpn/telegram-bot/data/vpn_bot.db ".backup $SNAPSHOT_PATH/vpn_bot.db" 2>/dev/null || true
-
-    # Сохраняем текущую версию
-    CURRENT_VERSION=$(cat "$REPO_DIR/version" 2>/dev/null || echo "unknown")
-    echo "$CURRENT_VERSION" > "$SNAPSHOT_PATH/version"
-    echo "$SNAPSHOT_ID" > "$SNAPSHOT_DIR/latest"
-
-    log_ok "Снапшот создан: $SNAPSHOT_ID (версия $CURRENT_VERSION)"
+# ── Загрузка .env ─────────────────────────────────────────────────────────────
+load_env() {
+    [[ -f "$ENV_FILE" ]] || { log_warn ".env не найден ($ENV_FILE)"; return; }
+    set -o allexport
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +o allexport
 }
 
-# ---------------------------------------------------------------------------
-# Функция: rollback
-# ---------------------------------------------------------------------------
-rollback() {
-    local reason="${1:-Неизвестная причина}"
-    log_error "Откат изменений: $reason"
-    notify_telegram "⚠️ *Deploy failed* — автооткат\nПричина: $reason"
+# ── SSH к VPS ─────────────────────────────────────────────────────────────────
+vps_exec() {
+    local port="${VPS_SSH_PORT:-22}"
+    ssh -p "$port" -i "$SSH_KEY" \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=15 \
+        -o BatchMode=yes \
+        "sysadmin@${VPS_IP:-localhost}" "$@" 2>/dev/null
+}
 
-    if [[ ! -f "$SNAPSHOT_DIR/latest" ]]; then
-        log_error "Снапшот не найден, откат невозможен"
+# =============================================================================
+# Снапшот
+# =============================================================================
+create_snapshot() {
+    log_step "Создание снапшота перед деплоем"
+    mkdir -p "$SNAPSHOT_DIR"
+
+    local snap_id; snap_id="$(date +%Y%m%d_%H%M%S)"
+    local snap_path="$SNAPSHOT_DIR/$snap_id"
+    mkdir -p "$snap_path"
+
+    local current_ver; current_ver="$(cat "$REPO_DIR/version" 2>/dev/null || echo "unknown")"
+
+    # Критичные файлы: ключи, .env, БД, nftables, конфиги
+    local items=(
+        "/etc/wireguard"
+        "$ENV_FILE"
+        "/etc/nftables.conf"
+        "/etc/nftables-blocked-static.conf"
+        "/etc/hysteria/config.yaml"
+        "$REPO_DIR/home/xray"
+        "$REPO_DIR/home/dnsmasq/dnsmasq.d"
+        "/etc/vpn-routes"
+    )
+
+    local tar_args=()
+    for item in "${items[@]}"; do
+        [[ -e "$item" ]] && tar_args+=("$item")
+    done
+
+    # SQLite .backup — гарантированно консистентная копия
+    local db_path="$REPO_DIR/telegram-bot/data/vpn_bot.db"
+    if [[ -f "$db_path" ]]; then
+        sqlite3 "$db_path" ".backup $snap_path/vpn_bot.db" 2>/dev/null || \
+            cp "$db_path" "$snap_path/vpn_bot.db"
+        tar_args+=("$snap_path/vpn_bot.db")
+    fi
+
+    # Создаём tar.gz снапшота
+    tar -czf "$snap_path/snapshot.tar.gz" --ignore-failed-read \
+        "${tar_args[@]}" 2>/dev/null || true
+
+    # Метаданные снапшота
+    cat > "$snap_path/meta.json" << EOF
+{
+  "snap_id": "$snap_id",
+  "version": "$current_ver",
+  "timestamp": "$(date -Iseconds)",
+  "hostname": "$(hostname)"
+}
+EOF
+
+    echo "$snap_id" > "$SNAPSHOT_DIR/latest"
+    log_ok "Снапшот создан: $snap_id (v$current_ver)"
+
+    # Очищаем старые снапшоты (оставляем SNAPSHOT_KEEP)
+    local old_snaps
+    old_snaps=$(ls -1dt "$SNAPSHOT_DIR"/20*/ 2>/dev/null | tail -n +$((SNAPSHOT_KEEP + 1)))
+    if [[ -n "$old_snaps" ]]; then
+        echo "$old_snaps" | xargs rm -rf
+        log_info "Удалены старые снапшоты (оставлено $SNAPSHOT_KEEP)"
+    fi
+}
+
+# =============================================================================
+# Rollback
+# =============================================================================
+rollback() {
+    local reason="${1:-ручной откат}"
+    log_error "Откат: $reason"
+
+    local latest="$SNAPSHOT_DIR/latest"
+    if [[ ! -f "$latest" ]]; then
+        log_error "Нет снапшота для отката — восстановление невозможно"
+        notify "❌ *Deploy FAILED* — снапшот не найден, ручное вмешательство требуется\nПричина: $reason"
         return 1
     fi
 
-    SNAPSHOT_ID=$(cat "$SNAPSHOT_DIR/latest")
-    SNAPSHOT_PATH="$SNAPSHOT_DIR/$SNAPSHOT_ID"
+    local snap_id; snap_id="$(cat "$latest")"
+    local snap_path="$SNAPSHOT_DIR/$snap_id"
 
-    log_info "Откат к снапшоту $SNAPSHOT_ID..."
+    log_step "Откат к снапшоту $snap_id"
+    notify "⚠️ *Deploy FAILED* — откат к \`$snap_id\`\nПричина: $reason"
 
     # Останавливаем сервисы
     systemctl stop watchdog 2>/dev/null || true
-    cd /opt/vpn && docker compose down 2>/dev/null || true
+    (cd "$REPO_DIR" && docker compose stop telegram-bot 2>/dev/null || true)
 
-    # Восстанавливаем файлы
-    cp -r "$SNAPSHOT_PATH/home/." "$REPO_DIR/home/"
-    cp "$SNAPSHOT_PATH/.env" "$REPO_DIR/.env" 2>/dev/null || true
+    # Восстанавливаем файлы из снапшота
+    if [[ -f "$snap_path/snapshot.tar.gz" ]]; then
+        tar -xzf "$snap_path/snapshot.tar.gz" -C / 2>/dev/null || true
+        log_info "Файлы восстановлены из $snap_id"
+    fi
 
-    # Запускаем сервисы
+    # Восстанавливаем БД если есть
+    local db_path="$REPO_DIR/telegram-bot/data/vpn_bot.db"
+    if [[ -f "$snap_path/vpn_bot.db" ]]; then
+        mkdir -p "$(dirname "$db_path")"
+        cp "$snap_path/vpn_bot.db" "$db_path"
+        log_info "БД восстановлена"
+    fi
+
+    # Перезагружаем nftables
+    systemctl restart nftables 2>/dev/null || true
+    nft -f /etc/nftables-blocked-static.conf 2>/dev/null || true
+
+    # Перезапускаем сервисы
+    systemctl restart dnsmasq 2>/dev/null || true
+    (cd "$REPO_DIR" && docker compose up -d --remove-orphans 2>/dev/null || true)
+    sleep 3
     systemctl start watchdog 2>/dev/null || true
-    cd /opt/vpn && docker compose up -d
 
-    log_ok "Откат выполнен"
-    notify_telegram "✅ Откат к $SNAPSHOT_ID выполнен"
+    log_ok "Откат к $snap_id завершён"
+    notify "✅ Откат к \`$snap_id\` выполнен успешно"
+    return 0
 }
 
-# ---------------------------------------------------------------------------
-# Функция: smoke-тест после деплоя
-# ---------------------------------------------------------------------------
-post_deploy_test() {
-    log_info "Smoke-тест после деплоя..."
-    if bash "$REPO_DIR/tests/run-smoke-tests.sh" > /tmp/deploy-test.log 2>&1; then
+# =============================================================================
+# Получение обновлений из VPS-зеркала
+# =============================================================================
+git_pull() {
+    log_step "Получение обновлений"
+
+    # Настраиваем remote vps-mirror если не настроен
+    if [[ -n "${VPS_IP:-}" ]]; then
+        local ssh_port="${VPS_SSH_PORT:-22}"
+        git -C "$REPO_DIR" remote get-url vps-mirror &>/dev/null || \
+            git -C "$REPO_DIR" remote add vps-mirror \
+                "ssh://sysadmin@${VPS_IP}:${ssh_port}/opt/vpn/vpn-repo.git"
+
+        # Сначала из VPS-зеркала
+        if GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes" \
+           git -C "$REPO_DIR" fetch vps-mirror 2>/dev/null; then
+            log_info "Получено из VPS-зеркала"
+            git -C "$REPO_DIR" merge --ff-only vps-mirror/main 2>/dev/null || \
+                git -C "$REPO_DIR" merge --ff-only vps-mirror/master 2>/dev/null || {
+                    log_warn "ff-only merge не получился — нет изменений или конфликт"
+                    return 0
+                }
+            return 0
+        fi
+        log_warn "VPS-зеркало недоступно, пробуем GitHub напрямую..."
+    fi
+
+    # Fallback: GitHub напрямую
+    git -C "$REPO_DIR" fetch origin 2>/dev/null && \
+        git -C "$REPO_DIR" merge --ff-only origin/main 2>/dev/null || \
+        git -C "$REPO_DIR" merge --ff-only origin/master 2>/dev/null || {
+            log_warn "Не удалось получить обновления"
+            return 1
+        }
+}
+
+# =============================================================================
+# Применение миграций (идемпотентно)
+# =============================================================================
+apply_migrations() {
+    local dir="$REPO_DIR/migrations"
+    [[ -d "$dir" ]] || return 0
+    touch "$MIGRATIONS_LOG"
+
+    local count=0
+    while IFS= read -r -d '' migration; do
+        local name; name="$(basename "$migration" .sh)"
+        if grep -qxF "$name" "$MIGRATIONS_LOG" 2>/dev/null; then
+            continue  # уже применена
+        fi
+        log_info "Миграция: $name"
+        if bash "$migration" >> "$LOG_FILE" 2>&1; then
+            echo "$name" >> "$MIGRATIONS_LOG"
+            log_ok "Миграция $name применена"
+            ((count++))
+        else
+            log_warn "Миграция $name не выполнилась — продолжаем"
+        fi
+    done < <(find "$dir" -name "*.sh" -print0 | sort -z)
+
+    [[ $count -gt 0 ]] && log_info "Применено миграций: $count"
+    return 0
+}
+
+# =============================================================================
+# Smoke-тесты
+# =============================================================================
+run_smoke_tests() {
+    log_step "Smoke-тесты (таймаут ${SMOKE_TIMEOUT}с)"
+    local test_script="$REPO_DIR/tests/run-smoke-tests.sh"
+    [[ -f "$test_script" ]] || { log_warn "Smoke-тесты не найдены ($test_script)"; return 0; }
+
+    local output; output=$(mktemp)
+    if timeout "$SMOKE_TIMEOUT" bash "$test_script" > "$output" 2>&1; then
         log_ok "Smoke-тесты прошли"
+        rm -f "$output"
         return 0
     else
-        log_error "Smoke-тесты не прошли:"
-        cat /tmp/deploy-test.log
+        local rc=$?
+        log_error "Smoke-тесты ПРОВАЛИЛИСЬ (exit=$rc):"
+        cat "$output" | tee -a "$LOG_FILE"
+        rm -f "$output"
         return 1
     fi
 }
 
-# ---------------------------------------------------------------------------
-# Функция: применение миграций
-# ---------------------------------------------------------------------------
-apply_migrations() {
-    local migrations_dir="$REPO_DIR/migrations"
-    [[ -d "$migrations_dir" ]] || return 0
+# =============================================================================
+# Деплой на VPS
+# =============================================================================
+deploy_vps() {
+    [[ -n "${VPS_IP:-}" ]] || { log_warn "VPS_IP не задан, пропуск"; return 0; }
+    log_step "Деплой на VPS ${VPS_IP}"
 
-    for migration in $(ls "$migrations_dir"/*.sh 2>/dev/null | sort); do
-        local migration_name=$(basename "$migration" .sh)
-        log_info "Применение миграции: $migration_name"
-        bash "$migration" && log_ok "Миграция $migration_name выполнена" || \
-            log_warn "Миграция $migration_name не выполнилась (возможно уже применена)"
+    local retry=0 max_retry=2
+    while (( retry <= max_retry )); do
+        if vps_exec "cd /opt/vpn && \
+            git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || true && \
+            docker compose pull --quiet 2>/dev/null || true && \
+            docker compose up -d --remove-orphans"; then
+            log_ok "VPS ${VPS_IP} обновлён"
+            return 0
+        fi
+        ((retry++))
+        [[ $retry -le $max_retry ]] && { log_warn "Retry $retry/$max_retry..."; sleep 5; }
     done
+
+    log_warn "Деплой на VPS не удался — обновите вручную: /vps deploy"
+    notify "⚠️ Деплой на VPS ${VPS_IP} не удался — требуется ручное обновление"
+    return 0   # Не прерываем деплой из-за VPS
 }
 
-# ---------------------------------------------------------------------------
-# Функция: git pull через SSH-туннель к VPS
-# ---------------------------------------------------------------------------
-git_pull_from_mirror() {
-    source "$VPN_ENV" 2>/dev/null || true
-    local vps_ip="${VPS_IP:-}"
-    local ssh_port="${VPS_SSH_PORT:-22}"
-
-    if [[ -z "$vps_ip" ]]; then
-        log_warn "VPS_IP не задан, пробуем git pull напрямую..."
-        git -C "$REPO_DIR" pull origin main 2>/dev/null || return 1
-        return 0
-    fi
-
-    log_info "Pull из git-зеркала на VPS $vps_ip..."
-    # Добавляем remote если нет
-    git -C "$REPO_DIR" remote get-url vps-mirror 2>/dev/null || \
-        git -C "$REPO_DIR" remote add vps-mirror \
-            "ssh://sysadmin@$vps_ip:$ssh_port/opt/vpn/vpn-repo.git"
-
-    git -C "$REPO_DIR" fetch vps-mirror 2>/dev/null || {
-        log_warn "VPS недоступен, пробуем GitHub напрямую..."
-        git -C "$REPO_DIR" fetch origin 2>/dev/null || return 1
-    }
-    git -C "$REPO_DIR" merge --ff-only FETCH_HEAD || return 1
+# =============================================================================
+# Проверить изменился ли watchdog.py
+# =============================================================================
+watchdog_changed() {
+    git -C "$REPO_DIR" diff HEAD@{1} HEAD -- \
+        home/watchdog/watchdog.py home/watchdog/requirements.txt \
+        2>/dev/null | grep -q "."
 }
 
-# ---------------------------------------------------------------------------
-# Функция: деплой на VPS
-# ---------------------------------------------------------------------------
-deploy_to_vps() {
-    source "$VPN_ENV" 2>/dev/null || true
-    local vps_ip="${VPS_IP:-}"
-    [[ -z "$vps_ip" ]] && { log_warn "VPS_IP не задан, пропуск деплоя на VPS"; return 0; }
-
-    local ssh_port="${VPS_SSH_PORT:-22}"
-    log_info "Деплой на VPS $vps_ip..."
-
-    ssh -p "$ssh_port" -o StrictHostKeyChecking=no "sysadmin@$vps_ip" \
-        "cd /opt/vpn && git pull && docker compose pull && docker compose up -d --remove-orphans" \
-        && log_ok "VPS обновлён" \
-        || log_warn "Деплой на VPS не удался (retry вручную: /vps deploy)"
-}
-
-# ---------------------------------------------------------------------------
-# Главный поток
-# ---------------------------------------------------------------------------
-main() {
+# =============================================================================
+# Главный деплой
+# =============================================================================
+do_deploy() {
     local force="${1:-}"
+    local prev_ver; prev_ver="$(cat "$REPO_DIR/version" 2>/dev/null || echo "unknown")"
 
-    echo "" | tee -a "$LOG_FILE"
-    echo "=== Deploy $(date '+%Y-%m-%d %H:%M:%S') ===" | tee -a "$LOG_FILE"
+    # Получаем обновления
+    git_pull || { log_warn "Нет обновлений"; [[ "$force" == "--force" ]] || exit 0; }
 
-    CURRENT_VERSION=$(cat "$REPO_DIR/version" 2>/dev/null || echo "unknown")
+    local new_ver; new_ver="$(cat "$REPO_DIR/version" 2>/dev/null || echo "unknown")"
 
-    # Получаем обновление
-    log_info "Получение обновлений..."
-    git_pull_from_mirror || {
-        log_warn "Обновление не получено"
-        exit 0
-    }
-
-    NEW_VERSION=$(cat "$REPO_DIR/version" 2>/dev/null || echo "unknown")
-
-    if [[ "$CURRENT_VERSION" == "$NEW_VERSION" && "$force" != "--force" ]]; then
-        log_info "Версия не изменилась ($CURRENT_VERSION), обновление не требуется"
+    # Проверяем нужен ли деплой
+    if [[ "$prev_ver" == "$new_ver" && "$force" != "--force" ]]; then
+        log_info "Версия не изменилась ($new_ver) — обновление не требуется"
+        log_info "Используйте --force для принудительного деплоя"
         exit 0
     fi
 
-    notify_telegram "🚀 Начало обновления $CURRENT_VERSION → $NEW_VERSION"
-    log_info "Обновление: $CURRENT_VERSION → $NEW_VERSION"
+    # Показываем diff
+    local changed_files
+    changed_files="$(git -C "$REPO_DIR" diff --name-only HEAD@{1} HEAD 2>/dev/null | head -20 || echo "(неизвестно)")"
+    log_info "Изменённые файлы:\n$changed_files"
+    notify "🚀 *Деплой* \`${prev_ver}\` → \`${new_ver}\`\nИзменено файлов: $(echo "$changed_files" | wc -l)"
 
     # Снапшот
     create_snapshot
 
-    # Применяем миграции
+    # Миграции
     apply_migrations
 
-    # Обновляем домашний сервер
-    log_info "Обновление домашнего сервера..."
-    WATCHDOG_NEEDS_RESTART=false
+    # ── Обновление домашнего сервера ───────────────────────────────────────────
 
-    # Если изменился watchdog.py — перезапускаем как отдельный процесс
-    if git -C "$REPO_DIR" diff HEAD~1 -- home/watchdog/watchdog.py | grep -q .; then
-        WATCHDOG_NEEDS_RESTART=true
+    # Нужно ли перезапустить watchdog?
+    local restart_watchdog=false
+    watchdog_changed && restart_watchdog=true
+
+    # Обновляем Python venv если requirements изменились
+    if git -C "$REPO_DIR" diff HEAD@{1} HEAD -- home/watchdog/requirements.txt 2>/dev/null | grep -q "."; then
+        log_info "Обновление watchdog venv..."
+        "$REPO_DIR/watchdog/venv/bin/pip" install -q --no-cache-dir \
+            -r "$REPO_DIR/watchdog/requirements.txt" 2>/dev/null || true
     fi
 
-    # Обновляем Docker образы
-    cd "$REPO_DIR" && docker compose pull 2>/dev/null || true
-    cd "$REPO_DIR" && docker compose up -d --remove-orphans
+    # Docker Compose обновление
+    log_step "Обновление Docker контейнеров"
+    (cd "$REPO_DIR" && docker compose pull --quiet 2>/dev/null || true)
+    (cd "$REPO_DIR" && docker compose up -d --remove-orphans)
 
-    # Перезапускаем watchdog если нужно
-    if $WATCHDOG_NEEDS_RESTART; then
-        log_info "Перезапуск watchdog..."
-        # Деплой как отдельный процесс чтобы пережить рестарт watchdog
-        systemctl restart watchdog &
+    # Перезапуск watchdog как отдельный процесс (переживёт собственный рестарт)
+    if $restart_watchdog; then
+        log_info "Watchdog изменился — перезапуск (detached)..."
+        # setsid: новая сессия → не убивается при завершении текущего процесса
+        setsid bash -c "sleep 3 && systemctl restart watchdog >> $LOG_FILE 2>&1" &
     fi
 
     # Деплой на VPS
-    deploy_to_vps
+    deploy_vps
 
-    # Smoke-тест
-    sleep 5  # Ждём поднятия сервисов
-    if ! post_deploy_test; then
-        rollback "Smoke-тесты не прошли после деплоя"
-        notify_telegram "❌ Deploy FAILED — откат выполнен"
+    # Ждём стабилизации
+    log_info "Ожидание стабилизации (15с)..."
+    sleep 15
+
+    # Smoke-тесты
+    if ! run_smoke_tests; then
+        rollback "smoke-тесты провалились после деплоя v${new_ver}"
+        notify "❌ *Deploy FAILED* v${new_ver} — откат выполнен"
         exit 1
     fi
 
-    log_ok "Deploy завершён: $NEW_VERSION"
-    notify_telegram "✅ Обновлено до $NEW_VERSION"
+    log_ok "Deploy v${new_ver} завершён успешно"
+    notify "✅ *Обновлено* до \`${new_ver}\`"
 }
 
-# Обработка аргументов
-case "${1:-}" in
-    --rollback) rollback "Ручной откат" ;;
-    *)          main "$@" ;;
-esac
+# =============================================================================
+# Статус
+# =============================================================================
+show_status() {
+    echo ""
+    echo "── Deploy Status ──────────────────────────────"
+    echo "  Версия:   $(cat "$REPO_DIR/version" 2>/dev/null || echo 'unknown')"
+    echo "  Снапшот:  $(cat "$SNAPSHOT_DIR/latest" 2>/dev/null || echo 'нет')"
+    echo "  Последний деплой:"
+    tail -5 "$LOG_FILE" 2>/dev/null | sed 's/^/    /'
+    echo "───────────────────────────────────────────────"
+}
+
+# =============================================================================
+# Main
+# =============================================================================
+main() {
+    # Проверка root
+    [[ "$EUID" -eq 0 ]] || { echo "Запустите: sudo bash deploy.sh"; exit 1; }
+
+    mkdir -p "$(dirname "$LOG_FILE")" "$(dirname "$SNAPSHOT_DIR")"
+    echo "" >> "$LOG_FILE"
+    echo "════ Deploy $(date '+%Y-%m-%d %H:%M:%S') ════" >> "$LOG_FILE"
+
+    load_env
+
+    # Один экземпляр деплоя
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+        log_error "Деплой уже запущен ($LOCK_FILE)"
+        exit 1
+    fi
+
+    case "${1:-}" in
+        --rollback) rollback "ручной откат" ;;
+        --check)
+            git_pull 2>/dev/null
+            new_ver="$(cat "$REPO_DIR/version" 2>/dev/null || echo 'unknown')"
+            echo "Текущая версия: $new_ver"
+            ;;
+        --status)   show_status ;;
+        --force)    do_deploy "--force" ;;
+        "")         do_deploy ;;
+        *)          echo "Неизвестный аргумент: $1"; echo "Использование: $0 [--force|--check|--rollback|--status]"; exit 1 ;;
+    esac
+}
+
+main "$@"

@@ -1,32 +1,47 @@
 #!/bin/bash
-# Тест: Kill switch — nftables правила присутствуют
+# Тест: Kill switch — nftables правила (table inet vpn, не inet filter/mangle)
 set -euo pipefail
 
-# Проверяем правила forward chain
-RULES=$(nft list chain inet filter forward 2>/dev/null)
+FAIL=0
+ok()   { echo "  [OK]   $1"; }
+fail() { echo "  [FAIL] $1"; ((FAIL++)); }
+warn() { echo "  [WARN] $1"; }
 
-# Kill switch правило: src VPN + blocked → только через tun
-echo "$RULES" | grep -q "blocked_static\|blocked_dynamic" || {
-    echo "Kill switch правила для blocked sets не найдены в forward chain"
-    exit 1
+# forward chain в table inet vpn
+FORWARD=$(nft list chain inet vpn forward 2>/dev/null) || {
+    fail "chain inet vpn forward не найдена"
+    echo "Kill switch: FAIL"; exit 1
 }
 
-echo "$RULES" | grep -qE "DROP|drop" || {
-    echo "WARN: DROP правила не найдены в forward chain"
+# Kill switch: blocked sets проверяются в forward
+echo "$FORWARD" | grep -q "blocked_static" \
+    && ok "kill switch blocked_static в forward" \
+    || fail "blocked_static не найден в forward chain"
+
+echo "$FORWARD" | grep -q "blocked_dynamic" \
+    && ok "kill switch blocked_dynamic в forward" \
+    || fail "blocked_dynamic не найден в forward chain"
+
+# DROP правило
+echo "$FORWARD" | grep -qi "drop" \
+    && ok "DROP правило в forward" \
+    || fail "DROP не найден в forward chain"
+
+# prerouting в table inet vpn (fwmark — в нашей таблице, не в mangle)
+PREROUTING=$(nft list chain inet vpn prerouting 2>/dev/null) || {
+    fail "chain inet vpn prerouting не найдена"
+    echo "Kill switch: FAIL"; exit 1
 }
 
-# Проверяем mangle chain (fwmark)
-MANGLE=$(nft list chain inet mangle prerouting 2>/dev/null)
-echo "$MANGLE" | grep -q "0x1\|mark set" || {
-    echo "fwmark правила не найдены в mangle prerouting"
-    exit 1
-}
+echo "$PREROUTING" | grep -q "mark set 0x1" \
+    && ok "fwmark 0x1 в prerouting" \
+    || fail "mark set 0x1 не найден в prerouting"
 
-# Проверяем policy routing
-ip rule show | grep -q "fwmark 0x1 lookup 200" || {
-    echo "ip rule fwmark 0x1 → table 200 не настроен"
-    exit 1
-}
+# ip rule: fwmark → table 200
+ip rule show | grep -q "fwmark 0x1 lookup 200" \
+    && ok "ip rule fwmark 0x1 → table 200" \
+    || fail "ip rule fwmark 0x1 lookup 200 не настроен"
 
-echo "Kill switch: OK"
-exit 0
+echo ""
+[[ $FAIL -eq 0 ]] && { echo "Kill switch: OK"; exit 0; } \
+    || { echo "Kill switch: FAIL ($FAIL)"; exit 1; }
