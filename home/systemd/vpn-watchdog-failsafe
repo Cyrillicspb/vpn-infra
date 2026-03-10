@@ -1,0 +1,13 @@
+# /etc/cron.d/vpn-watchdog-failsafe
+# Failsafe: если watchdog умер — уведомить администратора через Telegram напрямую
+#
+# Проверяет каждые 5 минут что watchdog активен.
+# При падении: curl → Telegram Bot API (обходит watchdog).
+#
+# Установка: cp vpn-watchdog-failsafe /etc/cron.d/ && chmod 644 /etc/cron.d/vpn-watchdog-failsafe
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# Каждые 5 минут проверяем watchdog
+*/5 * * * * root /opt/vpn/scripts/watchdog-failsafe.sh >> /var/log/vpn-failsafe.log 2>&1

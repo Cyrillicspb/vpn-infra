@@ -1,0 +1,58 @@
+[Unit]
+Description=tun2socks — TUN device через SOCKS5 прокси (%i)
+Documentation=https://github.com/Cyrillicspb/vpn-infra/blob/main/docs/ARCHITECTURE.md
+# %i = имя TUN-интерфейса (например: tun0, tun1)
+# Использование:
+#   systemctl start tun2socks@tun0   → SOCKS5 :1080 (xray-client, REALITY)
+#   systemctl start tun2socks@tun1   → SOCKS5 :1081 (xray-client-2, gRPC)
+#   systemctl start tun2socks@tun2   → SOCKS5 :1082 (временный, make-before-break)
+#
+# Порт SOCKS5 определяется по имени:
+#   tun0 → 1080, tun1 → 1081, tun2 → 1082 (захардкожено в ExecStartPre)
+After=network-online.target vpn-routes.service xray-client.service
+Wants=network-online.target
+BindsTo=xray-client.service
+
+[Service]
+Type=simple
+User=root
+
+# Определяем порт по имени интерфейса через ExecStartPre
+# Шаблонная логика: tun0=1080, tun1=1081, tun2=1082, tun3=1083
+ExecStartPre=/bin/sh -c '\
+    IFACE=%i; \
+    IDX="${IFACE#tun}"; \
+    PORT=$((1080 + IDX)); \
+    echo "SOCKS5_PORT=${PORT}" > /run/tun2socks-%i.env'
+
+EnvironmentFile=-/run/tun2socks-%i.env
+
+# Создаём TUN-устройство и направляем трафик через SOCKS5
+ExecStart=/usr/local/bin/tun2socks \
+    -device tun://%i \
+    -proxy socks5://127.0.0.1:${SOCKS5_PORT} \
+    -interface ${NET_INTERFACE:-eth0} \
+    -tcp-sndbuf 4m \
+    -tcp-rcvbuf 4m \
+    -loglevel warn
+
+ExecStartPost=/bin/sh -c '\
+    sleep 1; \
+    ip link set %i up; \
+    ip addr add 10.177.2.3/30 dev %i 2>/dev/null || true'
+
+ExecStop=/bin/sh -c 'ip link del %i 2>/dev/null || true'
+
+Restart=on-failure
+RestartSec=3
+
+# Загружаем переменные сети из .env
+EnvironmentFile=-/opt/vpn/.env
+
+RuntimeDirectory=tun2socks
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tun2socks@%i
+
+[Install]
+WantedBy=multi-user.target

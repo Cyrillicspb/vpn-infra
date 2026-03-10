@@ -1,0 +1,36 @@
+[Unit]
+Description=Hysteria2 VPN Client (QUIC + Salamander obfuscation)
+Documentation=https://github.com/Cyrillicspb/vpn-infra/blob/main/docs/ARCHITECTURE.md
+After=network-online.target vpn-routes.service
+Wants=network-online.target
+# Hysteria2 запускается до watchdog — watchdog использует его в failover
+Before=watchdog.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/hysteria client --config /etc/hysteria/config.yaml --log-level warn
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Ограничения безопасности
+NoNewPrivileges=no
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run/hysteria
+
+# Создаём runtime директорию
+RuntimeDirectory=hysteria
+RuntimeDirectoryMode=0750
+
+# Логирование
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hysteria2
+
+[Install]
+WantedBy=multi-user.target

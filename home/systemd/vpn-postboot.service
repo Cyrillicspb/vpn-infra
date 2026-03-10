@@ -1,0 +1,30 @@
+[Unit]
+Description=VPN post-boot health check and Telegram report
+Documentation=https://github.com/Cyrillicspb/vpn-infra/blob/main/docs/ARCHITECTURE.md
+# Запускается после полного старта системы
+After=network-online.target watchdog.service docker.service dnsmasq.service
+Wants=network-online.target
+# Только один раз при старте, не рестартовать
+Type=oneshot
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+User=root
+
+# Даём время всем сервисам стабилизироваться
+ExecStartPre=/bin/sleep 30
+
+ExecStart=/opt/vpn/scripts/postboot-check.sh
+
+# Таймаут: 5 минут на все проверки
+TimeoutStartSec=300
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vpn-postboot
+
+EnvironmentFile=-/opt/vpn/.env
+
+[Install]
+WantedBy=multi-user.target

@@ -39,7 +39,7 @@ check "docker" "systemctl is-active docker"
 check "wg0 (AWG)" "ip link show wg0"
 check "wg1 (WG)" "ip link show wg1"
 check "DNS резолвинг" "dig @127.0.0.1 google.com +short +time=5"
-check "nft blocked_static" "nft list set inet filter blocked_static"
+check "nft blocked_static" "nft list set inet vpn blocked_static"
 check "DKMS awg" "dkms status | grep -q 'amneziawg'"
 check "telegram-bot" "docker inspect --format '{{.State.Running}}' telegram-bot | grep -q true"
 

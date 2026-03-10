@@ -1,15 +1,27 @@
 # docker-compose.yml — домашний сервер
-# Заполняется setup.sh из .env
-version: "3.9"
+# Запуск: docker compose up -d
+# Опциональные профили: --profile portainer --profile homepage --profile wg-easy
+#
+# Порядок старта при boot: docker.service (After=watchdog.service)
+# Порядок зависимостей в compose: socket-proxy → telegram-bot
+#
+# Сеть: 172.20.0.0/24 (Docker bridge, watchdog принимает только из этой подсети)
+# Альтернативная при конфликте с офисным VPN /8: 172.29.177.0/24 (задаётся в .env)
 
 networks:
   vpn-net:
+    name: vpn-net
     driver: bridge
     ipam:
       config:
-        - subnet: 172.20.0.0/24
+        - subnet: ${DOCKER_SUBNET:-172.20.0.0/24}
+    driver_opts:
+      com.docker.network.bridge.name: br-vpn
 
 services:
+
+  # ── Docker socket proxy (безопасный доступ к Docker API) ────────────────────
+  # Telegram-бот и Portainer не получают полный доступ к /var/run/docker.sock
   socket-proxy:
     image: tecnativa/docker-socket-proxy:0.1.2
     container_name: socket-proxy
@@ -19,39 +31,64 @@ services:
       SERVICES: 1
       NETWORKS: 1
       TASKS: 1
+      INFO: 1
+      VERSION: 1
+      AUTH: 0
+      SECRETS: 0
+      POST: 0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       vpn-net:
         ipv4_address: 172.20.0.10
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:2375/version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
 
+  # ── Telegram-бот ─────────────────────────────────────────────────────────────
   telegram-bot:
-    build: ./telegram-bot
+    build:
+      context: ./telegram-bot
+      dockerfile: Dockerfile
+    image: vpn-telegram-bot:latest
     container_name: telegram-bot
     restart: always
     env_file: .env
     environment:
-      - WATCHDOG_URL=http://host.docker.internal:8080
-      - DOCKER_HOST=tcp://socket-proxy:2375
+      WATCHDOG_URL: "http://host.docker.internal:8080"
+      DOCKER_HOST: "tcp://socket-proxy:2375"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./telegram-bot/data:/app/data
     networks:
-      - vpn-net
+      vpn-net:
+        ipv4_address: 172.20.0.11
     depends_on:
-      - socket-proxy
+      socket-proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sqlite3; sqlite3.connect('/app/data/vpn_bot.db').close()"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
 
+  # ── Xray-client (REALITY / REALITY+gRPC) — standby, SOCKS5 :1080 ───────────
+  # Управляется watchdog-ом (выбор стека), всегда запущен
   xray-client:
     image: teddysun/xray:1.8.11
     container_name: xray-client
@@ -59,12 +96,19 @@ services:
     volumes:
       - ./xray/config-reality.json:/etc/xray/config.json:ro
     network_mode: host
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z localhost 1080 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
 
+  # ── Xray-client-2 (gRPC REALITY, dest cdn.jsdelivr.net) — standby, SOCKS5 :1081
   xray-client-2:
     image: teddysun/xray:1.8.11
     container_name: xray-client-2
@@ -72,37 +116,148 @@ services:
     volumes:
       - ./xray/config-grpc.json:/etc/xray/config.json:ro
     network_mode: host
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z localhost 1081 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
 
+  # ── Cloudflared (CDN-стек клиент) ────────────────────────────────────────────
+  # Соединяется с Cloudflare Tunnel → VPS cloudflared → Xray VLESS
   cloudflared:
-    image: cloudflare/cloudflared:2024.2.1
+    image: cloudflare/cloudflared:2024.5.0
     container_name: cloudflared
     restart: always
     command: tunnel --config /etc/cloudflared/config.yml run
     volumes:
       - ./cloudflared:/etc/cloudflared:ro
     network_mode: host
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "info"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
 
+  # ── Node Exporter — метрики хоста для Prometheus ─────────────────────────────
   node-exporter:
     image: prom/node-exporter:v1.7.0
     container_name: node-exporter
     restart: always
     command:
-      - '--path.rootfs=/host'
+      - "--path.rootfs=/host"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    pid: host
     volumes:
       - /:/host:ro,rslave
     network_mode: host
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9100/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+  # ── Portainer (опционально: --profile portainer) ─────────────────────────────
+  portainer:
+    image: portainer/portainer-ce:2.20.2
+    container_name: portainer
+    restart: always
+    profiles:
+      - portainer
+    command: --http-disabled
+    ports:
+      - "9443:9443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - portainer_data:/data
+    networks:
+      vpn-net:
+        ipv4_address: 172.20.0.20
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://localhost:9443/api/system/status"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Homepage (опционально: --profile homepage) ───────────────────────────────
+  homepage:
+    image: ghcr.io/gethomepage/homepage:v0.8.13
+    container_name: homepage
+    restart: always
+    profiles:
+      - homepage
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./homepage/config:/app/config
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      vpn-net:
+        ipv4_address: 172.20.0.21
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Amnezia WG Easy (опционально: --profile wg-easy, read-only мониторинг) ──
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy:13
+    container_name: wg-easy
+    restart: always
+    profiles:
+      - wg-easy
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: "1"
+      net.ipv4.ip_forward: "1"
+    environment:
+      WG_HOST: ${WG_HOST}
+      PASSWORD: ${WG_EASY_PASSWORD:-changeme}
+      WG_PORT: ${WG_AWG_PORT:-51820}
+      WG_DEFAULT_ADDRESS: "10.177.1.x"
+      WG_DEFAULT_DNS: "10.177.1.1"
+      WG_MTU: ${WG_MTU:-1320}
+      UI_TRAFFIC_STATS: "true"
+    ports:
+      - "51820:51820/udp"
+      - "51821:51821"
+    volumes:
+      - ./amnezia-wg-easy:/etc/wireguard
+    networks:
+      vpn-net:
+        ipv4_address: 172.20.0.22
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  portainer_data:
+    name: portainer_data
