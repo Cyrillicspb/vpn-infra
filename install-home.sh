@@ -509,6 +509,74 @@ EOF
     step_done "step19_configure_nftables"
 fi
 
+# ── Шаг 19b: Проверка firewall — nmap + ss ────────────────────────────────────
+# Firewall — единственная защита. Все порты кроме явно разрешённых DROP.
+# Этот шаг убеждается что нет неожиданно открытых сервисов.
+
+if is_done "step19b_verify_firewall"; then
+    step_skip "step19b_verify_firewall"
+else
+    step "Проверка firewall (nmap + ss)"
+
+    # Установить nmap если нет (не добавляем в шаг 10 — нужен только здесь)
+    if ! command -v nmap &>/dev/null; then
+        log_info "Устанавливаем nmap..."
+        apt-get install -y -qq nmap
+    fi
+
+    # Тестируем через LAN IP (не loopback) — пакеты проходят через nftables INPUT
+    [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
+    LAN_IP="${HOME_SERVER_IP:-}"
+    if [[ -z "$LAN_IP" ]]; then
+        LAN_IP=$(ip -4 addr show "${NET_INTERFACE:-eth0}" 2>/dev/null \
+            | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+    fi
+    LAN_IP="${LAN_IP:-127.0.0.1}"
+
+    log_info "nmap TCP (top-100 портов) → $LAN_IP ..."
+    # --open: только открытые; -oG: grepable; -T4: быстро
+    open_tcp=$(nmap -sT --top-ports 100 --open -T4 -oG - "$LAN_IP" 2>/dev/null \
+        | grep -oP '\d+/open/tcp' | cut -d/ -f1 | sort -n | tr '\n' ' ' || true)
+    open_tcp="${open_tcp%% }"   # trim trailing space
+
+    log_info "Открытые TCP порты: ${open_tcp:-нет}"
+
+    # Разрешённые TCP порты: только SSH
+    # (AWG/WG — UDP; watchdog API — только из 172.20.0.0/24; DNS — только из wg0/wg1)
+    unexpected_tcp=""
+    for port in $open_tcp; do
+        case "$port" in
+            22) ;;   # SSH — ожидаем
+            *)  unexpected_tcp="${unexpected_tcp} ${port}/tcp" ;;
+        esac
+    done
+
+    if [[ -n "$unexpected_tcp" ]]; then
+        log_warn "⚠️  Неожиданные открытые TCP порты:${unexpected_tcp}"
+        log_warn "   Проверьте: nft list chain inet vpn input"
+        log_warn "   Если порт легитимен — добавьте явно в home/nftables/nftables.conf"
+    else
+        log_ok "TCP: только SSH (22) открыт снаружи ✓"
+    fi
+
+    # Проверка UDP: убеждаемся что AWG/WG слушают (nftables их пропускает)
+    log_info "Проверка UDP 51820/51821 (AWG/WG)..."
+    for udp_port in 51820 51821; do
+        if ss -ulnp 2>/dev/null | grep -q ":${udp_port} "; then
+            log_ok "  UDP ${udp_port}: слушает ✓"
+        else
+            log_warn "  UDP ${udp_port}: не слушает (AWG/WG ещё не запущен — OK на этом этапе)"
+        fi
+    done
+
+    # Итоговый вывод nft list chain input для финального контроля
+    log_info "--- nft list chain inet vpn input ---"
+    nft list chain inet vpn input 2>/dev/null || log_warn "nft list chain inet vpn input завершился с ошибкой"
+    log_info "-------------------------------------"
+
+    step_done "step19b_verify_firewall"
+fi
+
 # ── Шаг 20: Создание конфигов WireGuard-интерфейсов ──────────────────────────
 
 if is_done "step20_wireguard_configs"; then

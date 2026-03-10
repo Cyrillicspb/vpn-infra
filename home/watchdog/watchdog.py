@@ -712,6 +712,83 @@ async def check_certs() -> None:
 # ---------------------------------------------------------------------------
 # Мониторинг: кэш маршрутов
 # ---------------------------------------------------------------------------
+async def check_nftables_integrity() -> None:
+    """
+    Проверяет что правила nftables соответствуют ожидаемым (раз в час).
+
+    Контролирует:
+      - таблица inet vpn существует
+      - input chain: policy drop
+      - forward chain: policy drop
+      - ключевые правила (SSH 22, AWG 51820, WG 51821, blocked sets)
+      - sets blocked_static и blocked_dynamic существуют
+
+    При расхождении — восстанавливает из /etc/nftables.conf и алертит.
+    """
+    issues: list[str] = []
+
+    # 1. Таблица inet vpn существует?
+    rc, out, _ = await run_cmd(["nft", "list", "tables"], timeout=5)
+    if rc != 0 or "inet vpn" not in out:
+        issues.append("таблица inet vpn отсутствует")
+    else:
+        # 2. input: policy drop
+        rc_in, out_in, _ = await run_cmd(
+            ["nft", "list", "chain", "inet", "vpn", "input"], timeout=5
+        )
+        if rc_in != 0 or "policy drop" not in out_in:
+            issues.append("input chain: policy не drop")
+        else:
+            if "51820" not in out_in:
+                issues.append("AWG порт 51820 отсутствует в input")
+            if "51821" not in out_in:
+                issues.append("WG порт 51821 отсутствует в input")
+            if "dport 22" not in out_in:
+                issues.append("SSH порт 22 отсутствует в input")
+
+        # 3. forward: policy drop
+        rc_fw, out_fw, _ = await run_cmd(
+            ["nft", "list", "chain", "inet", "vpn", "forward"], timeout=5
+        )
+        if rc_fw != 0 or "policy drop" not in out_fw:
+            issues.append("forward chain: policy не drop")
+
+        # 4. Sets существуют
+        rc_s, out_s, _ = await run_cmd(["nft", "list", "sets", "inet"], timeout=5)
+        if rc_s == 0:
+            if "blocked_static" not in out_s:
+                issues.append("set blocked_static отсутствует")
+            if "blocked_dynamic" not in out_s:
+                issues.append("set blocked_dynamic отсутствует")
+
+    if not issues:
+        logger.debug("check_nftables_integrity: OK")
+        return
+
+    details = "; ".join(issues)
+    logger.warning(f"check_nftables_integrity: расхождения: {details}")
+
+    # Восстановить правила
+    rc_r, _, err = await run_cmd(["nft", "-f", "/etc/nftables.conf"], timeout=15)
+    if rc_r == 0:
+        # Восстановить blocked_static (без blocked_dynamic — он self-healing через dnsmasq)
+        await run_cmd(["nft", "-f", "/etc/nftables-blocked-static.conf"], timeout=15)
+        alert(
+            f"🔥 *nftables: правила изменены или сброшены!*\n\n"
+            f"Проблемы: `{details}`\n\n"
+            f"✅ Правила восстановлены из `/etc/nftables.conf`"
+        )
+        logger.info("check_nftables_integrity: правила восстановлены")
+    else:
+        alert(
+            f"🔥 *nftables: правила изменены или сброшены!*\n\n"
+            f"Проблемы: `{details}`\n\n"
+            f"❌ Восстановление ПРОВАЛИЛОСЬ: `{err.strip()}`\n"
+            f"Выполните вручную: `sudo nft -f /etc/nftables.conf`"
+        )
+        logger.error(f"check_nftables_integrity: восстановление провалилось: {err}")
+
+
 async def check_routes_cache_age() -> None:
     per_source_dir = ROUTES_DIR
     if not per_source_dir.exists():
@@ -1075,11 +1152,12 @@ async def monitoring_loop() -> None:
                 await check_certs()
                 await check_dkms()
 
-            # Каждый час: полная переоценка стеков, conntrack
+            # Каждый час: полная переоценка стеков, conntrack, целостность firewall
             if now - last_full_assessment >= 3600:
                 asyncio.create_task(_full_reassessment())
                 last_full_assessment = now
                 await collect_conntrack_stats()
+                await check_nftables_integrity()
 
             # В 04:30 каждый день: проверка standby туннелей
             now_dt = datetime.now()

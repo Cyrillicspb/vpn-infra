@@ -18,7 +18,7 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 STEP=0
-TOTAL_STEPS=51
+TOTAL_STEPS=52
 STATE_FILE="/opt/vpn/.setup-state"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="/opt/vpn/.env"
