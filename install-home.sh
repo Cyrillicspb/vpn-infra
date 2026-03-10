@@ -92,8 +92,8 @@ else
         fail2ban unattended-upgrades apt-transport-https \
         logrotate cron gnupg2 ca-certificates \
         sshpass autossh \
-        aggregate6 \
-        openssl uuidgen dkms build-essential
+        uuid-runtime openssl dkms build-essential
+    pip3 install --quiet aggregate6
     log_ok "Системные пакеты установлены"
     step_done "step10_install_packages"
 fi
