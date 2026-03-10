@@ -1,159 +1,179 @@
 @echo off
 chcp 65001 > nul
 setlocal enabledelayedexpansion
-title VPN Infrastructure — Установщик
+title VPN Infrastructure Setup
 
 cls
 echo.
 echo  ==========================================
-echo    VPN Infrastructure -- Установка
+echo    VPN Infrastructure -- Setup
 echo  ==========================================
 echo.
-echo  Этот скрипт подключится к вашему домашнему
-echo  серверу и запустит установку VPN.
+echo  This script connects to your home server
+echo  and starts VPN installation.
 echo.
-echo  Требования:
-echo   - Windows 10/11 с OpenSSH (встроен)
-echo   - Домашний сервер: Ubuntu Server 24.04
-echo   - Сервер подключён к роутеру по Ethernet
+echo  Requirements:
+echo    - Windows 10/11 with OpenSSH (built-in)
+echo    - Home server: Ubuntu Server 24.04
+echo    - Server connected to router via Ethernet
 echo.
+pause
 
-REM Проверка OpenSSH
+REM ── Check OpenSSH ──────────────────────────────────────────────────────────
 where ssh >nul 2>&1
 if %errorlevel% neq 0 (
-    echo  [ОШИБКА] SSH не найден.
     echo.
-    echo  Установите OpenSSH Client:
-    echo  Параметры -> Приложения -> Дополнительные функции
-    echo  -> Добавить компонент -> Клиент OpenSSH
+    echo  [ERROR] SSH not found.
+    echo.
+    echo  Install OpenSSH Client:
+    echo    Settings -^> Apps -^> Optional features
+    echo    -^> Add a feature -^> OpenSSH Client
     echo.
     pause
     exit /b 1
 )
-echo  [OK] SSH найден.
+echo  [OK] SSH found.
 echo.
 
-REM Ввод данных сервера
-:input_ip
-set /p SERVER_IP=IP-адрес домашнего сервера (например 192.168.1.100):
+REM ── Server credentials ─────────────────────────────────────────────────────
+echo  Enter home server IP address:
+echo  (example: 192.168.1.100 -- find it in your router admin panel)
+set /p SERVER_IP=  IP:
 if "!SERVER_IP!"=="" (
-    echo  Введите IP-адрес.
-    goto input_ip
+    echo  IP cannot be empty.
+    goto :eof
 )
 
-set /p SERVER_USER=Пользователь SSH [sysadmin]:
+echo.
+echo  SSH username (press Enter for default: sysadmin):
+set /p SERVER_USER=  User:
 if "!SERVER_USER!"=="" set SERVER_USER=sysadmin
 
-set /p SSH_PORT=SSH порт [22]:
+echo.
+echo  SSH port (press Enter for default: 22):
+set /p SSH_PORT=  Port:
 if "!SSH_PORT!"=="" set SSH_PORT=22
 
 echo.
+echo  Target: !SERVER_USER!@!SERVER_IP!:!SSH_PORT!
+echo.
 
-REM Проверка/генерация SSH ключа
+REM ── SSH key ────────────────────────────────────────────────────────────────
 set SSH_KEY=%USERPROFILE%\.ssh\vpn_deploy_key
+
 if not exist "!SSH_KEY!" (
-    echo  Создание SSH ключа...
+    echo  Generating SSH key...
     if not exist "%USERPROFILE%\.ssh" mkdir "%USERPROFILE%\.ssh"
-    ssh-keygen -t ed25519 -f "!SSH_KEY!" -N "" -C "vpn-deploy" > nul 2>&1
+    ssh-keygen -t ed25519 -f "!SSH_KEY!" -N "" -C "vpn-deploy" >nul 2>&1
     if !errorlevel! equ 0 (
-        echo  [OK] SSH ключ создан: !SSH_KEY!
+        echo  [OK] SSH key created: !SSH_KEY!
     ) else (
-        echo  [ОШИБКА] Не удалось создать SSH ключ.
+        echo  [ERROR] Failed to create SSH key.
         pause
         exit /b 1
     )
+) else (
+    echo  [OK] SSH key already exists: !SSH_KEY!
 )
-
-echo.
-echo  Копирование SSH ключа на сервер...
-echo  (Введите пароль от !SERVER_USER!@!SERVER_IP! при запросе)
 echo.
 
-REM Копирование публичного ключа
+REM ── Copy public key to server ──────────────────────────────────────────────
+echo  Copying public key to server...
+echo  (Enter password for !SERVER_USER!@!SERVER_IP! when asked)
+echo.
+
 set /p PUBKEY=< "!SSH_KEY!.pub"
-ssh -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "mkdir -p ~/.ssh && echo '!PUBKEY!' >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && echo SSH_KEY_OK"
+ssh -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "mkdir -p ~/.ssh && printf '%%s\n' '!PUBKEY!' >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && echo SSH_KEY_OK"
+
 if !errorlevel! neq 0 (
     echo.
-    echo  [ПРЕДУПРЕЖДЕНИЕ] Автоматическое копирование ключа не удалось.
+    echo  [WARNING] Could not copy key automatically.
     echo.
-    echo  Добавьте ключ вручную на сервере:
-    echo  1. Подключитесь: ssh !SERVER_USER!@!SERVER_IP! -p !SSH_PORT!
-    echo  2. Выполните:
+    echo  Manual steps:
+    echo    1. Connect: ssh !SERVER_USER!@!SERVER_IP! -p !SSH_PORT!
+    echo    2. Run on server:
+    echo       mkdir -p ~/.ssh
+    echo       nano ~/.ssh/authorized_keys
+    echo    3. Paste this key:
     type "!SSH_KEY!.pub"
-    echo.
-    echo  Скопируйте вывод выше и добавьте в ~/.ssh/authorized_keys на сервере.
     echo.
     pause
 )
 
+REM ── Test connection ────────────────────────────────────────────────────────
 echo.
-echo  Проверка подключения к серверу...
-ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=10" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "echo OK_CONNECTION"
+echo  Testing connection...
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "echo OK_CONNECTION" 2>&1
 if !errorlevel! neq 0 (
     echo.
-    echo  [ОШИБКА] Не удалось подключиться к серверу.
+    echo  [ERROR] Cannot connect to server.
     echo.
-    echo  Проверьте:
-    echo   1. Сервер включён и подключён к сети
-    echo   2. IP: !SERVER_IP!, пользователь: !SERVER_USER!, порт: !SSH_PORT!
-    echo   3. OpenSSH-server установлен на Ubuntu-сервере
+    echo  Check:
+    echo    1. Server is powered on and connected
+    echo    2. IP: !SERVER_IP!, user: !SERVER_USER!, port: !SSH_PORT!
+    echo    3. openssh-server is installed on Ubuntu server
+    echo.
+    echo  Try manually:
+    echo    ssh !SERVER_USER!@!SERVER_IP! -p !SSH_PORT!
     echo.
     pause
     exit /b 1
 )
+echo  [OK] Connected successfully.
 
+REM ── Confirm ────────────────────────────────────────────────────────────────
 echo.
 echo  ==========================================
-echo   Сервер доступен. Готово к установке!
+echo    Server is ready. Starting installation.
 echo  ==========================================
 echo.
-echo  Подключение к: !SERVER_USER!@!SERVER_IP!:!SSH_PORT!
+echo  WARNING: Installation takes 20-40 minutes.
+echo  Do NOT close this window!
 echo.
-echo  ВНИМАНИЕ: Установка займёт 15-30 минут.
-echo  Не закрывайте это окно!
-echo.
-set /p CONFIRM=Начать установку? (y/N):
-if /i "!CONFIRM!" neq "y" (
-    echo Отменено.
-    pause
-    exit /b 0
-)
+echo  Press Enter to start, or close window to cancel.
+pause
 
 echo.
-echo  Запуск установки на сервере...
+echo  Connecting to !SERVER_USER!@!SERVER_IP!...
 echo  ==========================================
 echo.
 
-REM Запуск setup.sh
+REM ── Run setup.sh ───────────────────────────────────────────────────────────
 ssh -i "!SSH_KEY!" ^
-    -o "StrictHostKeyChecking=accept-new" ^
-    -o "ServerAliveInterval=30" ^
-    -o "ServerAliveCountMax=10" ^
+    -o StrictHostKeyChecking=accept-new ^
+    -o ServerAliveInterval=30 ^
+    -o ServerAliveCountMax=10 ^
     -p !SSH_PORT! ^
     -t !SERVER_USER!@!SERVER_IP! ^
-    "bash -lc \"set -e; echo '=== Скачивание setup.sh ==='; if curl -sf --max-time 30 https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/setup.sh -o /tmp/vpn-setup.sh 2>/dev/null; then echo 'OK: скачано с GitHub'; else echo 'Ошибка: GitHub недоступен'; exit 1; fi; chmod +x /tmp/vpn-setup.sh; echo '=== Запуск setup.sh ==='; sudo bash /tmp/vpn-setup.sh\""
+    "bash -lc \"set -e; if ! command -v curl >/dev/null 2>&1; then sudo apt-get install -y curl; fi; echo '=== Downloading setup.sh ==='; if curl -sf --max-time 30 https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/setup.sh -o /tmp/vpn-setup.sh; then echo '[OK] Downloaded from GitHub'; else echo '[ERROR] GitHub not available'; exit 1; fi; chmod +x /tmp/vpn-setup.sh; echo '=== Running setup.sh ==='; sudo bash /tmp/vpn-setup.sh 2>&1 | tee /tmp/vpn-setup.log\""
 
-set RESULT=!errorlevel!
+set SETUP_RESULT=!errorlevel!
+
 echo.
 echo  ==========================================
 
-if !RESULT! equ 0 (
+if !SETUP_RESULT! equ 0 (
     echo.
-    echo  [OK] Установка завершена успешно!
+    echo  [OK] Installation completed successfully!
     echo.
-    echo  Следующие шаги:
-    echo   1. Настройте Port Forwarding на роутере:
-    echo      UDP 51820 --^> !SERVER_IP!:51820 (AmneziaWG)
-    echo      UDP 51821 --^> !SERVER_IP!:51821 (WireGuard)
-    echo   2. Откройте Telegram и напишите боту /start
-    echo   3. Получите конфиг и импортируйте в WireGuard
+    echo  Next steps:
+    echo    1. Configure Port Forwarding on your router:
+    echo       UDP 51820 --^> !SERVER_IP!:51820  (AmneziaWG)
+    echo       UDP 51821 --^> !SERVER_IP!:51821  (WireGuard)
+    echo    2. Open Telegram and send /start to your bot
+    echo    3. Get your config and import into WireGuard/AmneziaWG
+    echo.
+    echo  Your SSH key for future access:
+    echo    ssh -i "!SSH_KEY!" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP!
 ) else (
     echo.
-    echo  [ОШИБКА] Установка завершилась с ошибкой (код !RESULT!)
+    echo  [ERROR] Installation failed with code !SETUP_RESULT!
     echo.
-    echo  Для диагностики:
-    echo   ssh -i "!SSH_KEY!" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP!
-    echo   cat /tmp/vpn-setup.log
+    echo  Diagnostics:
+    echo    ssh -i "!SSH_KEY!" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP!
+    echo    cat /tmp/vpn-setup.log
+    echo.
+    echo  Re-run is safe -- completed steps are skipped automatically.
 )
 
 echo.
