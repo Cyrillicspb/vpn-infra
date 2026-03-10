@@ -1,180 +1,458 @@
 #!/bin/bash
 # =============================================================================
 # install-vps.sh — Установка компонентов на VPS
-# Вызывается из setup.sh
+# Вызывается из setup.sh (STEP=28 bash install-vps.sh)
 # Использует: sysadmin пользователь (не root)
+# Шаги 29-39
 # =============================================================================
+
 set -euo pipefail
 
-STATE_FILE="${1:-/opt/vpn/.setup-state}"
-VPS_IP="${2:-}"
-REPO_DIR="/opt/vpn"
+# ── Цвета и константы ────────────────────────────────────────────────────────
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
-log_info() { echo -e "${BLUE}[INFO]${NC} $*"; }
-log_ok()   { echo -e "${GREEN}[OK]${NC}   $*"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
-log_error(){ echo -e "${RED}[ERROR]${NC} $*"; }
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
 
-STEP=30
-TOTAL=51
+STEP="${STEP:-28}"
+TOTAL_STEPS=51
+STATE_FILE="/opt/vpn/.setup-state"
+ENV_FILE="/opt/vpn/.env"
 
-step() { ((STEP++)); echo -e "\n${BLUE}━━━ Шаг ${STEP}/${TOTAL}: $* ━━━${NC}"; }
-is_done()   { grep -q "^$1$" "$STATE_FILE" 2>/dev/null; }
+# ── Вспомогательные функции ──────────────────────────────────────────────────
+
+log_info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
+log_ok()    { echo -e "${GREEN}[✓]${NC}   $*"; }
+log_warn()  { echo -e "${YELLOW}[!]${NC}   $*"; }
+log_error() { echo -e "${RED}[✗]${NC}   $*" >&2; }
+
+step() {
+    ((STEP++)) || true
+    echo ""
+    echo -e "${CYAN}${BOLD}━━━ Шаг ${STEP}/${TOTAL_STEPS}: $* ━━━${NC}"
+}
+
+is_done()   { grep -qxF "$1" "$STATE_FILE" 2>/dev/null; }
 step_done() { echo "$1" >> "$STATE_FILE"; log_ok "Готово: $1"; }
-step_skip() { log_info "Пропуск (уже выполнено): $1"; }
+step_skip() { ((STEP++)) || true; log_info "Пропуск (уже выполнено): $1"; }
 
-[[ -z "$VPS_IP" ]] && { log_error "VPS_IP не задан"; exit 1; }
+die() {
+    log_error "$*"
+    echo ""
+    echo -e "${RED}━━━ Ошибка ━━━${NC}"
+    echo "  Проблема: $*"
+    echo "  Действие: проверьте вывод выше и устраните причину."
+    echo "  Повтор:   sudo bash setup.sh  (выполненные шаги будут пропущены)"
+    exit 1
+}
 
-source "$REPO_DIR/.env" 2>/dev/null || true
-SSH_PORT="${VPS_SSH_PORT:-22}"
-SSH_USER="sysadmin"
+env_set() {
+    local key="$1" val="$2"
+    mkdir -p "$(dirname "$ENV_FILE")"
+    touch "$ENV_FILE"
+    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+        sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
+    else
+        echo "${key}=${val}" >> "$ENV_FILE"
+    fi
+}
 
-# ---------------------------------------------------------------------------
-# Хелпер: выполнить команду на VPS
-# ---------------------------------------------------------------------------
+# ── Загрузка переменных и SSH-функции ────────────────────────────────────────
+
+[[ -f "$ENV_FILE" ]] || die "Файл ${ENV_FILE} не найден. Сначала запустите setup.sh"
+set -o allexport; source "$ENV_FILE"; set +o allexport
+
+SSH_KEY="/root/.ssh/vpn_id_ed25519"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+[[ -f "$SSH_KEY" ]] || die "SSH-ключ ${SSH_KEY} не найден. Шаг 6 (setup.sh) не выполнен?"
+[[ -n "${VPS_IP:-}" ]]  || die "VPS_IP не задан в ${ENV_FILE}"
+
 vps_exec() {
-    ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no \
-        -o ConnectTimeout=10 \
-        "$SSH_USER@$VPS_IP" "$@"
+    ssh -p "${VPS_SSH_PORT:-22}" -i "$SSH_KEY" \
+        -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+        "sysadmin@${VPS_IP}" "$@"
 }
 
 vps_copy() {
-    scp -P "$SSH_PORT" -o StrictHostKeyChecking=no \
-        -o ConnectTimeout=10 \
-        "$@"
+    scp -P "${VPS_SSH_PORT:-22}" -i "$SSH_KEY" \
+        -o StrictHostKeyChecking=no "$@"
 }
 
-# ---------------------------------------------------------------------------
-# Шаг: Проверка SSH доступа
-# ---------------------------------------------------------------------------
-step "Проверка SSH-доступа к VPS"
-if ! is_done "vps_ssh_ok"; then
-    if ! vps_exec "echo ok" &>/dev/null; then
-        log_warn "SSH на порту $SSH_PORT не работает. Пробуем порт 22..."
-        SSH_PORT=22
-        vps_exec "echo ok" || {
-            log_error "SSH недоступен. Если SSH:22 заблокирован:"
-            log_error "  1. Зайдите в веб-консоль VPS у провайдера"
-            log_error "  2. Создайте пользователя sysadmin: adduser sysadmin && usermod -aG sudo sysadmin"
-            log_error "  3. Скопируйте SSH-ключ вручную"
-            exit 1
-        }
+vps_root_exec() {
+    ssh -p "${VPS_SSH_PORT:-22}" -i "$SSH_KEY" \
+        -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+        "root@${VPS_IP}" "$@"
+}
+
+# ── Шаг 29: Проверка SSH-доступа к VPS ───────────────────────────────────────
+
+if is_done "step29_vps_ssh_check"; then
+    step_skip "step29_vps_ssh_check"
+else
+    step "Проверка SSH-доступа к VPS (sysadmin)"
+
+    if ! vps_exec "echo ok" &>/dev/null 2>&1; then
+        log_warn "SSH с ключом не работает. Попытка через sshpass..."
+
+        [[ -z "${VPS_ROOT_PASSWORD:-}" ]] && \
+            die "VPS_ROOT_PASSWORD не задан. Установите пароль в ${ENV_FILE} и повторите."
+
+        sshpass -p "${VPS_ROOT_PASSWORD}" ssh-copy-id \
+            -i "${SSH_KEY}.pub" \
+            -p "${VPS_SSH_PORT:-22}" \
+            -o StrictHostKeyChecking=no \
+            "sysadmin@${VPS_IP}" 2>/dev/null \
+            || die "SSH к VPS недоступен. Проверьте IP (${VPS_IP}), порт (${VPS_SSH_PORT:-22}) и учётные данные."
     fi
-    log_ok "SSH доступен (порт $SSH_PORT)"
-    step_done "vps_ssh_ok"
-else step_skip "vps_ssh_ok"; fi
 
-# ---------------------------------------------------------------------------
-# Шаг: Базовая настройка VPS
-# ---------------------------------------------------------------------------
-step "Базовая настройка VPS (обновление, пакеты)"
-if ! is_done "vps_base_setup"; then
-    vps_exec "sudo apt-get update -qq && sudo apt-get upgrade -y -qq"
-    vps_exec "sudo apt-get install -y -qq curl wget git jq docker.io docker-compose nftables fail2ban"
-    vps_exec "sudo systemctl enable docker && sudo systemctl start docker"
-    step_done "vps_base_setup"
-else step_skip "vps_base_setup"; fi
+    # Финальная проверка
+    vps_exec "echo ok" &>/dev/null 2>&1 \
+        || die "SSH к VPS (sysadmin@${VPS_IP}) не работает даже после копирования ключа."
 
-# ---------------------------------------------------------------------------
-# Шаг: Отключение IPv6 на VPS
-# ---------------------------------------------------------------------------
-step "Отключение IPv6 на VPS"
-if ! is_done "vps_ipv6_disabled"; then
-    vps_exec "cat << 'EOF' | sudo tee /etc/sysctl.d/99-disable-ipv6.conf
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
+    log_ok "SSH-доступ к VPS подтверждён"
+    step_done "step29_vps_ssh_check"
+fi
+
+# ── Шаг 30: Обновление пакетов на VPS ────────────────────────────────────────
+
+if is_done "step30_vps_update_packages"; then
+    step_skip "step30_vps_update_packages"
+else
+    step "Обновление системных пакетов на VPS"
+
+    vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
+        sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq"
+
+    vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+        curl wget git jq wireguard-tools openssl gnupg2 ca-certificates \
+        python3 python3-pip net-tools"
+
+    log_ok "Пакеты на VPS обновлены"
+    step_done "step30_vps_update_packages"
+fi
+
+# ── Шаг 31: Отключение IPv6 на VPS ───────────────────────────────────────────
+
+if is_done "step31_vps_disable_ipv6"; then
+    step_skip "step31_vps_disable_ipv6"
+else
+    step "Отключение IPv6 на VPS"
+
+    vps_exec "printf 'net.ipv6.conf.all.disable_ipv6 = 1\nnet.ipv6.conf.default.disable_ipv6 = 1\nnet.ipv6.conf.lo.disable_ipv6 = 1\n' | \
+        sudo tee /etc/sysctl.d/99-disable-ipv6.conf > /dev/null && \
+        sudo sysctl -p /etc/sysctl.d/99-disable-ipv6.conf 2>/dev/null || true"
+
+    log_ok "IPv6 отключён на VPS"
+    step_done "step31_vps_disable_ipv6"
+fi
+
+# ── Шаг 32: Установка Docker CE на VPS ───────────────────────────────────────
+
+if is_done "step32_vps_install_docker"; then
+    step_skip "step32_vps_install_docker"
+else
+    step "Установка Docker CE на VPS"
+
+    # Проверяем, установлен ли уже Docker
+    if vps_exec "command -v docker &>/dev/null && echo already" 2>/dev/null \
+            | grep -q "already"; then
+        log_info "Docker уже установлен на VPS"
+    else
+        log_info "Установка Docker на VPS через get.docker.com..."
+        vps_exec "curl -fsSL https://get.docker.com | sudo sh" \
+            || die "Не удалось установить Docker на VPS"
+        vps_exec "sudo systemctl enable docker && sudo systemctl start docker"
+    fi
+
+    # Настройка daemon.json
+    vps_exec "sudo mkdir -p /etc/docker && \
+        printf '{\"log-driver\":\"json-file\",\"log-opts\":{\"max-size\":\"10m\",\"max-file\":\"3\"},\"ipv6\":false}\n' | \
+        sudo tee /etc/docker/daemon.json > /dev/null && \
+        sudo systemctl restart docker"
+
+    # Добавление sysadmin в группу docker
+    vps_exec "sudo usermod -aG docker sysadmin 2>/dev/null || true"
+
+    VPS_DOCKER_VER=$(vps_exec "sudo docker --version 2>/dev/null")
+    log_ok "Docker на VPS: ${VPS_DOCKER_VER}"
+    step_done "step32_vps_install_docker"
+fi
+
+# ── Шаг 33: Настройка nftables на VPS (rate limiting TCP/UDP 443) ─────────────
+
+if is_done "step33_vps_nftables"; then
+    step_skip "step33_vps_nftables"
+else
+    step "Настройка nftables на VPS (rate limiting + защита портов)"
+
+    vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables"
+
+    vps_exec "cat << 'NFTEOF' | sudo tee /etc/nftables-vps.conf > /dev/null
+#!/usr/sbin/nft -f
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority filter; policy accept;
+
+        # Loopback
+        iifname \"lo\" accept
+
+        # Established/related
+        ct state established,related accept
+
+        # SSH (стандартный порт + опциональный 443)
+        tcp dport { 22, 443 } ct state new accept
+
+        # Rate limiting TCP 443 (защита Xray/Nginx от flood)
+        tcp dport 443 limit rate 200/second burst 500 packets accept
+        tcp dport 443 drop
+
+        # Rate limiting UDP 443 (защита Hysteria2 от flood)
+        udp dport 443 limit rate 200/second burst 500 packets accept
+        udp dport 443 drop
+
+        # ICMP
+        icmp type echo-request limit rate 10/second accept
+
+        # WireGuard Tier-2
+        udp dport 51822 accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        ct state established,related accept
+    }
+}
+NFTEOF"
+
+    vps_exec "sudo systemctl enable nftables && \
+        sudo nft -f /etc/nftables-vps.conf || true"
+
+    log_ok "nftables настроен на VPS"
+    step_done "step33_vps_nftables"
+fi
+
+# ── Шаг 34: Настройка fail2ban на VPS ────────────────────────────────────────
+
+if is_done "step34_vps_fail2ban"; then
+    step_skip "step34_vps_fail2ban"
+else
+    step "Настройка fail2ban на VPS"
+
+    vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fail2ban"
+    vps_exec "printf '[DEFAULT]\nbantime = 3600\nfindtime = 600\nmaxretry = 5\nbackend = systemd\n\n[sshd]\nenabled = true\nport = 22\n' | \
+        sudo tee /etc/fail2ban/jail.local > /dev/null"
+    vps_exec "sudo systemctl enable fail2ban && sudo systemctl restart fail2ban"
+
+    log_ok "fail2ban настроен на VPS"
+    step_done "step34_vps_fail2ban"
+fi
+
+# ── Шаг 35: Копирование файлов VPS ───────────────────────────────────────────
+
+if is_done "step35_vps_copy_files"; then
+    step_skip "step35_vps_copy_files"
+else
+    step "Копирование файлов на VPS"
+
+    # Создаём директорию /opt/vpn на VPS
+    vps_exec "sudo mkdir -p /opt/vpn && sudo chown sysadmin:sysadmin /opt/vpn && \
+        mkdir -p /opt/vpn/scripts /opt/vpn/nginx/mtls /opt/vpn/nginx/ssl \
+                 /opt/vpn/nginx/conf.d /opt/vpn/cloudflared /opt/vpn/3x-ui/db \
+                 /opt/vpn/prometheus /opt/vpn/alertmanager /opt/vpn/grafana \
+                 /opt/vpn/backups /opt/vpn/vpn-repo.git"
+
+    # Копируем директорию vps/ из репозитория
+    VPS_DIR="${REPO_DIR}/vps"
+    if [[ -d "$VPS_DIR" ]]; then
+        vps_copy -r "${VPS_DIR}/." "sysadmin@${VPS_IP}:/opt/vpn/"
+        log_ok "Файлы VPS скопированы из ${VPS_DIR}"
+    else
+        log_warn "Директория vps/ не найдена в ${REPO_DIR}. Пропускаем копирование файлов VPS."
+    fi
+
+    step_done "step35_vps_copy_files"
+fi
+
+# ── Шаг 36: Генерация .env для VPS ───────────────────────────────────────────
+
+if is_done "step36_vps_env"; then
+    step_skip "step36_vps_env"
+else
+    step "Генерация .env файла для VPS"
+
+    set -o allexport; source "$ENV_FILE"; set +o allexport
+
+    # Создаём временный файл .env для VPS
+    VPS_ENV_TMP=$(mktemp /tmp/vps-env.XXXXXX)
+    chmod 600 "$VPS_ENV_TMP"
+
+    cat > "$VPS_ENV_TMP" << EOF
+# VPS .env — сгенерировано setup.sh
+TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+TELEGRAM_ADMIN_CHAT_ID=${TELEGRAM_ADMIN_CHAT_ID:-}
+GRAFANA_PASSWORD=${GRAFANA_PASSWORD:-}
+CF_TUNNEL_TOKEN=${CF_TUNNEL_TOKEN:-}
+XRAY_UUID=${XRAY_UUID:-}
+XRAY_GRPC_UUID=${XRAY_GRPC_UUID:-}
+XRAY_PRIVATE_KEY=${XRAY_PRIVATE_KEY:-}
+XRAY_GRPC_PRIVATE_KEY=${XRAY_GRPC_PRIVATE_KEY:-}
+XRAY_PUBLIC_KEY=${XRAY_PUBLIC_KEY:-}
+XRAY_GRPC_PUBLIC_KEY=${XRAY_GRPC_PUBLIC_KEY:-}
+HYSTERIA2_AUTH=${HYSTERIA2_AUTH:-}
+HYSTERIA2_OBFS=${HYSTERIA2_OBFS:-}
+VPS_IP=${VPS_IP:-}
+VPS_TUNNEL_IP=${VPS_TUNNEL_IP:-10.177.2.2}
+HOME_TUNNEL_IP=${HOME_TUNNEL_IP:-10.177.2.1}
+HOME_SERVER_IP=${HOME_SERVER_IP:-}
+WATCHDOG_API_TOKEN=${WATCHDOG_API_TOKEN:-}
+DOMAIN=${DOMAIN:-}
+CF_API_TOKEN=${CF_API_TOKEN:-}
+SSH_ADDITIONAL_PORT=443
 EOF
-sudo sysctl -p /etc/sysctl.d/99-disable-ipv6.conf"
-    step_done "vps_ipv6_disabled"
-else step_skip "vps_ipv6_disabled"; fi
 
-# ---------------------------------------------------------------------------
-# Шаг: fail2ban на VPS
-# ---------------------------------------------------------------------------
-step "fail2ban на VPS"
-if ! is_done "vps_fail2ban"; then
-    vps_exec "cat << 'EOF' | sudo tee /etc/fail2ban/jail.local
-[DEFAULT]
-bantime = 3600
-findtime = 600
-maxretry = 5
+    vps_copy "$VPS_ENV_TMP" "sysadmin@${VPS_IP}:/opt/vpn/.env"
+    vps_exec "chmod 600 /opt/vpn/.env"
+    rm -f "$VPS_ENV_TMP"
 
-[sshd]
-enabled = true
-EOF
-sudo systemctl enable fail2ban && sudo systemctl restart fail2ban"
-    step_done "vps_fail2ban"
-else step_skip "vps_fail2ban"; fi
+    log_ok ".env скопирован на VPS"
+    step_done "step36_vps_env"
+fi
 
-# ---------------------------------------------------------------------------
-# Шаг: Копирование файлов VPS
-# ---------------------------------------------------------------------------
-step "Копирование конфигурации на VPS"
-if ! is_done "vps_files_copied"; then
-    vps_exec "mkdir -p /opt/vpn"
-    vps_copy -r "$REPO_DIR/vps/." "$SSH_USER@$VPS_IP:/opt/vpn/"
-    vps_copy "$REPO_DIR/.env.example" "$SSH_USER@$VPS_IP:/opt/vpn/.env.example"
-    step_done "vps_files_copied"
-else step_skip "vps_files_copied"; fi
+# ── Шаг 37: Генерация mTLS CA на VPS ─────────────────────────────────────────
 
-# ---------------------------------------------------------------------------
-# Шаг: Git-зеркало на VPS
-# ---------------------------------------------------------------------------
-step "Настройка git-зеркала на VPS"
-if ! is_done "vps_git_mirror"; then
-    vps_exec "mkdir -p /opt/vpn/vpn-repo.git"
-    # Инициализируем bare repo
-    vps_exec "cd /opt/vpn/vpn-repo.git && git init --bare 2>/dev/null || true"
-    # Cron для синхронизации с GitHub (если доступен)
-    vps_exec "cat << 'EOF' | sudo tee /etc/cron.d/vpn-mirror
-# Синхронизация git-зеркала с GitHub
-*/30 * * * * $SSH_USER cd /opt/vpn/vpn-repo.git && git fetch --all 2>/dev/null || true
-EOF"
-    step_done "vps_git_mirror"
-else step_skip "vps_git_mirror"; fi
+if is_done "step37_vps_mtls_ca"; then
+    step_skip "step37_vps_mtls_ca"
+else
+    step "Генерация mTLS CA (корневой сертификат)"
 
-# ---------------------------------------------------------------------------
-# Шаг: mTLS CA (самоподписанный)
-# ---------------------------------------------------------------------------
-step "Генерация mTLS CA"
-if ! is_done "vps_mtls_ca"; then
-    vps_exec "mkdir -p /opt/vpn/nginx/mtls"
-    vps_exec "openssl genrsa -out /opt/vpn/nginx/mtls/ca.key 4096 2>/dev/null && \
+    vps_exec "mkdir -p /opt/vpn/nginx/mtls /opt/vpn/nginx/ssl"
+
+    # Генерируем CA только если ещё нет
+    vps_exec "[ -f /opt/vpn/nginx/mtls/ca.crt ] && echo 'exists' || ( \
+        openssl genrsa -out /opt/vpn/nginx/mtls/ca.key 4096 2>/dev/null && \
         openssl req -new -x509 -days 3650 \
             -key /opt/vpn/nginx/mtls/ca.key \
             -out /opt/vpn/nginx/mtls/ca.crt \
-            -subj '/CN=VPN-CA' 2>/dev/null && \
+            -subj '/CN=VPN-CA/O=VPNInfra/C=RU' 2>/dev/null && \
         chmod 600 /opt/vpn/nginx/mtls/ca.key && \
-        echo 'CA создан'"
-    step_done "vps_mtls_ca"
-else step_skip "vps_mtls_ca"; fi
+        echo 'CA создан' \
+    )" | grep -v '^$' | while IFS= read -r line; do log_info "$line"; done || true
 
-# ---------------------------------------------------------------------------
-# Шаг: Docker Compose на VPS
-# ---------------------------------------------------------------------------
-step "Запуск Docker Compose на VPS"
-if ! is_done "vps_docker_up"; then
-    vps_exec "[[ -f /opt/vpn/.env ]] || cp /opt/vpn/.env.example /opt/vpn/.env"
-    vps_exec "cd /opt/vpn && sudo docker compose up -d --remove-orphans || true"
-    step_done "vps_docker_up"
-else step_skip "vps_docker_up"; fi
+    log_ok "mTLS CA готов на VPS"
+    step_done "step37_vps_mtls_ca"
+fi
 
-# ---------------------------------------------------------------------------
-# Шаг: VPS healthcheck cron
-# ---------------------------------------------------------------------------
-step "Настройка VPS healthcheck"
-if ! is_done "vps_healthcheck"; then
-    ADMIN_CHAT="${TELEGRAM_ADMIN_CHAT_ID:-}"
-    BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
-    vps_exec "cat << 'CRONEOF' | sudo tee /etc/cron.d/vps-healthcheck
-# VPS healthcheck каждые 5 мин
-*/5 * * * * $SSH_USER bash /opt/vpn/scripts/vps-healthcheck.sh >> /var/log/vps-healthcheck.log 2>&1
+# ── Шаг 38: Запуск Docker Compose на VPS ─────────────────────────────────────
+
+if is_done "step38_vps_docker_compose"; then
+    step_skip "step38_vps_docker_compose"
+else
+    step "Запуск Docker Compose на VPS"
+
+    # Проверяем наличие docker-compose.yml на VPS
+    if ! vps_exec "[ -f /opt/vpn/docker-compose.yml ] && echo exists" 2>/dev/null \
+            | grep -q "exists"; then
+        log_warn "docker-compose.yml не найден на VPS в /opt/vpn/"
+        log_warn "Скопируйте файл VPS конфигурации и повторите шаг."
+    else
+        log_info "Загрузка Docker-образов на VPS..."
+        vps_exec "cd /opt/vpn && sudo docker compose pull --quiet 2>/dev/null || true"
+
+        log_info "Запуск контейнеров на VPS..."
+        vps_exec "cd /opt/vpn && sudo docker compose up -d --remove-orphans 2>/dev/null \
+            || sudo docker compose up -d 2>/dev/null || true"
+
+        # Ожидание запуска 3x-ui
+        sleep 15
+        echo ""
+        log_info "Статус контейнеров на VPS:"
+        vps_exec "cd /opt/vpn && sudo docker compose ps 2>/dev/null || true"
+    fi
+
+    log_ok "Docker Compose на VPS запущен"
+    step_done "step38_vps_docker_compose"
+fi
+
+# ── Шаг 39: Git-зеркало и healthcheck cron на VPS ────────────────────────────
+
+if is_done "step39_vps_git_mirror_cron"; then
+    step_skip "step39_vps_git_mirror_cron"
+else
+    step "Настройка git-зеркала и healthcheck cron на VPS"
+
+    # Инициализация bare git-репозитория (зеркало GitHub)
+    vps_exec "mkdir -p /opt/vpn/vpn-repo.git && \
+        git -C /opt/vpn/vpn-repo.git init --bare 2>/dev/null || true"
+
+    vps_exec "git -C /opt/vpn/vpn-repo.git remote add origin \
+        https://github.com/Cyrillicspb/vpn-infra.git 2>/dev/null || \
+        git -C /opt/vpn/vpn-repo.git remote set-url origin \
+        https://github.com/Cyrillicspb/vpn-infra.git 2>/dev/null || true"
+
+    # Начальное зеркалирование
+    log_info "Попытка начальной синхронизации с GitHub..."
+    vps_exec "git -C /opt/vpn/vpn-repo.git fetch --all 2>/dev/null || \
+        echo 'GitHub недоступен — синхронизация выполнится позже по cron'" || true
+
+    # Cron для зеркалирования (каждые 30 минут)
+    vps_exec "cat << 'CRONEOF' | sudo tee /etc/cron.d/vpn-mirror > /dev/null
+SHELL=/bin/bash
+# Git-зеркало GitHub (каждые 30 минут)
+*/30 * * * * sysadmin git -C /opt/vpn/vpn-repo.git fetch --all \
+    >> /var/log/vpn-mirror.log 2>&1
 CRONEOF"
-    # Копируем скрипт
-    vps_copy "$REPO_DIR/vps/scripts/vps-healthcheck.sh" \
-        "$SSH_USER@$VPS_IP:/opt/vpn/scripts/vps-healthcheck.sh"
-    step_done "vps_healthcheck"
-else step_skip "vps_healthcheck"; fi
 
-log_ok "install-vps.sh завершён для $VPS_IP"
+    # Cron для VPS healthcheck (каждые 5 минут)
+    vps_exec "cat << 'HCEOF' | sudo tee /etc/cron.d/vps-healthcheck > /dev/null
+SHELL=/bin/bash
+# VPS healthcheck каждые 5 минут
+*/5 * * * * sysadmin bash /opt/vpn/scripts/vps-healthcheck.sh \
+    >> /var/log/vps-healthcheck.log 2>&1
+HCEOF"
+
+    # Создание скрипта healthcheck если его нет
+    vps_exec "[ -f /opt/vpn/scripts/vps-healthcheck.sh ] && echo 'exists' || \
+        mkdir -p /opt/vpn/scripts && cat << 'HSEOF' > /opt/vpn/scripts/vps-healthcheck.sh
+#!/bin/bash
+# vps-healthcheck.sh — Мониторинг состояния VPS
+set -euo pipefail
+
+source /opt/vpn/.env 2>/dev/null || true
+
+send_alert() {
+    local msg=\"\$1\"
+    curl -sf \"https://api.telegram.org/bot\${TELEGRAM_BOT_TOKEN}/sendMessage\" \
+        -d \"chat_id=\${TELEGRAM_ADMIN_CHAT_ID}&text=\${msg}\" \
+        > /dev/null 2>&1 || true
+}
+
+# Проверка остановленных контейнеров
+sudo docker ps --filter \"status=exited\" --format \"{{.Names}}\" 2>/dev/null \
+    | while read -r container; do
+        send_alert \"VPS: контейнер \${container} остановился\"
+    done
+
+# Проверка заполнения диска
+DISK_USE=\$(df -h / 2>/dev/null | awk 'NR==2 {print int(\$5)}')
+if [[ \${DISK_USE:-0} -ge 85 ]]; then
+    send_alert \"VPS: диск заполнен на \${DISK_USE}%%\"
+fi
+HSEOF
+chmod +x /opt/vpn/scripts/vps-healthcheck.sh"
+
+    # Разрешения на cron-файлы
+    vps_exec "sudo chmod 644 /etc/cron.d/vpn-mirror /etc/cron.d/vps-healthcheck \
+        2>/dev/null || true"
+
+    log_ok "Git-зеркало и healthcheck cron настроены на VPS"
+    step_done "step39_vps_git_mirror_cron"
+fi
+
+log_info "═══ Фаза 2 (VPS) завершена ═══"
