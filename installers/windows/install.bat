@@ -145,7 +145,7 @@ echo.
 echo  Running setup.sh on server...
 echo  ==========================================
 echo.
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! "sudo bash /tmp/vpn-setup.sh 2>&1 | tee /tmp/vpn-setup.log"
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! "sudo bash /tmp/vpn-setup.sh 2>&1 | tee /tmp/vpn-setup.log; exit ${PIPESTATUS[0]}"
 set RESULT=!errorlevel!
 
 echo.
@@ -156,8 +156,8 @@ if !RESULT! equ 0 (
     echo.
     echo  Next steps:
     echo    1. Router Port Forwarding:
-    echo       UDP 51820 --^> !SERVER_IP!:51820  (AmneziaWG)
-    echo       UDP 51821 --^> !SERVER_IP!:51821  (WireGuard)
+    echo       UDP 51820 --^> !SERVER_IP!:51820  ^(AmneziaWG^)
+    echo       UDP 51821 --^> !SERVER_IP!:51821  ^(WireGuard^)
     echo    2. Telegram: send /start to your bot
     echo    3. Import config into WireGuard / AmneziaWG
     echo.
