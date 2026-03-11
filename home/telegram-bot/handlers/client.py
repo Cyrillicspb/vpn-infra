@@ -16,7 +16,6 @@ FSM:
 from __future__ import annotations
 
 import asyncio
-import io
 import ipaddress
 import logging
 from typing import TYPE_CHECKING
@@ -27,10 +26,15 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     BufferedInputFile,
-    KeyboardButton,
+    CallbackQuery,
     Message,
-    ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
+)
+
+from handlers.keyboards import (
+    client_main_menu,
+    devices_inline_kb,
+    proto_inline_kb,
 )
 
 from config import config
@@ -80,17 +84,6 @@ async def _get_client(message: Message, **kw) -> dict | None:
     return await db.get_client(str(message.from_user.id))
 
 
-def _proto_kb() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[[
-            KeyboardButton(text="AWG (рекомендуется)"),
-            KeyboardButton(text="WireGuard"),
-        ]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-
-
 def _parse_protocol(text: str) -> str:
     t = text.lower()
     return "awg" if ("awg" in t or "amnezia" in t) else "wg"
@@ -111,11 +104,12 @@ async def cmd_start(message: Message, state: FSMContext, **kw):
             await message.answer("❌ Ваш аккаунт отключён. Обратитесь к администратору.")
             return
         devices = await db.get_devices(chat_id)
+        name = message.from_user.first_name or "друг"
         await message.answer(
-            f"Добро пожаловать!\n\n"
-            f"Устройств: {len(devices)}\n\n"
-            f"/mydevices — список  /myconfig — конфиг\n"
-            f"/adddevice — добавить  /help — помощь"
+            f"👋 Добро пожаловать, *{name}*!\n\n"
+            f"Устройств подключено: *{len(devices)}*\n\n"
+            f"Выберите действие:",
+            reply_markup=client_main_menu(),
         )
     else:
         await message.answer(
@@ -153,12 +147,60 @@ async def reg_name(message: Message, state: FSMContext, **kw):
         await message.answer("Имя должно быть от 2 до 30 символов:")
         return
     await state.update_data(device_name=name, _fsm_ts=_now())
-    await message.answer("Выберите *протокол*:", reply_markup=_proto_kb())
+    await message.answer("Выберите *протокол*:", reply_markup=proto_inline_kb())
     await state.set_state(RegFSM.protocol)
 
 
 # ---------------------------------------------------------------------------
-# Регистрация: протокол → завершение
+# Регистрация: протокол через инлайн-кнопку
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data.startswith("proto:"), RegFSM.protocol)
+async def reg_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
+    protocol = cb.data.split(":")[1]   # "awg" или "wg"
+    await cb.answer()
+    # Используем общую логику завершения регистрации
+    db: Database = kw.get("db")
+    data        = await state.get_data()
+    invite_code = data.get("invite_code", "")
+    device_name = data.get("device_name", "")
+    chat_id     = str(cb.from_user.id)
+    username    = cb.from_user.username or ""
+
+    try:
+        await db.register_client(chat_id, username, invite_code)
+    except ValueError as e:
+        await cb.message.answer(f"❌ {e}")
+        await state.clear()
+        return
+
+    builder = ConfigBuilder()
+    device = await db.add_device(chat_id, device_name, protocol, pending=False)
+    device = await builder.ensure_keys(device)
+
+    try:
+        from services.watchdog_client import WatchdogClient
+        await WatchdogClient(config.watchdog_url, config.watchdog_token).add_peer(
+            device_name, protocol, device.get("public_key", "")
+        )
+    except Exception:
+        pass
+
+    await cb.message.answer(
+        f"✅ *Регистрация завершена!*\n\n"
+        f"Устройство: `{device_name}`\n"
+        f"Протокол: `{protocol.upper()}`\n\n"
+        f"Конфиг отправляется...",
+        reply_markup=client_main_menu(),
+    )
+    await state.clear()
+
+    autodist: "AutoDist" = kw.get("autodist")
+    if autodist:
+        asyncio.create_task(autodist.send_to_device(chat_id, device, "Регистрация"))
+
+
+# ---------------------------------------------------------------------------
+# Регистрация: протокол через текст (fallback)
 # ---------------------------------------------------------------------------
 @router.message(RegFSM.protocol)
 async def reg_protocol(message: Message, state: FSMContext, **kw):
@@ -192,9 +234,10 @@ async def reg_protocol(message: Message, state: FSMContext, **kw):
         f"✅ *Регистрация завершена!*\n\n"
         f"Устройство: `{device_name}`\n"
         f"Протокол: `{protocol.upper()}`\n\n"
-        f"Используйте /myconfig для получения конфига.",
+        f"Конфиг отправляется...",
         reply_markup=ReplyKeyboardRemove(),
     )
+    await message.answer("Выберите действие:", reply_markup=client_main_menu())
     await state.clear()
 
     # Отправляем конфиг сразу
@@ -250,14 +293,21 @@ async def cmd_myconfig(message: Message, state: FSMContext, **kw):
         if not device:
             await message.answer(f"Устройство `{args[1]}` не найдено.")
             return
-    else:
+        if device.get("pending_approval"):
+            await message.answer("⏳ Устройство ещё ожидает одобрения администратора.")
+            return
+        await _send_config(message, db, device, kw)
+    elif len(devices) == 1:
         device = devices[0]
-
-    if device.get("pending_approval"):
-        await message.answer("⏳ Устройство ещё ожидает одобрения администратора.")
-        return
-
-    await _send_config(message, db, device, kw)
+        if device.get("pending_approval"):
+            await message.answer("⏳ Устройство ещё ожидает одобрения администратора.")
+            return
+        await _send_config(message, db, device, kw)
+    else:
+        await message.answer(
+            "Выберите устройство для получения конфига:",
+            reply_markup=devices_inline_kb(devices, "cfg:"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -315,8 +365,39 @@ async def adddev_name(message: Message, state: FSMContext, **kw):
         await message.answer("Имя от 2 до 30 символов:")
         return
     await state.update_data(device_name=name, _fsm_ts=_now())
-    await message.answer("Выберите *протокол*:", reply_markup=_proto_kb())
+    await message.answer("Выберите *протокол*:", reply_markup=proto_inline_kb())
     await state.set_state(AddDeviceFSM.protocol)
+
+
+@router.callback_query(F.data.startswith("proto:"), AddDeviceFSM.protocol)
+async def adddev_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
+    db: Database = kw.get("db")
+    protocol = cb.data.split(":")[1]
+    data     = await state.get_data()
+    chat_id  = str(cb.from_user.id)
+    await state.clear()
+    await cb.answer()
+
+    try:
+        await db.add_device(chat_id, data["device_name"], protocol, pending=True)
+        await cb.message.answer(
+            f"✅ Запрос на устройство `{data['device_name']}` отправлен администратору.\n"
+            f"Конфиг придёт после одобрения.",
+            reply_markup=client_main_menu(),
+        )
+        bot: "Bot" = kw.get("bot")
+        if bot:
+            asyncio.create_task(
+                bot.send_message(
+                    config.admin_chat_id,
+                    f"📱 Новый запрос на устройство!\n"
+                    f"Клиент: `{chat_id}`  Устройство: `{data['device_name']}`\n"
+                    f"Протокол: `{protocol.upper()}`\n"
+                    f"/requests — для одобрения",
+                )
+            )
+    except Exception as e:
+        await cb.message.answer(f"❌ {e}", reply_markup=client_main_menu())
 
 
 @router.message(AddDeviceFSM.protocol)
@@ -328,15 +409,13 @@ async def adddev_protocol(message: Message, state: FSMContext, **kw):
     await state.clear()
 
     try:
-        device = await db.add_device(
-            chat_id, data["device_name"], protocol, pending=True
-        )
+        await db.add_device(chat_id, data["device_name"], protocol, pending=True)
         await message.answer(
             f"✅ Запрос на устройство `{data['device_name']}` отправлен администратору.\n"
             f"Конфиг придёт после одобрения.",
             reply_markup=ReplyKeyboardRemove(),
         )
-        # Уведомляем admin
+        await message.answer("Выберите действие:", reply_markup=client_main_menu())
         bot: "Bot" = kw.get("bot")
         if bot:
             asyncio.create_task(
@@ -375,24 +454,14 @@ async def cmd_removedevice(message: Message, state: FSMContext, **kw):
         if not device:
             await message.answer(f"Устройство `{args[1]}` не найдено.")
             return
+        await _do_remove_device(message, db, device)
     elif len(devices) == 1:
-        device = devices[0]
+        await _do_remove_device(message, db, devices[0])
     else:
-        names = "\n".join(f"• `{d['device_name']}`" for d in devices)
         await message.answer(
-            f"Укажите устройство:\n{names}\n\n"
-            f"Пример: `/removedevice iPhone`"
+            "Выберите устройство для удаления:",
+            reply_markup=devices_inline_kb(devices, "rm:"),
         )
-        return
-
-    # Удаляем пир из WireGuard
-    if device.get("public_key"):
-        try:
-            await _wc().remove_peer(device["public_key"])
-        except Exception:
-            pass
-    await db.delete_device(device["id"])
-    await message.answer(f"✅ Устройство `{device['device_name']}` удалено.")
 
 
 # ---------------------------------------------------------------------------
@@ -611,7 +680,8 @@ async def cmd_help(message: Message, state: FSMContext, **kw):
         "/exclude add|remove|list <подсеть> — исключения\n"
         "/report <текст> — сообщить о проблеме\n"
         "/status — статус VPN\n"
-        "/help — эта справка"
+        "/help — эта справка",
+        reply_markup=client_main_menu(),
     )
 
 
@@ -632,11 +702,200 @@ async def default_handler(message: Message, **kw):
 
 
 # ---------------------------------------------------------------------------
+# Клиентские callback-обработчики: главное меню
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "cl:mydevices")
+async def cb_cl_mydevices(cb: CallbackQuery, **kw):
+    await cb.answer()
+    db: Database = kw.get("db")
+    chat_id = str(cb.from_user.id)
+    devices = await db.get_devices(chat_id)
+    if not devices:
+        await cb.message.answer(
+            "Устройств нет. Нажмите «Добавить устройство».",
+            reply_markup=client_main_menu(),
+        )
+        return
+    lines = ["*Ваши устройства:*\n"]
+    for d in devices:
+        icon = "⏳" if d.get("pending_approval") else "✅"
+        lines.append(
+            f"{icon} `{d['device_name']}` ({d['protocol'].upper()}) — `{d.get('ip_address', 'N/A')}`"
+        )
+    await cb.message.answer("\n".join(lines), reply_markup=client_main_menu())
+
+
+@router.callback_query(F.data == "cl:myconfig")
+async def cb_cl_myconfig(cb: CallbackQuery, **kw):
+    await cb.answer()
+    db: Database = kw.get("db")
+    chat_id = str(cb.from_user.id)
+    devices = await db.get_devices(chat_id)
+    if not devices:
+        await cb.message.answer("Нет устройств.", reply_markup=client_main_menu())
+        return
+    if len(devices) == 1:
+        if devices[0].get("pending_approval"):
+            await cb.message.answer(
+                "⏳ Устройство ещё ожидает одобрения администратора.",
+                reply_markup=client_main_menu(),
+            )
+            return
+        await _send_config(cb.message, db, devices[0], kw)
+    else:
+        await cb.message.answer(
+            "Выберите устройство для получения конфига:",
+            reply_markup=devices_inline_kb(devices, "cfg:"),
+        )
+
+
+@router.callback_query(F.data == "cl:adddevice")
+async def cb_cl_adddevice(cb: CallbackQuery, state: FSMContext, **kw):
+    await cb.answer()
+    db: Database = kw.get("db")
+    chat_id = str(cb.from_user.id)
+    client = await db.get_client(chat_id)
+    if not client:
+        await cb.message.answer("Сначала зарегистрируйтесь: /start")
+        return
+    count = await db.count_devices(chat_id)
+    limit = client.get("device_limit", config.device_limit_per_client)
+    if count >= limit:
+        await cb.message.answer(
+            f"Достигнут лимит устройств: {count}/{limit}.\nОбратитесь к администратору.",
+            reply_markup=client_main_menu(),
+        )
+        return
+    await cb.message.answer("Введите *имя нового устройства*:")
+    await state.update_data(_fsm_ts=_now())
+    await state.set_state(AddDeviceFSM.device_name)
+
+
+@router.callback_query(F.data == "cl:update")
+async def cb_cl_update(cb: CallbackQuery, **kw):
+    await cb.answer("Отправляю конфиги...")
+    db: Database = kw.get("db")
+    chat_id = str(cb.from_user.id)
+    client = await db.get_client(chat_id)
+    if not client:
+        await cb.message.answer("Сначала зарегистрируйтесь: /start")
+        return
+    devices = await db.get_devices(chat_id)
+    active = [d for d in devices if not d.get("pending_approval")]
+    if not active:
+        await cb.message.answer("Нет активных устройств.", reply_markup=client_main_menu())
+        return
+    for device in active:
+        await _send_config(cb.message, db, device, kw)
+
+
+@router.callback_query(F.data == "cl:status")
+async def cb_cl_status(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю...")
+    try:
+        s = await _wc().get_status()
+        ok    = s.get("status") == "ok"
+        stack = s.get("active_stack", "N/A")
+        text  = (
+            f"{'✅ VPN работает' if ok else '⚠️ VPN деградирован'}\n"
+            f"Протокол: `{stack}`"
+        )
+    except Exception:
+        text = "❌ Не удалось получить статус"
+    await cb.message.answer(text, reply_markup=client_main_menu())
+
+
+@router.callback_query(F.data == "cl:myrequests")
+async def cb_cl_myrequests(cb: CallbackQuery, **kw):
+    await cb.answer()
+    db: Database = kw.get("db")
+    reqs = await db.get_requests_by_client(str(cb.from_user.id))
+    if not reqs:
+        await cb.message.answer("У вас нет запросов.", reply_markup=client_main_menu())
+        return
+    icons = {"pending": "⏳", "approved": "✅", "rejected": "❌"}
+    lines = ["*Ваши запросы:*\n"]
+    for r in reqs[:15]:
+        icon = icons.get(r["status"], "?")
+        lines.append(
+            f"{icon} `{r['domain']}` ({r['direction']}) — {r['status']}\n"
+            f"   {r['created_at'][:10]}"
+        )
+    await cb.message.answer("\n".join(lines), reply_markup=client_main_menu())
+
+
+@router.callback_query(F.data == "cl:help")
+async def cb_cl_help(cb: CallbackQuery, **kw):
+    await cb.answer()
+    await cb.message.answer(
+        "*Доступные команды:*\n\n"
+        "/start — главная\n"
+        "/mydevices — список устройств\n"
+        "/myconfig [имя] — получить конфиг\n"
+        "/update — обновить конфиги\n"
+        "/adddevice — добавить устройство\n"
+        "/removedevice [имя] — удалить устройство\n"
+        "/request vpn|direct <домен> — запросить маршрут\n"
+        "/myrequests — мои запросы\n"
+        "/exclude add|remove|list <подсеть> — исключения\n"
+        "/report <текст> — сообщить о проблеме\n"
+        "/status — статус VPN\n"
+        "/help — эта справка",
+        reply_markup=client_main_menu(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Callback: выбор устройства для конфига / удаления
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("cfg:"))
+async def cb_device_config(cb: CallbackQuery, **kw):
+    await cb.answer()
+    device_id = int(cb.data[4:])
+    db: Database = kw.get("db")
+    device = await db.get_device_by_id(device_id)
+    if not device:
+        await cb.message.answer("Устройство не найдено.")
+        return
+    if device.get("pending_approval"):
+        await cb.message.answer("⏳ Устройство ещё ожидает одобрения администратора.")
+        return
+    await _send_config(cb.message, db, device, kw)
+
+
+@router.callback_query(F.data.startswith("rm:"))
+async def cb_device_remove(cb: CallbackQuery, **kw):
+    await cb.answer()
+    device_id = int(cb.data[3:])
+    db: Database = kw.get("db")
+    device = await db.get_device_by_id(device_id)
+    if not device:
+        await cb.message.answer("Устройство не найдено.")
+        return
+    await _do_remove_device(cb.message, db, device)
+
+
+# ---------------------------------------------------------------------------
 # Утилиты
 # ---------------------------------------------------------------------------
 def _now() -> float:
     import time
     return time.time()
+
+
+async def _do_remove_device(message: Message, db: Database, device: dict) -> None:
+    if device.get("public_key"):
+        try:
+            await _wc().remove_peer(device["public_key"])
+        except Exception:
+            pass
+    await db.delete_device(device["id"])
+    await message.answer(
+        f"✅ Устройство `{device['device_name']}` удалено.",
+        reply_markup=client_main_menu(),
+    )
 
 
 async def _send_config(message: Message, db: Database, device: dict, kw: dict) -> None:

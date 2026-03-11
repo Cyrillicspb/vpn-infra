@@ -35,6 +35,18 @@ from aiogram.types import (
 
 from config import config
 from database import Database
+from handlers.keyboards import (
+    admin_clients_menu,
+    admin_main_menu,
+    admin_manage_menu,
+    admin_monitor_menu,
+    admin_restart_menu,
+    admin_routes_menu,
+    admin_security_menu,
+    admin_switch_menu,
+    admin_vps_menu,
+    back_to_admin_menu,
+)
 from services.watchdog_client import WatchdogClient, WatchdogError
 
 if TYPE_CHECKING:
@@ -963,27 +975,463 @@ async def cmd_diagnose(message: Message, state: FSMContext, **kw):
 
 
 # ---------------------------------------------------------------------------
-# /menu
+# /menu — главное инлайн-меню
 # ---------------------------------------------------------------------------
 @router.message(Command("menu"), StateFilter("*"))
 async def cmd_menu(message: Message, state: FSMContext, **kw):
     if not _is_admin(message):
         return
     await state.clear()
-    await message.answer(
-        "*Меню администратора*\n\n"
-        "*Мониторинг:*\n"
-        "/status /tunnel /ip /docker /speed /logs /graph\n\n"
-        "*Управление:*\n"
-        "/switch /restart /update /deploy /rollback /reboot\n\n"
-        "*Маршруты:*\n"
-        "/vpn /direct /list /check /routes\n\n"
-        "*Клиенты:*\n"
-        "/invite /clients /client /broadcast /requests\n\n"
-        "*VPS:*\n"
-        "/vps /migrate\\_vps\n\n"
-        "*Безопасность:*\n"
-        "/rotate\\_keys /renew\\_cert /renew\\_ca /diagnose"
+    await message.answer("*Меню администратора*", reply_markup=admin_main_menu())
+
+
+# ---------------------------------------------------------------------------
+# Навигация по меню (callback-запросы)
+# ---------------------------------------------------------------------------
+
+async def _edit_or_answer(cb: CallbackQuery, text: str, kb=None) -> None:
+    """Редактирует сообщение или отправляет новое если редактирование не удалось."""
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, reply_markup=kb)
+    await cb.answer()
+
+
+@router.callback_query(F.data == "adm:menu")
+async def cb_adm_menu(cb: CallbackQuery, **kw):
+    await _edit_or_answer(cb, "*Меню администратора*", admin_main_menu())
+
+
+@router.callback_query(F.data == "adm:monitor")
+async def cb_adm_monitor(cb: CallbackQuery, **kw):
+    await _edit_or_answer(cb, "📊 *Мониторинг*", admin_monitor_menu())
+
+
+@router.callback_query(F.data == "adm:manage")
+async def cb_adm_manage(cb: CallbackQuery, **kw):
+    await _edit_or_answer(cb, "⚙️ *Управление*", admin_manage_menu())
+
+
+@router.callback_query(F.data == "adm:routes")
+async def cb_adm_routes(cb: CallbackQuery, **kw):
+    await _edit_or_answer(cb, "🌐 *Маршруты*", admin_routes_menu())
+
+
+@router.callback_query(F.data == "adm:clients")
+async def cb_adm_clients(cb: CallbackQuery, **kw):
+    await _edit_or_answer(cb, "👥 *Клиенты*", admin_clients_menu())
+
+
+@router.callback_query(F.data == "adm:vps")
+async def cb_adm_vps(cb: CallbackQuery, **kw):
+    await _edit_or_answer(cb, "🖥️ *VPS серверы*", admin_vps_menu())
+
+
+@router.callback_query(F.data == "adm:security")
+async def cb_adm_security(cb: CallbackQuery, **kw):
+    await _edit_or_answer(cb, "🔐 *Безопасность*", admin_security_menu())
+
+
+@router.callback_query(F.data == "adm:switch_menu")
+async def cb_adm_switch_menu(cb: CallbackQuery, **kw):
+    await _edit_or_answer(cb, "🔄 *Выберите стек:*", admin_switch_menu())
+
+
+@router.callback_query(F.data == "adm:restart_menu")
+async def cb_adm_restart_menu(cb: CallbackQuery, **kw):
+    await _edit_or_answer(cb, "🔃 *Выберите сервис для перезапуска:*", admin_restart_menu())
+
+
+# ---------------------------------------------------------------------------
+# Действия мониторинга
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:status")
+async def cb_adm_status(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю...")
+    try:
+        s = await _wc().get_status()
+        sys = s.get("system", {})
+        text = (
+            f"*Статус системы*\n\n"
+            f"Режим: {'⚠️ Деградированный' if s.get('degraded_mode') else '✅ Нормальный'}\n"
+            f"Стек: `{s.get('active_stack')}`\n"
+            f"IP: `{s.get('external_ip', 'N/A')}`\n"
+            f"Uptime: {_uptime(s.get('uptime_seconds', 0))}\n"
+            f"Failover: {s.get('last_failover') or 'никогда'}\n\n"
+            f"CPU: {sys.get('cpu_percent', '?')}%  "
+            f"RAM: {sys.get('ram_percent', '?')}%  "
+            f"Диск: {sys.get('disk_percent', '?')}%"
+        )
+    except WatchdogError as e:
+        text = f"❌ Watchdog недоступен: {e}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:tunnel")
+async def cb_adm_tunnel(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю...")
+    try:
+        s = await _wc().get_status()
+        peers = await _wc().get_peers()
+        plugins = "\n".join(
+            f"  {'🟢' if p['name'] == s.get('active_stack') else '⚪'} `{p['name']}` (устойчивость {p['resilience']})"
+            for p in s.get("plugins", [])
+        )
+        text = (
+            f"*Туннель*\n\n"
+            f"Активный стек: `{s.get('active_stack')}`\n"
+            f"Primary: `{s.get('primary_stack')}`\n"
+            f"Последний failover: {s.get('last_failover') or 'никогда'}\n"
+            f"Следующая ротация: {s.get('next_rotation', 'N/A')[:16]}\n\n"
+            f"*Стеки:*\n{plugins}\n\n"
+            f"*WG peers:* {peers.get('count', 0)}"
+        )
+    except WatchdogError as e:
+        text = f"❌ Ошибка: {e}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:ip")
+async def cb_adm_ip(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю...")
+    try:
+        s = await _wc().get_status()
+        text = f"Внешний IP: `{s.get('external_ip', 'неизвестен')}`"
+    except WatchdogError as e:
+        text = f"❌ {e}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:docker")
+async def cb_adm_docker(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю...")
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}\t{{.Image}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        lines = result.stdout.strip().splitlines()
+        if not lines:
+            text = "Нет контейнеров."
+        else:
+            rows = []
+            for line in lines:
+                parts = line.split("\t")
+                name   = parts[0] if len(parts) > 0 else "?"
+                status = parts[1] if len(parts) > 1 else "?"
+                emoji  = "🟢" if "Up" in status else ("🔴" if "Exited" in status else "🟡")
+                rows.append(f"{emoji} `{name}` — {status}")
+            text = "*Docker контейнеры:*\n\n" + "\n".join(rows)
+    except Exception as e:
+        text = f"❌ {e}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:speed")
+async def cb_adm_speed(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю...")
+    try:
+        metrics = await _wc().get_metrics()
+        text = f"*Метрики:*\n```\n{metrics[:3000]}\n```"
+    except WatchdogError as e:
+        text = f"❌ {e}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+
+
+# ---------------------------------------------------------------------------
+# Действия управления
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("adm:sw:"))
+async def cb_adm_switch(cb: CallbackQuery, **kw):
+    stack = cb.data[len("adm:sw:"):]
+    try:
+        await _wc().switch_stack(stack)
+        text = f"🔄 Переключение на `{stack}` запущено"
+    except WatchdogError as e:
+        text = f"❌ {e}"
+    await cb.answer()
+    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data.startswith("adm:rs:"))
+async def cb_adm_restart(cb: CallbackQuery, **kw):
+    svc = cb.data[len("adm:rs:"):]
+    await cb.answer(f"Перезапускаю {svc}...")
+    try:
+        r = await _wc().restart_service(svc)
+        st = r.get("status", "?")
+        text = f"✅ `{svc}` перезапущен" if st == "ok" else f"⚠️ {r.get('error', 'ошибка')}"
+    except WatchdogError as e:
+        text = f"❌ {e}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:update")
+async def cb_adm_update(cb: CallbackQuery, state: FSMContext, **kw):
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Обновить все", callback_data="update_all"),
+        InlineKeyboardButton(text="❌ Отмена",       callback_data="update_cancel"),
+    ]])
+    await cb.answer()
+    await cb.message.answer(
+        "⚠️ *Обновление Docker образов*\n"
+        "Сервисы будут кратковременно недоступны.",
+        reply_markup=kb,
+    )
+    await state.set_state(AdminFSM.update_confirm)
+
+
+@router.callback_query(F.data == "adm:deploy")
+async def cb_adm_deploy(cb: CallbackQuery, **kw):
+    await cb.answer("Запускаю deploy...")
+    try:
+        await _wc().deploy()
+        text = "🚀 Deploy запущен. Отчёт придёт по завершении."
+    except WatchdogError as e:
+        text = f"❌ {e}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:rollback")
+async def cb_adm_rollback(cb: CallbackQuery, **kw):
+    await cb.answer("Запускаю откат...")
+    try:
+        await _wc().rollback()
+        text = "⏮️ Откат запущен..."
+    except WatchdogError as e:
+        text = f"❌ {e}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:reboot")
+async def cb_adm_reboot(cb: CallbackQuery, state: FSMContext, **kw):
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Да, перезагрузить", callback_data="reboot_yes"),
+        InlineKeyboardButton(text="❌ Отмена",            callback_data="reboot_no"),
+    ]])
+    await cb.answer()
+    await cb.message.answer(
+        "⚠️ *Перезагрузить сервер?*\nКлиенты потеряют соединение на ~2 мин.",
+        reply_markup=kb,
+    )
+    await state.set_state(AdminFSM.reboot_confirm)
+
+
+# ---------------------------------------------------------------------------
+# Действия маршрутов
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:list_vpn")
+async def cb_adm_list_vpn(cb: CallbackQuery, **kw):
+    await cb.answer()
+    if not MANUAL_VPN.exists():
+        await cb.message.answer("Список VPN пуст.", reply_markup=back_to_admin_menu())
+        return
+    lines = [ln.strip() for ln in MANUAL_VPN.read_text().splitlines() if ln.strip()]
+    text = ("*Список VPN:*\n" + "\n".join(f"• `{ln}`" for ln in lines[:50])) if lines else "Список VPN пуст."
+    if len(lines) > 50:
+        text += f"\n... и ещё {len(lines) - 50}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:list_direct")
+async def cb_adm_list_direct(cb: CallbackQuery, **kw):
+    await cb.answer()
+    if not MANUAL_DIRECT.exists():
+        await cb.message.answer("Список Direct пуст.", reply_markup=back_to_admin_menu())
+        return
+    lines = [ln.strip() for ln in MANUAL_DIRECT.read_text().splitlines() if ln.strip()]
+    text = ("*Список Direct:*\n" + "\n".join(f"• `{ln}`" for ln in lines[:50])) if lines else "Список Direct пуст."
+    if len(lines) > 50:
+        text += f"\n... и ещё {len(lines) - 50}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:routes_update")
+async def cb_adm_routes_update(cb: CallbackQuery, **kw):
+    await cb.answer("Запускаю обновление маршрутов...")
+    try:
+        await _wc().update_routes()
+        autodist = kw.get("autodist")
+        if autodist:
+            autodist.trigger("/routes update")
+        text = "✅ Обновление маршрутов запущено (~2-5 мин)"
+    except WatchdogError as e:
+        text = f"❌ {e}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:routes_info")
+async def cb_adm_routes_info(cb: CallbackQuery, **kw):
+    await cb.answer()
+    await cb.message.answer(
+        "*Управление маршрутами через команды:*\n\n"
+        "`/vpn add <домен>` — добавить в VPN\n"
+        "`/vpn remove <домен>` — убрать из VPN\n"
+        "`/direct add <домен>` — добавить в прямые\n"
+        "`/direct remove <домен>` — убрать из прямых\n"
+        "`/check <домен>` — проверить домен\n"
+        "`/routes update` — обновить все маршруты",
+        reply_markup=back_to_admin_menu(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Действия с клиентами
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:invite")
+async def cb_adm_invite(cb: CallbackQuery, **kw):
+    await cb.answer()
+    db: Database = kw.get("db")
+    code = await db.create_invite_code(str(cb.from_user.id))
+    await cb.message.answer(
+        f"*Код приглашения:*\n`{code}`\n\n"
+        f"Действителен 24 часа.\nПерешлите клиенту для регистрации (/start).",
+        reply_markup=back_to_admin_menu(),
+    )
+
+
+@router.callback_query(F.data == "adm:clients_list")
+async def cb_adm_clients_list(cb: CallbackQuery, **kw):
+    await cb.answer()
+    db: Database = kw.get("db")
+    clients = await db.get_all_clients()
+    if not clients:
+        await cb.message.answer("Нет зарегистрированных клиентов.", reply_markup=back_to_admin_menu())
+        return
+    lines = ["*Клиенты:*\n"]
+    for c in clients:
+        icon = "🚫" if c.get("is_disabled") else "✅"
+        name = c.get("username") or c["chat_id"]
+        lines.append(f"{icon} `{name}` (id: `{c['chat_id']}`)")
+    await cb.message.answer("\n".join(lines), reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:requests")
+async def cb_adm_requests(cb: CallbackQuery, **kw):
+    await cb.answer()
+    db: Database = kw.get("db")
+    devices = await db.get_pending_devices()
+    for d in devices[:5]:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"dev_approve_{d['id']}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"dev_reject_{d['id']}"),
+        ]])
+        await cb.message.answer(
+            f"📱 *Устройство на модерации*\n"
+            f"Клиент: `{d.get('username') or d['chat_id']}`\n"
+            f"Устройство: `{d['device_name']}`\n"
+            f"Протокол: `{d['protocol'].upper()}`",
+            reply_markup=kb,
+        )
+    reqs = await db.get_pending_requests()
+    for r in reqs[:10]:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"req_approve_{r['id']}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"req_reject_{r['id']}"),
+        ]])
+        icon = "🔒" if r["direction"] == "vpn" else "🌐"
+        await cb.message.answer(
+            f"{icon} *Запрос #{r['id']}*\n"
+            f"Домен: `{r['domain']}`  ({r['direction']})\n"
+            f"От: `{r['chat_id']}`  {r['created_at'][:16]}",
+            reply_markup=kb,
+        )
+    if not devices and not reqs:
+        await cb.message.answer("Нет ожидающих запросов.", reply_markup=back_to_admin_menu())
+
+
+# ---------------------------------------------------------------------------
+# Действия VPS
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:vps_list")
+async def cb_adm_vps_list(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю...")
+    try:
+        data = await _wc().get_vps_list()
+        vps_list = data.get("vps_list", [])
+        if not vps_list:
+            text = "VPS не добавлены."
+        else:
+            lines = []
+            for i, v in enumerate(vps_list):
+                active = "✅" if i == data.get("active_idx", 0) else "⚪"
+                lines.append(f"{active} `{v['ip']}` (SSH :{v.get('ssh_port', 22)})")
+            text = "*VPS серверы:*\n" + "\n".join(lines)
+    except WatchdogError as e:
+        text = f"❌ {e}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:vps_info")
+async def cb_adm_vps_info(cb: CallbackQuery, **kw):
+    await cb.answer()
+    await cb.message.answer(
+        "*Управление VPS через команды:*\n\n"
+        "`/vps list` — список VPS\n"
+        "`/vps add <IP> [PORT]` — добавить VPS\n"
+        "`/vps remove <IP>` — удалить VPS\n"
+        "`/migrate_vps <IP>` — мигрировать",
+        reply_markup=back_to_admin_menu(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Действия безопасности
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:rotate_keys")
+async def cb_adm_rotate_keys(cb: CallbackQuery, **kw):
+    await cb.answer()
+    await cb.message.answer(
+        "⚠️ Ротация ключей сбросит все клиентские конфиги.\n"
+        "Функция реализуется через deploy.sh --rotate-keys\n"
+        "Запустите: `/deploy`",
+        reply_markup=back_to_admin_menu(),
+    )
+
+
+@router.callback_query(F.data == "adm:renew_cert")
+async def cb_adm_renew_cert(cb: CallbackQuery, **kw):
+    await cb.answer("Обновляю сертификат...")
+    result = subprocess.run(
+        ["bash", "/opt/vpn/scripts/renew-mtls.sh", "client"],
+        capture_output=True, text=True, timeout=60,
+    )
+    ok = result.returncode == 0
+    await cb.message.answer(
+        f"{'✅' if ok else '❌'} Обновление клиентского сертификата mTLS:\n"
+        f"```\n{(result.stdout or result.stderr)[:500]}\n```",
+        reply_markup=back_to_admin_menu(),
+    )
+
+
+@router.callback_query(F.data == "adm:renew_ca")
+async def cb_adm_renew_ca(cb: CallbackQuery, **kw):
+    await cb.answer("Обновляю CA...")
+    result = subprocess.run(
+        ["bash", "/opt/vpn/scripts/renew-mtls.sh", "ca"],
+        capture_output=True, text=True, timeout=60,
+    )
+    ok = result.returncode == 0
+    await cb.message.answer(
+        f"{'✅' if ok else '❌'} Обновление CA:\n"
+        f"```\n{(result.stdout or result.stderr)[:500]}\n```",
+        reply_markup=back_to_admin_menu(),
+    )
+
+
+@router.callback_query(F.data == "adm:diagnose_info")
+async def cb_adm_diagnose_info(cb: CallbackQuery, **kw):
+    await cb.answer()
+    await cb.message.answer(
+        "Используйте команду:\n`/diagnose <имя_устройства>`",
+        reply_markup=back_to_admin_menu(),
     )
 
 
