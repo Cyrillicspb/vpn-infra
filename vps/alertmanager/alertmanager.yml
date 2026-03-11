@@ -69,8 +69,6 @@ receivers:
         send_resolved: true
         http_config:
           bearer_token_file: /etc/alertmanager/watchdog-token
-        # Таймаут на один вызов
-        timeout: 15s
         # Повторить при ошибке (не поддерживается в v0.27, но на всякий случай)
         max_alerts: 10
 
