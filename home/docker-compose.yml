@@ -140,7 +140,7 @@ services:
       - ./cloudflared:/etc/cloudflared:ro
     network_mode: host
     healthcheck:
-      test: ["CMD", "cloudflared", "tunnel", "info"]
+      test: ["CMD", "cloudflared", "--version"]
       interval: 60s
       timeout: 15s
       retries: 3

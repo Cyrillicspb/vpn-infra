@@ -171,7 +171,7 @@ else
 
     # Настройка daemon.json
     vps_exec "sudo mkdir -p /etc/docker && \
-        printf '{\"log-driver\":\"json-file\",\"log-opts\":{\"max-size\":\"10m\",\"max-file\":\"3\"},\"ipv6\":false}\n' | \
+        printf '{\"log-driver\":\"json-file\",\"log-opts\":{\"max-size\":\"10m\",\"max-file\":\"3\"},\"dns\":[\"8.8.8.8\",\"1.1.1.1\"],\"ipv6\":false}\n' | \
         sudo tee /etc/docker/daemon.json > /dev/null && \
         sudo systemctl restart docker"
 
@@ -345,7 +345,25 @@ else
         echo 'CA создан' \
     )" | grep -v '^$' | while IFS= read -r line; do log_info "$line"; done || true
 
-    log_ok "mTLS CA готов на VPS"
+    # Генерируем server.crt/server.key для nginx (подписываем нашим CA)
+    vps_exec "[ -f /opt/vpn/nginx/ssl/server.crt ] && echo 'exists' || ( \
+        openssl genrsa -out /opt/vpn/nginx/ssl/server.key 2048 2>/dev/null && \
+        openssl req -new \
+            -key /opt/vpn/nginx/ssl/server.key \
+            -out /opt/vpn/nginx/ssl/server.csr \
+            -subj '/CN=vpn-server/O=VPNInfra/C=RU' 2>/dev/null && \
+        openssl x509 -req -days 730 \
+            -in /opt/vpn/nginx/ssl/server.csr \
+            -CA /opt/vpn/nginx/mtls/ca.crt \
+            -CAkey /opt/vpn/nginx/mtls/ca.key \
+            -CAcreateserial \
+            -out /opt/vpn/nginx/ssl/server.crt 2>/dev/null && \
+        rm -f /opt/vpn/nginx/ssl/server.csr && \
+        chmod 600 /opt/vpn/nginx/ssl/server.key && \
+        echo 'server cert создан' \
+    )" | grep -v '^$' | while IFS= read -r line; do log_info "$line"; done || true
+
+    log_ok "mTLS CA и server cert готовы на VPS"
     step_done "step37_vps_mtls_ca"
 fi
 

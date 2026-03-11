@@ -455,6 +455,8 @@ table inet vpn {
         oifname { "wg0", "wg1" } accept
         iifname "tun*" accept
         oifname "tun*" accept
+        iifname "br-vpn" accept
+        oifname "br-vpn" accept
     }
 
     chain input {
@@ -479,6 +481,7 @@ table inet vpn {
         ip saddr 10.177.3.0/24 oifname != { "wg0", "wg1", "tun*" } masquerade
         ip saddr 10.177.1.0/24 oifname "tun*" masquerade
         ip saddr 10.177.3.0/24 oifname "tun*" masquerade
+        ip saddr 172.20.0.0/24 oifname != "br-vpn" masquerade
     }
 }
 EOF
