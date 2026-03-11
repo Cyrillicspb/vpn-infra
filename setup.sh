@@ -644,22 +644,43 @@ phase3() {
         [[ -z "$AWG_PUB" ]]  && die "AWG_SERVER_PUBLIC_KEY не найден в .env"
         [[ -z "$VPS_PRIV" ]] && die "VPS_WG_PRIVATE_KEY не найден в .env"
 
-        # Конфиг Tier-2 на VPS
+        # Генерируем отдельный keypair для Tier-2 на ДОМАШНЕМ сервере
+        # (нельзя использовать AWG ключи — VPS ожидает стандартный WireGuard)
+        TIER2_HOME_PRIV=$(wg genkey)
+        TIER2_HOME_PUB=$(echo "$TIER2_HOME_PRIV" | wg pubkey)
+        env_set "TIER2_HOME_PRIVATE_KEY" "$TIER2_HOME_PRIV"
+        env_set "TIER2_HOME_PUBLIC_KEY"  "$TIER2_HOME_PUB"
+
+        # Конфиг Tier-2 на VPS (peer = домашний TIER2, не AWG ключ)
+        VPS_WG_PUB="${VPS_WG_PUBLIC_KEY:-}"
         vps_exec "sudo mkdir -p /etc/wireguard && \
             printf '[Interface]\nAddress = 10.177.2.2/30\nPrivateKey = %s\nListenPort = 51822\n\n[Peer]\nPublicKey = %s\nAllowedIPs = 10.177.1.0/24,10.177.3.0/24,10.177.2.1/32\nPersistentKeepalive = 25\n' \
-                '${VPS_PRIV}' '${AWG_PUB}' | sudo tee /etc/wireguard/wg-tier2.conf > /dev/null && \
+                '${VPS_PRIV}' '${TIER2_HOME_PUB}' | sudo tee /etc/wireguard/wg-tier2.conf > /dev/null && \
             sudo chmod 600 /etc/wireguard/wg-tier2.conf"
 
         vps_exec "sudo systemctl enable wg-quick@wg-tier2 && \
             sudo systemctl restart wg-quick@wg-tier2 || true"
 
-        # Добавить Tier-2 peer к домашнему wg0
-        VPS_WG_PUB="${VPS_WG_PUBLIC_KEY:-}"
-        if [[ -n "$VPS_WG_PUB" ]] && [[ -f /etc/wireguard/wg0.conf ]]; then
-            if ! grep -qF "$VPS_WG_PUB" /etc/wireguard/wg0.conf 2>/dev/null; then
-                printf '\n# Tier-2 туннель к VPS\n[Peer]\nPublicKey = %s\nAllowedIPs = 10.177.2.0/30\nEndpoint = %s:51822\nPersistentKeepalive = 25\n' \
-                    "$VPS_WG_PUB" "${VPS_IP}" >> /etc/wireguard/wg0.conf
-            fi
+        # Создаём отдельный wg-tier2.conf на домашнем сервере (стандартный WireGuard, не AWG)
+        # ВАЖНО: Tier-2 peer НЕ добавляется в wg0.conf (AWG) — AWG пакеты несовместимы
+        # со стандартным WireGuard на VPS
+        if [[ -n "$VPS_WG_PUB" ]]; then
+            cat > /etc/wireguard/wg-tier2.conf << TIER2EOF
+[Interface]
+Address = 10.177.2.1/30
+PrivateKey = ${TIER2_HOME_PRIV}
+MTU = 1320
+
+[Peer]
+PublicKey = ${VPS_WG_PUB}
+AllowedIPs = 10.177.2.0/30
+Endpoint = ${VPS_IP}:51822
+PersistentKeepalive = 25
+TIER2EOF
+            chmod 600 /etc/wireguard/wg-tier2.conf
+            systemctl enable wg-quick@wg-tier2 2>/dev/null || true
+            systemctl restart wg-quick@wg-tier2 2>/dev/null \
+                || log_warn "wg-quick@wg-tier2 не запустился — продолжаем"
         fi
 
         # AmneziaWG: создаём директорию и симлинк конфига

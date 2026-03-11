@@ -114,14 +114,6 @@ setup_routing() {
         log "Rule: fwmark $FWMARK → table $TABLE_MARKED (priority 100)"
     fi
 
-    # Priority 150: DNS-серверы через VPN (чтобы dnsmasq резолвил через VPS)
-    for dns in 1.1.1.1 8.8.8.8; do
-        if ! rule_exists "to $dns lookup $TABLE_MARKED"; then
-            ip rule add to $dns lookup $TABLE_MARKED priority 150
-            log "Rule: to $dns → table $TABLE_MARKED (priority 150)"
-        fi
-    done
-
     # Priority 200: AWG-клиенты (незаблокированное) → table 100
     if ! rule_exists "from $AWG_SUBNET lookup $TABLE_VPN"; then
         ip rule add from $AWG_SUBNET lookup $TABLE_VPN priority 200
@@ -172,10 +164,6 @@ teardown_routing() {
     ip rule del fwmark $FWMARK lookup $TABLE_MARKED 2>/dev/null || true
     ip rule del from $AWG_SUBNET lookup $TABLE_VPN 2>/dev/null || true
     ip rule del from $WG_SUBNET lookup $TABLE_VPN 2>/dev/null || true
-
-    for dns in 1.1.1.1 8.8.8.8; do
-        ip rule del to $dns lookup $TABLE_MARKED 2>/dev/null || true
-    done
 
     # Очищаем routing tables
     ip route flush table $TABLE_MARKED 2>/dev/null || true
