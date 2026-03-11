@@ -370,6 +370,13 @@ do_deploy() {
             -r "$REPO_DIR/watchdog/requirements.txt" 2>/dev/null || true
     fi
 
+    # Синхронизация кода из home/ в рабочие директории (repo структура vs. deployment)
+    log_info "Синхронизация home/ → deployment директории..."
+    rsync -a --exclude="data/" "$REPO_DIR/home/telegram-bot/" "$REPO_DIR/telegram-bot/" 2>/dev/null || true
+    rsync -a "$REPO_DIR/home/watchdog/watchdog.py" "$REPO_DIR/watchdog/watchdog.py" 2>/dev/null || true
+    rsync -a "$REPO_DIR/home/watchdog/plugins/" "$REPO_DIR/watchdog/plugins/" 2>/dev/null || true
+    rsync -a "$REPO_DIR/home/scripts/" "$REPO_DIR/scripts/" 2>/dev/null && chmod +x "$REPO_DIR/scripts/"*.sh 2>/dev/null || true
+
     # Docker Compose обновление
     log_step "Обновление Docker контейнеров"
     (cd "$REPO_DIR" && docker compose pull --quiet 2>/dev/null || true)
