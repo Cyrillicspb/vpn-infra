@@ -30,7 +30,7 @@ services:
   # network_mode: host — Xray биндит 443/TCP (REALITY), 443/UDP (Hysteria2)
   # Панель доступна через Nginx :8443 с mTLS
   3x-ui:
-    image: ghcr.io/mhsanaei/3x-ui:2.3.14
+    image: ghcr.io/mhsanaei/3x-ui:latest
     container_name: 3x-ui
     restart: always
     network_mode: host

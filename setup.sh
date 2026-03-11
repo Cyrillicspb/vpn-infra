@@ -662,10 +662,13 @@ phase3() {
             fi
         fi
 
-        # Запуск wg0 на домашнем сервере
-        systemctl enable wg-quick@wg0 2>/dev/null || true
-        systemctl restart wg-quick@wg0 2>/dev/null \
-            || log_warn "wg-quick@wg0 не запустился — продолжаем"
+        # AmneziaWG: создаём директорию и симлинк конфига
+        mkdir -p /etc/amnezia/amneziawg
+        ln -sf /etc/wireguard/wg0.conf /etc/amnezia/amneziawg/wg0.conf
+        systemctl mask wg-quick@wg0 2>/dev/null || true
+        systemctl enable awg-quick@wg0 2>/dev/null || true
+        systemctl restart awg-quick@wg0 2>/dev/null \
+            || log_warn "awg-quick@wg0 не запустился — продолжаем"
 
         sleep 3
         if ping -c 3 -W 3 10.177.2.2 &>/dev/null; then
@@ -853,7 +856,7 @@ EOF
         sleep 10
         echo ""
         log_info "Статус сервисов:"
-        for svc in nftables dnsmasq hysteria2 watchdog wg-quick@wg0; do
+        for svc in nftables dnsmasq hysteria2 watchdog awg-quick@wg0; do
             if systemctl is-active "$svc" &>/dev/null 2>&1; then
                 log_ok "  ${svc}: активен"
             else
@@ -898,7 +901,7 @@ phase4() {
     step "Тест VPN-туннеля Tier-2"
     run_test "Ping Tier-2 (10.177.2.2)" \
         "ping -c 3 -W 2 10.177.2.2" \
-        "systemctl status wg-quick@wg0; wg show wg0"
+        "systemctl status awg-quick@wg0; awg show wg0"
 
     # Шаг 47 — Watchdog API
     step "Тест Watchdog HTTP API"

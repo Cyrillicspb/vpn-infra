@@ -236,7 +236,7 @@ else
         "max-size": "10m",
         "max-file": "3"
     },
-    "dns": ["127.0.0.1", "1.1.1.1"],
+    "dns": ["8.8.8.8", "1.1.1.1"],
     "ipv6": false
 }
 EOF
@@ -429,7 +429,6 @@ table inet vpn {
         type ipv4_addr
         flags interval
         auto-merge
-        elements = { }
     }
 
     set blocked_dynamic {
@@ -745,7 +744,7 @@ else
         cat > /etc/systemd/system/vpn-routes.service << 'EOF'
 [Unit]
 Description=VPN Policy Routing
-After=network.target nftables.service wg-quick@wg0.service wg-quick@wg1.service
+After=network.target nftables.service awg-quick@wg0.service wg-quick@wg1.service
 Wants=nftables.service
 
 [Service]

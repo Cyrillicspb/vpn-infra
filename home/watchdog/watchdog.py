@@ -14,7 +14,6 @@ watchdog.py — Центральный агент управления VPN Infra
   - Conntrack-статистику для самообучения AllowedIPs
 """
 
-from __future__ import annotations
 
 import asyncio
 import json
