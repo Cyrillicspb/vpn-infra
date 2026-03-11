@@ -210,8 +210,14 @@ async def main() -> None:
     dp.include_router(requests_router)
 
     # Lifecycle
-    dp.startup.register(lambda: on_startup(bot, dp, db, autodist))
-    dp.shutdown.register(lambda: on_shutdown(bot))
+    async def _startup() -> None:
+        await on_startup(bot, dp, db, autodist)
+
+    async def _shutdown() -> None:
+        await on_shutdown(bot)
+
+    dp.startup.register(_startup)
+    dp.shutdown.register(_shutdown)
 
     logger.info(f"Запуск polling (admin={config.admin_chat_id})")
     await bot.delete_webhook(drop_pending_updates=True)
