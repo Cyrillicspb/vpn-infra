@@ -81,6 +81,34 @@ if (-not (Test-Path $SshKey)) {
 
 $PubKey = (Get-Content $SshKeyPub -Raw).Trim()
 
+# --- Pre-flight: detect host key conflict ---
+
+Write-Host ""
+Write-Host "  Verifying server identity..." -NoNewline
+$sshCheckOutput = & ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 -p $SshPort "${ServerUser}@${ServerIP}" "exit" 2>&1
+$sshCheckStr = $sshCheckOutput | Out-String
+if ($sshCheckStr -match "REMOTE HOST IDENTIFICATION HAS CHANGED") {
+    Write-Host " CHANGED" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  [WARNING] Server host key has changed." -ForegroundColor Yellow
+    Write-Host "  This is normal if the server/VPS was reinstalled."
+    Write-Host ""
+    $FixKey = Read-Host "  Remove old key and continue? (y/N)"
+    if ($FixKey -match '^[Yy]$') {
+        & ssh-keygen -R $ServerIP 2>&1 | Out-Null
+        if ($SshPort -ne "22") {
+            & ssh-keygen -R "[$ServerIP]:$SshPort" 2>&1 | Out-Null
+        }
+        Write-Host "  [OK] Old host key removed." -ForegroundColor Green
+    } else {
+        Write-Host "  Fix manually: ssh-keygen -R $ServerIP"
+        Read-Host "  Press Enter to exit"
+        exit 1
+    }
+} else {
+    Write-Host " OK" -ForegroundColor Green
+}
+
 # --- Copy public key to server ---
 
 Write-Host ""

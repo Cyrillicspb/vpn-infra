@@ -64,6 +64,29 @@ echo  [OK] Key exists: !SSH_KEY!
 :key_done
 echo.
 
+:: --- pre-flight: detect host key conflict ---
+ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=10 -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "exit" 2>"%TEMP%\vpn_ssh_check.tmp" >nul
+findstr /C:"REMOTE HOST IDENTIFICATION HAS CHANGED" "%TEMP%\vpn_ssh_check.tmp" >nul 2>&1
+if !errorlevel! equ 0 (
+    echo.
+    echo  [WARNING] Server host key has changed.
+    echo  This is normal if the server/VPS was reinstalled.
+    echo.
+    set /p FIX_KEY=  Remove old key and continue? ^(y/N^):
+    if /i "!FIX_KEY!"=="y" (
+        ssh-keygen -R "!SERVER_IP!" >nul 2>&1
+        if "!SSH_PORT!" neq "22" ssh-keygen -R "[!SERVER_IP!]:!SSH_PORT!" >nul 2>&1
+        echo  [OK] Old host key removed.
+    ) else (
+        echo  Fix manually: ssh-keygen -R !SERVER_IP!
+        del "%TEMP%\vpn_ssh_check.tmp" 2>nul
+        pause
+        exit /b 1
+    )
+    echo.
+)
+del "%TEMP%\vpn_ssh_check.tmp" 2>nul
+
 :: --- copy public key to server (scp .pub file, then append) ---
 echo  Copying public key to server...
 echo  Enter server password when prompted:
