@@ -1,13 +1,14 @@
 name: reality-grpc
-display_name: "VLESS+REALITY+gRPC (cdn.jsdelivr.net)"
+display_name: "VLESS+REALITY+XHTTP (cdn.jsdelivr.net)"
 resilience: 2
 protocol: vless
-transport: grpc
-port: 443
-flow: ""        # flow пустой — vision несовместим с gRPC
+transport: splithttp
+port: 2083
+flow: ""
 fingerprint: chrome
 dest: cdn.jsdelivr.net
+tun_name: tun-grpc
 requires:
   - xray-client-2
-  - tcp-443-open
-description: "Маскировка под gRPC-сервис cdn.jsdelivr.net. Очень устойчив."
+  - tcp-2083-open
+description: "XHTTP (splithttp) маскировка под cdn.jsdelivr.net. Порт 2083. Работает."

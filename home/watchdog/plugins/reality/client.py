@@ -13,7 +13,8 @@ from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).parent
 SOCKS_PORT = 1080
-TUN_IFACE = "tun-reality"
+TUN_IFACE = "tun-reality"    # 11 chars, within Linux 15-char limit
+TUN_TMP   = "tun-reality-t"  # 13 chars
 CONTAINER_NAME = "xray-client"
 
 
@@ -29,8 +30,8 @@ async def run_cmd(cmd: list, timeout: int = 30) -> tuple[int, str, str]:
 
 async def start(temp_port: str = ""):
     """Запуск REALITY стека: xray-client + tun2socks."""
-    tun_name = f"tun-reality-tmp" if temp_port else TUN_IFACE
-    socks_port = int(temp_port) if temp_port else SOCKS_PORT
+    tun_name = TUN_TMP if temp_port else TUN_IFACE
+    socks_port = SOCKS_PORT  # always use own SOCKS port; temp_port is just a signal for tmp tun name
 
     # 1. Запускаем xray-client если не запущен
     rc, stdout, _ = await run_cmd(["docker", "inspect", "-f", "{{.State.Running}}", CONTAINER_NAME])
@@ -72,8 +73,8 @@ async def start(temp_port: str = ""):
 
 async def stop():
     """Остановка REALITY стека."""
-    # Убиваем tun2socks
     await run_cmd(["pkill", "-f", f"tun2socks.*{TUN_IFACE}"])
+    await run_cmd(["pkill", "-f", f"tun2socks.*{TUN_TMP}"])
     await asyncio.sleep(1)
     return 0
 

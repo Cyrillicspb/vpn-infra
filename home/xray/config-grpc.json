@@ -21,7 +21,7 @@
         "vnext": [
           {
             "address": "${XRAY_SERVER}",
-            "port": 443,
+            "port": 2083,
             "users": [
               {
                 "id": "${XRAY_GRPC_UUID}",
@@ -33,7 +33,7 @@
         ]
       },
       "streamSettings": {
-        "network": "grpc",
+        "network": "splithttp",
         "security": "reality",
         "realitySettings": {
           "serverName": "cdn.jsdelivr.net",
@@ -41,12 +41,15 @@
           "publicKey": "${XRAY_GRPC_PUBLIC_KEY}",
           "shortId": ""
         },
-        "grpcSettings": {
-          "serviceName": "grpc",
-          "multiMode": false
+        "splithttpSettings": {
+          "path": "/",
+          "host": "cdn.jsdelivr.net",
+          "maxUploadSize": 1000000,
+          "maxConcurrentUploads": 10,
+          "password": "${XHTTP_CDN_PASSWORD}"
         }
       },
-      "tag": "vless-grpc-out"
+      "tag": "vless-xhttp-cdn-out"
     },
     {
       "protocol": "freedom",

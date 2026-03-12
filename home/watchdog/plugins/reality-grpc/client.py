@@ -11,7 +11,8 @@ import time
 from pathlib import Path
 
 SOCKS_PORT = 1081
-TUN_IFACE = "tun-reality-grpc"
+TUN_IFACE = "tun-grpc"      # max 15 chars (Linux netdev limit)
+TUN_TMP   = "tun-grpc-tmp"
 CONTAINER_NAME = "xray-client-2"
 
 
@@ -26,8 +27,8 @@ async def run_cmd(cmd: list, timeout: int = 30) -> tuple[int, str, str]:
 
 
 async def start(temp_port: str = ""):
-    tun_name = f"tun-reality-grpc-tmp" if temp_port else TUN_IFACE
-    socks_port = int(temp_port) if temp_port else SOCKS_PORT
+    tun_name = TUN_TMP if temp_port else TUN_IFACE
+    socks_port = SOCKS_PORT  # always use own SOCKS port; temp_port is just a signal for tmp tun name
 
     # Запускаем xray-client-2
     rc, stdout, _ = await run_cmd(["docker", "inspect", "-f", "{{.State.Running}}", CONTAINER_NAME])
@@ -64,6 +65,7 @@ async def start(temp_port: str = ""):
 
 async def stop():
     await run_cmd(["pkill", "-f", f"tun2socks.*{TUN_IFACE}"])
+    await run_cmd(["pkill", "-f", f"tun2socks.*{TUN_TMP}"])
     return 0
 
 

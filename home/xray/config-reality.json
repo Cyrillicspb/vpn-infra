@@ -21,28 +21,35 @@
         "vnext": [
           {
             "address": "${XRAY_SERVER}",
-            "port": 443,
+            "port": 2087,
             "users": [
               {
                 "id": "${XRAY_UUID}",
                 "encryption": "none",
-                "flow": "xtls-rprx-vision"
+                "flow": ""
               }
             ]
           }
         ]
       },
       "streamSettings": {
-        "network": "tcp",
+        "network": "splithttp",
         "security": "reality",
         "realitySettings": {
           "serverName": "microsoft.com",
           "fingerprint": "chrome",
           "publicKey": "${XRAY_PUBLIC_KEY}",
           "shortId": ""
+        },
+        "splithttpSettings": {
+          "path": "/",
+          "host": "microsoft.com",
+          "maxUploadSize": 1000000,
+          "maxConcurrentUploads": 10,
+          "password": "${XHTTP_MS_PASSWORD}"
         }
       },
-      "tag": "vless-reality-out"
+      "tag": "vless-xhttp-out"
     },
     {
       "protocol": "freedom",

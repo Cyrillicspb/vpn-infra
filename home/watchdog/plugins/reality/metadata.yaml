@@ -1,13 +1,14 @@
 name: reality
-display_name: "VLESS+REALITY (microsoft.com)"
+display_name: "VLESS+REALITY+XHTTP (microsoft.com)"
 resilience: 3
 protocol: vless
-transport: tcp
-port: 443
-flow: xtls-rprx-vision
+transport: splithttp
+port: 2087
+flow: ""
 fingerprint: chrome
 dest: microsoft.com
+tun_name: tun-reality
 requires:
   - xray-client
-  - tcp-443-open
-description: "Маскировка под HTTPS к Microsoft. Устойчив к DPI."
+  - tcp-2087-open
+description: "XHTTP (splithttp) маскировка под HTTPS к Microsoft. Порт 2087."

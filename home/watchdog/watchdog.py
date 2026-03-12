@@ -882,16 +882,18 @@ async def _do_switch(new_stack: str, reason: str) -> bool:
 
     logger.info(f"Переключение стека: {old_stack} → {new_stack} (причина: {reason})")
 
-    # 1. Поднимаем новое соединение на временном порту
-    ok = await plugin.start(temp_port="1082")
+    # 1. Поднимаем новый стек (без temp_port — failover не требует make-before-break)
+    ok = await plugin.start()
     if not ok:
         logger.error(f"Не удалось запустить {new_stack}")
         alert(f"⚠️ Failover на *{new_stack}* не удался")
         return False
 
-    # 2. Атомарно переключаем маршрут table 200 → новый tun
+    # 2. Атомарно переключаем маршрут table marked → новый tun
+    # tun_name берём из metadata.yaml плагина, fallback = tun-{stack_name}
+    tun_name = plugin.meta.get("tun_name", f"tun-{new_stack}")
     await run_cmd(
-        ["ip", "route", "replace", "default", "dev", f"tun-{new_stack}", "table", "200"],
+        ["ip", "route", "replace", "default", "dev", tun_name, "table", "marked"],
         timeout=5,
     )
 
@@ -1103,8 +1105,9 @@ async def decision_loop() -> None:
 async def monitoring_loop() -> None:
     """Периодические проверки всех компонентов системы."""
     tick = 0
-    last_large_speedtest = 0.0
-    last_full_assessment = 0.0
+    _now = time.time()
+    last_large_speedtest = _now  # не запускать при старте, только через 6ч
+    last_full_assessment = _now  # не запускать при старте, только через 1ч
     last_heartbeat = 0.0
     last_conntrack = 0.0
     standby_checked_today = False
@@ -1115,6 +1118,9 @@ async def monitoring_loop() -> None:
         try:
             now = time.time()
             tick += 1
+
+            # Systemd watchdog ping — в начале итерации, до тяжёлых операций
+            _notify_systemd(b"WATCHDOG=1")
 
             # Каждые 30 сек: dnsmasq
             if tick % 3 == 0:
@@ -1167,8 +1173,7 @@ async def monitoring_loop() -> None:
                 await test_standby_tunnels()
                 standby_checked_today = True
 
-            # Systemd watchdog ping каждые 10 сек
-            _notify_systemd(b"WATCHDOG=1")
+            # (watchdog ping уже отправлен в начале итерации)
 
         except Exception as exc:
             logger.error(f"monitoring_loop ошибка: {exc}")

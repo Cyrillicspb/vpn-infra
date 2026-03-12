@@ -70,3 +70,17 @@ vps/3x-ui/
 # Grafana/Prometheus данные
 vps/grafana/data/
 vps/prometheus/data/
+
+# Временные fix-скрипты
+add_xhttp_inbound.py
+check_db.py
+enable_clients.py
+fix_reality_shortid.py
+fix_xray_clients.py
+fix_xray_inbounds.py
+replace_vision_xhttp.py
+setup_xray_inbounds.py
+update_xhttp_password.py
+vps_fix_shortid.py
+vps_move_reality_port.py
+.claude/settings.local.json

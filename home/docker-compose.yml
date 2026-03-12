@@ -91,7 +91,7 @@ services:
   # ── Xray-client (REALITY / REALITY+gRPC) — standby, SOCKS5 :1080 ───────────
   # Управляется watchdog-ом (выбор стека), всегда запущен
   xray-client:
-    image: teddysun/xray:1.8.11
+    image: teddysun/xray:latest
     container_name: xray-client
     restart: always
     volumes:
@@ -111,7 +111,7 @@ services:
 
   # ── Xray-client-2 (gRPC REALITY, dest cdn.jsdelivr.net) — standby, SOCKS5 :1081
   xray-client-2:
-    image: teddysun/xray:1.8.11
+    image: teddysun/xray:latest
     container_name: xray-client-2
     restart: always
     volumes:
