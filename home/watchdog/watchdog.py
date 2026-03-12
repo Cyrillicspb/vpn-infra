@@ -373,21 +373,30 @@ state = WatchdogState()
 # Мониторинг: ping VPS через tun
 # ---------------------------------------------------------------------------
 async def ping_vps(target: str = "") -> tuple[bool, float]:
-    """Ping VPS через tun. Возвращает (success, rtt_ms)."""
-    host = target or VPS_TUNNEL_IP
-    if not host:
-        return False, 0.0
-    rc, stdout, _ = await run_cmd(["ping", "-c", "3", "-W", "5", "-q", host], timeout=25)
-    if rc == 0:
-        # "rtt min/avg/max/mdev = 10.1/12.3/14.5/1.2 ms"
-        for line in stdout.splitlines():
-            if "avg" in line and "=" in line:
-                try:
-                    avg_rtt = float(line.split("=")[1].strip().split("/")[1])
-                    return True, avg_rtt
-                except Exception as exc:
-                    logger.debug(f"ping_vps: не удалось распарсить RTT из '{line}': {exc}")
-        return True, 0.0
+    """Проверяет связь через активный стек (curl via SOCKS5). Возвращает (success, rtt_ms)."""
+    plugin = plugins.get(state.active_stack)
+    socks_port = 1080
+    if plugin:
+        cy_path = plugin.dir / "client.yaml"
+        if cy_path.exists():
+            try:
+                import yaml as _yaml
+                cy = _yaml.safe_load(cy_path.read_text())
+                socks_port = int(cy.get("socks_port", 1080))
+            except Exception:
+                pass
+    import time as _time
+    start = _time.time()
+    rc, out, _ = await run_cmd(
+        ["curl", "-s", "--max-time", "8",
+         "--proxy", f"socks5://127.0.0.1:{socks_port}",
+         "-o", "/dev/null", "-w", "%{http_code}",
+         "http://www.gstatic.com/generate_204"],
+        timeout=12,
+    )
+    elapsed_ms = (_time.time() - start) * 1000
+    if rc == 0 and out.strip() in ("200", "204", "301", "302"):
+        return True, elapsed_ms
     return False, 0.0
 
 
@@ -930,46 +939,40 @@ async def _do_switch(new_stack: str, reason: str) -> bool:
     return True
 
 
-async def _do_failover(reason: str) -> None:
-    """
-    Последовательный проход по стекам ВВЕРХ по устойчивости
-    начиная с текущего. Worst case до CDN ~30 сек.
-    """
-    async with _LOCK:
-        state.failover_in_progress = True
+async def _failover_impl(reason: str) -> None:
+    """Внутренняя логика failover. Вызывается под _LOCK (не захватывает его сама)."""
+    state.failover_in_progress = True
+    try:
+        current = state.active_stack
+        ordered = plugins.all_names()
         try:
-            current = state.active_stack
-            ordered = plugins.all_names()   # убывает по resilience (CDN первый)
+            cur_pos = ordered.index(current)
+        except ValueError:
+            cur_pos = len(ordered) - 1
+        candidates = ordered[:cur_pos] + ordered[cur_pos + 1:]
+        for candidate in candidates:
+            plugin = plugins.get(candidate)
+            if not plugin:
+                continue
+            logger.info(f"Тест кандидата: {candidate}")
+            ok, mbps = await plugin.test(timeout=10)
+            if ok:
+                await _do_switch(candidate, reason)
+                return
+        now = datetime.now()
+        if state.all_stacks_down_since is None:
+            state.all_stacks_down_since = now
+        down_min = (now - state.all_stacks_down_since).total_seconds() / 60
+        if down_min >= ALL_STACKS_DOWN_MINUTES:
+            alert("🚨 *ВСЕ VPN СТЕКИ НЕДОСТУПНЫ* более 5 мин!\nПроверьте VPS вручную.")
+    finally:
+        state.failover_in_progress = False
 
-            # Начинаем тестирование со следующего после текущего по устойчивости
-            try:
-                cur_pos = ordered.index(current)
-            except ValueError:
-                cur_pos = len(ordered) - 1
 
-            # Пробуем более устойчивые (индексы < cur_pos), затем все остальные
-            candidates = ordered[:cur_pos] + ordered[cur_pos + 1:]
-
-            for candidate in candidates:
-                plugin = plugins.get(candidate)
-                if not plugin:
-                    continue
-                logger.info(f"Тест кандидата: {candidate}")
-                ok, mbps = await plugin.test(timeout=10)
-                if ok:
-                    await _do_switch(candidate, reason)
-                    return
-
-            # Все стеки недоступны
-            now = datetime.now()
-            if state.all_stacks_down_since is None:
-                state.all_stacks_down_since = now
-
-            down_min = (now - state.all_stacks_down_since).total_seconds() / 60
-            if down_min >= ALL_STACKS_DOWN_MINUTES:
-                alert("🚨 *ВСЕ VPN СТЕКИ НЕДОСТУПНЫ* более 5 мин!\nПроверьте VPS вручную.")
-        finally:
-            state.failover_in_progress = False
+async def _do_failover(reason: str) -> None:
+    """Failover с захватом _LOCK. Для вызова изнутри _LOCK используй _failover_impl()."""
+    async with _LOCK:
+        await _failover_impl(reason)
 
 
 async def _do_rotation() -> None:
@@ -990,7 +993,7 @@ async def _do_rotation() -> None:
             ok, _ = await plugin.test(timeout=10)
             if not ok:
                 logger.warning("Ротация: стек не отвечает, выполняем failover вместо ротации")
-                await _do_failover("rotation_check_failed")
+                await _failover_impl("rotation_check_failed")  # уже под _LOCK, не захватывать повторно
                 return
 
             ok = await plugin.rotate()
