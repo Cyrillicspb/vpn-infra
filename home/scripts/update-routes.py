@@ -969,7 +969,7 @@ def main() -> None:
 
     # ── Дельта-проверка ────────────────────────────────────────────────────────
     new_cidr_lines = [str(n) for n in allowed_networks]
-    if not validate_delta(
+    if not force and not validate_delta(
         {l for l in old_lines if l and not l.startswith("#")},
         set(new_cidr_lines),
     ):
