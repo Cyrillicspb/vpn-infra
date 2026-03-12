@@ -629,22 +629,22 @@ async def cb_dev_approve(cb: CallbackQuery, **kw):
     db: Database = kw.get("db")
     device = await db.approve_device(device_id)
     if device:
-        # Добавляем пир через watchdog
-        try:
-            await _wc().add_peer(
-                device["device_name"],
-                device["protocol"],
-                device.get("public_key", ""),
-            )
-        except Exception:
-            pass
         bot: "Bot" = kw.get("bot")
+        autodist = kw.get("autodist")
         if bot:
-            asyncio.create_task(
-                notify_device_approved(
-                    bot, db, device, autodist=kw.get("autodist")
-                )
-            )
+            # Сначала отправляем конфиг (внутри сгенерируются и сохранятся ключи)
+            await notify_device_approved(bot, db, device, autodist=autodist)
+            # Потом добавляем пир (теперь public_key есть в БД)
+            device = await db.get_device_by_id(device_id)
+            if device and device.get("public_key"):
+                try:
+                    await _wc().add_peer(
+                        device["device_name"],
+                        device["protocol"],
+                        device["public_key"],
+                    )
+                except Exception:
+                    pass
     name = device["device_name"] if device else device_id
     await safe_edit(cb, f"✅ Устройство `{name}` одобрено.")
 

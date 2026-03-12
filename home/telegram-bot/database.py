@@ -421,6 +421,18 @@ class Database:
             finally:
                 conn.close()
 
+    async def update_device_keys(self, device_id: int, private_key: str, public_key: str) -> None:
+        async with self._lock:
+            conn = self._conn()
+            try:
+                conn.execute(
+                    "UPDATE devices SET private_key = ?, public_key = ? WHERE id = ?",
+                    (private_key, public_key, device_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
     async def update_config_version(self, device_id: int, version: str) -> None:
         async with self._lock:
             conn = self._conn()

@@ -106,8 +106,13 @@ class AutoDist:
     async def _send_one(self, chat_id: str, device: dict, reason: str) -> None:
         excludes = await self.db.get_excludes(device["id"])
 
-        # Обеспечиваем наличие ключей
+        # Обеспечиваем наличие ключей; сохраняем если были сгенерированы
+        had_keys = bool(device.get("private_key"))
         device = await self.builder.ensure_keys(device)
+        if not had_keys and device.get("private_key"):
+            await self.db.update_device_keys(
+                device["id"], device["private_key"], device["public_key"]
+            )
 
         conf_text, qr_bytes, version = await self.builder.build(device, excludes)
 
