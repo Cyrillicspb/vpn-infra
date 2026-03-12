@@ -1059,13 +1059,18 @@ async def _full_reassessment() -> None:
             if not plugin:
                 continue
             ok, mbps = await plugin.test(timeout=10)
+            logger.info(f"Переоценка {name}: {'OK' if ok else 'FAIL'} {mbps:.1f} Mbps")
             if ok and mbps > best_mbps:
                 best_mbps = mbps
                 best_stack = name
 
         if best_stack and best_stack != state.active_stack:
-            logger.info(f"Переоценка: более быстрый стек {best_stack} ({best_mbps:.1f} Mbps)")
+            logger.info(f"Переоценка: переключаемся на {best_stack} ({best_mbps:.1f} Mbps)")
             await _do_switch(best_stack, "hourly_reassessment")
+        elif best_stack:
+            logger.info(f"Переоценка: текущий стек {state.active_stack} оптимален")
+        else:
+            logger.warning("Переоценка: ни один стек не доступен")
 
     state.last_full_assessment = datetime.now()
 
@@ -1080,6 +1085,14 @@ async def decision_loop() -> None:
 
     if state.is_first_run:
         await _first_run_assessment()
+    else:
+        # Не первый запуск (рестарт): через 30 сек запустить переоценку стеков,
+        # чтобы переключиться на быстрейший доступный (не ждать 1 час)
+        async def _delayed_reassessment():
+            await asyncio.sleep(30)
+            logger.info("Запуск переоценки стеков после рестарта (30 сек задержка)...")
+            await _full_reassessment()
+        asyncio.create_task(_delayed_reassessment(), name="startup-reassessment")
 
     while True:
         try:
