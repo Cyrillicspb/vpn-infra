@@ -891,9 +891,14 @@ EOF
 }
 CDNEOF
                 log_ok "Конфиг CDN-стека создан: /opt/vpn/xray/config-cdn.json"
+                # Перезапуск xray-client-cdn с новым конфигом
+                if command -v docker &>/dev/null && docker ps &>/dev/null 2>&1; then
+                    docker compose -f /opt/vpn/docker-compose.yml \
+                        restart xray-client-cdn 2>/dev/null || true
+                fi
             fi
 
-            # Перезапуск Xray-контейнеров если Docker запущен
+            # Перезапуск основных Xray-контейнеров если Docker запущен
             if command -v docker &>/dev/null && docker ps &>/dev/null 2>&1; then
                 docker compose -f /opt/vpn/docker-compose.yml \
                     restart xray-client xray-client-2 2>/dev/null || true

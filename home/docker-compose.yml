@@ -130,22 +130,22 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # ── Cloudflared (CDN-стек клиент) ────────────────────────────────────────────
-  # Соединяется с Cloudflare Tunnel → VPS cloudflared → Xray VLESS
-  cloudflared:
-    image: cloudflare/cloudflared:2024.5.0
-    container_name: cloudflared
+  # ── Xray-client-cdn (Cloudflare Workers CDN-стек) — standby, SOCKS5 :1082 ───
+  # Подключается к Cloudflare Worker → VPS Xray VLESS+WS :8080
+  # Worker URL задаётся через CF_WORKER_HOSTNAME в .env → config-cdn.json
+  xray-client-cdn:
+    image: teddysun/xray:latest
+    container_name: xray-client-cdn
     restart: always
-    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN}
     volumes:
-      - ./cloudflared:/etc/cloudflared:ro
+      - ./xray/config-cdn.json:/etc/xray/config.json:ro
     network_mode: host
     healthcheck:
-      test: ["CMD", "cloudflared", "--version"]
-      interval: 60s
-      timeout: 15s
+      test: ["CMD", "sh", "-c", "nc -z localhost 1082 || exit 1"]
+      interval: 30s
+      timeout: 5s
       retries: 3
-      start_period: 30s
+      start_period: 10s
     logging:
       driver: json-file
       options:

@@ -377,6 +377,22 @@ do_deploy() {
     rsync -a "$REPO_DIR/home/watchdog/plugins/" "$REPO_DIR/watchdog/plugins/" 2>/dev/null || true
     rsync -a "$REPO_DIR/home/scripts/" "$REPO_DIR/scripts/" 2>/dev/null && chmod +x "$REPO_DIR/scripts/"*.sh 2>/dev/null || true
 
+    # CDN конфиг: регенерировать из .env если CF_WORKER_HOSTNAME задан
+    # (пользователь мог сменить Worker — обновляем config-cdn.json)
+    source "$REPO_DIR/.env" 2>/dev/null || true
+    if [[ -n "${CF_WORKER_HOSTNAME:-}" ]]; then
+        CF_CDN_UUID="${CF_CDN_UUID:-$(python3 -c "import uuid; print(uuid.uuid4())")}"
+        python3 -c "
+import json, os
+cfg = {
+    'log': {'loglevel': 'warning'},
+    'inbounds': [{'listen': '127.0.0.1', 'port': 1082, 'protocol': 'socks', 'settings': {'udp': True}}],
+    'outbounds': [{'protocol': 'vless', 'settings': {'vnext': [{'address': os.environ['CF_WORKER_HOSTNAME'], 'port': 443, 'users': [{'id': os.environ['CF_CDN_UUID'], 'encryption': 'none', 'flow': ''}]}]}, 'streamSettings': {'network': 'ws', 'security': 'tls', 'tlsSettings': {'serverName': os.environ['CF_WORKER_HOSTNAME'], 'allowInsecure': False}, 'wsSettings': {'path': '/vpn-cdn', 'headers': {'Host': os.environ['CF_WORKER_HOSTNAME']}}}}]
+}
+json.dump(cfg, open('$REPO_DIR/xray/config-cdn.json', 'w'), indent=4)
+" && log_ok "config-cdn.json обновлён (Worker: ${CF_WORKER_HOSTNAME})"
+    fi
+
     # Docker Compose обновление
     log_step "Обновление Docker контейнеров"
     (cd "$REPO_DIR" && docker compose pull --quiet 2>/dev/null || true)

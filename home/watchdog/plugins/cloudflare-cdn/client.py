@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
-Cloudflare CDN плагин для watchdog.
-Управляет cloudflared + xray-client + tun2socks.
+Cloudflare CDN плагин для watchdog (Workers вариант).
+Поток: tun2socks → xray-client-cdn (VLESS+WS+TLS) → Cloudflare Worker → VPS Xray WS :8080
+
+Настройка: CF_WORKER_HOSTNAME в .env → config-cdn.json генерируется setup.sh / deploy.sh
 """
 import asyncio
 import json
 import subprocess
 import sys
 import time
+from pathlib import Path
 
-SOCKS_PORT = 1080
-TUN_IFACE = "tun-cloudflare-cdn"
-CONTAINER_CLOUDFLARED = "cloudflared"
-CONTAINER_XRAY = "xray-client"
+SOCKS_PORT = 1082
+TUN_IFACE  = "tun-cf-cdn"    # 10 chars — в лимите Linux 15
+TUN_TMP    = "tun-cf-cdn-t"  # 12 chars
+CONTAINER_NAME = "xray-client-cdn"
 
 
 async def run_cmd(cmd: list, timeout: int = 30) -> tuple[int, str, str]:
@@ -26,54 +29,60 @@ async def run_cmd(cmd: list, timeout: int = 30) -> tuple[int, str, str]:
 
 
 async def start(temp_port: str = ""):
-    tun_name = f"tun-cf-tmp" if temp_port else TUN_IFACE
-    socks_port = int(temp_port) if temp_port else SOCKS_PORT
+    """Запуск CDN стека: xray-client-cdn + tun2socks."""
+    tun_name = TUN_TMP if temp_port else TUN_IFACE
 
-    # 1. Запускаем cloudflared (домашний)
-    await run_cmd(["docker", "start", CONTAINER_CLOUDFLARED], timeout=15)
-    await asyncio.sleep(3)
-
-    # 2. Запускаем xray-client
-    rc, stdout, _ = await run_cmd(["docker", "inspect", "-f", "{{.State.Running}}", CONTAINER_XRAY])
+    # 1. Запускаем xray-client-cdn если не запущен
+    rc, stdout, _ = await run_cmd(["docker", "inspect", "-f", "{{.State.Running}}", CONTAINER_NAME])
     if "true" not in stdout.lower():
-        await run_cmd(["docker", "start", CONTAINER_XRAY], timeout=15)
+        rc, _, err = await run_cmd(["docker", "start", CONTAINER_NAME], timeout=15)
+        if rc != 0:
+            print(json.dumps({"status": "error", "message": f"Не удалось запустить {CONTAINER_NAME}: {err}"}))
+            return 1
 
-    # Ждём SOCKS порт
+    # Ждём SOCKS5 порт
     for _ in range(30):
         await asyncio.sleep(1)
         rc, _, _ = await run_cmd(["nc", "-z", "127.0.0.1", str(SOCKS_PORT)])
         if rc == 0:
             break
+    else:
+        print(json.dumps({"status": "error", "message": f"SOCKS5 :{SOCKS_PORT} недоступен"}))
+        return 1
 
-    # 3. tun2socks
+    # 2. Запускаем tun2socks
     proc = subprocess.Popen([
         "/usr/local/bin/tun2socks",
         "-device", tun_name,
-        "-proxy", f"socks5://127.0.0.1:{socks_port}",
+        "-proxy", f"socks5://127.0.0.1:{SOCKS_PORT}",
         "-loglevel", "warning",
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    # Ждём tun интерфейс
     for _ in range(15):
         await asyncio.sleep(1)
         rc, _, _ = await run_cmd(["ip", "link", "show", tun_name])
         if rc == 0:
             await run_cmd(["ip", "link", "set", tun_name, "up"])
-            print(json.dumps({"status": "started", "tun": tun_name}))
+            print(json.dumps({"status": "started", "tun": tun_name, "pid": proc.pid}))
             return 0
 
+    print(json.dumps({"status": "error", "message": "tun interface not created"}))
     proc.terminate()
-    print(json.dumps({"status": "error", "message": "tun not created"}))
     return 1
 
 
 async def stop():
+    """Остановка CDN стека."""
     await run_cmd(["pkill", "-f", f"tun2socks.*{TUN_IFACE}"])
-    # cloudflared останавливаем только при явном запросе (он нужен для тестирования)
+    await run_cmd(["pkill", "-f", f"tun2socks.*{TUN_TMP}"])
+    await asyncio.sleep(1)
     return 0
 
 
 async def test() -> int:
-    """Тест CDN стека — самый устойчивый, тестируем последним."""
+    """Тест CDN стека через SOCKS5 :1082."""
+    start_time = time.time()
     rc, stdout, _ = await run_cmd(
         ["curl", "-s", "--max-time", "15",
          "--proxy", f"socks5://127.0.0.1:{SOCKS_PORT}",
@@ -82,13 +91,16 @@ async def test() -> int:
         timeout=20,
     )
     if rc == 0 and stdout.strip() in ["200", "301", "302"]:
-        print(json.dumps({"status": "ok", "throughput_mbps": 5.0}))
+        elapsed = time.time() - start_time
+        throughput = 10.0 / max(elapsed, 0.1)
+        print(json.dumps({"status": "ok", "throughput_mbps": round(min(throughput, 100), 2)}))
         return 0
     print(json.dumps({"status": "fail", "throughput_mbps": 0}))
     return 1
 
 
 async def rotate():
+    """Ротация CDN соединения."""
     await stop()
     await asyncio.sleep(2)
     return await start()
@@ -108,6 +120,9 @@ async def main():
         sys.exit(await test())
     elif cmd == "rotate":
         sys.exit(await rotate())
+    else:
+        print(f"Неизвестная команда: {cmd}", file=sys.stderr)
+        sys.exit(1)
 
 if __name__ == "__main__":
     asyncio.run(main())

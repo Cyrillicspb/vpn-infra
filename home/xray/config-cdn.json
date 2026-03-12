@@ -1,49 +1,28 @@
 {
-    "log": {
-        "loglevel": "warning"
-    },
-    "inbounds": [
-        {
-            "listen": "127.0.0.1",
-            "port": 1082,
-            "protocol": "socks",
-            "settings": {
-                "udp": true
+    "log": {"loglevel": "warning"},
+    "inbounds": [{
+        "listen": "127.0.0.1",
+        "port": 1082,
+        "protocol": "socks",
+        "settings": {"udp": true}
+    }],
+    "outbounds": [{
+        "protocol": "vless",
+        "settings": {
+            "vnext": [{
+                "address": "YOUR_WORKER.workers.dev",
+                "port": 443,
+                "users": [{"id": "YOUR_CF_CDN_UUID", "encryption": "none", "flow": ""}]
+            }]
+        },
+        "streamSettings": {
+            "network": "ws",
+            "security": "tls",
+            "tlsSettings": {"serverName": "YOUR_WORKER.workers.dev", "allowInsecure": false},
+            "wsSettings": {
+                "path": "/vpn-cdn",
+                "headers": {"Host": "YOUR_WORKER.workers.dev"}
             }
         }
-    ],
-    "outbounds": [
-        {
-            "protocol": "vless",
-            "settings": {
-                "vnext": [
-                    {
-                        "address": "cool-king-7f33.kirill-savurov.workers.dev",
-                        "port": 443,
-                        "users": [
-                            {
-                                "id": "fae2880a-a250-4d6d-baa5-de2056ef3a26",
-                                "encryption": "none",
-                                "flow": ""
-                            }
-                        ]
-                    }
-                ]
-            },
-            "streamSettings": {
-                "network": "ws",
-                "security": "tls",
-                "tlsSettings": {
-                    "serverName": "cool-king-7f33.kirill-savurov.workers.dev",
-                    "allowInsecure": false
-                },
-                "wsSettings": {
-                    "path": "/vpn-cdn",
-                    "headers": {
-                        "Host": "cool-king-7f33.kirill-savurov.workers.dev"
-                    }
-                }
-            }
-        }
-    ]
+    }]
 }

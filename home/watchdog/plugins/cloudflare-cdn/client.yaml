@@ -1,8 +1,10 @@
-# Cloudflare CDN стек — клиентская сторона
-# Поток: xray-client (SOCKS5 :1080) ← cloudflared access ← CDN ← cloudflared tunnel ← VPS Xray
+# Cloudflare CDN стек — клиентская сторона (Workers вариант)
+# Поток: tun2socks → xray-client-cdn (VLESS+WS+TLS) → CF Worker → VPS Xray WS :8080
+#
+# Требует в .env: CF_WORKER_HOSTNAME, CF_CDN_UUID
+# config-cdn.json генерируется setup.sh и deploy.sh из этих переменных
 
 stack: cloudflare-cdn
-socks_port: 1080
-tun_interface: tun-cloudflare-cdn
-container_home: cloudflared       # на домашнем сервере
-container_vps: cloudflared        # на VPS
+socks_port: 1082
+tun_interface: tun-cf-cdn
+container: xray-client-cdn
