@@ -382,7 +382,13 @@ async def ping_vps(target: str = "") -> tuple[bool, float]:
             try:
                 import yaml as _yaml
                 cy = _yaml.safe_load(cy_path.read_text())
-                socks_port = int(cy.get("socks_port", 1080))
+                # Формат watchdog-плагинов: socks_port: 1081
+                # Формат hysteria2 binary config: socks5.listen: 127.0.0.1:1083
+                sp = cy.get("socks_port")
+                if sp is None:
+                    listen = cy.get("socks5", {}).get("listen", "127.0.0.1:1080")
+                    sp = listen.split(":")[-1]
+                socks_port = int(sp)
             except Exception:
                 pass
     import time as _time
