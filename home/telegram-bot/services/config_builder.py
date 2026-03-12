@@ -91,10 +91,11 @@ def _render(device: dict, allowed_ips: list[str]) -> str:
         allowed_ips      = allowed_ips,
         endpoint         = f"{host}:{port}",
         persistent_keepalive = AWG_PARAMS["PersistentKeepalive"],
-        # AWG-specific
+        # AWG-specific (H1-H4 должны совпадать с сервером — читаем из .env)
         jc=AWG_PARAMS["Jc"], jmin=AWG_PARAMS["Jmin"], jmax=AWG_PARAMS["Jmax"],
         s1=AWG_PARAMS["S1"], s2=AWG_PARAMS["S2"],
-        h1=_rand32(), h2=_rand32(), h3=_rand32(), h4=_rand32(),
+        h1=int(os.getenv("AWG_H1", "1")), h2=int(os.getenv("AWG_H2", "2")),
+        h3=int(os.getenv("AWG_H3", "3")), h4=int(os.getenv("AWG_H4", "4")),
     )
 
 
