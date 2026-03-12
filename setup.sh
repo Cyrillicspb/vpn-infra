@@ -259,9 +259,68 @@ phase0() {
             WG_HOST="${EXTERNAL_IP}"
         fi
 
-        ask USE_CLOUDFLARE "Настроить Cloudflare CDN-стек? (y/N)"
+        # ── CDN-стек (Cloudflare Workers) — опциональный ──────────────────────────
+        echo ""
+        echo -e "${CYAN}${BOLD}━━━ CDN-стек через Cloudflare Workers (опционально) ━━━${NC}"
+        echo ""
+        echo "  Самый надёжный стек — трафик через Cloudflare CDN."
+        echo "  Заблокировать его = заблокировать весь Cloudflare (тысячи сайтов)."
+        echo "  Нужен только бесплатный аккаунт Cloudflare. Домен не требуется."
+        echo ""
+        echo -e "  ${GREEN}Плюсы:${NC} максимальная устойчивость к блокировкам, бесплатно."
+        echo -e "  ${YELLOW}Минусы:${NC} ~10 мин на настройку, чуть медленнее (доп. hop через CDN)."
+        echo "  Используется как резервный — только если REALITY-стеки не работают."
+        echo ""
+        read -rp "  Настроить CDN-стек? (y/N): " USE_CLOUDFLARE
+        USE_CLOUDFLARE="${USE_CLOUDFLARE:-n}"
+
         if [[ "${USE_CLOUDFLARE,,}" == "y" ]]; then
-            ask CF_TUNNEL_TOKEN "Cloudflare Tunnel Token" yes
+            echo ""
+            echo -e "${CYAN}${BOLD}  Шаг A — Регистрация на Cloudflare${NC}"
+            echo "  1. https://dash.cloudflare.com/sign-up"
+            echo "  2. Email + пароль → «Create Account» → подтвердите email"
+            echo "     Бесплатно, карта не нужна."
+            echo ""
+            read -rp "  Аккаунт Cloudflare готов? (y/N): " _cf_acct
+            if [[ "${_cf_acct,,}" != "y" ]]; then
+                log_warn "CDN-стек пропущен. Настроить позже: sudo bash setup.sh"
+                USE_CLOUDFLARE="n"
+            fi
+        fi
+
+        if [[ "${USE_CLOUDFLARE,,}" == "y" ]]; then
+            echo ""
+            echo -e "${CYAN}${BOLD}  Шаг B — Создание Cloudflare Worker${NC}"
+            echo "  1. dash.cloudflare.com → «Workers & Pages» → «Create» → «Create Worker»"
+            echo "  2. Дайте любое имя, нажмите «Deploy»"
+            echo "  3. Нажмите «Edit code», замените ВСЁ на:"
+            echo ""
+            echo -e "${YELLOW}────────────────────────────────────────────────────${NC}"
+            echo  "export default {"
+            echo  "  async fetch(request) {"
+            echo  "    const url = new URL(request.url);"
+            echo  "    const target = \`http://${VPS_IP}:8080\${url.pathname}\${url.search}\`;"
+            echo  "    const h = new Headers();"
+            echo  "    for (const [k,v] of request.headers)"
+            echo  "      if (k.toLowerCase() !== 'host') h.set(k,v);"
+            echo  "    h.set('Host','${VPS_IP}');"
+            echo  "    return fetch(target,{method:request.method,headers:h,body:request.body});"
+            echo  "  }"
+            echo  "}"
+            echo -e "${YELLOW}────────────────────────────────────────────────────${NC}"
+            echo ""
+            echo "  4. «Save & Deploy»"
+            echo "  5. Скопируйте URL вида: https://xxx-xxx.ACCOUNT.workers.dev"
+            echo ""
+            read -rp "  Вставьте URL Worker (например xxx.workers.dev): " CF_WORKER_HOSTNAME
+            CF_WORKER_HOSTNAME="${CF_WORKER_HOSTNAME#https://}"
+            CF_WORKER_HOSTNAME="${CF_WORKER_HOSTNAME%/}"
+            if [[ -z "$CF_WORKER_HOSTNAME" ]]; then
+                log_warn "URL не введён — CDN-стек пропущен."
+                USE_CLOUDFLARE="n"
+            else
+                log_ok "Worker: ${CF_WORKER_HOSTNAME}"
+            fi
         fi
 
         # Сохранение всех параметров в .env
@@ -276,6 +335,7 @@ phase0() {
         env_set "DDNS_TOKEN"             "${DDNS_TOKEN:-}"
         env_set "USE_CLOUDFLARE"         "${USE_CLOUDFLARE:-n}"
         env_set "CF_TUNNEL_TOKEN"        "${CF_TUNNEL_TOKEN:-}"
+        env_set "CF_WORKER_HOSTNAME"    "${CF_WORKER_HOSTNAME:-}"
         env_set "NET_INTERFACE"          "${NET_INTERFACE:-${ETH_IFACE:-eth0}}"
         env_set "GATEWAY_IP"             "${GATEWAY_IP:-}"
         env_set "HOME_SERVER_IP"         "${HOME_SERVER_IP:-}"
@@ -795,6 +855,43 @@ EOF
 }
 EOF
             log_ok "Конфиги Xray-клиента созданы"
+
+            # CDN-стек: config-cdn.json (если настроен CF Worker)
+            if [[ -n "${CF_WORKER_HOSTNAME:-}" ]]; then
+                CF_CDN_UUID="${CF_CDN_UUID:-$(python3 -c "import uuid; print(uuid.uuid4())")}"
+                env_set "CF_CDN_UUID" "${CF_CDN_UUID}"
+                cat > /opt/vpn/xray/config-cdn.json << CDNEOF
+{
+    "log": {"loglevel": "warning"},
+    "inbounds": [{
+        "listen": "127.0.0.1",
+        "port": 1082,
+        "protocol": "socks",
+        "settings": {"udp": true}
+    }],
+    "outbounds": [{
+        "protocol": "vless",
+        "settings": {
+            "vnext": [{
+                "address": "${CF_WORKER_HOSTNAME}",
+                "port": 443,
+                "users": [{"id": "${CF_CDN_UUID}", "encryption": "none", "flow": ""}]
+            }]
+        },
+        "streamSettings": {
+            "network": "ws",
+            "security": "tls",
+            "tlsSettings": {"serverName": "${CF_WORKER_HOSTNAME}", "allowInsecure": false},
+            "wsSettings": {
+                "path": "/vpn-cdn",
+                "headers": {"Host": "${CF_WORKER_HOSTNAME}"}
+            }
+        }
+    }]
+}
+CDNEOF
+                log_ok "Конфиг CDN-стека создан: /opt/vpn/xray/config-cdn.json"
+            fi
 
             # Перезапуск Xray-контейнеров если Docker запущен
             if command -v docker &>/dev/null && docker ps &>/dev/null 2>&1; then

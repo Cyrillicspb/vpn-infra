@@ -1,0 +1,49 @@
+{
+    "log": {
+        "loglevel": "warning"
+    },
+    "inbounds": [
+        {
+            "listen": "127.0.0.1",
+            "port": 1082,
+            "protocol": "socks",
+            "settings": {
+                "udp": true
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "winter-unit-c4b4.kirill-savurov.workers.dev",
+                        "port": 443,
+                        "users": [
+                            {
+                                "id": "fae2880a-a250-4d6d-baa5-de2056ef3a26",
+                                "encryption": "none",
+                                "flow": ""
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "ws",
+                "security": "tls",
+                "tlsSettings": {
+                    "serverName": "winter-unit-c4b4.kirill-savurov.workers.dev",
+                    "allowInsecure": false
+                },
+                "wsSettings": {
+                    "path": "/vpn-cdn",
+                    "headers": {
+                        "Host": "winter-unit-c4b4.kirill-savurov.workers.dev"
+                    }
+                }
+            }
+        }
+    ]
+}
