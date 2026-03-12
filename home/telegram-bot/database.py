@@ -584,13 +584,13 @@ class Database:
             finally:
                 conn.close()
 
-    async def get_excludes(self, device_id: int) -> list[str]:
+    async def get_excludes(self, device_id: int) -> list[dict]:
         conn = self._conn()
         try:
             rows = conn.execute(
                 "SELECT subnet FROM excludes WHERE device_id = ?", (device_id,)
             ).fetchall()
-            return [r["subnet"] for r in rows]
+            return [{"subnet": r["subnet"]} for r in rows]
         finally:
             conn.close()
 

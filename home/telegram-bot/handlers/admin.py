@@ -36,7 +36,12 @@ from aiogram.types import (
 from config import config
 from database import Database
 from handlers.keyboards import (
+    admin_client_actions_kb,
+    admin_clients_list_kb,
     admin_clients_menu,
+    admin_diagnose_kb,
+    admin_graph_menu,
+    admin_logs_menu,
     admin_main_menu,
     admin_manage_menu,
     admin_monitor_menu,
@@ -44,8 +49,11 @@ from handlers.keyboards import (
     admin_routes_menu,
     admin_security_menu,
     admin_switch_menu,
+    admin_vps_list_kb,
     admin_vps_menu,
     back_to_admin_menu,
+    domains_inline_kb,
+    menu_reply_kb,
 )
 from services.watchdog_client import WatchdogClient, WatchdogError
 
@@ -96,10 +104,15 @@ async def _require_admin(message: Message) -> bool:
 # FSM состояния
 # ---------------------------------------------------------------------------
 class AdminFSM(StatesGroup):
-    reboot_confirm  = State()
-    update_confirm  = State()
-    broadcast_input = State()
-    migrate_confirm = State()
+    reboot_confirm     = State()
+    update_confirm     = State()
+    broadcast_input    = State()
+    migrate_confirm    = State()
+    vpn_add_domain     = State()
+    direct_add_domain  = State()
+    check_domain       = State()
+    vps_add_ip         = State()
+    client_limit_input = State()
 
 
 # ---------------------------------------------------------------------------
@@ -982,6 +995,7 @@ async def cmd_menu(message: Message, state: FSMContext, **kw):
     if not _is_admin(message):
         return
     await state.clear()
+    await message.answer("📋 Меню", reply_markup=menu_reply_kb())
     await message.answer("*Меню администратора*", reply_markup=admin_main_menu())
 
 
@@ -1303,12 +1317,7 @@ async def cb_adm_clients_list(cb: CallbackQuery, **kw):
     if not clients:
         await cb.message.answer("Нет зарегистрированных клиентов.", reply_markup=back_to_admin_menu())
         return
-    lines = ["*Клиенты:*\n"]
-    for c in clients:
-        icon = "🚫" if c.get("is_disabled") else "✅"
-        name = c.get("username") or c["chat_id"]
-        lines.append(f"{icon} `{name}` (id: `{c['chat_id']}`)")
-    await cb.message.answer("\n".join(lines), reply_markup=back_to_admin_menu())
+    await _edit_or_answer(cb, "👥 *Клиенты* — выберите для управления:", admin_clients_list_kb(clients))
 
 
 @router.callback_query(F.data == "adm:requests")
@@ -1356,29 +1365,15 @@ async def cb_adm_vps_list(cb: CallbackQuery, **kw):
         data = await _wc().get_vps_list()
         vps_list = data.get("vps_list", [])
         if not vps_list:
-            text = "VPS не добавлены."
-        else:
-            lines = []
-            for i, v in enumerate(vps_list):
-                active = "✅" if i == data.get("active_idx", 0) else "⚪"
-                lines.append(f"{active} `{v['ip']}` (SSH :{v.get('ssh_port', 22)})")
-            text = "*VPS серверы:*\n" + "\n".join(lines)
+            await cb.message.answer("VPS не добавлены.", reply_markup=back_to_admin_menu())
+            return
+        await _edit_or_answer(
+            cb,
+            "🖥️ *VPS серверы* — нажмите для удаления:",
+            admin_vps_list_kb(vps_list, data.get("active_idx", 0)),
+        )
     except WatchdogError as e:
-        text = f"❌ {e}"
-    await cb.message.answer(text, reply_markup=back_to_admin_menu())
-
-
-@router.callback_query(F.data == "adm:vps_info")
-async def cb_adm_vps_info(cb: CallbackQuery, **kw):
-    await cb.answer()
-    await cb.message.answer(
-        "*Управление VPS через команды:*\n\n"
-        "`/vps list` — список VPS\n"
-        "`/vps add <IP> [PORT]` — добавить VPS\n"
-        "`/vps remove <IP>` — удалить VPS\n"
-        "`/migrate_vps <IP>` — мигрировать",
-        reply_markup=back_to_admin_menu(),
-    )
+        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
 
 
 # ---------------------------------------------------------------------------
@@ -1426,13 +1421,373 @@ async def cb_adm_renew_ca(cb: CallbackQuery, **kw):
     )
 
 
-@router.callback_query(F.data == "adm:diagnose_info")
-async def cb_adm_diagnose_info(cb: CallbackQuery, **kw):
+@router.callback_query(F.data == "adm:diagnose_menu")
+async def cb_adm_diagnose_menu(cb: CallbackQuery, **kw):
     await cb.answer()
-    await cb.message.answer(
-        "Используйте команду:\n`/diagnose <имя_устройства>`",
-        reply_markup=back_to_admin_menu(),
+    db: Database = kw.get("db")
+    # Все устройства всех клиентов
+    clients = await db.get_all_clients()
+    devices = []
+    for c in clients:
+        devs = await db.get_devices(c["chat_id"])
+        devices.extend(devs)
+    if not devices:
+        await cb.message.answer("Нет устройств для диагностики.", reply_markup=back_to_admin_menu())
+        return
+    await _edit_or_answer(cb, "🔍 *Диагностика* — выберите устройство:", admin_diagnose_kb(devices))
+
+
+# ---------------------------------------------------------------------------
+# Логи через меню
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:logs_menu")
+async def cb_adm_logs_menu(cb: CallbackQuery, **kw):
+    await _edit_or_answer(cb, "📋 *Логи* — выберите сервис:", admin_logs_menu())
+
+
+@router.callback_query(F.data.startswith("adm:log:"))
+async def cb_adm_log(cb: CallbackQuery, **kw):
+    service = cb.data[len("adm:log:"):]
+    await cb.answer(f"Загружаю логи {service}...")
+    allowed_docker = {"telegram-bot", "xray-client", "xray-client-2", "cloudflared", "node-exporter"}
+    if service in allowed_docker:
+        cmd = ["docker", "logs", "--tail", "50", service]
+    else:
+        cmd = ["journalctl", "-u", service, "-n", "50", "--no-pager", "--output=short"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        text = result.stdout or result.stderr or "(нет логов)"
+        if len(text) > 4000:
+            from aiogram.types import BufferedInputFile
+            await cb.message.answer_document(
+                BufferedInputFile(text.encode(), filename=f"{service}.log"),
+                caption=f"Логи `{service}`",
+            )
+        else:
+            await cb.message.answer(f"*Логи {service}:*\n```\n{text[-3900:]}\n```",
+                                    reply_markup=back_to_admin_menu())
+    except Exception as e:
+        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
+# ---------------------------------------------------------------------------
+# Графики через меню
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:graph_menu")
+async def cb_adm_graph_menu(cb: CallbackQuery, **kw):
+    await _edit_or_answer(cb, "📉 *Графики* — выберите панель:", admin_graph_menu())
+
+
+@router.callback_query(F.data.startswith("adm:gr:"))
+async def cb_adm_graph(cb: CallbackQuery, **kw):
+    panel = cb.data[len("adm:gr:"):]
+    await cb.answer(f"Загружаю график {panel}...")
+    try:
+        from aiogram.types import BufferedInputFile
+        png = await _wc().get_graph(panel, "1h")
+        if png:
+            await cb.message.answer_photo(
+                BufferedInputFile(png, filename="graph.png"),
+                caption=f"График `{panel}` за 1ч",
+            )
+        else:
+            await cb.message.answer("Grafana не вернула изображение", reply_markup=back_to_admin_menu())
+    except WatchdogError as e:
+        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
+# ---------------------------------------------------------------------------
+# Маршруты: добавить/удалить/проверить через FSM
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:vpn_add")
+async def cb_adm_vpn_add(cb: CallbackQuery, state: FSMContext, **kw):
+    await cb.answer()
+    await cb.message.answer("Введите домен для добавления в VPN\n(например: `example.com`):")
+    await state.set_state(AdminFSM.vpn_add_domain)
+
+
+@router.message(AdminFSM.vpn_add_domain)
+async def fsm_vpn_add_domain(message: Message, state: FSMContext, **kw):
+    domain = message.text.strip().lower().strip(".")
+    await state.clear()
+    _file_add_line(MANUAL_VPN, domain)
+    try:
+        await _wc().update_routes()
+        autodist = kw.get("autodist")
+        if autodist:
+            autodist.trigger(f"/vpn add {domain}")
+    except WatchdogError:
+        pass
+    await message.answer(f"✅ `{domain}` добавлен в VPN. Маршруты обновляются...",
+                         reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:direct_add")
+async def cb_adm_direct_add(cb: CallbackQuery, state: FSMContext, **kw):
+    await cb.answer()
+    await cb.message.answer("Введите домен для добавления в Direct\n(например: `example.com`):")
+    await state.set_state(AdminFSM.direct_add_domain)
+
+
+@router.message(AdminFSM.direct_add_domain)
+async def fsm_direct_add_domain(message: Message, state: FSMContext, **kw):
+    domain = message.text.strip().lower().strip(".")
+    await state.clear()
+    _file_add_line(MANUAL_DIRECT, domain)
+    try:
+        await _wc().update_routes()
+    except WatchdogError:
+        pass
+    await message.answer(f"✅ `{domain}` добавлен в Direct. Маршруты обновляются...",
+                         reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:vpn_remove")
+async def cb_adm_vpn_remove(cb: CallbackQuery, **kw):
+    await cb.answer()
+    if not MANUAL_VPN.exists():
+        await cb.message.answer("Список VPN пуст.", reply_markup=back_to_admin_menu())
+        return
+    domains = [ln.strip() for ln in MANUAL_VPN.read_text().splitlines() if ln.strip()]
+    if not domains:
+        await cb.message.answer("Список VPN пуст.", reply_markup=back_to_admin_menu())
+        return
+    await _edit_or_answer(cb, "➖ *Удалить из VPN* — выберите домен:",
+                          domains_inline_kb(domains, "adm:vpn_rm:", "adm:routes"))
+
+
+@router.callback_query(F.data == "adm:direct_remove")
+async def cb_adm_direct_remove(cb: CallbackQuery, **kw):
+    await cb.answer()
+    if not MANUAL_DIRECT.exists():
+        await cb.message.answer("Список Direct пуст.", reply_markup=back_to_admin_menu())
+        return
+    domains = [ln.strip() for ln in MANUAL_DIRECT.read_text().splitlines() if ln.strip()]
+    if not domains:
+        await cb.message.answer("Список Direct пуст.", reply_markup=back_to_admin_menu())
+        return
+    await _edit_or_answer(cb, "➖ *Удалить из Direct* — выберите домен:",
+                          domains_inline_kb(domains, "adm:direct_rm:", "adm:routes"))
+
+
+@router.callback_query(F.data.startswith("adm:vpn_rm:"))
+async def cb_adm_vpn_rm(cb: CallbackQuery, **kw):
+    domain = cb.data[len("adm:vpn_rm:"):]
+    _file_remove_line(MANUAL_VPN, domain)
+    try:
+        await _wc().update_routes()
+    except WatchdogError:
+        pass
+    await cb.answer(f"Удалено: {domain}")
+    await cb.message.edit_text(f"✅ `{domain}` удалён из VPN. Маршруты обновляются...")
+
+
+@router.callback_query(F.data.startswith("adm:direct_rm:"))
+async def cb_adm_direct_rm(cb: CallbackQuery, **kw):
+    domain = cb.data[len("adm:direct_rm:"):]
+    _file_remove_line(MANUAL_DIRECT, domain)
+    try:
+        await _wc().update_routes()
+    except WatchdogError:
+        pass
+    await cb.answer(f"Удалено: {domain}")
+    await cb.message.edit_text(f"✅ `{domain}` удалён из Direct. Маршруты обновляются...")
+
+
+@router.callback_query(F.data == "adm:check")
+async def cb_adm_check(cb: CallbackQuery, state: FSMContext, **kw):
+    await cb.answer()
+    await cb.message.answer("Введите домен для проверки:")
+    await state.set_state(AdminFSM.check_domain)
+
+
+@router.message(AdminFSM.check_domain)
+async def fsm_check_domain(message: Message, state: FSMContext, **kw):
+    domain = message.text.strip().lower().strip(".")
+    await state.clear()
+    in_vpn    = MANUAL_VPN.exists() and domain in MANUAL_VPN.read_text()
+    in_direct = MANUAL_DIRECT.exists() and domain in MANUAL_DIRECT.read_text()
+    label = "🔒 VPN" if in_vpn else ("🌐 Direct" if in_direct else "❓ не задан")
+    await message.answer(f"`{domain}`: {label}", reply_markup=back_to_admin_menu())
+
+
+# ---------------------------------------------------------------------------
+# Рассылка через меню (FSM)
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:broadcast")
+async def cb_adm_broadcast(cb: CallbackQuery, state: FSMContext, **kw):
+    await cb.answer()
+    await cb.message.answer("Введите текст рассылки:")
+    await state.set_state(AdminFSM.broadcast_input)
+
+
+@router.message(AdminFSM.broadcast_input)
+async def fsm_broadcast_input(message: Message, state: FSMContext, **kw):
+    text = message.text.strip()
+    await state.clear()
+    db: Database = kw.get("db")
+    bot = kw.get("bot")
+    clients = await db.get_all_clients()
+    sent = 0
+    for c in clients:
+        if not c.get("is_disabled") and c["chat_id"] != str(message.from_user.id):
+            try:
+                await bot.send_message(c["chat_id"], f"📢 *Объявление:*\n\n{text}")
+                sent += 1
+            except Exception:
+                pass
+    await message.answer(f"✅ Отправлено {sent}/{len(clients)} клиентам.",
+                         reply_markup=back_to_admin_menu())
+
+
+# ---------------------------------------------------------------------------
+# Действия с конкретным клиентом
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("adm:cl:"))
+async def cb_adm_client(cb: CallbackQuery, **kw):
+    chat_id = cb.data[len("adm:cl:"):]
+    db: Database = kw.get("db")
+    client = await db.get_client(chat_id)
+    if not client:
+        await cb.answer("Клиент не найден")
+        return
+    name = client.get("username") or chat_id
+    devices = await db.get_devices(chat_id)
+    text = (
+        f"👤 *{name}*\n"
+        f"ID: `{chat_id}`\n"
+        f"Устройств: {len(devices)}\n"
+        f"Статус: {'🚫 отключён' if client.get('is_disabled') else '✅ активен'}\n"
+        f"Лимит устройств: {client.get('device_limit', 5)}"
     )
+    await _edit_or_answer(cb, text, admin_client_actions_kb(chat_id, bool(client.get("is_disabled"))))
+
+
+@router.callback_query(F.data.startswith("adm:cl_dis:"))
+async def cb_adm_client_disable(cb: CallbackQuery, **kw):
+    chat_id = cb.data[len("adm:cl_dis:"):]
+    db: Database = kw.get("db")
+    await db.set_client_disabled(chat_id, True)
+    await cb.answer("Отключён")
+    await cb.message.edit_text(f"🚫 Клиент `{chat_id}` отключён.")
+
+
+@router.callback_query(F.data.startswith("adm:cl_en:"))
+async def cb_adm_client_enable(cb: CallbackQuery, **kw):
+    chat_id = cb.data[len("adm:cl_en:"):]
+    db: Database = kw.get("db")
+    await db.set_client_disabled(chat_id, False)
+    await cb.answer("Включён")
+    await cb.message.edit_text(f"✅ Клиент `{chat_id}` включён.")
+
+
+@router.callback_query(F.data.startswith("adm:cl_kick:"))
+async def cb_adm_client_kick(cb: CallbackQuery, **kw):
+    chat_id = cb.data[len("adm:cl_kick:"):]
+    db: Database = kw.get("db")
+    bot = kw.get("bot")
+    devices = await db.get_devices(chat_id)
+    wc = _wc()
+    for d in devices:
+        if d.get("public_key"):
+            try:
+                await wc.remove_peer(d["public_key"])
+            except Exception:
+                pass
+        await db.delete_device(d["id"])
+    await db.set_client_disabled(chat_id, True)
+    try:
+        await bot.send_message(chat_id, "❌ Ваш доступ к VPN отозван.")
+    except Exception:
+        pass
+    await cb.answer("Кикнут")
+    await cb.message.edit_text(f"🦵 Клиент `{chat_id}` кикнут, устройства удалены.")
+
+
+@router.callback_query(F.data.startswith("adm:cl_lim:"))
+async def cb_adm_client_limit(cb: CallbackQuery, state: FSMContext, **kw):
+    chat_id = cb.data[len("adm:cl_lim:"):]
+    await cb.answer()
+    await state.update_data(_limit_chat_id=chat_id)
+    await cb.message.answer(f"Введите новый лимит устройств для `{chat_id}`:")
+    await state.set_state(AdminFSM.client_limit_input)
+
+
+@router.message(AdminFSM.client_limit_input)
+async def fsm_client_limit_input(message: Message, state: FSMContext, **kw):
+    data = await state.get_data()
+    chat_id = data.get("_limit_chat_id", "")
+    await state.clear()
+    if not message.text.isdigit():
+        await message.answer("❌ Введите число.", reply_markup=back_to_admin_menu())
+        return
+    limit = int(message.text)
+    db: Database = kw.get("db")
+    await db.set_client_limit(chat_id, limit)
+    await message.answer(f"✅ Лимит для `{chat_id}` = {limit}", reply_markup=back_to_admin_menu())
+
+
+# ---------------------------------------------------------------------------
+# VPS: добавить/удалить через меню
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:vps_add")
+async def cb_adm_vps_add(cb: CallbackQuery, state: FSMContext, **kw):
+    await cb.answer()
+    await cb.message.answer("Введите IP-адрес нового VPS\n(опционально: `IP:PORT`, по умолчанию порт 443):")
+    await state.set_state(AdminFSM.vps_add_ip)
+
+
+@router.message(AdminFSM.vps_add_ip)
+async def fsm_vps_add_ip(message: Message, state: FSMContext, **kw):
+    await state.clear()
+    parts = message.text.strip().split(":")
+    ip = parts[0].strip()
+    port = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 443
+    try:
+        await _wc().add_vps(ip, port)
+        await message.answer(f"✅ VPS `{ip}:{port}` добавлен.", reply_markup=back_to_admin_menu())
+    except WatchdogError as e:
+        await message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data.startswith("adm:vps_rm:"))
+async def cb_adm_vps_remove(cb: CallbackQuery, **kw):
+    ip = cb.data[len("adm:vps_rm:"):]
+    try:
+        await _wc().remove_vps(ip)
+        await cb.answer(f"Удалён: {ip}")
+        await cb.message.edit_text(f"✅ VPS `{ip}` удалён.")
+    except WatchdogError as e:
+        await cb.answer(f"❌ {e}", show_alert=True)
+
+
+# ---------------------------------------------------------------------------
+# Диагностика через меню
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("adm:diag:"))
+async def cb_adm_diagnose(cb: CallbackQuery, **kw):
+    device_name = cb.data[len("adm:diag:"):]
+    await cb.answer(f"Диагностика {device_name}...")
+    try:
+        r = await _wc().diagnose(device_name)
+        text = (
+            f"*Диагностика `{device_name}`:*\n\n"
+            f"WG peer: {'✅' if r.get('wg_peer_found') else '❌'}\n"
+            f"DNS: {'✅' if r.get('dns_ok') else '❌'}\n"
+            f"Туннель: {'✅' if r.get('tunnel_ok') else '❌'} "
+            f"RTT: {r.get('tunnel_rtt_ms', '?')}ms\n"
+            f"Заблокированные сайты: {'✅' if r.get('blocked_sites_ok') else '❌'}"
+        )
+    except WatchdogError as e:
+        text = f"❌ {e}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu())
 
 
 # ---------------------------------------------------------------------------

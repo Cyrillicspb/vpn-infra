@@ -32,8 +32,12 @@ from aiogram.types import (
 )
 
 from handlers.keyboards import (
+    client_excludes_menu,
     client_main_menu,
+    client_request_type_kb,
     devices_inline_kb,
+    excludes_inline_kb,
+    menu_reply_kb,
     proto_inline_kb,
 )
 
@@ -66,6 +70,18 @@ class AddDeviceFSM(StatesGroup):
 
 class RemoveDeviceFSM(StatesGroup):
     confirm = State()
+
+
+class RequestFSM(StatesGroup):
+    domain = State()
+
+
+class ExcludeFSM(StatesGroup):
+    subnet = State()
+
+
+class ReportFSM(StatesGroup):
+    text = State()
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +121,7 @@ async def cmd_start(message: Message, state: FSMContext, **kw):
             return
         devices = await db.get_devices(chat_id)
         name = message.from_user.first_name or "друг"
+        await message.answer("📋 Меню", reply_markup=menu_reply_kb())
         await message.answer(
             f"👋 Добро пожаловать, *{name}*!\n\n"
             f"Устройств подключено: *{len(devices)}*\n\n"
@@ -564,7 +581,7 @@ async def cmd_exclude(message: Message, state: FSMContext, **kw):
             exs = await db.get_excludes(d["id"])
             if exs:
                 lines.append(f"*{d['device_name']}:*")
-                lines.extend(f"  • `{e}`" for e in exs)
+                lines.extend(f"  • `{e['subnet']}`" for e in exs)
         await message.answer("\n".join(lines) if lines else "Исключений нет.")
         return
 
@@ -683,6 +700,231 @@ async def cmd_help(message: Message, state: FSMContext, **kw):
         "/help — эта справка",
         reply_markup=client_main_menu(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Кнопка «📋 Меню» (постоянная ReplyKeyboard)
+# ---------------------------------------------------------------------------
+@router.message(F.text == "📋 Меню", StateFilter("*"))
+async def btn_menu(message: Message, state: FSMContext, **kw):
+    await state.clear()
+    db: Database = kw.get("db")
+    client = await db.get_client(str(message.from_user.id))
+    if not client:
+        return
+    if _is_admin(message):
+        from handlers.keyboards import admin_main_menu
+        await message.answer("*Меню администратора*", reply_markup=admin_main_menu())
+    else:
+        await message.answer("*Меню*", reply_markup=client_main_menu())
+
+
+# ---------------------------------------------------------------------------
+# /menu для клиентов
+# ---------------------------------------------------------------------------
+@router.message(Command("menu"), StateFilter("*"))
+async def cmd_menu_client(message: Message, state: FSMContext, **kw):
+    if _is_admin(message):
+        return  # admin.py обработает
+    await state.clear()
+    client = await _get_client(message, **kw)
+    if not client:
+        return
+    await message.answer("📋 Меню", reply_markup=menu_reply_kb())
+    await message.answer("*Меню*", reply_markup=client_main_menu())
+
+
+# ---------------------------------------------------------------------------
+# Callback «cl:menu» — вернуться в главное меню клиента
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "cl:menu")
+async def cb_cl_menu(cb: CallbackQuery, **kw):
+    await cb.answer()
+    try:
+        await cb.message.edit_text("*Меню*", reply_markup=client_main_menu())
+    except Exception:
+        await cb.message.answer("*Меню*", reply_markup=client_main_menu())
+
+
+# ---------------------------------------------------------------------------
+# Callback: «cl:removedevice» — удалить устройство через меню
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "cl:removedevice")
+async def cb_cl_removedevice(cb: CallbackQuery, **kw):
+    db: Database = kw.get("db")
+    devices = await db.get_devices(str(cb.from_user.id))
+    if not devices:
+        await cb.answer("Нет устройств")
+        await cb.message.answer("Нет устройств.", reply_markup=client_main_menu())
+        return
+    if len(devices) == 1:
+        await cb.answer()
+        await _do_remove_device(cb.message, db, devices[0])
+    else:
+        await cb.answer()
+        await cb.message.answer("Выберите устройство для удаления:",
+                                reply_markup=devices_inline_kb(devices, "rm:", "cl:menu"))
+
+
+# ---------------------------------------------------------------------------
+# Запрос маршрута через меню (FSM)
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "cl:request")
+async def cb_cl_request(cb: CallbackQuery, **kw):
+    await cb.answer()
+    await cb.message.answer("Куда направить домен?", reply_markup=client_request_type_kb())
+
+
+@router.callback_query(F.data.startswith("cl:req:"))
+async def cb_cl_request_type(cb: CallbackQuery, state: FSMContext, **kw):
+    direction = cb.data[len("cl:req:"):]
+    await cb.answer()
+    label = "VPN" if direction == "vpn" else "Direct"
+    await cb.message.answer(f"Введите домен для маршрута *{label}*\n(например: `example.com`):")
+    await state.update_data(_req_direction=direction, _fsm_ts=_now())
+    await state.set_state(RequestFSM.domain)
+
+
+@router.message(RequestFSM.domain)
+async def fsm_request_domain(message: Message, state: FSMContext, **kw):
+    data = await state.get_data()
+    direction = data.get("_req_direction", "vpn")
+    domain = message.text.strip().lower().strip(".")
+    await state.clear()
+    db: Database = kw.get("db")
+    bot = kw.get("bot")
+    req_id = await db.create_domain_request(str(message.from_user.id), domain, direction)
+    await message.answer(
+        f"✅ Запрос #{req_id} отправлен.\nДомен: `{domain}` → {direction}",
+        reply_markup=client_main_menu(),
+    )
+    if bot:
+        asyncio.create_task(
+            bot.send_message(
+                config.admin_chat_id,
+                f"{'🔒' if direction == 'vpn' else '🌐'} Запрос #{req_id} на `{domain}` ({direction})\n"
+                f"От: `{message.from_user.id}`\n/requests — для модерации",
+            )
+        )
+
+
+# ---------------------------------------------------------------------------
+# Исключения через меню
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "cl:excludes")
+async def cb_cl_excludes(cb: CallbackQuery, **kw):
+    await cb.answer()
+    try:
+        await cb.message.edit_text("🚫 *Исключения из VPN*", reply_markup=client_excludes_menu())
+    except Exception:
+        await cb.message.answer("🚫 *Исключения из VPN*", reply_markup=client_excludes_menu())
+
+
+@router.callback_query(F.data == "cl:ex_list")
+async def cb_cl_ex_list(cb: CallbackQuery, **kw):
+    await cb.answer()
+    db: Database = kw.get("db")
+    devices = await db.get_devices(str(cb.from_user.id))
+    lines = []
+    for d in devices:
+        exs = await db.get_excludes(d["id"])
+        if exs:
+            lines.append(f"*{d['device_name']}:*")
+            lines.extend(f"  • `{e['subnet']}`" for e in exs)
+    text = "\n".join(lines) if lines else "Исключений нет."
+    await cb.message.answer(text, reply_markup=client_excludes_menu())
+
+
+@router.callback_query(F.data == "cl:ex_add")
+async def cb_cl_ex_add(cb: CallbackQuery, state: FSMContext, **kw):
+    await cb.answer()
+    db: Database = kw.get("db")
+    devices = await db.get_devices(str(cb.from_user.id))
+    if not devices:
+        await cb.message.answer("Нет устройств.", reply_markup=client_main_menu())
+        return
+    await state.update_data(_ex_device_id=devices[0]["id"], _fsm_ts=_now())
+    await cb.message.answer(
+        f"Введите подсеть для исключения\n(например: `192.168.1.0/24`):"
+    )
+    await state.set_state(ExcludeFSM.subnet)
+
+
+@router.message(ExcludeFSM.subnet)
+async def fsm_exclude_subnet(message: Message, state: FSMContext, **kw):
+    import ipaddress
+    subnet = message.text.strip()
+    try:
+        ipaddress.ip_network(subnet, strict=False)
+    except ValueError:
+        await message.answer(f"❌ Неверный формат: `{subnet}`\nПример: `192.168.1.0/24`")
+        return
+    data = await state.get_data()
+    device_id = data.get("_ex_device_id")
+    await state.clear()
+    db: Database = kw.get("db")
+    await db.add_exclude(device_id, subnet)
+    await message.answer(f"✅ `{subnet}` добавлен в исключения.", reply_markup=client_main_menu())
+
+
+@router.callback_query(F.data == "cl:ex_remove")
+async def cb_cl_ex_remove(cb: CallbackQuery, **kw):
+    await cb.answer()
+    db: Database = kw.get("db")
+    devices = await db.get_devices(str(cb.from_user.id))
+    # Показываем исключения первого устройства с исключениями
+    for d in devices:
+        exs = await db.get_excludes(d["id"])
+        if exs:
+            await cb.message.answer(
+                f"Исключения устройства *{d['device_name']}*:",
+                reply_markup=excludes_inline_kb(exs, d["id"]),
+            )
+            return
+    await cb.message.answer("Исключений нет.", reply_markup=client_excludes_menu())
+
+
+@router.callback_query(F.data.startswith("cl:ex_del:"))
+async def cb_cl_ex_del(cb: CallbackQuery, **kw):
+    parts = cb.data[len("cl:ex_del:"):].split(":", 1)
+    device_id = int(parts[0])
+    subnet = parts[1]
+    db: Database = kw.get("db")
+    await db.remove_exclude(device_id, subnet)
+    await cb.answer(f"Удалено: {subnet}")
+    await cb.message.edit_text(f"✅ `{subnet}` удалён из исключений.")
+
+
+# ---------------------------------------------------------------------------
+# Сообщить о проблеме через меню (FSM)
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "cl:report")
+async def cb_cl_report(cb: CallbackQuery, state: FSMContext, **kw):
+    await cb.answer()
+    await cb.message.answer("Опишите проблему:")
+    await state.update_data(_fsm_ts=_now())
+    await state.set_state(ReportFSM.text)
+
+
+@router.message(ReportFSM.text)
+async def fsm_report_text(message: Message, state: FSMContext, **kw):
+    text = message.text.strip()
+    await state.clear()
+    bot = kw.get("bot")
+    if bot:
+        asyncio.create_task(
+            bot.send_message(
+                config.admin_chat_id,
+                f"📝 *Жалоба от клиента*\n"
+                f"ID: `{message.from_user.id}`\n"
+                f"Username: @{message.from_user.username or 'N/A'}\n\n"
+                f"{text}",
+            )
+        )
+    await message.answer("✅ Сообщение отправлено администратору.", reply_markup=client_main_menu())
 
 
 # ---------------------------------------------------------------------------
@@ -901,7 +1143,8 @@ async def _do_remove_device(message: Message, db: Database, device: dict) -> Non
 async def _send_config(message: Message, db: Database, device: dict, kw: dict) -> None:
     """Отправить конфиг одного устройства пользователю."""
     builder = ConfigBuilder()
-    excludes = await db.get_excludes(device["id"])
+    excludes_raw = await db.get_excludes(device["id"])
+    excludes = [e["subnet"] for e in excludes_raw]
 
     device = await builder.ensure_keys(device)
     conf_text, qr_bytes, version = await builder.build(device, excludes)
