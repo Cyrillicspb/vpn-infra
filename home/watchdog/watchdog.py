@@ -167,8 +167,18 @@ class TelegramQueue:
                         json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
                         timeout=aiohttp.ClientTimeout(total=10),
                     )
-                    if resp.status in (200, 400):   # 400 = плохой текст, не ретраим
+                    if resp.status == 200:
                         return
+                    if resp.status == 400:
+                        # Markdown parse error (напр. _ в reason string) — plain text
+                        resp2 = await session.post(
+                            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                            json={"chat_id": chat_id, "text": text},
+                            timeout=aiohttp.ClientTimeout(total=10),
+                        )
+                        if resp2.status == 200:
+                            return
+                        return  # не ретраить
             except Exception as exc:
                 logger.debug(f"Telegram недоступен (попытка {attempt + 1}): {exc}")
             await asyncio.sleep(min(30, 5 * (attempt + 1)))
