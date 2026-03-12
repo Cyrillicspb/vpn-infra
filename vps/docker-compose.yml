@@ -257,6 +257,29 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # ── Hysteria2 (QUIC + Salamander obfs) — UDP 443 ─────────────────────────────
+  # Отдельный бинарник, не Xray. Сертификат: self-signed в ./hysteria2/
+  # Настройка: HYSTERIA2_AUTH, HYSTERIA2_OBFS_PASSWORD в .env → server.yaml
+  hysteria2:
+    image: tobyxdd/hysteria:v2.6.1
+    container_name: hysteria2
+    restart: always
+    command: server --config /etc/hysteria2/server.yaml
+    volumes:
+      - ./hysteria2:/etc/hysteria2:ro
+    network_mode: host
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ss -ulnp | grep :443"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
   prometheus_data:
     name: vps_prometheus_data

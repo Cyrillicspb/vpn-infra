@@ -921,6 +921,9 @@ CDNEOF
 # Hysteria2 клиент — stack 4 (QUIC + Salamander)
 server: ${VPS_IP}:443
 
+tls:
+  insecure: true
+
 auth: ${HYSTERIA2_AUTH}
 
 obfs:
@@ -936,13 +939,10 @@ quic:
   keepAlivePeriod: 20s
 
 socks5:
-  listen: 127.0.0.1:1082
+  listen: 127.0.0.1:1083
 
-tun:
-  name: tun-hysteria
-  address:
-    ipv4: 172.16.0.1/30
-  mtu: 1280
+log:
+  level: warn
 EOF
         chmod 600 /etc/hysteria/config.yaml
         log_ok "Конфиг Hysteria2 создан: /etc/hysteria/config.yaml"

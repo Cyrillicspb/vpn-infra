@@ -1,7 +1,11 @@
-# Hysteria2 client config
-# Генерируется setup.sh из .env
+# Hysteria2 client config — генерируется setup.sh из .env
+# Путь на сервере: /etc/hysteria/config.yaml (systemd unit: hysteria2.service)
+# TUN убран — watchdog использует tun2socks поверх SOCKS5 :1083
 
 server: "${HYSTERIA2_SERVER}:443"
+
+tls:
+  insecure: true    # self-signed cert на сервере
 
 auth: "${HYSTERIA2_AUTH}"
 
@@ -10,25 +14,15 @@ obfs:
   salamander:
     password: "${HYSTERIA2_OBFS_PASSWORD}"
 
-quic:
-  keepAlivePeriod: 20s
-
 bandwidth:
   up: 50 mbps
   down: 200 mbps
 
-tun:
-  name: tun-hysteria2
-  mtu: 1500
-  address:
-    ipv4: 172.16.0.1/30
-  route:
-    # Маршруты управляются watchdog через ip rule/route
-    strict: false
+quic:
+  keepAlivePeriod: 20s
 
 socks5:
   listen: 127.0.0.1:1083
 
-# Логи
 log:
   level: warn

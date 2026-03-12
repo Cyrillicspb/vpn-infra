@@ -266,7 +266,7 @@ else
         mkdir -p /opt/vpn/scripts /opt/vpn/nginx/mtls /opt/vpn/nginx/ssl \
                  /opt/vpn/nginx/conf.d /opt/vpn/cloudflared /opt/vpn/3x-ui/db \
                  /opt/vpn/prometheus /opt/vpn/alertmanager /opt/vpn/grafana \
-                 /opt/vpn/backups /opt/vpn/vpn-repo.git"
+                 /opt/vpn/hysteria2 /opt/vpn/backups /opt/vpn/vpn-repo.git"
 
     # Копируем директорию vps/ из репозитория
     VPS_DIR="${REPO_DIR}/vps"
@@ -368,6 +368,61 @@ else
 fi
 
 # ── Шаг 38: Запуск Docker Compose на VPS ─────────────────────────────────────
+
+if is_done "step37b_vps_hysteria2_config"; then
+    step_skip "step37b_vps_hysteria2_config"
+else
+    step "Генерация конфига Hysteria2-сервера и TLS-сертификата"
+
+    # Генерируем self-signed cert для Hysteria2 (TLS over QUIC)
+    vps_exec "sudo mkdir -p /opt/vpn/hysteria2 && \
+        sudo openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+            -keyout /opt/vpn/hysteria2/server.key \
+            -out /opt/vpn/hysteria2/server.crt \
+            -days 3650 -nodes \
+            -subj \"/CN=${VPS_IP}\" \
+            -addext \"subjectAltName=IP:${VPS_IP}\" 2>/dev/null && \
+        sudo chmod 600 /opt/vpn/hysteria2/server.key"
+
+    # Генерируем server.yaml с реальными значениями из .env
+    vps_exec "sudo tee /opt/vpn/hysteria2/server.yaml > /dev/null << 'HYEOF'
+listen: :443
+
+tls:
+  cert: /etc/hysteria2/server.crt
+  key: /etc/hysteria2/server.key
+
+obfs:
+  type: salamander
+  salamander:
+    password: ${HYSTERIA2_OBFS}
+
+auth:
+  type: password
+  password: ${HYSTERIA2_AUTH}
+
+bandwidth:
+  up: 200 mbps
+  down: 200 mbps
+
+quic:
+  keepAlivePeriod: 20s
+  maxIdleTimeout: 60s
+  maxIncomingStreams: 1024
+
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.microsoft.com
+    rewriteHost: true
+
+log:
+  level: warn
+HYEOF"
+
+    log_ok "Hysteria2 server.yaml и TLS cert сгенерированы"
+    step_done "step37b_vps_hysteria2_config"
+fi
 
 if is_done "step38_vps_docker_compose"; then
     step_skip "step38_vps_docker_compose"
