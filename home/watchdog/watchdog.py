@@ -445,13 +445,31 @@ def detect_volume_shaping() -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Хелпер: выбор wg/awg команды по интерфейсу
+# ---------------------------------------------------------------------------
+def _wg_tool(iface: str) -> str:
+    """wg0 использует AmneziaWG → awg/awg-quick, остальные → wg/wg-quick."""
+    return "awg" if iface == "wg0" else "wg"
+
+
+def _wg_quick_tool(iface: str) -> str:
+    return "awg-quick" if iface == "wg0" else "wg-quick"
+
+
+# ---------------------------------------------------------------------------
 # Мониторинг: WireGuard peers
 # ---------------------------------------------------------------------------
 async def check_wg_peers() -> None:
     """Проверка stale peers (last handshake > 180 сек)."""
-    rc, out, _ = await run_cmd(["wg", "show", "all", "latest-handshakes"], timeout=10)
-    if rc != 0:
+    # Собираем данные из обоих стеков (awg — wg0, wg — wg1)
+    combined_out = ""
+    for tool in ("awg", "wg"):
+        rc, out, _ = await run_cmd([tool, "show", "all", "latest-handshakes"], timeout=10)
+        if rc == 0:
+            combined_out += out
+    if not combined_out:
         return
+    out = combined_out
     now = int(time.time())
     for line in out.strip().splitlines():
         parts = line.split()
@@ -1299,9 +1317,13 @@ async def get_metrics(_: bool = Depends(_auth)):
 
 @app.get("/peer/list")
 async def get_peer_list(_: bool = Depends(_auth)):
-    rc, out, _ = await run_cmd(["wg", "show", "all", "dump"], timeout=10)
+    combined_out = ""
+    for tool in ("awg", "wg"):
+        rc, out, _ = await run_cmd([tool, "show", "all", "dump"], timeout=10)
+        if rc == 0:
+            combined_out += out
     peers = []
-    for line in out.strip().splitlines():
+    for line in combined_out.strip().splitlines():
         parts = line.split("\t")
         if len(parts) >= 5:
             peers.append({
@@ -1361,7 +1383,8 @@ async def _peer_add_task(req: PeerAddRequest) -> None:
             pubkey = out.decode().strip()
 
         # Выбираем свободный IP
-        rc, used_out, _ = await run_cmd(["wg", "show", iface, "allowed-ips"], timeout=10)
+        wg = _wg_tool(iface)
+        rc, used_out, _ = await run_cmd([wg, "show", iface, "allowed-ips"], timeout=10)
         used_ips = set()
         for line in used_out.splitlines():
             for part in line.split():
@@ -1381,11 +1404,11 @@ async def _peer_add_task(req: PeerAddRequest) -> None:
             return
 
         rc, _, err = await run_cmd(
-            ["wg", "set", iface, "peer", pubkey, "allowed-ips", f"{peer_ip}/32"],
+            [wg, "set", iface, "peer", pubkey, "allowed-ips", f"{peer_ip}/32"],
             timeout=10,
         )
         if rc == 0:
-            await run_cmd(["wg-quick", "save", iface], timeout=10)
+            await run_cmd([_wg_quick_tool(iface), "save", iface], timeout=10)
             logger.info(f"Peer добавлен: {req.name} → {peer_ip} на {iface}")
         else:
             logger.error(f"Ошибка добавления peer {req.name}: {err}")
@@ -1395,11 +1418,12 @@ async def _peer_add_task(req: PeerAddRequest) -> None:
 @limiter.limit("10/second")
 async def post_peer_remove(request: Request, req: PeerRemoveRequest, _: bool = Depends(_auth)):
     for iface in ([req.interface] if req.interface else ["wg0", "wg1"]):
+        wg = _wg_tool(iface)
         rc, _, _ = await run_cmd(
-            ["wg", "set", iface, "peer", req.peer_id, "remove"], timeout=10
+            [wg, "set", iface, "peer", req.peer_id, "remove"], timeout=10
         )
         if rc == 0:
-            await run_cmd(["wg-quick", "save", iface], timeout=10)
+            await run_cmd([_wg_quick_tool(iface), "save", iface], timeout=10)
             return {"status": "removed", "peer_id": req.peer_id, "interface": iface}
     raise HTTPException(status_code=404, detail="Peer не найден")
 
@@ -1541,9 +1565,13 @@ async def post_graph(request: Request, req: GraphRequest, _: bool = Depends(_aut
 async def post_diagnose(request: Request, device: str, _: bool = Depends(_auth)):
     results: dict[str, Any] = {"device": device, "ts": datetime.now().isoformat()}
 
-    # WG peer
-    rc, out, _ = await run_cmd(["wg", "show", "all", "dump"], timeout=10)
-    results["wg_peer_found"] = device in out
+    # WG peer (проверяем оба стека)
+    wg_dump = ""
+    for tool in ("awg", "wg"):
+        rc, out, _ = await run_cmd([tool, "show", "all", "dump"], timeout=10)
+        if rc == 0:
+            wg_dump += out
+    results["wg_peer_found"] = device in wg_dump
 
     # DNS
     rc, out, _ = await run_cmd(["dig", "@127.0.0.1", "youtube.com", "+short", "+time=3"], timeout=10)
