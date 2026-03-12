@@ -1102,6 +1102,14 @@ async def decision_loop() -> None:
 # ---------------------------------------------------------------------------
 # Мониторинг Loop
 # ---------------------------------------------------------------------------
+async def _watchdog_ping_loop() -> None:
+    """Независимый ping systemd watchdog каждые 10 сек.
+    Отдельный task — не блокируется долгими операциями monitoring_loop."""
+    while True:
+        _notify_systemd(b"WATCHDOG=1")
+        await asyncio.sleep(10)
+
+
 async def monitoring_loop() -> None:
     """Периодические проверки всех компонентов системы."""
     tick = 0
@@ -1118,9 +1126,6 @@ async def monitoring_loop() -> None:
         try:
             now = time.time()
             tick += 1
-
-            # Systemd watchdog ping — в начале итерации, до тяжёлых операций
-            _notify_systemd(b"WATCHDOG=1")
 
             # Каждые 30 сек: dnsmasq
             if tick % 3 == 0:
@@ -1173,7 +1178,7 @@ async def monitoring_loop() -> None:
                 await test_standby_tunnels()
                 standby_checked_today = True
 
-            # (watchdog ping уже отправлен в начале итерации)
+            pass  # watchdog ping отправляется из _watchdog_ping_loop()
 
         except Exception as exc:
             logger.error(f"monitoring_loop ошибка: {exc}")
@@ -1600,6 +1605,23 @@ async def on_startup() -> None:
     # Загружаем состояние
     state.load()
 
+    # Поднимаем активный стек при старте
+    active_plugin = plugins.get(state.active_stack)
+    if active_plugin:
+        tun_name = active_plugin.meta.get("tun_name", f"tun-{state.active_stack}")
+        rc, _, _ = await run_cmd(["ip", "link", "show", tun_name], timeout=5)
+        if rc != 0:
+            logger.info(f"Поднимаем стек {state.active_stack} при старте...")
+            ok = await active_plugin.start()
+            if ok:
+                await run_cmd(
+                    ["ip", "route", "replace", "default", "dev", tun_name, "table", "marked"],
+                    timeout=5,
+                )
+                logger.info(f"Стек {state.active_stack} поднят, маршрут настроен")
+            else:
+                logger.warning(f"Не удалось поднять стек {state.active_stack} при старте")
+
     # Consistency recovery
     ok, _ = await ping_vps()
     if not ok:
@@ -1609,9 +1631,10 @@ async def on_startup() -> None:
         state.degraded_mode = False
 
     # Запускаем фоновые задачи
-    asyncio.create_task(tg.run(),    name="tg-queue")
-    asyncio.create_task(decision_loop(), name="decision-loop")
-    asyncio.create_task(monitoring_loop(), name="monitoring-loop")
+    asyncio.create_task(tg.run(),              name="tg-queue")
+    asyncio.create_task(_watchdog_ping_loop(), name="watchdog-ping")
+    asyncio.create_task(decision_loop(),       name="decision-loop")
+    asyncio.create_task(monitoring_loop(),     name="monitoring-loop")
 
     _notify_systemd(b"READY=1")
     logger.info(f"Watchdog готов. Стек: {state.active_stack}, degraded={state.degraded_mode}")
