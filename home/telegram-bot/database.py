@@ -404,7 +404,9 @@ class Database:
                 )
                 conn.commit()
                 row = conn.execute(
-                    "SELECT * FROM devices WHERE id = ?", (device_id,)
+                    """SELECT d.*, c.chat_id FROM devices d
+                       JOIN clients c ON c.id = d.client_id
+                       WHERE d.id = ?""", (device_id,)
                 ).fetchone()
                 return dict(row) if row else None
             finally:
