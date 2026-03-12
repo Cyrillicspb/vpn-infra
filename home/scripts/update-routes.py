@@ -70,6 +70,7 @@ HASH_FILE       = ROUTES_DIR / "combined.hash"
 NFT_STATIC      = Path("/etc/nftables-blocked-static.conf")
 DNSMASQ_DOMAINS = Path("/etc/dnsmasq.d/vpn-domains.conf")
 DNSMASQ_FORCE   = Path("/etc/dnsmasq.d/vpn-force.conf")
+DNSMASQ_DIRECT  = Path("/etc/dnsmasq.d/vpn-direct.conf")
 MANUAL_VPN      = ROUTES_DIR / "manual-vpn.txt"
 MANUAL_DIRECT   = ROUTES_DIR / "manual-direct.txt"
 
@@ -88,6 +89,11 @@ FETCH_TIMEOUT        = 45     # Таймаут загрузки источник
 FETCH_TIMEOUT_ZIP    = 180    # Таймаут для ZIP (ZIP архив ~15 MB)
 FETCH_WORKERS        = 6      # Параллельные загрузки
 ZAPRET_MAX_LINES     = 500_000  # Лимит строк из всех dump-*.csv
+
+# ── TLD которые всегда идут напрямую (не через VPN) ───────────────────────────
+# .рф в punycode = xn--p1acf
+# Российские домены: не нужен VPN, российские сервисы блокируют иностранные IP
+DIRECT_TLDS: frozenset[str] = frozenset({".ru", ".xn--p1acf"})
 
 # ── Источники ─────────────────────────────────────────────────────────────────
 # type: "ip_list" | "cidr_list" | "zapret_csv" | "plain"
@@ -422,6 +428,14 @@ def _to_root_domain(domain: str) -> str:
     if len(parts) >= 2:
         return ".".join(parts[-2:])
     return domain
+
+
+def _is_direct_tld(domain: str) -> bool:
+    """True если домен должен идти напрямую (не через VPN)."""
+    for tld in DIRECT_TLDS:
+        if domain.endswith(tld):
+            return True
+    return False
 
 
 def _parse_bat_routes(content: str) -> set[ipaddress.IPv4Network]:
@@ -837,17 +851,50 @@ def write_dnsmasq_config(
         "",
     ]
 
+    written = 0
     for domain in sorted(set(domains)):
         domain = domain.strip().lower().lstrip("*.")
         if not domain or not _is_valid_domain(domain):
             continue
+        if _is_direct_tld(domain):
+            continue  # .ru/.рф → всегда прямое, не добавлять через VPS
         lines.append(f"server=/{domain}/{vps_dns}")
         lines.append(f"nftset=/{domain}/4#inet#vpn#blocked_dynamic")
         lines.append("")
+        written += 1
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     out_file.write_text("\n".join(lines), encoding="utf-8")
-    log.info(f"{out_file.name}: {len(domains)} доменов")
+    log.info(f"{out_file.name}: {written} доменов (пропущено direct TLD: {len(domains) - written})")
+
+
+# =============================================================================
+# Запись vpn-direct.conf — прямые TLD (.ru, .рф)
+# =============================================================================
+def write_dnsmasq_direct() -> None:
+    """
+    vpn-direct.conf: .ru и .рф всегда резолвятся через локальный DNS.
+    server=/.ru/ — пустой upstream = использовать системный резолвер (1.1.1.1/8.8.8.8).
+    НЕТ nftset — IP не добавляются в blocked_dynamic → пакеты идут напрямую.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    lines = [
+        f"# vpn-direct.conf — TLD с прямым подключением (без VPN)",
+        f"# Обновлено: {now}",
+        "# .ru и .рф (punycode: xn--p1acf) — всегда через локальный DNS",
+        "# IP этих доменов НЕ добавляются в blocked_dynamic → трафик идёт напрямую",
+        "# Без этого файла zapret/antifilter отправляли бы .ru домены через VPS DNS",
+        "",
+        "# .ru — российские домены",
+        "server=/.ru/",
+        "",
+        "# .рф — российские домены в кириллице (IDN punycode)",
+        "server=/.xn--p1acf/",
+        "",
+    ]
+    DNSMASQ_DIRECT.parent.mkdir(parents=True, exist_ok=True)
+    DNSMASQ_DIRECT.write_text("\n".join(lines), encoding="utf-8")
+    log.info("vpn-direct.conf: .ru/.рф → прямое подключение (локальный DNS)")
 
 
 # =============================================================================
@@ -1029,6 +1076,8 @@ def main() -> None:
         VPS_TUNNEL_IP,
         header_comment="manual-vpn.txt (добавлены через /vpn add)",
     )
+
+    write_dnsmasq_direct()
 
     # ── Применение (только root) ───────────────────────────────────────────────
     if os.geteuid() == 0:
