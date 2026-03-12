@@ -185,7 +185,7 @@ class Database:
         conn = self._conn()
         try:
             rows = conn.execute(
-                "SELECT * FROM clients WHERE is_admin = 0 ORDER BY created_at"
+                "SELECT * FROM clients ORDER BY created_at"
             ).fetchall()
             return [dict(r) for r in rows]
         finally:
