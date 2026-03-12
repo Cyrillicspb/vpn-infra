@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+
+from aiogram.types import BufferedInputFile
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
@@ -126,15 +128,14 @@ class AutoDist:
         if qr_bytes:
             await self.bot.send_photo(
                 chat_id,
-                photo=io.BytesIO(qr_bytes),
+                photo=BufferedInputFile(qr_bytes, filename="qr.png"),
                 caption=f"QR-код для `{device['device_name']}`{caption_reason}",
             )
 
         # .conf файл
         await self.bot.send_document(
             chat_id,
-            document=io.BytesIO(conf_text.encode()),
-            filename=f"vpn-{device['device_name']}.conf",
+            document=BufferedInputFile(conf_text.encode(), filename=f"vpn-{device['device_name']}.conf"),
             caption=f"Конфигурация `{device['device_name']}`{caption_reason}",
         )
 

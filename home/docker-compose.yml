@@ -70,6 +70,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./telegram-bot/data:/app/data
+      - /etc/vpn-routes:/etc/vpn-routes:ro
     networks:
       vpn-net:
         ipv4_address: 172.20.0.11

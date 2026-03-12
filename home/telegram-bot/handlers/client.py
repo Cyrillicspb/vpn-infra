@@ -408,7 +408,7 @@ async def adddev_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
                 bot.send_message(
                     config.admin_chat_id,
                     f"📱 Новый запрос на устройство!\n"
-                    f"Клиент: `{chat_id}`  Устройство: `{data['device_name']}`\n"
+                    f"Клиент: `{cb.from_user.username or cb.from_user.first_name or chat_id}`  Устройство: `{data['device_name']}`\n"
                     f"Протокол: `{protocol.upper()}`\n"
                     f"/requests — для одобрения",
                 )
@@ -439,7 +439,7 @@ async def adddev_protocol(message: Message, state: FSMContext, **kw):
                 bot.send_message(
                     config.admin_chat_id,
                     f"📱 Новый запрос на устройство!\n"
-                    f"Клиент: `{chat_id}`  Устройство: `{data['device_name']}`\n"
+                    f"Клиент: `{message.from_user.username or message.from_user.first_name or chat_id}`  Устройство: `{data['device_name']}`\n"
                     f"Протокол: `{protocol.upper()}`\n"
                     f"/requests — для одобрения",
                 )
