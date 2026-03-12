@@ -20,6 +20,28 @@ networks:
 
 services:
 
+  # ── Nginx — Grafana через VPN (10.177.1.1:9000 → VPS tier2 10.177.2.1:9000) ─
+  # Только VPN-клиенты (10.177.1.0/24) могут подключиться, снаружи порт закрыт
+  # Запуск: всегда (restart: always), не зависит от других сервисов
+  nginx:
+    image: nginx:1.25.4-alpine
+    container_name: nginx
+    restart: always
+    network_mode: host
+    volumes:
+      - ./nginx/grafana.conf:/etc/nginx/conf.d/grafana.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://10.177.1.1:9000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # ── Docker socket proxy (безопасный доступ к Docker API) ────────────────────
   # Telegram-бот и Portainer не получают полный доступ к /var/run/docker.sock
   socket-proxy:

@@ -20,6 +20,7 @@ vps/.env
 !home/xray/config-grpc.json
 !home/cloudflared/config.yml
 !vps/nginx/conf.d/default.conf
+!home/nginx/grafana.conf
 
 # База данных бота
 home/telegram-bot/data/
