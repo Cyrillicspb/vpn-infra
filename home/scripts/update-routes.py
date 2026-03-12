@@ -7,18 +7,20 @@ update-routes.py — Обновление маршрутов из баз РКН/
   python3 update-routes.py --dry-run   — показать результат без применения
   python3 update-routes.py --force     — применить даже без изменений
 
-Источники (6+):
-  1. antifilter.download/list/ip.lst
-  2. antifilter.download/list/subnet.lst
-  3. community.antifilter.download/list/ip.lst
-  4. iplist.opencck.org/lists/ipv4/subnet.txt
-  5. github.com/zapret-info/z-i/dump.csv     (IP + домены)
-  6. github.com/RockBlack-VPN                (геоблокировки)
-  7. /etc/vpn-routes/manual-vpn.txt          (ручные IP/домены)
-  8. Статические AS-блоки CDN               (Google, CF, Meta, Akamai)
+Источники (10+):
+  1.  antifilter.download/list/ip.lst
+  2.  antifilter.download/list/subnet.lst
+  3.  antifilter.download/list/allyouneed.lst       (14K CIDR агрегированных)
+  4.  antifilter.download/list/domains.lst           (1.3M → root domains)
+  5.  iplist.opencck.org/?format=text&data=cidr4    (2.7K CIDR)
+  6.  iplist.opencck.org/?format=text&data=domains  (26K доменов)
+  7.  github.com/zapret-info/z-i dump-00..18.csv    (через SOCKS5, IP + домены)
+  8.  github.com/RockBlack-VPN/ip-address/Global    (через SOCKS5, .bat + _domain)
+  9.  /etc/vpn-routes/manual-vpn.txt                (ручные IP/домены)
+  10. Статические AS-блоки CDN                      (Google, CF, Meta, Akamai)
 
 Выходные файлы:
-  /etc/nftables-blocked-static.conf   — атомарное обновление nft set (flush + add)
+  /etc/nftables-blocked-static.conf   — атомарное обновление nft set
   /etc/vpn-routes/combined.cidr       — агрегированные CIDR для AllowedIPs (≤500)
   /etc/dnsmasq.d/vpn-domains.conf     — nftset= + server= для баз РКН
   /etc/dnsmasq.d/vpn-force.conf       — nftset= + server= для manual-vpn.txt
@@ -35,16 +37,19 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import io
 import ipaddress
 import json
 import logging
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -80,12 +85,17 @@ MAX_CIDR_ALLOWED_IPS = 500    # Лимит записей AllowedIPs (для QR:
 ALERT_CACHE_AGE_DAYS = 3      # Алерт если кэш старше N дней
 MAX_DELTA_PCT        = 50     # Максимальная дельта изменений (%)
 FETCH_TIMEOUT        = 45     # Таймаут загрузки источника (сек)
-FETCH_WORKERS        = 4      # Параллельные загрузки
-ZAPRET_MAX_LINES     = 300_000  # Лимит строк из dump.csv (файл ~100 MB)
+FETCH_TIMEOUT_ZIP    = 180    # Таймаут для ZIP (ZIP архив ~15 MB)
+FETCH_WORKERS        = 6      # Параллельные загрузки
+ZAPRET_MAX_LINES     = 500_000  # Лимит строк из всех dump-*.csv
 
 # ── Источники ─────────────────────────────────────────────────────────────────
 # type: "ip_list" | "cidr_list" | "zapret_csv" | "plain"
+#       "root_domains" | "domain_list" | "rockblack_zip"
+# urls: список URL (для multi-URL источников, скачиваются по очереди)
+# proxy: True — требуется SOCKS5 (источник блокируется из РФ)
 SOURCES: dict[str, dict] = {
+    # ── Antifilter ────────────────────────────────────────────────────────────
     "antifilter_ip": {
         "url":       "https://antifilter.download/list/ip.lst",
         "type":      "ip_list",
@@ -98,34 +108,53 @@ SOURCES: dict[str, dict] = {
         "min_lines": 50,
         "desc":      "Antifilter subnet list",
     },
-    "antifilter_community": {
-        "url":       "https://community.antifilter.download/list/ip.lst",
-        "type":      "ip_list",
+    "antifilter_allyouneed": {
+        "url":       "https://antifilter.download/list/allyouneed.lst",
+        "type":      "cidr_list",
         "min_lines": 100,
-        "desc":      "Antifilter Community IP list",
+        "desc":      "Antifilter all-you-need (14K агрегированных CIDR)",
     },
-    "opencck_subnet": {
-        "url":       "https://iplist.opencck.org/lists/ipv4/subnet.txt",
+    "antifilter_domains": {
+        "url":       "https://antifilter.download/list/domains.lst",
+        "type":      "root_domains",
+        "min_lines": 10_000,
+        "desc":      "Antifilter domains (1.3M → root domains)",
+    },
+    # ── OpenCCK (iplist) ──────────────────────────────────────────────────────
+    "opencck_cidr4": {
+        "url":       "https://iplist.opencck.org/?format=text&data=cidr4",
         "type":      "cidr_list",
         "min_lines": 50,
-        "desc":      "OpenCCK subnet list",
+        "desc":      "OpenCCK CIDR4 (2.7K)",
     },
+    "opencck_domains": {
+        "url":       "https://iplist.opencck.org/?format=text&data=domains",
+        "type":      "domain_list",
+        "min_lines": 100,
+        "desc":      "OpenCCK domains (26K)",
+    },
+    # ── Zapret-info (GitHub raw заблокирован из РФ → SOCKS5) ─────────────────
     "zapret_info": {
-        "url":       "https://raw.githubusercontent.com/zapret-info/z-i/master/dump.csv",
+        "urls": [
+            f"https://raw.githubusercontent.com/zapret-info/z-i/master/dump-{i:02d}.csv"
+            for i in range(19)
+        ],
         "type":      "zapret_csv",
         "min_lines": 100,
-        "desc":      "Zapret-info dump.csv (IP + домены)",
+        "desc":      "Zapret-info dump CSV (19 файлов, IP + домены)",
+        "proxy":     True,
     },
-    "rockblack_geoblocks": {
-        "url":       "https://raw.githubusercontent.com/RockBlack-VPN/ipv4-blacklist/main/ipv4-blacklist.txt",
-        "type":      "cidr_list",
+    # ── RockBlack сервисы (GitHub заблокирован из РФ → SOCKS5) ───────────────
+    "rockblack_global": {
+        "url":       "https://github.com/RockBlack-VPN/ip-address/archive/refs/heads/main.zip",
+        "type":      "rockblack_zip",
         "min_lines": 10,
-        "desc":      "RockBlack геоблокировки",
+        "desc":      "RockBlack 230 сервисов (Windows route → CIDR + domain)",
+        "proxy":     True,
     },
 }
 
 # ── Статические AS-блоки CDN (широкий забор, не убирается самообучением) ──────
-# Источник: RIPE NCC, AS15169 (Google), AS13335 (Cloudflare), AS32934 (Meta)
 CDN_SUBNETS: list[str] = [
     # Google (AS15169) — YouTube, GDrive, Gmail, Play Store
     "8.8.8.8/32", "8.8.4.4/32",
@@ -171,7 +200,7 @@ CDN_SUBNETS: list[str] = [
 STATIC_BLOCKED_DOMAINS: list[str] = [
     # Видео
     "youtube.com", "youtu.be", "googlevideo.com",
-    "ggpht.com", "ytimg.com", "yt3.ggpht.com",
+    "ggpht.com", "ytimg.com",
     # Соцсети
     "instagram.com", "cdninstagram.com",
     "facebook.com", "fbcdn.net", "fb.com", "fb.me",
@@ -195,34 +224,86 @@ STATIC_BLOCKED_DOMAINS: list[str] = [
 
 
 # =============================================================================
+# Определение SOCKS5 прокси
+# =============================================================================
+def _get_socks5_proxy() -> Optional[str]:
+    """
+    Определяет активный SOCKS5 порт watchdog.
+    Читает state.json, fallback — пробует порты напрямую.
+    """
+    port_map = {
+        "cloudflare-cdn": 1082,
+        "reality":        1080,
+        "reality-grpc":   1081,
+        "hysteria2":      1083,
+    }
+
+    state_paths = [
+        Path("/opt/vpn/watchdog/state.json"),
+        Path("/tmp/watchdog-state.json"),
+    ]
+    for sf in state_paths:
+        if sf.exists():
+            try:
+                state = json.loads(sf.read_text())
+                stack = state.get("active_stack", "")
+                port = port_map.get(stack)
+                if port:
+                    log.debug(f"SOCKS5 прокси: стек={stack} порт={port}")
+                    return f"socks5://127.0.0.1:{port}"
+            except Exception:
+                pass
+
+    # Fallback: проверяем известные порты
+    for port in [1083, 1080, 1081, 1082]:
+        try:
+            s = socket.socket()
+            s.settimeout(1.0)
+            s.connect(("127.0.0.1", port))
+            s.close()
+            log.debug(f"SOCKS5 прокси: порт {port} доступен (fallback)")
+            return f"socks5://127.0.0.1:{port}"
+        except Exception:
+            pass
+
+    return None
+
+
+# =============================================================================
 # Telegram уведомления
 # =============================================================================
-def send_telegram(text: str, parse_mode: str = "Markdown") -> None:
+def send_telegram(text: str) -> None:
     if not BOT_TOKEN or not ADMIN_CHAT_ID:
         return
-    try:
-        payload = json.dumps({
-            "chat_id": ADMIN_CHAT_ID,
-            "text": text,
-            "parse_mode": parse_mode,
-        }).encode()
-        req = urllib.request.Request(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-        )
-        urllib.request.urlopen(req, timeout=10)
-    except Exception as exc:
-        log.debug(f"Telegram недоступен: {exc}")
+    for parse_mode in ("Markdown", None):
+        try:
+            payload: dict = {"chat_id": ADMIN_CHAT_ID, "text": text}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            data = json.dumps(payload).encode()
+            req = urllib.request.Request(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                data=data,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    return
+        except urllib.error.HTTPError as e:
+            if e.code == 400 and parse_mode:
+                continue  # Retry without Markdown
+            log.debug(f"Telegram HTTP {e.code}: {e}")
+            return
+        except Exception as exc:
+            log.debug(f"Telegram недоступен: {exc}")
+            return
 
 
 # =============================================================================
 # Сигнал watchdog → запустить авторассылку конфигов
 # =============================================================================
 def notify_watchdog_routes_updated() -> None:
-    """POST /notify-clients к watchdog — триггер авторассылки конфигов."""
     if not WATCHDOG_TOKEN:
-        log.debug("WATCHDOG_API_TOKEN не задан, пропуск уведомления watchdog")
         return
     try:
         payload = json.dumps({"reason": "routes_updated"}).encode()
@@ -241,7 +322,64 @@ def notify_watchdog_routes_updated() -> None:
 
 
 # =============================================================================
-# Загрузка источников с кэшем
+# Загрузка — низкоуровневые функции
+# =============================================================================
+def _fetch_raw(url: str, timeout: int = FETCH_TIMEOUT, proxy: Optional[str] = None) -> str:
+    """Скачать URL → str. Если proxy задан — использует curl."""
+    if proxy:
+        result = subprocess.run(
+            [
+                "curl", "-sL",
+                "--max-time", str(timeout),
+                "--proxy", proxy,
+                "-A", "vpn-routes-updater/2.0",
+                url,
+            ],
+            capture_output=True,
+            timeout=timeout + 10,
+        )
+        if result.returncode != 0:
+            err = result.stderr.decode("utf-8", errors="ignore")[:200]
+            raise OSError(f"curl rc={result.returncode}: {err}")
+        return result.stdout.decode("utf-8", errors="ignore")
+    else:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "vpn-routes-updater/2.0 (+https://github.com/Cyrillicspb/vpn-infra)"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="ignore")
+
+
+def _fetch_bytes(url: str, timeout: int = FETCH_TIMEOUT_ZIP, proxy: Optional[str] = None) -> bytes:
+    """Скачать URL → bytes (для ZIP и бинарных файлов)."""
+    if proxy:
+        result = subprocess.run(
+            [
+                "curl", "-sL",
+                "--max-time", str(timeout),
+                "--proxy", proxy,
+                "-A", "vpn-routes-updater/2.0",
+                url,
+            ],
+            capture_output=True,
+            timeout=timeout + 10,
+        )
+        if result.returncode != 0:
+            err = result.stderr.decode("utf-8", errors="ignore")[:200]
+            raise OSError(f"curl rc={result.returncode}: {err}")
+        return result.stdout
+    else:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "vpn-routes-updater/2.0 (+https://github.com/Cyrillicspb/vpn-infra)"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+
+
+# =============================================================================
+# Кэш
 # =============================================================================
 def _cache_path(key: str) -> Path:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -249,7 +387,6 @@ def _cache_path(key: str) -> Path:
 
 
 def _check_cache_age(cache_file: Path, key: str) -> None:
-    """Алерт если кэш старше ALERT_CACHE_AGE_DAYS."""
     age_days = (time.time() - cache_file.stat().st_mtime) / 86400
     if age_days > ALERT_CACHE_AGE_DAYS:
         msg = f"⚠️ *Кэш маршрутов `{key}` устарел*: {age_days:.1f} дней\nИсточник недоступен!"
@@ -257,54 +394,57 @@ def _check_cache_age(cache_file: Path, key: str) -> None:
         send_telegram(msg)
 
 
-def _fetch_raw(url: str, timeout: int = FETCH_TIMEOUT) -> str:
-    """Скачать URL → сырой текст."""
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "vpn-routes-updater/2.0 (+https://github.com/Cyrillicspb/vpn-infra)"},
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode("utf-8", errors="ignore")
-
-
-def fetch_source(key: str, cfg: dict) -> tuple[set[ipaddress.IPv4Network], set[str]]:
-    """
-    Скачать один источник → (set[IPv4Network], set[str] domains).
-    При ошибке → кэш. При отсутствии кэша → пустые множества.
-    """
-    cache_file = _cache_path(key)
-    url = cfg["url"]
-    min_lines = cfg.get("min_lines", 10)
-    src_type = cfg["type"]
-    desc = cfg.get("desc", key)
-
-    raw: Optional[str] = None
-    from_cache = False
-
+# =============================================================================
+# Парсинг источников
+# =============================================================================
+def _parse_network(s: str) -> Optional[ipaddress.IPv4Network]:
+    s = s.strip()
+    if not s or s.startswith("#"):
+        return None
     try:
-        log.info(f"[{key}] Загрузка: {url}")
-        raw = _fetch_raw(url)
-        # Сохраняем в кэш
-        cache_file.write_text(raw, encoding="utf-8")
-        log.info(f"[{key}] Загружено {len(raw.splitlines())} строк")
-    except Exception as exc:
-        log.warning(f"[{key}] Ошибка загрузки: {exc}")
-        if cache_file.exists():
-            raw = cache_file.read_text(encoding="utf-8")
-            from_cache = True
-            _check_cache_age(cache_file, key)
-            log.info(f"[{key}] Используется кэш ({cache_file.stat().st_size // 1024} КБ)")
-        else:
-            log.error(f"[{key}] Кэш отсутствует — пропуск источника")
-            return set(), set()
+        net = ipaddress.ip_network(s, strict=False)
+        if net.version == 4:
+            return net
+    except ValueError:
+        pass
+    return None
 
-    # Парсинг
-    networks, domains = _parse_source(raw, src_type, key, min_lines)
 
-    if not from_cache:
-        log.info(f"[{key}] ✓ {desc}: {len(networks)} CIDR + {len(domains)} доменов")
+def _is_valid_domain(s: str) -> bool:
+    if not s or len(s) > 253:
+        return False
+    return bool(re.match(r"^[a-z0-9][a-z0-9.\-]{1,251}[a-z0-9]$", s) and "." in s)
 
-    return networks, domains
+
+def _to_root_domain(domain: str) -> str:
+    """sub.example.com → example.com (простое eTLD+1 без PSL)."""
+    parts = domain.split(".")
+    if len(parts) >= 2:
+        return ".".join(parts[-2:])
+    return domain
+
+
+def _parse_bat_routes(content: str) -> set[ipaddress.IPv4Network]:
+    """
+    Парсинг Windows route commands → IPv4Network.
+    Формат: route [ADD|add] IP [MASK|mask] SUBNET_MASK GATEWAY
+    Пример: route add 104.16.0.0 mask 255.255.0.0 0.0.0.0
+    """
+    networks: set[ipaddress.IPv4Network] = set()
+    for line in content.splitlines():
+        line = line.strip()
+        m = re.match(
+            r"route\s+[Aa][Dd][Dd]\s+(\d+\.\d+\.\d+\.\d+)\s+[Mm][Aa][Ss][Kk]\s+(\d+\.\d+\.\d+\.\d+)",
+            line,
+        )
+        if m:
+            ip, mask = m.group(1), m.group(2)
+            try:
+                net = ipaddress.IPv4Network(f"{ip}/{mask}", strict=False)
+                networks.add(net)
+            except ValueError:
+                pass
+    return networks
 
 
 def _parse_source(
@@ -320,8 +460,7 @@ def _parse_source(
     networks: set[ipaddress.IPv4Network] = set()
     domains: set[str] = set()
 
-    if src_type == "ip_list":
-        # Файл: по одному IP или CIDR на строку
+    if src_type in ("ip_list", "cidr_list"):
         for line in lines:
             line = line.split("#")[0].strip()
             if not line:
@@ -329,45 +468,8 @@ def _parse_source(
             net = _parse_network(line)
             if net:
                 networks.add(net)
-
-    elif src_type == "cidr_list":
-        # Файл: CIDR-блоки, возможно с комментариями
-        for line in lines:
-            line = line.split("#")[0].strip()
-            if not line:
-                continue
-            net = _parse_network(line)
-            if net:
-                networks.add(net)
-
-    elif src_type == "zapret_csv":
-        # dump.csv: IP;Домен;Организация;...
-        # Первая строка может быть заголовком
-        parsed = 0
-        for line in lines[:ZAPRET_MAX_LINES]:
-            if parsed == 0 and line.startswith("Updated"):
-                continue  # Заголовок
-            parts = line.split(";")
-            if len(parts) < 2:
-                continue
-            # Столбец 0: IP или CIDR (может быть несколько через |)
-            ip_field = parts[0].strip()
-            for ip_part in re.split(r"[|\s]+", ip_field):
-                ip_part = ip_part.strip()
-                if ip_part:
-                    net = _parse_network(ip_part)
-                    if net:
-                        networks.add(net)
-            # Столбец 1: домен (может быть несколько через |)
-            domain_field = parts[1].strip()
-            for dom in re.split(r"[|\s]+", domain_field):
-                dom = dom.strip().lower().lstrip("*.")
-                if dom and _is_valid_domain(dom):
-                    domains.add(dom)
-            parsed += 1
 
     elif src_type == "plain":
-        # Простой список: IP, CIDR или домены вперемешку
         for line in lines:
             line = line.split("#")[0].strip().lower()
             if not line:
@@ -378,38 +480,206 @@ def _parse_source(
             elif _is_valid_domain(line):
                 domains.add(line)
 
+    elif src_type == "domain_list":
+        # Список доменов (один на строку)
+        for line in lines:
+            line = line.split("#")[0].strip().lower().lstrip("*.")
+            if line and _is_valid_domain(line):
+                domains.add(line)
+
+    elif src_type == "root_domains":
+        # Большой список (1M+) → только уникальные root domains
+        seen: set[str] = set()
+        for line in lines:
+            line = line.split("#")[0].strip().lower().lstrip("*.")
+            if not line or not _is_valid_domain(line):
+                continue
+            root = _to_root_domain(line)
+            if root not in seen and _is_valid_domain(root):
+                seen.add(root)
+                domains.add(root)
+
+    elif src_type == "zapret_csv":
+        # dump-NN.csv: IP;Домен;Организация;...
+        parsed = 0
+        for line in lines[:ZAPRET_MAX_LINES]:
+            if parsed == 0 and line.startswith("Updated"):
+                continue
+            parts = line.split(";")
+            if len(parts) < 2:
+                continue
+            # Столбец 0: IP (может быть несколько через |)
+            for ip_part in re.split(r"[|\s]+", parts[0].strip()):
+                ip_part = ip_part.strip()
+                if ip_part:
+                    net = _parse_network(ip_part)
+                    if net:
+                        networks.add(net)
+            # Столбец 1: домен (может быть несколько через |)
+            for dom in re.split(r"[|\s]+", parts[1].strip()):
+                dom = dom.strip().lower().lstrip("*.")
+                if dom and _is_valid_domain(dom):
+                    domains.add(dom)
+            parsed += 1
+
     return networks, domains
 
 
-def _parse_network(s: str) -> Optional[ipaddress.IPv4Network]:
-    """Строка → IPv4Network или None."""
-    s = s.strip()
-    if not s or s.startswith("#"):
-        return None
-    # Убираем /32 → оставляем как /32 (не расширяем)
+# =============================================================================
+# Загрузка RockBlack ZIP
+# =============================================================================
+def _fetch_and_parse_rockblack_zip(
+    proxy: Optional[str],
+) -> tuple[set[ipaddress.IPv4Network], set[str]]:
+    """
+    Скачивает ZIP архив RockBlack ip-address репозитория.
+    Парсит все .bat файлы (route add IP mask MASK) и _domain файлы из Global/.
+    Пропускает *_Old.bat и *_old.bat — устаревшие версии.
+    """
+    url = "https://github.com/RockBlack-VPN/ip-address/archive/refs/heads/main.zip"
+    log.info(f"[rockblack_global] Скачивание ZIP (~15 MB): {url}")
+    data = _fetch_bytes(url, timeout=FETCH_TIMEOUT_ZIP, proxy=proxy)
+    log.info(f"[rockblack_global] ZIP скачан: {len(data) // 1024} КБ")
+
+    networks: set[ipaddress.IPv4Network] = set()
+    domains: set[str] = set()
+    bat_files = 0
+    domain_files = 0
+
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        for name in zf.namelist():
+            # Только файлы в Global/*/
+            if "/Global/" not in name:
+                continue
+            fname = name.split("/")[-1]
+            if not fname:
+                continue  # directory entry
+
+            if fname.endswith(".bat") and "_Old" not in fname and "_old" not in fname:
+                try:
+                    content = zf.read(name).decode("utf-8", errors="ignore")
+                    nets = _parse_bat_routes(content)
+                    networks.update(nets)
+                    bat_files += 1
+                except Exception as e:
+                    log.debug(f"[rockblack_global] Ошибка {name}: {e}")
+
+            elif fname.endswith("_domain") or fname == "domain":
+                try:
+                    content = zf.read(name).decode("utf-8", errors="ignore")
+                    for line in content.splitlines():
+                        line = line.strip().lower().lstrip("*.")
+                        if line and _is_valid_domain(line):
+                            domains.add(line)
+                    domain_files += 1
+                except Exception as e:
+                    log.debug(f"[rockblack_global] Ошибка {name}: {e}")
+
+    log.info(
+        f"[rockblack_global] Обработано: {bat_files} .bat + {domain_files} domain файлов"
+        f" → {len(networks)} CIDR, {len(domains)} доменов"
+    )
+    return networks, domains
+
+
+# =============================================================================
+# Загрузка одного источника с кэшем
+# =============================================================================
+def fetch_source(key: str, cfg: dict) -> tuple[set[ipaddress.IPv4Network], set[str]]:
+    """
+    Загрузить один источник → (set[IPv4Network], set[str] domains).
+    При ошибке → кэш. При отсутствии кэша → пустые множества.
+    """
+    src_type   = cfg["type"]
+    desc       = cfg.get("desc", key)
+    min_lines  = cfg.get("min_lines", 10)
+    need_proxy = cfg.get("proxy", False)
+
+    cache_ips_file  = _cache_path(key)
+    cache_dom_file  = _cache_path(f"{key}_domains")
+
+    def _load_from_cache() -> tuple[set[ipaddress.IPv4Network], set[str]]:
+        nets: set[ipaddress.IPv4Network] = set()
+        doms: set[str] = set()
+        if src_type == "rockblack_zip":
+            if cache_ips_file.exists():
+                _check_cache_age(cache_ips_file, key)
+                for line in cache_ips_file.read_text().splitlines():
+                    net = _parse_network(line.strip())
+                    if net:
+                        nets.add(net)
+            if cache_dom_file.exists():
+                for line in cache_dom_file.read_text().splitlines():
+                    line = line.strip()
+                    if line and _is_valid_domain(line):
+                        doms.add(line)
+        else:
+            if cache_ips_file.exists():
+                _check_cache_age(cache_ips_file, key)
+                raw = cache_ips_file.read_text(encoding="utf-8")
+                log.info(f"[{key}] Из кэша ({cache_ips_file.stat().st_size // 1024} КБ)")
+                nets, doms = _parse_source(raw, src_type, key, min_lines)
+        return nets, doms
+
     try:
-        net = ipaddress.ip_network(s, strict=False)
-        if net.version == 4:
-            return net
-    except ValueError:
-        pass
-    return None
+        proxy: Optional[str] = None
+        if need_proxy:
+            proxy = _get_socks5_proxy()
+            if not proxy:
+                raise OSError("SOCKS5 прокси недоступен")
 
+        if src_type == "rockblack_zip":
+            networks, domains = _fetch_and_parse_rockblack_zip(proxy)
+            # Кэшируем распарсенный результат
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cache_ips_file.write_text(
+                "\n".join(str(n) for n in networks), encoding="utf-8"
+            )
+            cache_dom_file.write_text("\n".join(domains), encoding="utf-8")
+            log.info(f"[{key}] ✓ {desc}: {len(networks)} CIDR + {len(domains)} доменов")
+            return networks, domains
 
-def _is_valid_domain(s: str) -> bool:
-    """Простая проверка что строка похожа на домен."""
-    if not s or len(s) > 253:
-        return False
-    if re.match(r"^[a-z0-9][a-z0-9.\-]{1,251}[a-z0-9]$", s) and "." in s:
-        return True
-    return False
+        elif "urls" in cfg:
+            # Multi-URL: скачиваем по очереди, объединяем
+            all_parts: list[str] = []
+            for url in cfg["urls"]:
+                try:
+                    part = _fetch_raw(url, proxy=proxy)
+                    all_parts.append(part)
+                except Exception as exc:
+                    log.debug(f"[{key}] Skip {url}: {exc}")
+            if not all_parts:
+                raise OSError("Все URL недоступны")
+            raw = "\n".join(all_parts)
+            cache_ips_file.write_text(raw, encoding="utf-8")
+            networks, domains = _parse_source(raw, src_type, key, min_lines)
+            log.info(f"[{key}] ✓ {desc}: {len(networks)} CIDR + {len(domains)} доменов")
+            return networks, domains
+
+        else:
+            url = cfg["url"]
+            log.info(f"[{key}] Загрузка: {url}")
+            raw = _fetch_raw(url, proxy=proxy)
+            cache_ips_file.write_text(raw, encoding="utf-8")
+            log.info(f"[{key}] Загружено {len(raw.splitlines())} строк")
+            networks, domains = _parse_source(raw, src_type, key, min_lines)
+            log.info(f"[{key}] ✓ {desc}: {len(networks)} CIDR + {len(domains)} доменов")
+            return networks, domains
+
+    except Exception as exc:
+        log.warning(f"[{key}] Ошибка загрузки: {exc}")
+        if cache_ips_file.exists():
+            nets, doms = _load_from_cache()
+            log.info(f"[{key}] Из кэша: {len(nets)} CIDR + {len(doms)} доменов")
+            return nets, doms
+        log.error(f"[{key}] Кэш отсутствует — пропуск источника")
+        return set(), set()
 
 
 # =============================================================================
 # Параллельная загрузка всех источников
 # =============================================================================
 def fetch_all_sources() -> tuple[set[ipaddress.IPv4Network], set[str]]:
-    """Загрузить все источники параллельно."""
     all_networks: set[ipaddress.IPv4Network] = set()
     all_domains: set[str] = set()
 
@@ -434,7 +704,6 @@ def fetch_all_sources() -> tuple[set[ipaddress.IPv4Network], set[str]]:
 # Ручные списки
 # =============================================================================
 def load_manual_vpn() -> tuple[set[ipaddress.IPv4Network], set[str]]:
-    """Загрузить /etc/vpn-routes/manual-vpn.txt → (сети, домены)."""
     networks: set[ipaddress.IPv4Network] = set()
     domains: set[str] = set()
 
@@ -459,7 +728,6 @@ def load_manual_vpn() -> tuple[set[ipaddress.IPv4Network], set[str]]:
 # Агрегация CIDR
 # =============================================================================
 def aggregate_networks(networks: set[ipaddress.IPv4Network]) -> list[ipaddress.IPv4Network]:
-    """Схлопнуть перекрывающиеся/смежные сети."""
     if not networks:
         return []
     return sorted(ipaddress.collapse_addresses(networks))
@@ -470,23 +738,18 @@ def reduce_to_limit(
 ) -> list[ipaddress.IPv4Network]:
     """
     Прогрессивная агрегация для AllowedIPs (≤ limit записей).
-    Стратегия: расширяем маски шагами /32→/24→/22→/20→/18→/16
-    пока не уложимся в лимит.
+    Расширяем маски шагами /32→/24→/22→/20→/18→/16...
     """
     if len(networks) <= limit:
         return networks
 
     log.info(f"Прогрессивная агрегация: {len(networks)} → ≤{limit}")
-
-    # Шаги: минимальная длина префикса для "мелких" сетей
-    # т.е. всё что мельче порога → расширяем до порога
     thresholds = [24, 22, 20, 18, 16, 14, 12, 10, 8]
 
     for min_prefix in thresholds:
         promoted: set[ipaddress.IPv4Network] = set()
         for net in networks:
             if net.prefixlen > min_prefix:
-                # Расширяем до min_prefix
                 promoted.add(net.supernet(new_prefix=min_prefix))
             else:
                 promoted.add(net)
@@ -496,7 +759,6 @@ def reduce_to_limit(
             return collapsed
         networks = collapsed
 
-    # Если даже после /8 не уложились — берём первые limit записей
     log.warning(f"Не удалось сократить до {limit}, берём топ {limit} по размеру")
     return sorted(networks, key=lambda n: n.prefixlen)[:limit]
 
@@ -505,12 +767,8 @@ def reduce_to_limit(
 # Дельта-проверка
 # =============================================================================
 def validate_delta(old_set: set[str], new_set: set[str]) -> bool:
-    """
-    Проверяем что изменений не больше MAX_DELTA_PCT%.
-    Защита от применения «мусорного» обновления.
-    """
     if not old_set:
-        return True   # Первый запуск
+        return True  # Первый запуск
 
     added   = len(new_set - old_set)
     removed = len(old_set - new_set)
@@ -533,11 +791,8 @@ def validate_delta(old_set: set[str], new_set: set[str]) -> bool:
 
 # =============================================================================
 # Запись nftables-blocked-static.conf
-# КРИТИЧНО: flush set + add element в одном nft -f = одна транзакция без утечки
-# Таблица: inet vpn (не inet filter!)
 # =============================================================================
 def write_nftables_static(networks: list[ipaddress.IPv4Network]) -> None:
-    """Атомарный шаблон: flush set → add element → nft -f."""
     now = datetime.now(timezone.utc).isoformat()
     lines: list[str] = [
         f"# Автогенерировано update-routes.py  {now}",
@@ -552,7 +807,6 @@ def write_nftables_static(networks: list[ipaddress.IPv4Network]) -> None:
     ]
 
     if networks:
-        # Разбиваем на чанки по 500 (nft может не принять один гигантский add element)
         CHUNK = 500
         chunks = [networks[i:i+CHUNK] for i in range(0, len(networks), CHUNK)]
         for chunk in chunks:
@@ -567,8 +821,6 @@ def write_nftables_static(networks: list[ipaddress.IPv4Network]) -> None:
 
 # =============================================================================
 # Запись dnsmasq конфига
-# Таблица в nftset: inet#vpn (не inet#filter!)
-# VPS upstream DNS: VPS_TUNNEL_IP (не 1.1.1.1!)
 # =============================================================================
 def write_dnsmasq_config(
     domains: list[str],
@@ -576,21 +828,12 @@ def write_dnsmasq_config(
     vps_dns: str,
     header_comment: str = "Автогенерировано update-routes.py",
 ) -> None:
-    """
-    Записать dnsmasq конфиг с правильными директивами:
-      server=/<domain>/<vps_dns>           — резолв через VPS
-      nftset=/<domain>/4#inet#vpn#blocked_dynamic  — добавить IP в set
-    """
     now = datetime.now(timezone.utc).isoformat()
     lines: list[str] = [
         f"# {out_file.name} — {header_comment}",
         f"# Обновлено: {now}",
         f"# Доменов: {len(domains)}",
         "# НЕ РЕДАКТИРОВАТЬ ВРУЧНУЮ — перезаписывается update-routes.py",
-        "#",
-        "# Формат:",
-        f"#   server=/<domain>/{vps_dns}           — upstream через VPS",
-        "#   nftset=/<domain>/4#inet#vpn#blocked_dynamic — fwmark при резолве",
         "",
     ]
 
@@ -611,7 +854,6 @@ def write_dnsmasq_config(
 # Применение изменений
 # =============================================================================
 def apply_nftables() -> bool:
-    """nft -f — атомарное применение blocked_static."""
     try:
         result = subprocess.run(
             ["nft", "-f", str(NFT_STATIC)],
@@ -633,7 +875,6 @@ def apply_nftables() -> bool:
 
 
 def reload_dnsmasq() -> None:
-    """SIGHUP dnsmasq — безопасная перезагрузка конфига."""
     try:
         result = subprocess.run(
             ["systemctl", "kill", "-s", "SIGHUP", "dnsmasq"],
@@ -648,7 +889,7 @@ def reload_dnsmasq() -> None:
 
 
 # =============================================================================
-# Вычисление diff и hash
+# Diff и hash
 # =============================================================================
 def compute_diff(old_lines: list[str], new_lines: list[str]) -> dict:
     old_set = {l for l in old_lines if l and not l.startswith("#")}
@@ -656,12 +897,12 @@ def compute_diff(old_lines: list[str], new_lines: list[str]) -> dict:
     added   = new_set - old_set
     removed = old_set - new_set
     return {
-        "added":   sorted(added)[:20],    # Показываем первые 20
-        "removed": sorted(removed)[:20],
+        "added":         sorted(added)[:20],
+        "removed":       sorted(removed)[:20],
         "added_total":   len(added),
         "removed_total": len(removed),
-        "old_total": len(old_set),
-        "new_total": len(new_set),
+        "old_total":     len(old_set),
+        "new_total":     len(new_set),
     }
 
 
@@ -683,11 +924,10 @@ def main() -> None:
     ROUTES_DIR.mkdir(parents=True, exist_ok=True)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ── Загружаем предыдущий combined.cidr ────────────────────────────────────
+    # ── Предыдущий combined.cidr ───────────────────────────────────────────────
     old_lines: list[str] = []
     if COMBINED_CIDR.exists():
         old_lines = COMBINED_CIDR.read_text().splitlines()
-
     old_hash = HASH_FILE.read_text().strip() if HASH_FILE.exists() else ""
 
     # ── Загрузка всех источников (параллельно) ────────────────────────────────
@@ -725,7 +965,7 @@ def main() -> None:
     log.info(f"AllowedIPs: {len(allowed_networks)} записей")
 
     if len(allowed_networks) > 50:
-        log.info("QR-коды будут недоступны (>50 AllowedIPs) — отправлять .conf файлами")
+        log.info("QR-коды недоступны (>50 AllowedIPs) — отправлять .conf файлами")
 
     # ── Дельта-проверка ────────────────────────────────────────────────────────
     new_cidr_lines = [str(n) for n in allowed_networks]
@@ -746,7 +986,7 @@ def main() -> None:
     if diff["removed"][:5]:
         log.info(f"  Удалены:   {', '.join(diff['removed'][:5])}{'...' if diff['removed_total'] > 5 else ''}")
 
-    # ── Проверяем изменился ли результат ─────────────────────────────────────
+    # ── Проверяем изменился ли результат ──────────────────────────────────────
     combined_content = (
         f"# combined.cidr — AllowedIPs для WireGuard клиентов\n"
         f"# Обновлено: {datetime.now(timezone.utc).isoformat()}\n"
@@ -769,17 +1009,13 @@ def main() -> None:
         log.info(f"[DRY-RUN] Изменено: {changed}")
         return
 
-    # ── Запись файлов ─────────────────────────────────────────────────────────
-
-    # 1. combined.cidr (AllowedIPs, ≤500)
+    # ── Запись файлов ──────────────────────────────────────────────────────────
     COMBINED_CIDR.write_text(combined_content, encoding="utf-8")
     HASH_FILE.write_text(new_hash, encoding="utf-8")
     log.info(f"combined.cidr: {len(allowed_networks)} записей")
 
-    # 2. nftables-blocked-static.conf (полный, атомарный)
     write_nftables_static(nft_networks)
 
-    # 3. dnsmasq vpn-domains.conf (из баз РКН + статические)
     write_dnsmasq_config(
         list(all_domains),
         DNSMASQ_DOMAINS,
@@ -787,7 +1023,6 @@ def main() -> None:
         header_comment="Базы РКН + статические домены",
     )
 
-    # 4. dnsmasq vpn-force.conf (только ручные домены)
     write_dnsmasq_config(
         list(manual_domains),
         DNSMASQ_FORCE,
@@ -802,16 +1037,14 @@ def main() -> None:
     else:
         log.warning("Не root — применение nftables/dnsmasq пропущено")
 
-    # ── Сигнал watchdog → авторассылка конфигов ───────────────────────────────
+    # ── Сигнал watchdog ────────────────────────────────────────────────────────
     if changed:
-        # Файл-маркер для watchdog (polling)
         (ROUTES_DIR / "routes-updated").write_text(
             datetime.now(timezone.utc).isoformat(), encoding="utf-8"
         )
-        # HTTP сигнал watchdog
         notify_watchdog_routes_updated()
 
-    # ── Итоговый алерт ────────────────────────────────────────────────────────
+    # ── Итоговый алерт ─────────────────────────────────────────────────────────
     summary = (
         f"✅ *Маршруты обновлены*\n"
         f"nft blocked\\_static: `{len(nft_networks)}` CIDR\n"
