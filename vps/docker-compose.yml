@@ -61,7 +61,7 @@ services:
     restart: always
     ports:
       - "8443:8443"
-      - "10.177.2.1:9000:9000"   # Grafana через VPN, только с tier2 интерфейса
+      - "10.177.2.2:9000:9000"   # Grafana через VPN, только с tier2 интерфейса
     volumes:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/mtls:/etc/nginx/mtls:ro
