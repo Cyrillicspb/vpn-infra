@@ -18,7 +18,7 @@
             "settings": {
                 "vnext": [
                     {
-                        "address": "winter-unit-c4b4.kirill-savurov.workers.dev",
+                        "address": "cool-king-7f33.kirill-savurov.workers.dev",
                         "port": 443,
                         "users": [
                             {
@@ -34,13 +34,13 @@
                 "network": "ws",
                 "security": "tls",
                 "tlsSettings": {
-                    "serverName": "winter-unit-c4b4.kirill-savurov.workers.dev",
+                    "serverName": "cool-king-7f33.kirill-savurov.workers.dev",
                     "allowInsecure": false
                 },
                 "wsSettings": {
                     "path": "/vpn-cdn",
                     "headers": {
-                        "Host": "winter-unit-c4b4.kirill-savurov.workers.dev"
+                        "Host": "cool-king-7f33.kirill-savurov.workers.dev"
                     }
                 }
             }
