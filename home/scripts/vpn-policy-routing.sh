@@ -114,6 +114,16 @@ setup_routing() {
         log "Rule: fwmark $FWMARK → table $TABLE_MARKED (priority 100)"
     fi
 
+    # Priority 150: трафик К VPN-подсетям → main (ответы сервера идут через wg0/wg1)
+    if ! rule_exists "to $AWG_SUBNET lookup main"; then
+        ip rule add to $AWG_SUBNET lookup main priority 150
+        log "Rule: to $AWG_SUBNET → main (priority 150)"
+    fi
+    if ! rule_exists "to $WG_SUBNET lookup main"; then
+        ip rule add to $WG_SUBNET lookup main priority 150
+        log "Rule: to $WG_SUBNET → main (priority 150)"
+    fi
+
     # Priority 200: AWG-клиенты (незаблокированное) → table 100
     if ! rule_exists "from $AWG_SUBNET lookup $TABLE_VPN"; then
         ip rule add from $AWG_SUBNET lookup $TABLE_VPN priority 200
@@ -162,6 +172,8 @@ teardown_routing() {
 
     # Удаляем ip rules
     ip rule del fwmark $FWMARK lookup $TABLE_MARKED 2>/dev/null || true
+    ip rule del to $AWG_SUBNET lookup main 2>/dev/null || true
+    ip rule del to $WG_SUBNET lookup main 2>/dev/null || true
     ip rule del from $AWG_SUBNET lookup $TABLE_VPN 2>/dev/null || true
     ip rule del from $WG_SUBNET lookup $TABLE_VPN 2>/dev/null || true
 
