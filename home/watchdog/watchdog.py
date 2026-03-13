@@ -1037,8 +1037,16 @@ async def _do_rotation() -> None:
 
             ok = await plugin.rotate()
             if ok:
+                # Ротация пересоздаёт tun-интерфейс: ядро автоматически удаляет
+                # маршрут из table marked когда старый tun исчезает.
+                # Восстанавливаем маршрут после успешной ротации.
+                tun_name = plugin.meta.get("tun_name", f"tun-{current}")
+                await run_cmd(
+                    ["ip", "route", "replace", "default", "dev", tun_name, "table", "marked"],
+                    timeout=5,
+                )
                 state.last_rotation = datetime.now()
-                logger.info(f"Ротация {current} выполнена")
+                logger.info(f"Ротация {current} выполнена, маршрут table marked → {tun_name} восстановлен")
             else:
                 logger.warning(f"Ротация {current} не удалась")
         finally:
