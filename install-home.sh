@@ -1080,7 +1080,7 @@ else
     if [[ -n "${WATCHDOG_API_TOKEN:-}" ]]; then
         echo "${WATCHDOG_API_TOKEN}" > /opt/vpn/prometheus/watchdog-token
         echo "${WATCHDOG_API_TOKEN}" > /opt/vpn/alertmanager/watchdog-token
-        chmod 600 /opt/vpn/prometheus/watchdog-token /opt/vpn/alertmanager/watchdog-token
+        chmod 644 /opt/vpn/prometheus/watchdog-token /opt/vpn/alertmanager/watchdog-token
         log_ok "watchdog-token записан"
     else
         log_warn "WATCHDOG_API_TOKEN не задан — watchdog-token пустой"
