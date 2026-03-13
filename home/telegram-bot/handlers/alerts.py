@@ -168,7 +168,8 @@ async def start_notify_server(bot: "Bot", db: "Database") -> None:
     Запускает HTTP-сервер для приёма алертов.
 
     Слушает 0.0.0.0:8090.
-    Доступ ограничен nftables (только 127.0.0.1 + 10.177.2.0/30 Tier-2).
+    Доступ ограничен nftables (только 127.0.0.1 + 172.20.0.0/24 Docker + 10.177.2.0/30 Tier-2).
+    Alertmanager теперь локальный Docker-контейнер → приходит с 172.20.x.x.
     """
     app = web.Application()
     app["bot"] = bot

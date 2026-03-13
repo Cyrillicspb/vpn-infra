@@ -1,0 +1,78 @@
+# prometheus.yml — домашний сервер
+# =============================================================================
+# Источники метрик:
+#   home-node  : node-exporter домашнего сервера  (host.docker.internal:9100)
+#   vps-node   : node-exporter VPS                (10.177.2.2:9100, через tier2)
+#   watchdog   : watchdog custom metrics           (host.docker.internal:8080/metrics)
+#   alertmanager: сам Alertmanager                (alertmanager:9093)
+#
+# Watchdog Bearer-токен: файл /etc/prometheus/watchdog-token
+# (генерируется install-home.sh из /opt/vpn/.env → WATCHDOG_API_TOKEN)
+#
+# ВАЖНО: Prometheus в Docker (vpn-net) → для хостовых сервисов используется
+#         host.docker.internal (не localhost!)
+# =============================================================================
+
+global:
+  scrape_interval:     30s
+  scrape_timeout:      10s
+  evaluation_interval: 30s
+  external_labels:
+    project: 'vpn-infra'
+    env:     'production'
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+      timeout: 10s
+      api_version: v2
+
+scrape_configs:
+
+  # ── Домашний сервер: node-exporter ──────────────────────────────────────────
+  # node-exporter работает с network_mode: host → доступен через host.docker.internal
+  - job_name: 'home-node'
+    scrape_interval: 30s
+    scrape_timeout:  15s
+    static_configs:
+      - targets: ['host.docker.internal:9100']
+        labels:
+          instance: 'home'
+          role:     'home'
+
+  # ── VPS: node-exporter (через Tier-2 туннель) ───────────────────────────────
+  # 10.177.2.2 = VPS tier-2 WireGuard IP
+  - job_name: 'vps-node'
+    scrape_interval: 30s
+    scrape_timeout:  15s
+    static_configs:
+      - targets: ['10.177.2.2:9100']
+        labels:
+          instance: 'vps'
+          role:     'vps'
+
+  # ── Watchdog: VPN-специфичные метрики (Bearer auth) ─────────────────────────
+  # Экспонирует: vpn_tunnel_*, vpn_peer_*, vpn_routes_*, vpn_cert_*, vpn_docker_*
+  - job_name: 'watchdog'
+    scrape_interval: 30s
+    scrape_timeout:  15s
+    metrics_path: '/metrics'
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/watchdog-token
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+        labels:
+          instance: 'home'
+          role:     'home'
+
+  # ── Alertmanager self-metrics ────────────────────────────────────────────────
+  - job_name: 'alertmanager'
+    static_configs:
+      - targets: ['alertmanager:9093']
+        labels:
+          instance: 'home'

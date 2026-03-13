@@ -20,7 +20,7 @@ networks:
 
 services:
 
-  # ── Nginx — Grafana через VPN (10.177.1.1:9000 → VPS tier2 10.177.2.1:9000) ─
+  # ── Nginx — Grafana через VPN (10.177.1.1:3000 → localhost:3000) ────────────
   # Только VPN-клиенты (10.177.1.0/24) могут подключиться, снаружи порт закрыт
   # Запуск: всегда (restart: always), не зависит от других сервисов
   nginx:
@@ -31,7 +31,7 @@ services:
     volumes:
       - ./nginx/grafana.conf:/etc/nginx/conf.d/grafana.conf:ro
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://10.177.1.1:9000/health"]
+      test: ["CMD", "wget", "-qO-", "http://10.177.1.1:3000/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -174,6 +174,138 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # ── Prometheus — сбор метрик ─────────────────────────────────────────────────
+  # Scrape: home node-exporter (host.docker.internal:9100), VPS (10.177.2.2:9100),
+  #         watchdog (host.docker.internal:8080), alertmanager (alertmanager:9093)
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    restart: always
+    user: "65534:65534"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - ./prometheus/watchdog-token:/etc/prometheus/watchdog-token:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.listen-address=0.0.0.0:9090"
+      - "--web.external-url=http://localhost:9090"
+      - "--web.enable-lifecycle"
+    networks:
+      vpn-net:
+        ipv4_address: 172.20.0.30
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Alertmanager — маршрутизация алертов → Telegram ──────────────────────────
+  # Webhook: host.docker.internal:8090/notify (telegram-bot alerts.py)
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: always
+    user: "65534:65534"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./alertmanager/watchdog-token:/etc/alertmanager/watchdog-token:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      - "--web.listen-address=0.0.0.0:9093"
+    networks:
+      vpn-net:
+        ipv4_address: 172.20.0.31
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Grafana — дашборды + Render API (watchdog /graph → PNG → Telegram) ────────
+  # Доступна: VPN-клиенты http://10.177.1.1:3000, watchdog localhost:3000
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: grafana
+    restart: always
+    user: "472:472"
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_SERVER_ROOT_URL: "http://10.177.1.1:3000"
+      GF_SERVER_HTTP_ADDR: "0.0.0.0"
+      GF_SERVER_HTTP_PORT: "3000"
+      GF_RENDERING_SERVER_URL: "http://grafana-renderer:8081/render"
+      GF_RENDERING_CALLBACK_URL: "http://grafana:3000/"
+      GF_LOG_LEVEL: "warn"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    networks:
+      vpn-net:
+        ipv4_address: 172.20.0.32
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Grafana Image Renderer — рендеринг графиков в PNG ────────────────────────
+  grafana-renderer:
+    image: grafana/grafana-image-renderer:3.10.1
+    container_name: grafana-renderer
+    restart: always
+    environment:
+      ENABLE_METRICS: "true"
+      HTTP_HOST: "0.0.0.0"
+      HTTP_PORT: "8081"
+    networks:
+      vpn-net:
+        ipv4_address: 172.20.0.33
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # ── Node Exporter — метрики хоста для Prometheus ─────────────────────────────
   node-exporter:
     image: prom/node-exporter:v1.7.0
@@ -285,3 +417,9 @@ services:
 volumes:
   portainer_data:
     name: portainer_data
+  prometheus_data:
+    name: prometheus_data
+  alertmanager_data:
+    name: alertmanager_data
+  grafana_data:
+    name: grafana_data

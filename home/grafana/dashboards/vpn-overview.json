@@ -1,0 +1,294 @@
+{
+  "title": "VPN Infrastructure — Overview",
+  "uid": "vpn-overview",
+  "description": "Общий статус VPN-инфраструктуры: туннель, система, пиры",
+  "version": 2,
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": {"from": "now-3h", "to": "now"},
+  "timezone": "browser",
+  "tags": ["vpn", "overview"],
+  "panels": [
+
+    {
+      "id": 1,
+      "title": "Статус туннеля",
+      "type": "stat",
+      "gridPos": {"x": 0, "y": 0, "w": 4, "h": 3},
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}}},
+            {"type": "value", "options": {"1": {"text": "UP", "color": "green"}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null},
+            {"color": "green", "value": 1}
+          ]}
+        }
+      },
+      "targets": [{"expr": "vpn_tunnel_up", "legendFormat": "Туннель"}]
+    },
+
+    {
+      "id": 2,
+      "title": "Активный стек",
+      "type": "stat",
+      "gridPos": {"x": 4, "y": 0, "w": 4, "h": 3},
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "Hysteria2"}}},
+            {"type": "value", "options": {"1": {"text": "REALITY"}}},
+            {"type": "value", "options": {"2": {"text": "gRPC"}}},
+            {"type": "value", "options": {"3": {"text": "CDN"}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        }
+      },
+      "targets": [{"expr": "vpn_active_stack", "legendFormat": "Стек"}]
+    },
+
+    {
+      "id": 3,
+      "title": "RTT",
+      "type": "stat",
+      "gridPos": {"x": 8, "y": 0, "w": 4, "h": 3},
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 150},
+            {"color": "red", "value": 500}
+          ]}
+        }
+      },
+      "targets": [{"expr": "vpn_tunnel_rtt_ms", "legendFormat": "RTT"}]
+    },
+
+    {
+      "id": 4,
+      "title": "Потери пакетов",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 0, "w": 4, "h": 3},
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 2},
+            {"color": "red", "value": 5}
+          ]}
+        }
+      },
+      "targets": [{"expr": "vpn_tunnel_packet_loss_pct", "legendFormat": "Loss"}]
+    },
+
+    {
+      "id": 5,
+      "title": "Failover-переключений",
+      "type": "stat",
+      "gridPos": {"x": 16, "y": 0, "w": 4, "h": 3},
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 3},
+            {"color": "red", "value": 10}
+          ]}
+        }
+      },
+      "targets": [{"expr": "vpn_failover_total", "legendFormat": "Failovers"}]
+    },
+
+    {
+      "id": 6,
+      "title": "Активных пиров (AWG + WG)",
+      "type": "stat",
+      "gridPos": {"x": 20, "y": 0, "w": 4, "h": 3},
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        }
+      },
+      "targets": [{"expr": "sum(vpn_peer_count)", "legendFormat": "Пиры"}]
+    },
+
+    {
+      "id": 10,
+      "title": "RTT туннеля (история)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 3, "w": 12, "h": 8},
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "list", "placement": "bottom"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {"lineWidth": 2, "fillOpacity": 10}
+        }
+      },
+      "targets": [
+        {"expr": "vpn_tunnel_rtt_ms",          "legendFormat": "RTT текущий"},
+        {"expr": "vpn_tunnel_rtt_baseline_ms", "legendFormat": "Baseline (7d)"}
+      ]
+    },
+
+    {
+      "id": 11,
+      "title": "Трафик туннеля",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 3, "w": 12, "h": 8},
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "list", "placement": "bottom"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "mbps",
+          "custom": {"lineWidth": 2, "fillOpacity": 10}
+        }
+      },
+      "targets": [
+        {"expr": "vpn_tunnel_download_mbps", "legendFormat": "Download"},
+        {"expr": "vpn_tunnel_upload_mbps",   "legendFormat": "Upload"}
+      ]
+    },
+
+    {
+      "id": 20,
+      "title": "Сетевой трафик домашнего сервера",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 11, "w": 24, "h": 8},
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "right", "calcs": ["mean", "max"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "binBps",
+          "custom": {"lineWidth": 1, "fillOpacity": 5}
+        }
+      },
+      "targets": [
+        {
+          "expr": "irate(node_network_receive_bytes_total{instance='home',device='eth0'}[5m])",
+          "legendFormat": "home eth0 RX"
+        },
+        {
+          "expr": "irate(node_network_transmit_bytes_total{instance='home',device='eth0'}[5m])",
+          "legendFormat": "home eth0 TX"
+        },
+        {
+          "expr": "irate(node_network_receive_bytes_total{instance='home',device=~'wg[01]'}[5m])",
+          "legendFormat": "home {{device}} RX"
+        }
+      ]
+    },
+
+    {
+      "id": 30,
+      "title": "CPU домашнего сервера",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 19, "w": 8, "h": 6},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0, "max": 100,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 70},
+            {"color": "red", "value": 85}
+          ]},
+          "custom": {"lineWidth": 2, "fillOpacity": 20}
+        }
+      },
+      "targets": [{
+        "expr": "100 - (avg(irate(node_cpu_seconds_total{mode='idle',instance='home'}[5m])) * 100)",
+        "legendFormat": "CPU %"
+      }]
+    },
+
+    {
+      "id": 31,
+      "title": "RAM домашнего сервера",
+      "type": "timeseries",
+      "gridPos": {"x": 8, "y": 19, "w": 8, "h": 6},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {"lineWidth": 2, "fillOpacity": 20}
+        }
+      },
+      "targets": [
+        {
+          "expr": "node_memory_MemTotal_bytes{instance='home'} - node_memory_MemAvailable_bytes{instance='home'}",
+          "legendFormat": "Используется"
+        },
+        {
+          "expr": "node_memory_MemTotal_bytes{instance='home'}",
+          "legendFormat": "Всего"
+        }
+      ]
+    },
+
+    {
+      "id": 32,
+      "title": "Диск домашнего сервера",
+      "type": "gauge",
+      "gridPos": {"x": 16, "y": 19, "w": 8, "h": 6},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0, "max": 100,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 75},
+            {"color": "red", "value": 90}
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "(1 - (node_filesystem_avail_bytes{instance='home',mountpoint='/',fstype!='tmpfs'} / node_filesystem_size_bytes{instance='home',mountpoint='/',fstype!='tmpfs'})) * 100",
+        "legendFormat": "Диск %"
+      }]
+    }
+  ]
+}

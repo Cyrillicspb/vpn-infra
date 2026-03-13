@@ -1,0 +1,207 @@
+{
+  "title": "VPN — Tunnel & Speed",
+  "uid": "vpn-tunnel",
+  "description": "Детальная аналитика туннеля: RTT, failover, стеки, speedtest. Используется /graph tunnel и /graph speed",
+  "version": 1,
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "browser",
+  "tags": ["vpn", "tunnel", "speed"],
+  "panels": [
+
+    {
+      "id": 1,
+      "title": "RTT туннеля vs Baseline",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+      "options": {
+        "tooltip": {"mode": "multi", "sort": "none"},
+        "legend": {"displayMode": "table", "placement": "right",
+                   "calcs": ["mean", "min", "max", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {"lineWidth": 2, "fillOpacity": 10, "spanNulls": true},
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 150},
+            {"color": "red", "value": 500}
+          ]}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Baseline (7d)"},
+            "properties": [
+              {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 5]}},
+              {"id": "custom.lineWidth", "value": 1},
+              {"id": "color", "value": {"fixedColor": "gray", "mode": "fixed"}}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "Порог (3× baseline)"},
+            "properties": [
+              {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [4, 4]}},
+              {"id": "color", "value": {"fixedColor": "orange", "mode": "fixed"}}
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {"expr": "vpn_tunnel_rtt_ms",                   "legendFormat": "RTT мс"},
+        {"expr": "vpn_tunnel_rtt_baseline_ms",           "legendFormat": "Baseline (7d)"},
+        {"expr": "vpn_tunnel_rtt_baseline_ms * 3",       "legendFormat": "Порог (3× baseline)"}
+      ]
+    },
+
+    {
+      "id": 2,
+      "title": "Скорость туннеля (speedtest)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 8, "w": 16, "h": 8},
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "right",
+                   "calcs": ["mean", "min", "max", "lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "mbps",
+          "custom": {"lineWidth": 2, "fillOpacity": 15},
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null},
+            {"color": "yellow", "value": 5},
+            {"color": "green", "value": 20}
+          ]}
+        }
+      },
+      "targets": [
+        {"expr": "vpn_tunnel_download_mbps", "legendFormat": "Download Мбит/с"},
+        {"expr": "vpn_tunnel_upload_mbps",   "legendFormat": "Upload Мбит/с"},
+        {"expr": "vpn_tunnel_upload_util_pct / 100 * vpn_tunnel_upload_mbps",
+         "legendFormat": "Upload лимит (100%)"}
+      ]
+    },
+
+    {
+      "id": 3,
+      "title": "Потери пакетов",
+      "type": "timeseries",
+      "gridPos": {"x": 16, "y": 8, "w": 8, "h": 8},
+      "options": {
+        "tooltip": {"mode": "single"},
+        "legend": {"displayMode": "list", "placement": "bottom"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "custom": {"lineWidth": 2, "fillOpacity": 30},
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 2},
+            {"color": "red", "value": 5}
+          ]}
+        }
+      },
+      "targets": [
+        {"expr": "vpn_tunnel_packet_loss_pct", "legendFormat": "Потери %"}
+      ]
+    },
+
+    {
+      "id": 4,
+      "title": "Активный стек (история)",
+      "type": "stateTimeline",
+      "gridPos": {"x": 0, "y": 16, "w": 24, "h": 4},
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "rowHeight": 0.9,
+        "legend": {"displayMode": "list", "placement": "bottom"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "Hysteria2", "color": "red"}}},
+            {"type": "value", "options": {"1": {"text": "REALITY",   "color": "green"}}},
+            {"type": "value", "options": {"2": {"text": "gRPC",      "color": "blue"}}},
+            {"type": "value", "options": {"3": {"text": "CDN",       "color": "purple"}}}
+          ],
+          "color": {"mode": "thresholds"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        }
+      },
+      "targets": [
+        {"expr": "vpn_active_stack", "legendFormat": "Стек"}
+      ]
+    },
+
+    {
+      "id": 5,
+      "title": "Failover-события (накопительно)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 20, "w": 12, "h": 6},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"drawStyle": "bars", "fillOpacity": 60, "lineWidth": 0}
+        }
+      },
+      "targets": [
+        {"expr": "increase(vpn_failover_total[1h])", "legendFormat": "Failover/час"}
+      ]
+    },
+
+    {
+      "id": 6,
+      "title": "Upload-канал утилизация",
+      "type": "gauge",
+      "gridPos": {"x": 12, "y": 20, "w": 6, "h": 6},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0, "max": 100,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green",  "value": null},
+            {"color": "yellow", "value": 60},
+            {"color": "orange", "value": 80},
+            {"color": "red",    "value": 95}
+          ]}
+        }
+      },
+      "targets": [
+        {"expr": "vpn_tunnel_upload_util_pct", "legendFormat": "Upload %"}
+      ]
+    },
+
+    {
+      "id": 7,
+      "title": "Заблокированные сайты доступны",
+      "type": "stat",
+      "gridPos": {"x": 18, "y": 20, "w": 6, "h": 6},
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "НЕДОСТУПНЫ", "color": "red"}}},
+            {"type": "value", "options": {"1": {"text": "ДОСТУПНЫ",   "color": "green"}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null},
+            {"color": "green", "value": 1}
+          ]}
+        }
+      },
+      "targets": [
+        {"expr": "vpn_blocked_sites_reachable", "legendFormat": "Blocked sites"}
+      ]
+    }
+  ]
+}

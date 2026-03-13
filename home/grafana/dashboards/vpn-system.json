@@ -1,0 +1,310 @@
+{
+  "title": "VPN — System Resources",
+  "uid": "vpn-system",
+  "description": "Системные ресурсы домашнего сервера и VPS: CPU, RAM, диск, сеть. Используется /graph system",
+  "version": 1,
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "browser",
+  "tags": ["vpn", "system"],
+  "panels": [
+
+    {
+      "id": 1,
+      "title": "CPU домашнего сервера",
+      "type": "gauge",
+      "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 70},
+            {"color": "red", "value": 85}
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "100 - (avg(irate(node_cpu_seconds_total{mode='idle',instance='home'}[5m])) * 100)",
+        "legendFormat": "Home CPU"
+      }]
+    },
+
+    {
+      "id": 2,
+      "title": "RAM домашнего сервера",
+      "type": "gauge",
+      "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 75},
+            {"color": "red", "value": 90}
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "(1 - (node_memory_MemAvailable_bytes{instance='home'} / node_memory_MemTotal_bytes{instance='home'})) * 100",
+        "legendFormat": "Home RAM"
+      }]
+    },
+
+    {
+      "id": 3,
+      "title": "Диск домашнего сервера",
+      "type": "gauge",
+      "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 75},
+            {"color": "red", "value": 90}
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "(1 - (node_filesystem_avail_bytes{instance='home',mountpoint='/',fstype!='tmpfs'} / node_filesystem_size_bytes{instance='home',mountpoint='/',fstype!='tmpfs'})) * 100",
+        "legendFormat": "Home Disk"
+      }]
+    },
+
+    {
+      "id": 4,
+      "title": "CPU VPS",
+      "type": "gauge",
+      "gridPos": {"x": 12, "y": 0, "w": 4, "h": 4},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 70},
+            {"color": "red", "value": 85}
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "100 - (avg(irate(node_cpu_seconds_total{mode='idle',instance='vps'}[5m])) * 100)",
+        "legendFormat": "VPS CPU"
+      }]
+    },
+
+    {
+      "id": 5,
+      "title": "RAM VPS",
+      "type": "gauge",
+      "gridPos": {"x": 16, "y": 0, "w": 4, "h": 4},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 75},
+            {"color": "red", "value": 90}
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "(1 - (node_memory_MemAvailable_bytes{instance='vps'} / node_memory_MemTotal_bytes{instance='vps'})) * 100",
+        "legendFormat": "VPS RAM"
+      }]
+    },
+
+    {
+      "id": 6,
+      "title": "Диск VPS",
+      "type": "gauge",
+      "gridPos": {"x": 20, "y": 0, "w": 4, "h": 4},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 75},
+            {"color": "red", "value": 90}
+          ]}
+        }
+      },
+      "targets": [{
+        "expr": "(1 - (node_filesystem_avail_bytes{instance='vps',mountpoint='/',fstype!='tmpfs'} / node_filesystem_size_bytes{instance='vps',mountpoint='/',fstype!='tmpfs'})) * 100",
+        "legendFormat": "VPS Disk"
+      }]
+    },
+
+    {
+      "id": 10,
+      "title": "CPU история",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "list", "placement": "bottom"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "custom": {"lineWidth": 2, "fillOpacity": 15}
+        }
+      },
+      "targets": [
+        {
+          "expr": "100 - (avg(irate(node_cpu_seconds_total{mode='idle',instance='home'}[5m])) * 100)",
+          "legendFormat": "Home CPU"
+        },
+        {
+          "expr": "100 - (avg(irate(node_cpu_seconds_total{mode='idle',instance='vps'}[5m])) * 100)",
+          "legendFormat": "VPS CPU"
+        }
+      ]
+    },
+
+    {
+      "id": 11,
+      "title": "RAM история",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "list", "placement": "bottom"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {"lineWidth": 2, "fillOpacity": 15}
+        }
+      },
+      "targets": [
+        {
+          "expr": "node_memory_MemTotal_bytes{instance='home'} - node_memory_MemAvailable_bytes{instance='home'}",
+          "legendFormat": "Home используется"
+        },
+        {
+          "expr": "node_memory_MemTotal_bytes{instance='home'}",
+          "legendFormat": "Home всего"
+        },
+        {
+          "expr": "node_memory_MemTotal_bytes{instance='vps'} - node_memory_MemAvailable_bytes{instance='vps'}",
+          "legendFormat": "VPS используется"
+        }
+      ]
+    },
+
+    {
+      "id": 20,
+      "title": "Сетевой трафик (домашний сервер)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 12, "w": 24, "h": 8},
+      "options": {
+        "tooltip": {"mode": "multi"},
+        "legend": {"displayMode": "table", "placement": "right",
+                   "calcs": ["mean", "max"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "binBps",
+          "custom": {"lineWidth": 1, "fillOpacity": 5}
+        }
+      },
+      "targets": [
+        {
+          "expr": "irate(node_network_receive_bytes_total{instance='home',device='eth0'}[5m])",
+          "legendFormat": "eth0 RX"
+        },
+        {
+          "expr": "irate(node_network_transmit_bytes_total{instance='home',device='eth0'}[5m])",
+          "legendFormat": "eth0 TX"
+        },
+        {
+          "expr": "irate(node_network_receive_bytes_total{instance='home',device='wg0'}[5m])",
+          "legendFormat": "AWG wg0 RX"
+        },
+        {
+          "expr": "irate(node_network_transmit_bytes_total{instance='home',device='wg0'}[5m])",
+          "legendFormat": "AWG wg0 TX"
+        },
+        {
+          "expr": "irate(node_network_receive_bytes_total{instance='home',device=~'tun[0-9]+'}[5m])",
+          "legendFormat": "{{device}} RX"
+        }
+      ]
+    },
+
+    {
+      "id": 30,
+      "title": "Load Average (домашний сервер)",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 20, "w": 12, "h": 6},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"lineWidth": 2, "fillOpacity": 10}
+        }
+      },
+      "targets": [
+        {"expr": "node_load1{instance='home'}",  "legendFormat": "1m"},
+        {"expr": "node_load5{instance='home'}",  "legendFormat": "5m"},
+        {"expr": "node_load15{instance='home'}", "legendFormat": "15m"}
+      ]
+    },
+
+    {
+      "id": 31,
+      "title": "Uptime",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 20, "w": 6, "h": 6},
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        }
+      },
+      "targets": [
+        {"expr": "node_time_seconds{instance='home'} - node_boot_time_seconds{instance='home'}",
+         "legendFormat": "Home uptime"},
+        {"expr": "node_time_seconds{instance='vps'} - node_boot_time_seconds{instance='vps'}",
+         "legendFormat": "VPS uptime"}
+      ]
+    },
+
+    {
+      "id": 32,
+      "title": "Docker-контейнеры",
+      "type": "stat",
+      "gridPos": {"x": 18, "y": 20, "w": 6, "h": 6},
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"]}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null},
+            {"color": "green", "value": 1}
+          ]}
+        }
+      },
+      "targets": [
+        {"expr": "sum(vpn_docker_healthy)",          "legendFormat": "Healthy"},
+        {"expr": "sum(vpn_docker_healthy == 0) or vector(0)", "legendFormat": "Unhealthy"}
+      ]
+    }
+  ]
+}

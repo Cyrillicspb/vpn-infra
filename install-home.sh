@@ -1041,6 +1041,54 @@ EOF
     step_done "step27_configure_cron"
 fi
 
+# ── Шаг 27b: Подготовка конфигов мониторинга ─────────────────────────────────
+
+if is_done "step27b_monitoring_configs"; then
+    step_skip "step27b_monitoring_configs"
+else
+    step "Подготовка конфигов мониторинга (Prometheus, Alertmanager, Grafana)"
+
+    set -o allexport; source "$ENV_FILE"; set +o allexport
+
+    # Создаём директории
+    mkdir -p /opt/vpn/prometheus/rules /opt/vpn/alertmanager /opt/vpn/grafana/provisioning
+
+    # Копируем конфиги из репозитория
+    REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [[ -d "${REPO_DIR}/home/prometheus" ]]; then
+        rsync -a "${REPO_DIR}/home/prometheus/" /opt/vpn/prometheus/
+        log_ok "prometheus конфиг скопирован"
+    else
+        log_warn "home/prometheus/ не найден — пропускаем"
+    fi
+
+    if [[ -d "${REPO_DIR}/home/alertmanager" ]]; then
+        rsync -a "${REPO_DIR}/home/alertmanager/" /opt/vpn/alertmanager/
+        log_ok "alertmanager конфиг скопирован"
+    else
+        log_warn "home/alertmanager/ не найден — пропускаем"
+    fi
+
+    if [[ -d "${REPO_DIR}/home/grafana" ]]; then
+        rsync -a "${REPO_DIR}/home/grafana/" /opt/vpn/grafana/
+        log_ok "grafana конфиг скопирован"
+    else
+        log_warn "home/grafana/ не найден — пропускаем"
+    fi
+
+    # Записываем watchdog-token для Prometheus и Alertmanager
+    if [[ -n "${WATCHDOG_API_TOKEN:-}" ]]; then
+        echo "${WATCHDOG_API_TOKEN}" > /opt/vpn/prometheus/watchdog-token
+        echo "${WATCHDOG_API_TOKEN}" > /opt/vpn/alertmanager/watchdog-token
+        chmod 600 /opt/vpn/prometheus/watchdog-token /opt/vpn/alertmanager/watchdog-token
+        log_ok "watchdog-token записан"
+    else
+        log_warn "WATCHDOG_API_TOKEN не задан — watchdog-token пустой"
+    fi
+
+    step_done "step27b_monitoring_configs"
+fi
+
 # ── Шаг 28: Запуск Docker Compose на домашнем сервере ────────────────────────
 
 if is_done "step28_docker_compose_home"; then

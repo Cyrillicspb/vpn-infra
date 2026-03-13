@@ -3,16 +3,15 @@
 #
 # Архитектура:
 #   3x-ui (network_mode: host) — Xray с REALITY + gRPC + fallback → Nginx
-#   nginx — mTLS reverse proxy на :8443 + Prometheus/Grafana за reverse proxy
+#   nginx — mTLS reverse proxy на :8443 (3x-ui панель)
 #   cloudflared — CDN-стек (tunnel к Cloudflare)
-#   prometheus — pull метрики домашнего сервера через туннель
-#   alertmanager — правила алертов → Telegram
-#   grafana — дашборды, Render API для /graph в боте
-#   node-exporter — метрики самого VPS
+#   node-exporter — метрики VPS (scrape с домашнего Prometheus через tier2)
+#   hysteria2 — QUIC+Salamander UDP 443
+#
+# Мониторинг (Prometheus, Alertmanager, Grafana) перенесён на домашний сервер.
 #
 # Сеть: vps-net 172.21.0.0/24
-# 3x-ui и cloudflared: network_mode: host (требуют bind на 0.0.0.0)
-# node-exporter: network_mode: host (нужен доступ к метрикам хоста)
+# 3x-ui, cloudflared, node-exporter, hysteria2: network_mode: host
 
 networks:
   vps-net:
@@ -52,16 +51,15 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # ── Nginx — mTLS + reverse proxy для панелей ──────────────────────────────────
+  # ── Nginx — mTLS + reverse proxy для 3x-ui панели ────────────────────────────
   # :8443 → 3x-ui панель (mTLS клиентский сертификат)
-  # Prometheus/Grafana за reverse proxy (без прямого внешнего доступа)
+  # :80   → health check
   nginx:
     image: nginx:1.25.4-alpine
     container_name: nginx
     restart: always
     ports:
       - "8443:8443"
-      - "10.177.2.2:9000:9000"   # Grafana через VPN, только с tier2 интерфейса
     volumes:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/mtls:/etc/nginx/mtls:ro
@@ -71,8 +69,6 @@ services:
         ipv4_address: 172.21.0.10
     depends_on:
       - 3x-ui
-      - grafana
-      - prometheus
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:80/health"]
       interval: 30s
@@ -107,134 +103,8 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # ── Prometheus ────────────────────────────────────────────────────────────────
-  # Pull-метрики: домашний сервер (node-exporter + watchdog) через туннель
-  # Слушает только на 127.0.0.1:9090 — доступ через Nginx reverse proxy
-  prometheus:
-    image: prom/prometheus:v2.51.0
-    container_name: prometheus
-    restart: always
-    user: "65534:65534"
-    volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus/rules:/etc/prometheus/rules:ro
-      - ./prometheus/watchdog-token:/etc/prometheus/watchdog-token:ro
-      - prometheus_data:/prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.retention.time=30d"
-      - "--storage.tsdb.path=/prometheus"
-      - "--web.listen-address=0.0.0.0:9090"
-      - "--web.external-url=http://localhost:9090"
-      - "--web.enable-lifecycle"
-    networks:
-      vps-net:
-        ipv4_address: 172.21.0.11
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ── Alertmanager ──────────────────────────────────────────────────────────────
-  # Правила алертов → Telegram (через Prometheus alerting rules)
-  alertmanager:
-    image: prom/alertmanager:v0.27.0
-    container_name: alertmanager
-    restart: always
-    user: "65534:65534"
-    volumes:
-      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      - ./alertmanager/watchdog-token:/etc/alertmanager/watchdog-token:ro
-      - alertmanager_data:/alertmanager
-    command:
-      - "--config.file=/etc/alertmanager/alertmanager.yml"
-      - "--storage.path=/alertmanager"
-      - "--web.listen-address=0.0.0.0:9093"
-    networks:
-      vps-net:
-        ipv4_address: 172.21.0.12
-    depends_on:
-      prometheus:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9093/-/healthy"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ── Grafana ───────────────────────────────────────────────────────────────────
-  # Дашборды + Render API (watchdog /graph → PNG → Telegram)
-  # Доступна через Nginx reverse proxy (не напрямую снаружи)
-  grafana:
-    image: grafana/grafana:10.4.2
-    container_name: grafana
-    restart: always
-    user: "472:472"
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
-      GF_SERVER_ROOT_URL: "http://localhost:3000"
-      GF_SERVER_HTTP_ADDR: "0.0.0.0"
-      GF_SERVER_HTTP_PORT: "3000"
-      GF_RENDERING_SERVER_URL: "http://grafana-renderer:8081/render"
-      GF_RENDERING_CALLBACK_URL: "http://grafana:3000/"
-      GF_LOG_LEVEL: "warn"
-      GF_ANALYTICS_REPORTING_ENABLED: "false"
-      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
-    volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - grafana_data:/var/lib/grafana
-    networks:
-      vps-net:
-        ipv4_address: 172.21.0.13
-    depends_on:
-      prometheus:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ── Grafana Image Renderer (для /graph PNG в боте) ────────────────────────────
-  grafana-renderer:
-    image: grafana/grafana-image-renderer:3.10.1
-    container_name: grafana-renderer
-    restart: always
-    environment:
-      ENABLE_METRICS: "true"
-      HTTP_HOST: "0.0.0.0"
-      HTTP_PORT: "8081"
-    networks:
-      vps-net:
-        ipv4_address: 172.21.0.14
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
   # ── Node Exporter — метрики VPS ───────────────────────────────────────────────
+  # Scrape с домашнего Prometheus через tier2 туннель (10.177.2.2:9100)
   node-exporter:
     image: prom/node-exporter:v1.7.0
     container_name: node-exporter
@@ -280,11 +150,3 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  prometheus_data:
-    name: vps_prometheus_data
-  alertmanager_data:
-    name: vps_alertmanager_data
-  grafana_data:
-    name: vps_grafana_data

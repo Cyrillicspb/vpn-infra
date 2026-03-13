@@ -8,6 +8,20 @@
 
 set -euo pipefail
 
+# ── Swap: создать 1GB если RAM < 2048 MB и swap ещё нет ──────────────────────
+TOTAL_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
+if (( TOTAL_RAM_MB < 2048 )); then
+    if ! swapon --show | grep -q '/swapfile'; then
+        echo "[INFO] RAM ${TOTAL_RAM_MB}MB < 2048MB — создаём swap 1GB..."
+        fallocate -l 1G /swapfile
+        chmod 600 /swapfile
+        mkswap /swapfile
+        swapon /swapfile
+        echo '/swapfile none swap sw 0 0' >> /etc/fstab
+        echo "[✓]   Swap 1GB активирован"
+    fi
+fi
+
 # ── Цвета и константы ────────────────────────────────────────────────────────
 
 RED='\033[0;31m'
@@ -265,7 +279,6 @@ else
     vps_exec "sudo mkdir -p /opt/vpn && sudo chown sysadmin:sysadmin /opt/vpn && \
         mkdir -p /opt/vpn/scripts /opt/vpn/nginx/mtls /opt/vpn/nginx/ssl \
                  /opt/vpn/nginx/conf.d /opt/vpn/cloudflared /opt/vpn/3x-ui/db \
-                 /opt/vpn/prometheus /opt/vpn/alertmanager /opt/vpn/grafana \
                  /opt/vpn/hysteria2 /opt/vpn/backups /opt/vpn/vpn-repo.git"
 
     # Копируем директорию vps/ из репозитория
@@ -297,7 +310,6 @@ else
 # VPS .env — сгенерировано setup.sh
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
 TELEGRAM_ADMIN_CHAT_ID=${TELEGRAM_ADMIN_CHAT_ID:-}
-GRAFANA_PASSWORD=${GRAFANA_PASSWORD:-}
 CF_TUNNEL_TOKEN=${CF_TUNNEL_TOKEN:-}
 XRAY_UUID=${XRAY_UUID:-}
 XRAY_GRPC_UUID=${XRAY_GRPC_UUID:-}

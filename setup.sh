@@ -1048,7 +1048,19 @@ phase4() {
         "ip route show table 200 2>/dev/null | grep -q default" \
         "systemctl status vpn-routes; bash /opt/vpn/scripts/vpn-policy-routing.sh status"
 
-    # Шаг 50 — DKMS AmneziaWG
+    # Шаг 50 — Мониторинг (домашний сервер)
+    step "Тест мониторинга (домашний сервер)"
+    run_test "Prometheus healthy" \
+        "curl -sf --max-time 5 http://localhost:9090/-/healthy" \
+        "docker compose -f /opt/vpn/docker-compose.yml logs --tail=20 prometheus"
+    run_test "Grafana healthy" \
+        "curl -sf --max-time 5 http://localhost:3000/api/health | grep -q ok" \
+        "docker compose -f /opt/vpn/docker-compose.yml logs --tail=20 grafana"
+    run_test "Alertmanager healthy" \
+        "curl -sf --max-time 5 http://localhost:9093/-/healthy" \
+        "docker compose -f /opt/vpn/docker-compose.yml logs --tail=20 alertmanager"
+
+    # Шаг 51 — DKMS AmneziaWG
     step "Тест DKMS модуля AmneziaWG"
     run_test "Модуль AmneziaWG загружен" \
         "lsmod 2>/dev/null | grep -qi amneziawg \

@@ -204,7 +204,6 @@ log_step "Шаг 7: Копирование файлов VPS"
 vps2_exec "sudo mkdir -p /opt/vpn && sudo chown sysadmin:sysadmin /opt/vpn && \
     mkdir -p /opt/vpn/scripts /opt/vpn/nginx/mtls /opt/vpn/nginx/ssl \
              /opt/vpn/nginx/conf.d /opt/vpn/cloudflared /opt/vpn/3x-ui/db \
-             /opt/vpn/prometheus /opt/vpn/alertmanager /opt/vpn/grafana \
              /opt/vpn/hysteria2 /opt/vpn/backups /opt/vpn/vpn-repo.git"
 
 vps2_copy -r "${REPO_DIR}/vps/." "sysadmin@${VPS2_IP}:/opt/vpn/"
@@ -261,7 +260,6 @@ cat > "$VPS2_ENV_TMP" << EOF
 # VPS2 .env — сгенерировано add-vps.sh
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
 TELEGRAM_ADMIN_CHAT_ID=${TELEGRAM_ADMIN_CHAT_ID:-}
-GRAFANA_PASSWORD=${GRAFANA_PASSWORD:-}
 CF_TUNNEL_TOKEN=
 XRAY_UUID=${XRAY_UUID:-}
 XRAY_GRPC_UUID=${XRAY_GRPC_UUID:-}
