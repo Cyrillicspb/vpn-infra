@@ -323,6 +323,8 @@ class WatchdogState:
         self.is_first_run: bool = True
         self.last_full_assessment: Optional[datetime] = None
         self.peer_lock = asyncio.Lock()         # mutex /peer/add
+        # Дедупликация алертов о stale peers: {iface:pubkey → timestamp последнего алерта}
+        self.stale_peer_alerted: dict[str, float] = {}
 
     @property
     def active_vps(self) -> Optional[dict]:
@@ -484,8 +486,16 @@ def _wg_quick_tool(iface: str) -> str:
 # ---------------------------------------------------------------------------
 # Мониторинг: WireGuard peers
 # ---------------------------------------------------------------------------
+PEER_STALE_REPEAT_INTERVAL = 3600  # повторный алерт о stale peer — не чаще раза в час
+
+
 async def check_wg_peers() -> None:
-    """Проверка stale peers (last handshake > 180 сек)."""
+    """Проверка stale peers (last handshake > 180 сек).
+
+    Дедупликация: первый алерт — сразу, повторные — не чаще раза в час.
+    При восстановлении пира — очищаем запись, чтобы следующий stale снова
+    дал немедленный алерт.
+    """
     # Собираем данные из обоих стеков (awg — wg0, wg — wg1)
     combined_out = ""
     for tool in ("awg", "wg"):
@@ -496,18 +506,31 @@ async def check_wg_peers() -> None:
         return
     out = combined_out
     now = int(time.time())
+    seen_keys: set[str] = set()
     for line in out.strip().splitlines():
         parts = line.split()
         if len(parts) >= 3:
             iface, pubkey, ts_str = parts[0], parts[1], parts[2]
+            peer_key = f"{iface}:{pubkey}"
+            seen_keys.add(peer_key)
             try:
                 ts = int(ts_str)
                 age = now - ts
                 if ts > 0 and age > PEER_STALE_SECONDS:
-                    logger.warning(f"Stale peer {pubkey[:16]}… на {iface} ({age}s)")
-                    alert(f"⚠️ WireGuard peer устарел: `{pubkey[:20]}…` на {iface} ({age}s без handshake)")
+                    last_alerted = state.stale_peer_alerted.get(peer_key, 0)
+                    if now - last_alerted >= PEER_STALE_REPEAT_INTERVAL:
+                        logger.warning(f"Stale peer {pubkey[:16]}… на {iface} ({age}s)")
+                        alert(f"⚠️ WireGuard peer устарел: `{pubkey[:20]}…` на {iface} ({age}s без handshake)")
+                        state.stale_peer_alerted[peer_key] = now
+                else:
+                    # Пир восстановился — сбросить дедупликацию
+                    state.stale_peer_alerted.pop(peer_key, None)
             except Exception as exc:
                 logger.debug(f"check_wg_peers: не удалось распарсить строку '{line}': {exc}")
+    # Удалить записи о пирах, которых больше нет в wg show
+    for key in list(state.stale_peer_alerted):
+        if key not in seen_keys:
+            state.stale_peer_alerted.pop(key, None)
 
 
 # ---------------------------------------------------------------------------
