@@ -247,14 +247,14 @@ services:
         max-file: "3"
 
   # ── Grafana — дашборды + Render API (watchdog /graph → PNG → Telegram) ────────
-  # Доступна: VPN-клиенты http://10.177.1.1:3000, watchdog localhost:3000
+  # Доступна: VPN-клиенты через nginx http://10.177.1.1:3000 → 172.20.0.32:3000
+  #           watchdog напрямую http://172.20.0.32:3000
+  # Порт на хост не пробрасывается: nginx занимает 10.177.1.1:3000 на хосте
   grafana:
     image: grafana/grafana:10.4.2
     container_name: grafana
     restart: always
     user: "472:472"
-    ports:
-      - "3000:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}

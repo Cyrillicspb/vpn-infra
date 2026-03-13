@@ -1054,7 +1054,7 @@ phase4() {
         "curl -sf --max-time 5 http://localhost:9090/-/healthy" \
         "docker compose -f /opt/vpn/docker-compose.yml logs --tail=20 prometheus"
     run_test "Grafana healthy" \
-        "curl -sf --max-time 5 http://localhost:3000/api/health | grep -q ok" \
+        "GRAFANA_IP=\$(docker inspect grafana --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null); curl -sf --max-time 5 http://\${GRAFANA_IP}:3000/api/health | grep -q ok" \
         "docker compose -f /opt/vpn/docker-compose.yml logs --tail=20 grafana"
     run_test "Alertmanager healthy" \
         "curl -sf --max-time 5 http://localhost:9093/-/healthy" \
