@@ -1696,14 +1696,21 @@ async def on_startup() -> None:
         if rc != 0:
             logger.info(f"Поднимаем стек {state.active_stack} при старте...")
             ok = await active_plugin.start()
-            if ok:
-                await run_cmd(
-                    ["ip", "route", "replace", "default", "dev", tun_name, "table", "marked"],
-                    timeout=5,
-                )
-                logger.info(f"Стек {state.active_stack} поднят, маршрут настроен")
-            else:
+            if not ok:
                 logger.warning(f"Не удалось поднять стек {state.active_stack} при старте")
+                active_plugin = None
+        else:
+            logger.info(f"Стек {state.active_stack} уже запущен (tun={tun_name})")
+        # Всегда обновляем маршрут table marked → tun.
+        # vpn-routes.service ставит table marked=unreachable при загрузке
+        # (tun ещё нет), поэтому необходимо восстановить маршрут независимо
+        # от того, поднимали ли мы tun сами или он уже существовал.
+        if active_plugin:
+            await run_cmd(
+                ["ip", "route", "replace", "default", "dev", tun_name, "table", "marked"],
+                timeout=5,
+            )
+            logger.info(f"Маршрут table marked → {tun_name} установлен")
 
     # Consistency recovery
     ok, _ = await ping_vps()
