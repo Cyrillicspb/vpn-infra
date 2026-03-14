@@ -1026,13 +1026,14 @@ def main() -> None:
     nft_networks = aggregate_networks(all_networks)
     log.info(f"nft blocked_static: {len(all_networks)} → {len(nft_networks)} после агрегации")
 
-    # ── Агрегация: ≤500 для AllowedIPs (combined.cidr) ────────────────────────
+    # ── Агрегация: AllowedIPs (combined.cidr) ─────────────────────────────────
     # Используем только CIDR-based источники (не /32 IP-листы) чтобы не раздувать маски.
     # Индивидуальные IP идут только в nft blocked_static (точная маршрутизация на сервере).
-    log.info(f"Агрегация AllowedIPs (лимит {MAX_CIDR_ALLOWED_IPS}, только CIDR-источники)...")
-    cidr_aggregated = aggregate_networks(cidr_networks)
-    allowed_networks = reduce_to_limit(cidr_aggregated, MAX_CIDR_ALLOWED_IPS)
-    log.info(f"AllowedIPs: {len(cidr_aggregated)} → {len(allowed_networks)} записей")
+    # Лимит 500 НЕ применяется — WireGuard обрабатывает тысячи записей через trie в ядре.
+    # Лимит 50 — только для QR-кодов (QR физически не вмещает больше).
+    log.info("Агрегация AllowedIPs (только CIDR-источники, без лимита на кол-во)...")
+    allowed_networks = aggregate_networks(cidr_networks)
+    log.info(f"AllowedIPs: {len(allowed_networks)} записей")
 
     if len(allowed_networks) > 50:
         log.info("QR-коды недоступны (>50 AllowedIPs) — отправлять .conf файлами")
