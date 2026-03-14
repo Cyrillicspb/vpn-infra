@@ -48,6 +48,7 @@ class Database:
                         id            INTEGER PRIMARY KEY AUTOINCREMENT,
                         chat_id       TEXT    NOT NULL UNIQUE,
                         username      TEXT,
+                        first_name    TEXT,
                         is_admin      INTEGER NOT NULL DEFAULT 0,
                         is_disabled   INTEGER NOT NULL DEFAULT 0,
                         device_limit  INTEGER NOT NULL DEFAULT 5,
@@ -108,6 +109,11 @@ class Database:
                         ON domain_requests(status);
                 """)
                 conn.commit()
+                # Миграция: добавить first_name если отсутствует
+                cols = {r[1] for r in conn.execute("PRAGMA table_info(clients)")}
+                if "first_name" not in cols:
+                    conn.execute("ALTER TABLE clients ADD COLUMN first_name TEXT")
+                    conn.commit()
                 logger.info("БД инициализирована")
             finally:
                 conn.close()
@@ -142,7 +148,7 @@ class Database:
                 conn.close()
 
     async def register_client(
-        self, chat_id: str, username: str, invite_code: str
+        self, chat_id: str, username: str, invite_code: str, first_name: str = ""
     ) -> dict:
         """Регистрация нового клиента по invite-коду."""
         async with self._lock:
@@ -164,8 +170,8 @@ class Database:
                     raise ValueError("Неверный, использованный или истёкший код")
 
                 conn.execute(
-                    "INSERT INTO clients (chat_id, username) VALUES (?, ?)",
-                    (str(chat_id), username),
+                    "INSERT INTO clients (chat_id, username, first_name) VALUES (?, ?, ?)",
+                    (str(chat_id), username, first_name),
                 )
                 conn.execute("""
                     UPDATE invite_codes

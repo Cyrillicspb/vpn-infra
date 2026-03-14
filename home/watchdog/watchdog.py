@@ -1403,7 +1403,15 @@ async def get_peer_list(_: bool = Depends(_auth)):
 
 @app.get("/vps/list")
 async def get_vps_list(_: bool = Depends(_auth)):
-    return {"vps_list": state.vps_list, "active_idx": state.active_vps_idx}
+    vps_list = list(state.vps_list)
+    # Всегда включаем первичный VPS из конфига если он не в списке
+    if VPS_IP and not any(v["ip"] == VPS_IP for v in vps_list):
+        vps_list.insert(0, {
+            "ip": VPS_IP,
+            "ssh_port": int(os.getenv("VPS_SSH_PORT", "443")),
+            "tunnel_ip": VPS_TUNNEL_IP,
+        })
+    return {"vps_list": vps_list, "active_idx": state.active_vps_idx}
 
 
 # ---------------------------------------------------------------------------

@@ -182,9 +182,10 @@ async def reg_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
     device_name = data.get("device_name", "")
     chat_id     = str(cb.from_user.id)
     username    = cb.from_user.username or ""
+    first_name  = cb.from_user.first_name or ""
 
     try:
-        await db.register_client(chat_id, username, invite_code)
+        await db.register_client(chat_id, username, invite_code, first_name)
     except ValueError as e:
         await cb.message.answer(f"❌ {e}")
         await state.clear()
@@ -228,9 +229,10 @@ async def reg_protocol(message: Message, state: FSMContext, **kw):
     device_name = data.get("device_name", "")
     chat_id     = str(message.from_user.id)
     username    = message.from_user.username or ""
+    first_name  = message.from_user.first_name or ""
 
     try:
-        await db.register_client(chat_id, username, invite_code)
+        await db.register_client(chat_id, username, invite_code, first_name)
     except ValueError as e:
         await message.answer(f"❌ {e}", reply_markup=ReplyKeyboardRemove())
         await state.clear()

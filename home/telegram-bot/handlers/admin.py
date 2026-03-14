@@ -21,7 +21,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -451,15 +451,18 @@ async def cb_reboot_no(cb: CallbackQuery, state: FSMContext, **kw):
 # /invite
 # ---------------------------------------------------------------------------
 @router.message(Command("invite"), StateFilter("*"))
-async def cmd_invite(message: Message, state: FSMContext, **kw):
+async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
     if not _is_admin(message):
         return
     await state.clear()
     db: Database = kw.get("db")
     code = await db.create_invite_code(str(message.from_user.id))
+    me = await bot.get_me()
+    bot_link = f"https://t.me/{me.username}" if me.username else ""
     await message.answer(
         f"*Код приглашения:*\n`{code}`\n\n"
-        f"Действителен 24 часа.\nПерешлите клиенту для регистрации (/start)."
+        f"Действителен 24 часа.\n"
+        f"Перешлите клиенту для регистрации:\n{bot_link}"
     )
 
 
@@ -479,7 +482,7 @@ async def cmd_clients(message: Message, state: FSMContext, **kw):
     lines = ["*Клиенты:*\n"]
     for c in clients:
         icon = "🚫" if c.get("is_disabled") else "✅"
-        name = c.get("username") or c["chat_id"]
+        name = c.get("first_name") or c.get("username") or c["chat_id"]
         lines.append(f"{icon} `{name}` (id: `{c['chat_id']}`)")
     await message.answer("\n".join(lines))
 
@@ -1298,13 +1301,16 @@ async def cb_adm_routes_info(cb: CallbackQuery, **kw):
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data == "adm:invite")
-async def cb_adm_invite(cb: CallbackQuery, **kw):
+async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
     await cb.answer()
     db: Database = kw.get("db")
     code = await db.create_invite_code(str(cb.from_user.id))
+    me = await bot.get_me()
+    bot_link = f"https://t.me/{me.username}" if me.username else ""
     await cb.message.answer(
         f"*Код приглашения:*\n`{code}`\n\n"
-        f"Действителен 24 часа.\nПерешлите клиенту для регистрации (/start).",
+        f"Действителен 24 часа.\n"
+        f"Перешлите клиенту для регистрации:\n{bot_link}",
         reply_markup=back_to_admin_menu(),
     )
 
@@ -1656,7 +1662,7 @@ async def cb_adm_client(cb: CallbackQuery, **kw):
     if not client:
         await cb.answer("Клиент не найден")
         return
-    name = client.get("username") or chat_id
+    name = client.get("first_name") or client.get("username") or chat_id
     devices = await db.get_devices(chat_id)
     text = (
         f"👤 *{name}*\n"
