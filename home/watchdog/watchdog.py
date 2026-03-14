@@ -507,7 +507,7 @@ def _lookup_peer_device(pubkey: str) -> str:
                 """
                 SELECT c.first_name, d.device_name
                 FROM devices d
-                LEFT JOIN clients c ON c.chat_id = d.chat_id
+                LEFT JOIN clients c ON c.id = d.client_id
                 WHERE d.public_key = ? OR d.peer_id = ?
                 LIMIT 1
                 """,
