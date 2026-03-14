@@ -194,6 +194,7 @@ async def reg_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
     builder = ConfigBuilder()
     device = await db.add_device(chat_id, device_name, protocol, pending=False)
     device = await builder.ensure_keys(device)
+    await db.update_device_keys(device["id"], device["private_key"], device["public_key"])
 
     try:
         from services.watchdog_client import WatchdogClient
@@ -242,6 +243,7 @@ async def reg_protocol(message: Message, state: FSMContext, **kw):
     builder = ConfigBuilder()
     device = await db.add_device(chat_id, device_name, protocol, pending=False)
     device = await builder.ensure_keys(device)
+    await db.update_device_keys(device["id"], device["private_key"], device["public_key"])
 
     # Добавляем WG пир
     try:
@@ -1148,7 +1150,10 @@ async def _send_config(message: Message, db: Database, device: dict, kw: dict) -
     excludes_raw = await db.get_excludes(device["id"])
     excludes = [e["subnet"] for e in excludes_raw]
 
+    had_keys = bool(device.get("private_key"))
     device = await builder.ensure_keys(device)
+    if not had_keys and device.get("private_key"):
+        await db.update_device_keys(device["id"], device["private_key"], device["public_key"])
     conf_text, qr_bytes, version = await builder.build(device, excludes)
 
     # Предупреждение
