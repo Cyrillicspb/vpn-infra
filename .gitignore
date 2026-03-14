@@ -21,6 +21,7 @@ vps/.env
 !home/cloudflared/config.yml
 !vps/nginx/conf.d/default.conf
 !home/nginx/grafana.conf
+!home/nginx/default.conf
 
 # База данных бота
 home/telegram-bot/data/
