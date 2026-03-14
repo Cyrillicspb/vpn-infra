@@ -873,23 +873,28 @@ def write_dnsmasq_config(
 # =============================================================================
 def write_dnsmasq_direct() -> None:
     """
-    vpn-direct.conf: .ru и .рф всегда резолвятся через локальный DNS.
-    server=/.ru/ — пустой upstream = использовать системный резолвер (1.1.1.1/8.8.8.8).
+    vpn-direct.conf: .ru и .рф всегда резолвятся через 1.1.1.1/8.8.8.8 напрямую.
+    server=/.ru/1.1.1.1 + server=/.ru/8.8.8.8 — явный upstream, НЕ пустой.
+    Пустой server=/.ru/ в dnsmasq означает "только локальные данные" (local-only),
+    что ломает резолвинг .ru доменов. Нужны явные адреса серверов.
     НЕТ nftset — IP не добавляются в blocked_dynamic → пакеты идут напрямую.
     """
     now = datetime.now(timezone.utc).isoformat()
     lines = [
         f"# vpn-direct.conf — TLD с прямым подключением (без VPN)",
         f"# Обновлено: {now}",
-        "# .ru и .рф (punycode: xn--p1acf) — всегда через локальный DNS",
+        "# .ru и .рф (punycode: xn--p1acf) — резолвятся через 1.1.1.1/8.8.8.8 напрямую",
         "# IP этих доменов НЕ добавляются в blocked_dynamic → трафик идёт напрямую",
         "# Без этого файла zapret/antifilter отправляли бы .ru домены через VPS DNS",
+        "# ВАЖНО: server=/.ru/ без адреса = local-only (NXDOMAIN), нужен явный upstream",
         "",
         "# .ru — российские домены",
-        "server=/.ru/",
+        "server=/.ru/1.1.1.1",
+        "server=/.ru/8.8.8.8",
         "",
         "# .рф — российские домены в кириллице (IDN punycode)",
-        "server=/.xn--p1acf/",
+        "server=/.xn--p1acf/1.1.1.1",
+        "server=/.xn--p1acf/8.8.8.8",
         "",
     ]
     DNSMASQ_DIRECT.parent.mkdir(parents=True, exist_ok=True)
