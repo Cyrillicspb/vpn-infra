@@ -1,0 +1,16 @@
+name: zapret
+display_name: "zapret (DPI bypass, прямой выход)"
+resilience: 2
+protocol: tcp_direct
+transport: nfqueue
+port: null
+direct_mode: true      # не создаёт tun; трафик через eth0 с перехватом nfqueue
+tun_name: null
+requires:
+  - nfqws-binary        # /usr/local/bin/nfqws
+  - nfnetlink_queue     # ядерный модуль
+description: >
+  Прямой обход DPI без VPS через zapret/nfqws (Linux-аналог GoodbyeDPI).
+  Адаптивный поиск параметров через Thompson Sampling.
+  Работает против пассивного DPI и ТСПУ с fake/split техниками.
+  Быстрее туннельных стеков (нет hop через VPS), но менее устойчив.

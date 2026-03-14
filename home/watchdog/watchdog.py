@@ -58,6 +58,7 @@ DDNS_DOMAIN          = os.getenv("DDNS_DOMAIN", "")
 DDNS_TOKEN           = os.getenv("DDNS_TOKEN", "")
 CF_API_TOKEN         = os.getenv("CF_API_TOKEN", "")
 NET_INTERFACE        = os.getenv("NET_INTERFACE", "eth0")
+GATEWAY_IP           = os.getenv("GATEWAY_IP", "")
 
 STATE_FILE   = Path("/opt/vpn/watchdog/state.json")
 PLUGINS_DIR  = Path("/opt/vpn/watchdog/plugins")
@@ -65,7 +66,8 @@ ROUTES_DIR   = Path("/etc/vpn-routes")
 LOG_FILE     = "/var/log/vpn-watchdog.log"
 
 # Порядок по устойчивости (индекс 0 = самый устойчивый)
-STACK_ORDER = ["cloudflare-cdn", "reality-grpc", "reality", "hysteria2"]
+# zapret (resilience=2): прямой обход DPI без VPS, между hysteria2 и reality
+STACK_ORDER = ["cloudflare-cdn", "reality-grpc", "reality", "zapret", "hysteria2"]
 
 # Пороги мониторинга
 RTT_DEGRADATION_FACTOR   = 3.0   # RTT > 3× baseline → деградация
@@ -905,6 +907,31 @@ async def collect_conntrack_stats() -> None:
 
 
 # ---------------------------------------------------------------------------
+# zapret: ночной full probe параметров (02:30)
+# ---------------------------------------------------------------------------
+async def _run_zapret_probe() -> None:
+    """Запустить full probe zapret в фоне, обновить Thompson Sampling."""
+    plugin_dir = PLUGINS_DIR / "zapret"
+    probe_script = plugin_dir / "probe.py"
+    if not probe_script.exists():
+        return
+    logger.info("[zapret] Запуск ночного full probe...")
+    rc, out, err = await run_cmd(
+        [sys.executable, str(probe_script), "full"],
+        timeout=600,
+    )
+    if rc == 0:
+        # Извлечь лучший пресет из вывода
+        for line in out.splitlines():
+            if "Лучший пресет:" in line:
+                logger.info(f"[zapret] {line.strip()}")
+                break
+        logger.info("[zapret] Ночной full probe завершён")
+    else:
+        logger.warning(f"[zapret] full probe завершился с ошибкой: {err.strip()[:200]}")
+
+
+# ---------------------------------------------------------------------------
 # Мониторинг: проверка standby туннелей (04:30)
 # ---------------------------------------------------------------------------
 async def test_standby_tunnels() -> None:
@@ -958,13 +985,28 @@ async def _do_switch(new_stack: str, reason: str) -> bool:
         alert(f"⚠️ Failover на *{new_stack}* не удался")
         return False
 
-    # 2. Атомарно переключаем маршрут table marked → новый tun
-    # tun_name берём из metadata.yaml плагина, fallback = tun-{stack_name}
-    tun_name = plugin.meta.get("tun_name", f"tun-{new_stack}")
-    await run_cmd(
-        ["ip", "route", "replace", "default", "dev", tun_name, "table", "marked"],
-        timeout=5,
-    )
+    # 2. Атомарно переключаем маршрут table marked
+    if plugin.meta.get("direct_mode"):
+        # direct_mode (zapret): трафик через eth0 с nfqueue, без tun
+        gw = GATEWAY_IP
+        eth = NET_INTERFACE
+        if gw:
+            await run_cmd(
+                ["ip", "route", "replace", "default", "via", gw, "dev", eth, "table", "marked"],
+                timeout=5,
+            )
+        else:
+            await run_cmd(
+                ["ip", "route", "replace", "default", "dev", eth, "table", "marked"],
+                timeout=5,
+            )
+    else:
+        # Обычный режим: маршрут через tun интерфейс
+        tun_name = plugin.meta.get("tun_name", f"tun-{new_stack}")
+        await run_cmd(
+            ["ip", "route", "replace", "default", "dev", tun_name, "table", "marked"],
+            timeout=5,
+        )
 
     # 3. Останавливаем старый стек
     old_plugin = plugins.get(old_stack)
@@ -1203,6 +1245,7 @@ async def monitoring_loop() -> None:
     last_heartbeat = 0.0
     last_conntrack = 0.0
     standby_checked_today = False
+    zapret_probe_done_today = False
     last_standby_check_date = datetime.now().date()
     logger.info("monitoring_loop запущен")
 
@@ -1257,10 +1300,19 @@ async def monitoring_loop() -> None:
             now_dt = datetime.now()
             if now_dt.date() != last_standby_check_date:
                 standby_checked_today = False
+                zapret_probe_done_today = False
                 last_standby_check_date = now_dt.date()
             if not standby_checked_today and now_dt.hour == 4 and now_dt.minute >= 30:
                 await test_standby_tunnels()
                 standby_checked_today = True
+
+            # В 02:30 каждый день: full probe zapret параметров (Thompson Sampling re-train)
+            if not zapret_probe_done_today and now_dt.hour == 2 and now_dt.minute >= 30:
+                zapret_plugin = plugins.get("zapret")
+                if zapret_plugin:
+                    logger.info("Ночной full probe zapret параметров...")
+                    asyncio.create_task(_run_zapret_probe())
+                zapret_probe_done_today = True
 
             pass  # watchdog ping отправляется из _watchdog_ping_loop()
 
