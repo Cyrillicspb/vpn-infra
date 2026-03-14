@@ -460,10 +460,13 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
     me = await bot.get_me()
     bot_link = f"https://t.me/{me.username}" if me.username else ""
     await message.answer(
-        f"*Код приглашения:*\n`{code}`\n\n"
-        f"Действителен 24 часа.\n"
-        f"Перешлите клиенту для регистрации:\n{bot_link}"
+        f"🎫 *Код приглашения готов*\n\n"
+        f"Действителен 24 часа\\.\n"
+        f"Перешлите клиенту ссылку на бота и код ниже\\.\n\n"
+        f"{bot_link}",
+        parse_mode="MarkdownV2",
     )
+    await message.answer(f"```\n{code}\n```", parse_mode="MarkdownV2")
 
 
 # ---------------------------------------------------------------------------
@@ -1308,11 +1311,13 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
     me = await bot.get_me()
     bot_link = f"https://t.me/{me.username}" if me.username else ""
     await cb.message.answer(
-        f"*Код приглашения:*\n`{code}`\n\n"
-        f"Действителен 24 часа.\n"
-        f"Перешлите клиенту для регистрации:\n{bot_link}",
-        reply_markup=back_to_admin_menu(),
+        f"🎫 *Код приглашения готов*\n\n"
+        f"Действителен 24 часа\\.\n"
+        f"Перешлите клиенту ссылку на бота и код ниже\\.\n\n"
+        f"{bot_link}",
+        parse_mode="MarkdownV2",
     )
+    await cb.message.answer(f"```\n{code}\n```", parse_mode="MarkdownV2")
 
 
 @router.callback_query(F.data == "adm:clients_list")
