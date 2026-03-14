@@ -490,6 +490,36 @@ def _wg_quick_tool(iface: str) -> str:
 # Мониторинг: WireGuard peers
 # ---------------------------------------------------------------------------
 PEER_STALE_REPEAT_INTERVAL = 3600  # повторный алерт о stale peer — не чаще раза в час
+BOT_DB_PATH = Path("/opt/vpn/telegram-bot/data/vpn_bot.db")
+
+
+def _lookup_peer_device(pubkey: str) -> str:
+    """
+    Найти имя устройства и владельца по публичному ключу в БД бота.
+    Возвращает строку вида 'Иван / iPhone' или 'неизвестное устройство'.
+    """
+    if not BOT_DB_PATH.exists():
+        return ""
+    try:
+        import sqlite3 as _sqlite3
+        with _sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=3) as conn:
+            row = conn.execute(
+                """
+                SELECT c.first_name, d.device_name
+                FROM devices d
+                LEFT JOIN clients c ON c.chat_id = d.chat_id
+                WHERE d.public_key = ? OR d.peer_id = ?
+                LIMIT 1
+                """,
+                (pubkey, pubkey),
+            ).fetchone()
+        if row:
+            name, device = row
+            parts = [p for p in [name, device] if p]
+            return " / ".join(parts) if parts else ""
+    except Exception:
+        pass
+    return ""
 
 
 async def check_wg_peers() -> None:
@@ -522,8 +552,21 @@ async def check_wg_peers() -> None:
                 if ts > 0 and age > PEER_STALE_SECONDS:
                     last_alerted = state.stale_peer_alerted.get(peer_key, 0)
                     if now - last_alerted >= PEER_STALE_REPEAT_INTERVAL:
+                        device_info = _lookup_peer_device(pubkey)
+                        hours = age // 3600
+                        mins  = (age % 3600) // 60
+                        age_str = f"{hours}ч {mins}мин" if hours else f"{mins}мин"
+                        if device_info:
+                            who = f"*{device_info}*"
+                        else:
+                            who = f"неизвестное устройство (`{pubkey[:20]}…`)"
                         logger.warning(f"Stale peer {pubkey[:16]}… на {iface} ({age}s)")
-                        alert(f"⚠️ WireGuard peer устарел: `{pubkey[:20]}…` на {iface} ({age}s без handshake)")
+                        alert(
+                            f"⚠️ WireGuard peer не на связи\n"
+                            f"Устройство: {who}\n"
+                            f"Интерфейс: `{iface}`\n"
+                            f"Без handshake: {age_str}"
+                        )
                         state.stale_peer_alerted[peer_key] = now
                 else:
                     # Пир восстановился — сбросить дедупликацию
