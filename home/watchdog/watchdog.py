@@ -51,7 +51,7 @@ TELEGRAM_BOT_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_ADMIN_ID    = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "")
 VPS_IP               = os.getenv("VPS_IP", "")
 VPS_TUNNEL_IP        = os.getenv("VPS_TUNNEL_IP", "10.177.2.2")
-GRAFANA_URL          = os.getenv("GRAFANA_URL", "http://localhost:3000")
+GRAFANA_URL          = os.getenv("GRAFANA_URL", "http://172.20.0.32:3000")
 GRAFANA_TOKEN        = os.getenv("GRAFANA_TOKEN", "")
 DDNS_PROVIDER        = os.getenv("DDNS_PROVIDER", "")
 DDNS_DOMAIN          = os.getenv("DDNS_DOMAIN", "")
@@ -193,7 +193,8 @@ tg = TelegramQueue()
 def alert(text: str, chat_id: str = "") -> None:
     """Добавить алерт в очередь Telegram."""
     logger.info(f"ALERT: {text[:120]}")
-    tg.enqueue(text, chat_id)
+    ts = datetime.now().strftime("%d.%m %H:%M")
+    tg.enqueue(f"{text}\n\n🕐 {ts}", chat_id)
 
 
 # ---------------------------------------------------------------------------
@@ -716,9 +717,11 @@ BLOCKED_CHECK_URLS = ["https://youtube.com", "https://t.me"]
 
 
 async def check_blocked_sites() -> None:
+    plugin = plugins.get(state.active_stack)
+    tun = plugin.meta.get("tun_name", f"tun-{state.active_stack}") if plugin else f"tun-{state.active_stack}"
     for url in BLOCKED_CHECK_URLS:
         rc, out, _ = await run_cmd(
-            ["curl", "-s", "--max-time", "15", "-o", "/dev/null", "-w", "%{http_code}", url],
+            ["curl", "-s", "--max-time", "15", "--interface", tun, "-o", "/dev/null", "-w", "%{http_code}", url],
             timeout=20,
         )
         if rc != 0 or out.strip() not in ("200", "301", "302", "303"):
@@ -1654,8 +1657,10 @@ async def post_diagnose(request: Request, device: str, _: bool = Depends(_auth))
     results["tunnel_rtt_ms"] = rtt
 
     # Заблокированные сайты
+    _plugin = plugins.get(state.active_stack)
+    _tun = _plugin.meta.get("tun_name", f"tun-{state.active_stack}") if _plugin else f"tun-{state.active_stack}"
     rc, out, _ = await run_cmd(
-        ["curl", "-s", "--max-time", "10", "-o", "/dev/null", "-w", "%{http_code}", "https://youtube.com"],
+        ["curl", "-s", "--max-time", "10", "--interface", _tun, "-o", "/dev/null", "-w", "%{http_code}", "https://youtube.com"],
         timeout=15,
     )
     results["blocked_sites_ok"] = rc == 0 and out.strip() in ("200", "301", "302")
