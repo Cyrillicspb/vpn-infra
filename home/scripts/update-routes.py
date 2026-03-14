@@ -113,12 +113,14 @@ SOURCES: dict[str, dict] = {
         "type":      "cidr_list",
         "min_lines": 50,
         "desc":      "Antifilter subnet list",
+        "cidr_for_allowed_ips": True,
     },
     "antifilter_allyouneed": {
         "url":       "https://antifilter.download/list/allyouneed.lst",
         "type":      "cidr_list",
         "min_lines": 100,
         "desc":      "Antifilter all-you-need (14K агрегированных CIDR)",
+        "cidr_for_allowed_ips": True,
     },
     "antifilter_domains": {
         "url":       "https://antifilter.download/list/domains.lst",
@@ -132,6 +134,7 @@ SOURCES: dict[str, dict] = {
         "type":      "cidr_list",
         "min_lines": 50,
         "desc":      "OpenCCK CIDR4 (2.7K)",
+        "cidr_for_allowed_ips": True,
     },
     "opencck_domains": {
         "url":       "https://iplist.opencck.org/?format=text&data=domains",
@@ -693,25 +696,34 @@ def fetch_source(key: str, cfg: dict) -> tuple[set[ipaddress.IPv4Network], set[s
 # =============================================================================
 # Параллельная загрузка всех источников
 # =============================================================================
-def fetch_all_sources() -> tuple[set[ipaddress.IPv4Network], set[str]]:
+def fetch_all_sources() -> tuple[set[ipaddress.IPv4Network], set[ipaddress.IPv4Network], set[str]]:
+    """
+    Возвращает (all_networks, cidr_networks, all_domains).
+    all_networks  — все IP/CIDR из всех источников (для nft blocked_static).
+    cidr_networks — только CIDR-based источники с cidr_for_allowed_ips=True
+                    (для combined.cidr AllowedIPs — без /32 IP, чтобы не раздувать маски).
+    """
     all_networks: set[ipaddress.IPv4Network] = set()
+    cidr_networks: set[ipaddress.IPv4Network] = set()
     all_domains: set[str] = set()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
         futures = {
-            pool.submit(fetch_source, key, cfg): key
+            pool.submit(fetch_source, key, cfg): (key, cfg)
             for key, cfg in SOURCES.items()
         }
         for future in concurrent.futures.as_completed(futures):
-            key = futures[future]
+            key, cfg = futures[future]
             try:
                 nets, doms = future.result()
                 all_networks.update(nets)
                 all_domains.update(doms)
+                if cfg.get("cidr_for_allowed_ips"):
+                    cidr_networks.update(nets)
             except Exception as exc:
                 log.error(f"[{key}] Неожиданная ошибка: {exc}")
 
-    return all_networks, all_domains
+    return all_networks, cidr_networks, all_domains
 
 
 # =============================================================================
@@ -983,21 +995,23 @@ def main() -> None:
     old_hash = HASH_FILE.read_text().strip() if HASH_FILE.exists() else ""
 
     # ── Загрузка всех источников (параллельно) ────────────────────────────────
-    all_networks, all_domains = fetch_all_sources()
+    all_networks, cidr_networks, all_domains = fetch_all_sources()
 
-    # Добавляем статические AS-блоки CDN
+    # Добавляем статические AS-блоки CDN (в оба set-а)
     for cidr in CDN_SUBNETS:
         net = _parse_network(cidr)
         if net:
             all_networks.add(net)
+            cidr_networks.add(net)
     log.info(f"CDN блоки: {len(CDN_SUBNETS)} добавлено")
 
     # Добавляем статические домены
     all_domains.update(STATIC_BLOCKED_DOMAINS)
 
-    # Загружаем ручные списки
+    # Загружаем ручные списки (manual-vpn.txt → в оба set-а)
     manual_networks, manual_domains = load_manual_vpn()
     all_networks.update(manual_networks)
+    cidr_networks.update(manual_networks)
 
     if not all_networks:
         log.error("Нет данных для обновления!")
@@ -1005,6 +1019,7 @@ def main() -> None:
         sys.exit(1)
 
     log.info(f"Всего до агрегации: {len(all_networks)} сетей, {len(all_domains)} доменов")
+    log.info(f"CIDR-only (для AllowedIPs): {len(cidr_networks)} сетей")
 
     # ── Агрегация: полный set для nft blocked_static ───────────────────────────
     log.info("Агрегация nft blocked_static (без лимита)...")
@@ -1012,9 +1027,12 @@ def main() -> None:
     log.info(f"nft blocked_static: {len(all_networks)} → {len(nft_networks)} после агрегации")
 
     # ── Агрегация: ≤500 для AllowedIPs (combined.cidr) ────────────────────────
-    log.info(f"Агрегация AllowedIPs (лимит {MAX_CIDR_ALLOWED_IPS})...")
-    allowed_networks = reduce_to_limit(nft_networks, MAX_CIDR_ALLOWED_IPS)
-    log.info(f"AllowedIPs: {len(allowed_networks)} записей")
+    # Используем только CIDR-based источники (не /32 IP-листы) чтобы не раздувать маски.
+    # Индивидуальные IP идут только в nft blocked_static (точная маршрутизация на сервере).
+    log.info(f"Агрегация AllowedIPs (лимит {MAX_CIDR_ALLOWED_IPS}, только CIDR-источники)...")
+    cidr_aggregated = aggregate_networks(cidr_networks)
+    allowed_networks = reduce_to_limit(cidr_aggregated, MAX_CIDR_ALLOWED_IPS)
+    log.info(f"AllowedIPs: {len(cidr_aggregated)} → {len(allowed_networks)} записей")
 
     if len(allowed_networks) > 50:
         log.info("QR-коды недоступны (>50 AllowedIPs) — отправлять .conf файлами")
