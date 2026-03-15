@@ -166,7 +166,7 @@ class TelegramQueue:
                 async with aiohttp.ClientSession() as session:
                     resp = await session.post(
                         f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                        json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"},
+                        json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
                         timeout=aiohttp.ClientTimeout(total=10),
                     )
                     if resp.status == 200:
@@ -328,6 +328,16 @@ class WatchdogState:
         self.peer_lock = asyncio.Lock()         # mutex /peer/add
         # Дедупликация алертов о stale peers: {iface:pubkey → timestamp последнего алерта}
         self.stale_peer_alerted: dict[str, float] = {}
+        # ── Метрики для Prometheus /metrics ──────────────────────────────────────
+        self.last_rtt: float = 0.0              # последний RTT (ms)
+        self.ping_results: deque = deque(maxlen=30)  # 1=ok, 0=fail (для packet_loss_pct)
+        self.last_download_mbps: float = 0.0   # последний speedtest (Mbps)
+        self.upload_util_pct: float = 0.0      # утилизация upload-канала %
+        self.blocked_sites_reachable: int = 1  # 1=OK, 0=недоступны
+        self.failover_count: int = 0           # счётчик failover-переключений
+        self.dnsmasq_up: int = 1               # 1=работает, 0=нет
+        self.docker_health: dict[str, int] = {}  # {container: 1/0}
+        self.cached_peers: list[dict] = []      # последний дамп WG пиров
 
     @property
     def active_vps(self) -> Optional[dict]:
@@ -424,8 +434,16 @@ async def ping_vps(target: str = "") -> tuple[bool, float]:
 # ---------------------------------------------------------------------------
 # Speedtest
 # ---------------------------------------------------------------------------
-SPEED_URL_SMALL = "https://speed.cloudflare.com/__down?bytes=102400"    # 100 KB
-SPEED_URL_LARGE = "https://speed.cloudflare.com/__down?bytes=10485760"  # 10 MB
+SPEED_URL_SMALL = "https://speed.cloudflare.com/__down?bytes=102400"    # 100 KB (через VPN)
+SPEED_URL_LARGE = "https://speed.cloudflare.com/__down?bytes=10485760"  # 10 MB  (через VPN)
+
+# Российские speedtest-серверы для ISP-теста (не заблокированы провайдером).
+# Проверены по убыванию приоритета: первый рабочий используется.
+DIRECT_TEST_SERVERS = [
+    "http://speedtest.corbina.ru/speedtest/random4000x4000.jpg",   # Beeline/Corbina ~4 MB
+    "http://speedtest.corbina.ru/speedtest/random1000x1000.jpg",   # Beeline/Corbina ~1 MB
+    "https://speedtest.megafon.ru/speedtest/random1000x1000.jpg",  # МегаФон ~1 MB
+]
 
 
 async def _measure_throughput(url: str, proxy: str = "") -> float:
@@ -449,6 +467,7 @@ async def speedtest_small() -> float:
     mbps = await _measure_throughput(SPEED_URL_SMALL)
     if mbps > 0:
         state.small_speedtest.append(mbps)
+        state.last_download_mbps = mbps
     return mbps
 
 
@@ -458,6 +477,54 @@ async def speedtest_large() -> float:
     if mbps > 0:
         state.large_speedtest.append(mbps)
     return mbps
+
+
+async def speedtest_direct() -> float:
+    """ISP-тест напрямую через NET_INTERFACE (без VPN). Перебирает DIRECT_TEST_SERVERS.
+    Возвращает Mbps первого успешного сервера, 0.0 если все недоступны."""
+    for url in DIRECT_TEST_SERVERS:
+        cmd = [
+            "curl", "-sL", "--max-time", "12",
+            "--interface", NET_INTERFACE,
+            "-o", "/dev/null", "-w", "%{speed_download} %{http_code}",
+            url,
+        ]
+        rc, out, _ = await run_cmd(cmd, timeout=17)
+        if not out.strip():
+            continue
+        parts = out.strip().split()
+        http_code = parts[1] if len(parts) >= 2 else "0"
+        if http_code != "200":
+            continue
+        try:
+            mbps = round(float(parts[0]) * 8 / 1_000_000, 1)
+            if mbps >= 1.0:
+                logger.debug(f"speedtest_direct: {mbps} Mbps via {url}")
+                return mbps
+        except Exception:
+            continue
+    return 0.0
+
+
+async def speedtest_iperf_vps() -> float:
+    """Замер download-скорости от VPS через iperf3 (tier-2 туннель). Возвращает Mbps."""
+    cmd = [
+        "iperf3", "-c", VPS_TUNNEL_IP,
+        "-p", "5201",
+        "-t", "10",   # 10 секунд
+        "-R",         # reverse: VPS → дом (download, как у стеков)
+        "--json",
+    ]
+    rc, out, _ = await run_cmd(cmd, timeout=25)
+    if rc == 0:
+        try:
+            import json as _json
+            data = _json.loads(out)
+            bits = data["end"]["sum_received"]["bits_per_second"]
+            return round(bits / 1_000_000, 2)
+        except Exception as e:
+            logger.debug(f"iperf3: ошибка парсинга: {e}")
+    return 0.0
 
 
 def detect_volume_shaping() -> Optional[str]:
@@ -578,23 +645,47 @@ async def check_wg_peers() -> None:
         if key not in seen_keys:
             state.stale_peer_alerted.pop(key, None)
 
+    # Обновить кэш пиров для /metrics (vpn_peer_count, vpn_peer_last_handshake)
+    dump_out = ""
+    for tool in ("awg", "wg"):
+        rc, out, _ = await run_cmd([tool, "show", "all", "dump"], timeout=10)
+        if rc == 0:
+            dump_out += out
+    peers: list[dict] = []
+    for line in dump_out.strip().splitlines():
+        p = line.split("\t")
+        if len(p) != 9:
+            continue
+        try:
+            peers.append({
+                "interface": p[0], "public_key": p[1],
+                "last_handshake": int(p[5]),
+            })
+        except Exception:
+            continue
+    state.cached_peers = peers
+
 
 # ---------------------------------------------------------------------------
 # Мониторинг: Docker контейнеры
 # ---------------------------------------------------------------------------
 async def check_containers() -> None:
-    """Проверка exited/unhealthy контейнеров."""
+    """Проверка exited/unhealthy контейнеров. Обновляет state.docker_health."""
     rc, out, _ = await run_cmd(
         ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}"], timeout=15
     )
     if rc != 0:
         return
+    new_health: dict[str, int] = {}
     for line in out.strip().splitlines():
         parts = line.split("\t", 1)
         if len(parts) == 2:
             name, status = parts
-            if "Exited" in status or "unhealthy" in status.lower():
+            healthy = 0 if ("Exited" in status or "unhealthy" in status.lower()) else 1
+            new_health[name] = healthy
+            if healthy == 0:
                 alert(f"🚨 Контейнер *{name}*: `{status}`")
+    state.docker_health = new_health
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +735,7 @@ async def check_upload_utilization() -> None:
         c2 = psutil.net_io_counters(pernic=True)[iface]
         upload_mbps = (c2.bytes_sent - c1.bytes_sent) * 8 / 1_000_000 / 2
         pct = upload_mbps / bw_limit_mbps * 100
+        state.upload_util_pct = round(pct, 1)
         if pct > UPLOAD_ALERT_PCT:
             alert(f"⚠️ Upload {upload_mbps:.1f} Mbps — *{pct:.0f}%* от канала ({bw_limit_mbps} Mbps)")
     except Exception as exc:
@@ -656,9 +748,12 @@ async def check_upload_utilization() -> None:
 async def check_dnsmasq() -> None:
     rc, out, _ = await run_cmd(["dig", "@127.0.0.1", "google.com", "+short", "+time=3"], timeout=10)
     if rc != 0 or not out.strip():
+        state.dnsmasq_up = 0
         logger.error("dnsmasq не отвечает, перезапуск")
         alert("⚠️ dnsmasq не отвечает — перезапуск")
         await run_cmd(["systemctl", "restart", "dnsmasq"])
+    else:
+        state.dnsmasq_up = 1
 
 
 # ---------------------------------------------------------------------------
@@ -770,8 +865,10 @@ async def check_blocked_sites() -> None:
             timeout=20,
         )
         if rc != 0 or out.strip() not in ("200", "301", "302", "303"):
+            state.blocked_sites_reachable = 0
             alert(f"⚠️ Заблокированный сайт *{url}* недоступен через туннель (код: {out.strip() or 'нет ответа'})")
             return
+    state.blocked_sites_reachable = 1
 
 
 # ---------------------------------------------------------------------------
@@ -1059,6 +1156,7 @@ async def _do_switch(new_stack: str, reason: str) -> bool:
     state.active_stack = new_stack
     state.last_failover = datetime.now()
     state.all_stacks_down_since = None
+    state.failover_count += 1
     state.save()
 
     logger.info(f"Стек переключён: {old_stack} → {new_stack}")
@@ -1232,6 +1330,9 @@ async def decision_loop() -> None:
     while True:
         try:
             ok, rtt = await ping_vps()
+
+            state.last_rtt = rtt if ok else 0.0
+            state.ping_results.append(1 if ok else 0)
 
             if ok:
                 ping_fails = 0
@@ -1463,16 +1564,56 @@ async def get_metrics(_: bool = Depends(_auth)):
     ram  = psutil.virtual_memory()
 
     stack_idx = STACK_ORDER.index(state.active_stack) if state.active_stack in STACK_ORDER else -1
+    tunnel_up = 1 if state.last_rtt > 0 else 0
+    rtt_baseline = round(state.rtt_avg(state.active_stack), 1)
+
+    # Packet loss из скользящего окна последних 30 пингов
+    if state.ping_results:
+        loss_pct = round(state.ping_results.count(0) / len(state.ping_results) * 100, 1)
+    else:
+        loss_pct = 0.0
+
     lines = [
+        # Туннель
+        f'vpn_tunnel_up {tunnel_up}',
+        f'vpn_tunnel_rtt_ms {round(state.last_rtt, 1)}',
+        f'vpn_tunnel_rtt_baseline_ms {rtt_baseline}',
+        f'vpn_tunnel_packet_loss_pct {loss_pct}',
+        f'vpn_tunnel_download_mbps {state.last_download_mbps}',
+        f'vpn_tunnel_upload_mbps 0',          # upload тест не реализован
+        f'vpn_tunnel_upload_util_pct {state.upload_util_pct}',
+        f'vpn_blocked_sites_reachable {max(0, state.blocked_sites_reachable)}',
+        f'vpn_failover_total {state.failover_count}',
+        # Стек
         f'vpn_active_stack{{stack="{state.active_stack}"}} {stack_idx}',
-        f"vpn_bytes_sent_total {net.bytes_sent}",
-        f"vpn_bytes_recv_total {net.bytes_recv}",
-        f"vpn_disk_used_percent {disk.percent}",
-        f"vpn_ram_used_percent {ram.percent}",
-        f"vpn_cpu_percent {psutil.cpu_percent(interval=0.1)}",
-        f"vpn_degraded_mode {int(state.degraded_mode)}",
-        f"vpn_uptime_seconds {int((datetime.now() - state.started_at).total_seconds())}",
+        f'vpn_degraded_mode {int(state.degraded_mode)}',
+        # dnsmasq
+        f'vpn_dnsmasq_up {state.dnsmasq_up}',
+        # Система
+        f'vpn_bytes_sent_total {net.bytes_sent}',
+        f'vpn_bytes_recv_total {net.bytes_recv}',
+        f'vpn_disk_used_percent {disk.percent}',
+        f'vpn_ram_used_percent {ram.percent}',
+        f'vpn_cpu_percent {psutil.cpu_percent(interval=0.1)}',
+        f'vpn_uptime_seconds {int((datetime.now() - state.started_at).total_seconds())}',
     ]
+
+    # Docker health per-container
+    for container, healthy in state.docker_health.items():
+        lines.append(f'vpn_docker_healthy{{container="{container}"}} {healthy}')
+
+    # WG peer metrics
+    from collections import Counter as _Counter
+    iface_counts = _Counter(p.get("interface") for p in state.cached_peers)
+    for iface, count in iface_counts.items():
+        lines.append(f'vpn_peer_count{{interface="{iface}"}} {count}')
+    # Per-peer last handshake
+    for peer in state.cached_peers:
+        iface  = peer.get("interface", "wg0")
+        pubkey = peer.get("public_key", "")
+        hs     = peer.get("last_handshake", 0)
+        lines.append(f'vpn_peer_last_handshake{{interface="{iface}",pubkey="{pubkey[:24]}"}} {hs}')
+
     return Response(content="\n".join(lines), media_type="text/plain")
 
 
@@ -1709,18 +1850,104 @@ async def post_notify_clients(request: Request, req: NotifyClientsRequest, _: bo
     return {"status": "queued", "message": req.message}
 
 
+
+
+async def _manual_reassessment() -> None:
+    """Тест всех стеков по запросу пользователя — отправляет отчёт в Telegram."""
+    alert("🔍 Запуск теста скорости всех стеков...")
+
+    # Базовые линии последовательно — параллельный запуск насыщает канал
+    # и мешает точному измерению каждого теста
+    vps_mbps = await speedtest_iperf_vps()
+    direct_mbps = await speedtest_direct()
+
+    results: list[tuple[str, bool, float]] = []
+    async with _LOCK:
+        for name in plugins.all_names():
+            plugin = plugins.get(name)
+            if not plugin:
+                continue
+            ok, mbps = await plugin.test(timeout=10)
+            results.append((name, ok, mbps))
+
+    best_stack: Optional[str] = None
+    best_mbps = 0.0
+    lines = []
+
+    # Базовые линии
+    if direct_mbps > 0:
+        lines.append(f"🌐 ISP ({NET_INTERFACE}): {direct_mbps:.1f} Mbps")
+    else:
+        lines.append(f"🌐 ISP ({NET_INTERFACE}): недоступно")
+    if vps_mbps > 0:
+        # Процент ISP показываем только если ISP тест дал осмысленное значение
+        pct_vps = f"  ({round(vps_mbps / direct_mbps * 100)}% ISP)" if direct_mbps >= 1.0 else ""
+        lines.append(f"🔒 VPS tier-2 (iperf3): {vps_mbps:.1f} Mbps{pct_vps}")
+    else:
+        lines.append("🔒 VPS tier-2 (iperf3): недоступно")
+    lines.append("─" * 28)
+
+    # Базовая линия для процентов стеков — канал до VPS (он реалистичнее ISP)
+    base_mbps = vps_mbps if vps_mbps > 0 else direct_mbps
+
+    for name, ok, mbps in results:
+        icon = "✅" if ok else "❌"
+        marker = " ← активный" if name == state.active_stack else ""
+        if ok:
+            pct = f"  ({round(mbps / base_mbps * 100)}%)" if base_mbps > 0 else ""
+            speed = f"{mbps:.1f} Mbps{pct}"
+        else:
+            speed = "недоступен"
+        lines.append(f"{icon} {name}: {speed}{marker}")
+        if ok and mbps > best_mbps:
+            best_mbps, best_stack = mbps, name
+
+    report = "\n".join(lines)
+    if best_stack and best_stack != state.active_stack:
+        async with _LOCK:
+            await _do_switch(best_stack, "manual_reassessment")
+        alert(
+            f"📊 Тест завершён:\n\n{report}\n\n"
+            f"🔄 Переключено на <b>{best_stack}</b> ({best_mbps:.1f} Mbps)"
+        )
+    elif best_stack:
+        alert(
+            f"📊 Тест завершён:\n\n{report}\n\n"
+            f"✅ Текущий стек <b>{state.active_stack}</b> уже оптимален"
+        )
+    else:
+        alert(f"📊 Тест завершён:\n\n{report}\n\n⚠️ Все стеки недоступны")
+
+    state.last_full_assessment = datetime.now()
+
+
+@app.post("/assess")
+@limiter.limit("10/second")
+async def post_assess(request: Request, _: bool = Depends(_auth)):
+    if state.failover_in_progress or state.rotation_in_progress:
+        raise HTTPException(status_code=409, detail="Уже выполняется переключение")
+    stacks = plugins.all_names()
+    asyncio.create_task(_manual_reassessment(), name="manual-reassessment")
+    return {"status": "started", "stacks": stacks, "eta_seconds": len(stacks) * 10 + 15}
+
 @app.post("/graph")
 @limiter.limit("10/second")
 async def post_graph(request: Request, req: GraphRequest, _: bool = Depends(_auth)):
     """Получить PNG-график из Grafana Render API."""
-    panel_ids = {"tunnel": 1, "speed": 2, "clients": 3, "system": 4}
+    # (dashboard_uid, panel_id) для каждого типа графика
+    panel_map = {
+        "tunnel":  ("vpn-tunnel",  1),   # RTT туннеля vs Baseline
+        "speed":   ("vpn-tunnel",  2),   # Скорость туннеля (speedtest)
+        "clients": ("vpn-clients", 10),  # Количество пиров (история)
+        "system":  ("vpn-system",  10),  # CPU история
+    }
     period_map = {"1h": "1h", "6h": "6h", "24h": "24h", "7d": "7d"}
 
-    panel_id = panel_ids.get(req.panel, 1)
-    period   = period_map.get(req.period, "1h")
+    dash_uid, panel_id = panel_map.get(req.panel, ("vpn-tunnel", 1))
+    period = period_map.get(req.period, "1h")
 
     url = (
-        f"{GRAFANA_URL}/render/d-solo/vpn-overview/vpn-overview"
+        f"{GRAFANA_URL}/render/d-solo/{dash_uid}/{dash_uid}"
         f"?panelId={panel_id}&width=800&height=400&from=now-{period}&to=now"
     )
     headers = {}

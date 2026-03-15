@@ -115,6 +115,7 @@ def admin_switch_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=name, callback_data=f"adm:sw:{key}")]
         for name, key in stacks
     ]
+    rows.append([InlineKeyboardButton(text="🔍 Тест всех стеков", callback_data="adm:assess")])
     rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:manage")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

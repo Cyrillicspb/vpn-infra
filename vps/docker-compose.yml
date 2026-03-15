@@ -128,6 +128,21 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # ── iperf3 — сервер для замера скорости до VPS (только tier-2) ───────────────
+  # Слушает только на 10.177.2.2 (tier-2 интерфейс) → недоступен из интернета
+  # Используется watchdog /assess для базовой линии скорости
+  iperf3:
+    image: networkstatic/iperf3:latest
+    container_name: iperf3
+    restart: always
+    network_mode: host
+    command: ["-s", "--bind", "10.177.2.2", "-p", "5201"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
   # ── Hysteria2 (QUIC + Salamander obfs) — UDP 443 ─────────────────────────────
   # Отдельный бинарник, не Xray. Сертификат: self-signed в ./hysteria2/
   # Настройка: HYSTERIA2_AUTH, HYSTERIA2_OBFS_PASSWORD в .env → server.yaml

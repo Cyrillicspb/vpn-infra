@@ -137,3 +137,6 @@ class WatchdogClient:
 
     async def notify_clients(self, message: str) -> dict:
         return await self._post("/notify-clients", {"message": message})
+
+    async def assess(self) -> dict:
+        return await self._post("/assess")

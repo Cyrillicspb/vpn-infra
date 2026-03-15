@@ -718,9 +718,9 @@ async def btn_menu(message: Message, state: FSMContext, **kw):
         return
     if _is_admin(message):
         from handlers.keyboards import admin_main_menu
-        await message.answer("*Меню администратора*", reply_markup=admin_main_menu())
+        await message.answer("<b>Меню администратора</b>", reply_markup=admin_main_menu(), parse_mode="HTML")
     else:
-        await message.answer("*Меню*", reply_markup=client_main_menu())
+        await message.answer("<b>Меню</b>", reply_markup=client_main_menu(), parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------
