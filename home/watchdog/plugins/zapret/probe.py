@@ -24,19 +24,22 @@ from datetime import datetime
 # ---------------------------------------------------------------------------
 # Конфиг
 # ---------------------------------------------------------------------------
-NFQWS_BIN    = "/usr/local/bin/nfqws"
-STATE_FILE   = Path("/opt/vpn/watchdog/plugins/zapret/probe_state.json")
-NFQUEUE_NUM  = 200
-ETH_IFACE    = os.getenv("NET_INTERFACE", "eth0")
+NFQWS_BIN        = "/usr/local/bin/nfqws"
+STATE_FILE        = Path("/opt/vpn/watchdog/plugins/zapret/probe_state.json")
+# PROBE_NFQUEUE_NUM отличается от основной очереди (200) чтобы не конфликтовать
+# с запущенным nfqws-main, когда zapret является активным стеком.
+PROBE_NFQUEUE_NUM = 201
+PROBE_MARK        = 0x50   # SO_MARK для probe-сокетов → попадают в nft OUTPUT rule
+ETH_IFACE         = os.getenv("NET_INTERFACE", "eth0")
 
-# URLs для тестирования — заблокированные сайты через прямой выход
-TEST_URLS = [
-    "https://www.youtube.com",
-    "https://www.instagram.com",
-    "https://t.me",
+# Хосты для тестирования — заблокированы в России, HTTPS 443
+TEST_HOSTS = [
+    "www.youtube.com",
+    "www.instagram.com",
+    "www.facebook.com",
 ]
 
-# Таймаут одного теста (секунды)
+# Таймаут одного TCP+TLS теста (секунды)
 TEST_TIMEOUT = 8
 
 # ---------------------------------------------------------------------------
@@ -317,13 +320,13 @@ async def run_cmd(cmd: list, timeout: int = 30) -> tuple[int, str, str]:
 
 
 def _nfqws_cmd(preset: dict, extra_args: list | None = None) -> list[str]:
-    """Собрать команду запуска nfqws с параметрами пресета."""
+    """Собрать команду запуска nfqws-probe с параметрами пресета."""
     cmd = [
         NFQWS_BIN,
         "--daemon",
-        f"--pidfile=/run/nfqws-probe.pid",
+        "--pidfile=/run/nfqws-probe.pid",
         "--user=daemon",
-        f"--qnum={NFQUEUE_NUM}",
+        f"--qnum={PROBE_NFQUEUE_NUM}",   # 201 — не конфликтует с основным nfqws (200)
     ] + preset["args"]
     if extra_args:
         cmd += extra_args
@@ -351,31 +354,52 @@ async def _stop_nfqws() -> None:
             pidfile.unlink(missing_ok=True)
         except Exception:
             pass
-    await run_cmd(["pkill", "-f", f"nfqws.*--qnum={NFQUEUE_NUM}.*pidfile=/run/nfqws-probe"], timeout=3)
+    await run_cmd(["pkill", "-f", f"nfqws.*--qnum={PROBE_NFQUEUE_NUM}.*pidfile=/run/nfqws-probe"], timeout=3)
 
 
 async def _add_nft_probe_rules() -> None:
     """
-    Добавить временную nft таблицу для probe-теста.
-    Перехватывает TCP 443 (HTTPS) и 80 (HTTP) от WireGuard клиентов.
+    Добавить временную nft таблицу для probe-теста (queue 201).
+
+    FORWARD chain: добавляется только если основной nfqws (queue 200) НЕ запущен,
+    чтобы избежать двойной постановки пакетов в очередь.
+
+    OUTPUT chain: перехватывает пакеты с SO_MARK=PROBE_MARK от probe-сокетов.
+    Это позволяет тестировать DPI bypass НАПРЯМУЮ с сервера без необходимости
+    реального VPN-клиента (трафик идёт через OUTPUT chain, а не FORWARD).
     """
-    nft_script = f"""
-table inet zapret_probe {{
-    chain forward {{
-        type filter hook forward priority filter + 1;
-        iifname {{ "wg0", "wg1" }} oifname "{ETH_IFACE}" tcp dport {{ 80, 443 }} queue num {NFQUEUE_NUM} bypass
-    }}
-}}
-"""
-    await run_cmd(["nft", "-f", "-"], timeout=5)
-    # Используем pipe
+    main_active = Path("/run/nfqws-main.pid").exists()
+
+    forward_chain = ""
+    if not main_active:
+        forward_chain = (
+            f'    chain forward {{\n'
+            f'        type filter hook forward priority filter + 1;\n'
+            f'        iifname {{ "wg0", "wg1" }} oifname "{ETH_IFACE}" '
+            f'tcp dport {{ 80, 443 }} queue num {PROBE_NFQUEUE_NUM} bypass\n'
+            f'    }}\n'
+        )
+
+    nft_script = (
+        f'table inet zapret_probe {{\n'
+        + forward_chain +
+        f'    chain output {{\n'
+        f'        type filter hook output priority filter + 1;\n'
+        f'        oifname "{ETH_IFACE}" tcp dport {{ 80, 443 }} '
+        f'meta mark 0x{PROBE_MARK:02x} queue num {PROBE_NFQUEUE_NUM} bypass\n'
+        f'    }}\n'
+        f'}}\n'
+    )
+
     proc = await asyncio.create_subprocess_exec(
         "nft", "-f", "-",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    await proc.communicate(input=nft_script.encode())
+    _, err = await proc.communicate(input=nft_script.encode())
+    if proc.returncode != 0:
+        print(f"[probe] nft add rules error: {err.decode().strip()}", file=sys.stderr)
 
 
 async def _del_nft_probe_rules() -> None:
@@ -383,36 +407,73 @@ async def _del_nft_probe_rules() -> None:
     await run_cmd(["nft", "delete", "table", "inet", "zapret_probe"], timeout=5)
 
 
+def _tcp_connect_sync(host: str, port: int, mark: int, timeout: float) -> bool:
+    """
+    Синхронная TCP+TLS попытка подключения с установленным SO_MARK.
+    Выполняется в thread pool executor чтобы не блокировать event loop.
+
+    SO_MARK = PROBE_MARK → пакет попадает в nft OUTPUT rule → nfqws (queue PROBE_NFQUEUE_NUM).
+    Это тест РЕАЛЬНОГО DPI bypass, а не просто проверка сервиса.
+    """
+    import socket as _socket
+    import ssl as _ssl
+    _SO_MARK = 36  # socket.SO_MARK (Linux-only constant)
+    try:
+        addrs = _socket.getaddrinfo(host, port, _socket.AF_INET, _socket.SOCK_STREAM)
+        if not addrs:
+            return False
+        addr = addrs[0][4]
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        sock.setsockopt(_socket.SOL_SOCKET, _SO_MARK, mark)
+        sock.settimeout(timeout)
+        sock.connect(addr)
+        ctx = _ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl.CERT_NONE
+        tls = ctx.wrap_socket(sock, server_hostname=host)
+        tls.close()
+        return True
+    except Exception:
+        return False
+
+
+async def _tcp_connect_with_mark(host: str, port: int, mark: int, timeout: float) -> bool:
+    """Асинхронная обёртка над _tcp_connect_sync."""
+    loop = asyncio.get_event_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _tcp_connect_sync, host, port, mark, timeout),
+            timeout=timeout + 2,
+        )
+    except Exception:
+        return False
+
+
 async def _test_preset_connectivity() -> tuple[bool, float, int]:
     """
-    Тест подключения к заблокированным сайтам через текущий eth0 маршрут.
-    Возвращает (success, avg_latency_ms, urls_ok).
+    Тест подключения к заблокированным сайтам через nfqws DPI bypass.
+
+    Использует TCP+TLS сокеты с SO_MARK=PROBE_MARK.
+    Пакеты маршрутизируются через nft OUTPUT chain → nfqws (queue 201).
+    Это настоящий тест DPI bypass, а не просто проверка доступности хоста.
+
+    ВАЖНО: обычный curl --interface eth0 НЕ работает для тестирования —
+    пакеты из OUTPUT chain сервера не попадают в FORWARD chain nfqueue.
+    SO_MARK + нft OUTPUT rule решают эту проблему.
     """
     ok_count = 0
     latencies: list[float] = []
 
-    for url in TEST_URLS:
+    for host in TEST_HOSTS:
         t0 = time.time()
-        rc, out, _ = await run_cmd(
-            [
-                "curl", "-s",
-                "--interface", ETH_IFACE,
-                "--max-time", str(TEST_TIMEOUT),
-                "--connect-timeout", "5",
-                "-o", "/dev/null",
-                "-w", "%{http_code}",
-                url,
-            ],
-            timeout=TEST_TIMEOUT + 3,
-        )
+        ok = await _tcp_connect_with_mark(host, 443, PROBE_MARK, timeout=TEST_TIMEOUT)
         elapsed_ms = (time.time() - t0) * 1000
-        code = out.strip()
-        if rc == 0 and code in ("200", "301", "302", "303"):
+        if ok:
             ok_count += 1
             latencies.append(elapsed_ms)
 
     avg_lat = sum(latencies) / len(latencies) if latencies else 9999.0
-    success = ok_count >= 2  # минимум 2 из 3 URL доступны
+    success = ok_count >= 2  # минимум 2 из 3 хостов доступны
     return success, avg_lat, ok_count
 
 
@@ -587,8 +648,12 @@ async def main() -> None:
         print_status()
     elif cmd == "needs-probe":
         sys.exit(0 if needs_initial_probe() or needs_emergency_probe() else 1)
+    elif cmd == "record":
+        # Запись результата текущего пресета: record 1 (success) / record 0 (failure)
+        success_val = len(sys.argv) > 2 and sys.argv[2] in ("1", "true", "ok")
+        record_result(success_val)
     else:
-        print(f"Команды: full | quick | best | status | needs-probe", file=sys.stderr)
+        print(f"Команды: full | quick | best | status | needs-probe | record <0|1>", file=sys.stderr)
         sys.exit(1)
 
 

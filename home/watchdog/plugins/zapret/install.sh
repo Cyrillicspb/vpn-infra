@@ -3,7 +3,6 @@
 # Запускать: bash install.sh
 set -euo pipefail
 
-NFQWS_VERSION="67"   # Последняя стабильная версия zapret
 INSTALL_BIN="/usr/local/bin/nfqws"
 ARCH="$(uname -m)"
 
@@ -29,39 +28,85 @@ apt-get install -y -qq curl wget nftables
 # ---------------------------------------------------------------------------
 # 3. Загрузить zapret binary
 # ---------------------------------------------------------------------------
-ZAPRET_URL="https://github.com/bol-van/zapret/releases/latest/download/zapret-${BINARY_ARCH}.tar.gz"
+# zapret архивы называются zapret-vNN.tar.gz, бинарники внутри: binaries/ARCH/nfqws
+# Определяем URL через GitHub API (надёжнее чем хардкодить версию)
 TMP_DIR="$(mktemp -d)"
 trap "rm -rf $TMP_DIR" EXIT
 
-log "Загрузка zapret ${BINARY_ARCH}..."
+log "Определение последней версии zapret..."
 
-# Попытка скачать через VPS tunnel (GitHub может быть заблокирован)
-if curl -sSfL --connect-timeout 15 -o "$TMP_DIR/zapret.tar.gz" "$ZAPRET_URL" 2>/dev/null; then
-    log "Загружено напрямую"
-elif curl -sSfL --connect-timeout 15 \
-     --interface "$(ip route show table 200 | grep default | awk '{print $5}')" \
-     -o "$TMP_DIR/zapret.tar.gz" "$ZAPRET_URL" 2>/dev/null; then
-    log "Загружено через туннель"
+# Функция загрузки с поддержкой SOCKS5 туннеля (GitHub может быть заблокирован)
+_curl_maybe_tunnel() {
+    local url="$1" out="$2"
+    local tun_iface
+    if curl -sSfL --connect-timeout 15 -o "$out" "$url" 2>/dev/null; then
+        return 0
+    fi
+    # Попытка через активный tun интерфейс (table 200 default route)
+    tun_iface="$(ip route show table 200 2>/dev/null | grep default | awk '{print $5}' | head -1)"
+    if [ -n "$tun_iface" ] && curl -sSfL --connect-timeout 15 \
+         --interface "$tun_iface" -o "$out" "$url" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+# Получить URL последнего релиза через GitHub API
+RELEASE_URL=""
+if _curl_maybe_tunnel "https://api.github.com/repos/bol-van/zapret/releases/latest" \
+        "$TMP_DIR/release.json" 2>/dev/null; then
+    # Ищем asset tar.gz
+    RELEASE_URL=$(python3 -c "
+import json, sys
+d = json.load(open('$TMP_DIR/release.json'))
+assets = d.get('assets', [])
+for a in assets:
+    if a['name'].endswith('.tar.gz'):
+        print(a['browser_download_url'])
+        break
+" 2>/dev/null || true)
+fi
+
+# Fallback: архив master-ветки (всегда содержит prebuilt binaries/ARCH/nfqws)
+if [ -z "$RELEASE_URL" ]; then
+    log "GitHub API недоступен, используем master архив..."
+    RELEASE_URL="https://github.com/bol-van/zapret/archive/refs/heads/master.tar.gz"
+fi
+
+log "Загрузка zapret (${BINARY_ARCH})..."
+if _curl_maybe_tunnel "$RELEASE_URL" "$TMP_DIR/zapret.tar.gz"; then
+    log "Загружено: $RELEASE_URL"
+    tar -xzf "$TMP_DIR/zapret.tar.gz" -C "$TMP_DIR"
+    # Ищем prebuilt бинарник для нужной архитектуры
+    NFQWS_BINARY="$(find "$TMP_DIR" -path "*binaries/${BINARY_ARCH}/nfqws" -type f 2>/dev/null | head -1)"
+    # Fallback: любой nfqws в архиве
+    if [ -z "$NFQWS_BINARY" ]; then
+        NFQWS_BINARY="$(find "$TMP_DIR" -name "nfqws" -type f 2>/dev/null | head -1)"
+    fi
+    if [ -n "$NFQWS_BINARY" ]; then
+        cp "$NFQWS_BINARY" "$INSTALL_BIN"
+        log "Бинарник установлен из архива: $NFQWS_BINARY"
+    else
+        log "Prebuilt бинарник не найден в архиве, собираем из исходников..."
+        NFQWS_BINARY=""
+    fi
 else
-    # Fallback: собрать из исходников
-    log "Прямая загрузка недоступна, сборка из исходников..."
+    log "Загрузка архива недоступна, сборка из исходников..."
+    NFQWS_BINARY=""
+fi
+
+# Fallback: собрать из исходников
+if [ -z "$NFQWS_BINARY" ] || [ ! -f "$INSTALL_BIN" ]; then
     apt-get install -y -qq build-essential libnetfilter-queue-dev libmnl-dev git
-    git clone --depth=1 https://github.com/bol-van/zapret.git "$TMP_DIR/zapret-src" 2>/dev/null || \
-    git clone --depth=1 http://github.com/bol-van/zapret.git "$TMP_DIR/zapret-src"
+    SRC_URL="https://github.com/bol-van/zapret.git"
+    git clone --depth=1 "$SRC_URL" "$TMP_DIR/zapret-src" 2>/dev/null || \
+        git clone --depth=1 "http://github.com/bol-van/zapret.git" "$TMP_DIR/zapret-src" || \
+        err "Не удалось скачать исходники zapret (нет доступа к GitHub)"
     cd "$TMP_DIR/zapret-src/nfq"
     make -j"$(nproc)"
     cp nfqws "$INSTALL_BIN"
     cd /
-fi
-
-# Если скачали архив — распаковать
-if [ -f "$TMP_DIR/zapret.tar.gz" ]; then
-    tar -xzf "$TMP_DIR/zapret.tar.gz" -C "$TMP_DIR"
-    NFQWS_BINARY="$(find "$TMP_DIR" -name "nfqws" -type f | head -1)"
-    if [ -z "$NFQWS_BINARY" ]; then
-        err "nfqws бинарник не найден в архиве"
-    fi
-    cp "$NFQWS_BINARY" "$INSTALL_BIN"
+    log "Собрано из исходников"
 fi
 
 chmod +x "$INSTALL_BIN"

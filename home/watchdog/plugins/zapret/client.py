@@ -26,10 +26,17 @@ from pathlib import Path
 
 # ---------------------------------------------------------------------------
 NFQWS_BIN   = "/usr/local/bin/nfqws"
-NFQUEUE_NUM = 200
+NFQUEUE_NUM = 200           # Основная очередь — должна совпадать с nft правилом zapret_main
 PID_FILE    = Path("/run/nfqws-main.pid")
 ETH_IFACE   = os.getenv("NET_INTERFACE", "eth0")
 PLUGIN_DIR  = Path(__file__).parent
+
+# Серверы для замера пропускной способности — российские ISP, не блокируются
+DIRECT_TEST_SERVERS = [
+    "http://speedtest.corbina.ru/speedtest/random4000x4000.jpg",   # Beeline/Corbina ~4 MB
+    "http://speedtest.corbina.ru/speedtest/random1000x1000.jpg",   # Beeline/Corbina ~1 MB
+    "https://speedtest.megafon.ru/speedtest/random1000x1000.jpg",  # МегаФон ~1 MB
+]
 
 
 # ---------------------------------------------------------------------------
@@ -205,71 +212,113 @@ async def stop() -> int:
     return 0
 
 
+async def _measure_direct_throughput() -> float:
+    """
+    Замерить пропускную способность прямого соединения через eth0.
+    Использует российские ISP серверы (не блокируются в России).
+    Zapret не создаёт тун-интерфейс — пропускная способность = прямой интернет.
+    """
+    for url in DIRECT_TEST_SERVERS:
+        rc, out, _ = await run_cmd(
+            ["curl", "-sL", "--max-time", "12", "--interface", ETH_IFACE,
+             "-o", "/dev/null", "-w", "%{speed_download} %{http_code}", url],
+            timeout=17,
+        )
+        if not out.strip():
+            continue
+        parts = out.strip().split()
+        http_code = parts[1] if len(parts) >= 2 else "0"
+        if http_code != "200":
+            continue
+        try:
+            mbps = round(float(parts[0]) * 8 / 1_000_000, 1)
+            if mbps >= 1.0:
+                return mbps
+        except Exception:
+            continue
+    return 0.0
+
+
 async def test() -> int:
     """
-    Проверка работоспособности стека.
-    Тест: curl через eth0 к заблокированным сайтам.
-    При active стеке: nfqueue перехватит пакеты и применит DPI bypass.
+    Проверка работоспособности zapret стека.
+
+    Режимы:
+      - Активный (nfqws запущен): проверяем pid + nft таблицу + замеряем скорость.
+      - Standby (nfqws не запущен): проверяем бинарник + ядерный модуль + замеряем скорость.
+
+    ВАЖНО: curl --interface eth0 к заблокированным сайтам НЕ работает как тест —
+    трафик идёт через OUTPUT chain, а nft запрет_main перехватывает только FORWARD chain
+    (трафик от wg0/wg1 клиентов). Поэтому тест connectivity здесь не выполняется;
+    реальная проверка DPI bypass происходит в probe.py через SO_MARK + OUTPUT chain.
     """
-    # Проверить что nfqws запущен
-    if not PID_FILE.exists():
-        print(json.dumps({"status": "fail", "throughput_mbps": 0, "message": "nfqws не запущен"}))
+    # Проверить наличие бинарника — базовое требование
+    if not _check_binary():
+        print(json.dumps({"status": "fail", "throughput_mbps": 0,
+                          "message": f"{NFQWS_BIN} не найден — запустите install.sh"}))
         return 1
 
-    try:
-        pid = int(PID_FILE.read_text().strip())
-        rc, _, _ = await run_cmd(["kill", "-0", str(pid)], timeout=3)
-        if rc != 0:
-            print(json.dumps({"status": "fail", "throughput_mbps": 0, "message": "nfqws процесс мёртв"}))
-            return 1
-    except Exception:
-        pass
+    # Проверить ядерный модуль
+    if not _check_nfqueue_module():
+        print(json.dumps({"status": "fail", "throughput_mbps": 0,
+                          "message": "nfnetlink_queue не загружен"}))
+        return 1
 
-    # Тест подключения к заблокированному сайту через eth0
-    rc, out, _ = await run_cmd(
-        [
-            "curl", "-s",
-            "--interface", ETH_IFACE,
-            "--max-time", "10",
-            "--connect-timeout", "5",
-            "-o", "/dev/null",
-            "-w", "%{http_code}",
-            "https://youtube.com",
-        ],
-        timeout=15,
-    )
-    code = out.strip()
-    if rc != 0 or code not in ("200", "301", "302", "303"):
-        # Записать неудачу в Thompson Sampling
-        subprocess.run(
-            [sys.executable, str(PLUGIN_DIR / "probe.py")],
-            input='', capture_output=True,  # probe.py record_result вызывается из watchdog
+    if PID_FILE.exists():
+        # ── Активный режим ────────────────────────────────────────────────────
+        try:
+            pid = int(PID_FILE.read_text().strip())
+            rc, _, _ = await run_cmd(["kill", "-0", str(pid)], timeout=3)
+            if rc != 0:
+                # Записать неудачу в Thompson Sampling
+                subprocess.run(
+                    [sys.executable, str(PLUGIN_DIR / "probe.py"), "record", "0"],
+                    capture_output=True, timeout=3,
+                )
+                print(json.dumps({"status": "fail", "throughput_mbps": 0,
+                                  "message": "nfqws процесс мёртв"}))
+                return 1
+        except Exception:
+            pass
+
+        # Проверить nft таблицу
+        rc_nft, _, _ = await run_cmd(
+            ["nft", "list", "table", "inet", "zapret_main"], timeout=3,
         )
-        print(json.dumps({"status": "fail", "throughput_mbps": 0, "http_code": code}))
-        return 1
+        if rc_nft != 0:
+            print(json.dumps({"status": "fail", "throughput_mbps": 0,
+                              "message": "nft таблица zapret_main отсутствует"}))
+            return 1
 
-    # Замерить throughput (100KB)
-    t0 = time.time()
-    rc2, _, _ = await run_cmd(
-        [
-            "curl", "-s",
-            "--interface", ETH_IFACE,
-            "--max-time", "15",
-            "-o", "/dev/null",
-            "https://speed.cloudflare.com/__down?bytes=102400",
-        ],
-        timeout=20,
-    )
-    elapsed = time.time() - t0
-    throughput = (102400 * 8 / 1_000_000) / elapsed if elapsed > 0 and rc2 == 0 else 1.0
+        # Замер пропускной способности
+        throughput = await _measure_direct_throughput()
 
-    preset = _get_best_preset()
-    print(json.dumps({
-        "status": "ok",
-        "throughput_mbps": round(throughput, 2),
-        "preset": preset["id"],
-    }))
-    return 0
+        # Записать успех в Thompson Sampling
+        subprocess.run(
+            [sys.executable, str(PLUGIN_DIR / "probe.py"), "record", "1"],
+            capture_output=True, timeout=3,
+        )
+
+        preset = _get_best_preset()
+        print(json.dumps({
+            "status": "ok",
+            "throughput_mbps": max(throughput, 1.0),
+            "preset": preset["id"],
+            "mode": "active",
+        }))
+        return 0
+
+    else:
+        # ── Standby режим: бинарник и модуль уже проверены выше ──────────────
+        throughput = await _measure_direct_throughput()
+        preset = _get_best_preset()
+        print(json.dumps({
+            "status": "ok",
+            "throughput_mbps": max(throughput, 1.0),
+            "preset": preset["id"],
+            "mode": "standby",
+        }))
+        return 0
 
 
 async def rotate() -> int:
