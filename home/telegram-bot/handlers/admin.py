@@ -195,22 +195,22 @@ async def cmd_docker(message: Message, state: FSMContext, **kw):
         return
     await state.clear()
     try:
-        result = subprocess.run(
-            ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}\t{{.Image}}"],
-            capture_output=True, text=True, timeout=10,
-        )
-        lines = result.stdout.strip().splitlines()
-        if not lines:
+        import aiohttp as _aiohttp
+        docker_host = os.getenv("DOCKER_HOST", "tcp://socket-proxy:2375").replace("tcp://", "http://")
+        async with _aiohttp.ClientSession() as session:
+            async with session.get(f"{docker_host}/containers/json?all=1", timeout=_aiohttp.ClientTimeout(total=10)) as r:
+                containers = await r.json()
+        if not containers:
             await message.answer("Нет контейнеров.")
             return
         rows = []
-        for line in lines:
-            parts = line.split("\t")
-            name   = parts[0] if len(parts) > 0 else "?"
-            status = parts[1] if len(parts) > 1 else "?"
-            emoji  = "🟢" if "Up" in status else ("🔴" if "Exited" in status else "🟡")
-            rows.append(f"{emoji} `{name}` — {status}")
-        await message.answer("*Docker контейнеры:*\n\n" + "\n".join(rows))
+        for c in sorted(containers, key=lambda x: x.get("Names", [""])[0]):
+            name   = (c.get("Names") or ["?"])[0].lstrip("/")
+            state_ = c.get("State", "?")
+            status = c.get("Status", "?")
+            emoji  = "🟢" if state_ == "running" else ("🔴" if state_ == "exited" else "🟡")
+            rows.append(f"{emoji} <code>{name}</code> — {status}")
+        await message.answer("<b>Docker контейнеры:</b>\n\n" + "\n".join(rows), parse_mode="HTML")
     except Exception as e:
         await message.answer(f"❌ {e}")
 
@@ -224,8 +224,41 @@ async def cmd_speed(message: Message, state: FSMContext, **kw):
         return
     await state.clear()
     try:
-        metrics = await _wc().get_metrics()
-        await message.answer(f"*Метрики:*\n```\n{metrics[:3000]}\n```")
+        s = await _wc().get_status()
+        metrics_raw = await _wc().get_metrics()
+        metrics: dict[str, str] = {}
+        for line in metrics_raw.splitlines():
+            if line.startswith("#") or not line.strip():
+                continue
+            key = line.split("{")[0].split(" ")[0]
+            val = line.rsplit(" ", 1)[-1]
+            metrics[key] = val
+
+        def _fmt_bytes(b_str: str) -> str:
+            try:
+                b = int(float(b_str))
+                if b >= 1_000_000_000:
+                    return f"{b/1_000_000_000:.1f} GB"
+                if b >= 1_000_000:
+                    return f"{b/1_000_000:.1f} MB"
+                return f"{b/1_000:.1f} KB"
+            except Exception:
+                return "?"
+
+        sys_info = s.get("system", {})
+        rx = _fmt_bytes(metrics.get("vpn_bytes_recv_total", "0"))
+        tx = _fmt_bytes(metrics.get("vpn_bytes_sent_total", "0"))
+        text = (
+            f"<b>Ресурсы и трафик</b>\n\n"
+            f"CPU: <b>{sys_info.get('cpu_percent', '?')}%</b>  "
+            f"RAM: <b>{sys_info.get('ram_percent', '?')}%</b>  "
+            f"Диск: <b>{sys_info.get('disk_percent', '?')}%</b>\n\n"
+            f"↓ Получено: <b>{rx}</b>\n"
+            f"↑ Отправлено: <b>{tx}</b>\n\n"
+            f"Стек: <code>{s.get('active_stack')}</code>\n"
+            f"Uptime: {_uptime(s.get('uptime_seconds', 0))}"
+        )
+        await message.answer(text, parse_mode="HTML")
     except WatchdogError as e:
         await message.answer(f"❌ {e}")
 
@@ -1012,9 +1045,9 @@ async def cmd_menu(message: Message, state: FSMContext, **kw):
 async def _edit_or_answer(cb: CallbackQuery, text: str, kb=None) -> None:
     """Редактирует сообщение или отправляет новое если редактирование не удалось."""
     try:
-        await cb.message.edit_text(text, reply_markup=kb)
+        await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
-        await cb.message.answer(text, reply_markup=kb)
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
     await cb.answer()
 
 
@@ -1072,21 +1105,27 @@ async def cb_adm_status(cb: CallbackQuery, **kw):
     await cb.answer("Загружаю...")
     try:
         s = await _wc().get_status()
-        sys = s.get("system", {})
+        sys_info = s.get("system", {})
+        mode = "⚠️ Деградированный" if s.get("degraded_mode") else "✅ Нормальный"
+        failover = s.get("last_failover") or "никогда"
+        rotation = (s.get("next_rotation") or "N/A")[:16].replace("T", " ")
+        cpu  = sys_info.get("cpu_percent", "?")
+        ram  = sys_info.get("ram_percent", "?")
+        disk = sys_info.get("disk_percent", "?")
         text = (
-            f"*Статус системы*\n\n"
-            f"Режим: {'⚠️ Деградированный' if s.get('degraded_mode') else '✅ Нормальный'}\n"
-            f"Стек: `{s.get('active_stack')}`\n"
-            f"IP: `{s.get('external_ip', 'N/A')}`\n"
+            f"<b>Статус системы</b>\n\n"
+            f"Режим: {mode}\n"
+            f"Стек: <code>{s.get('active_stack')}</code>\n"
+            f"Primary: <code>{s.get('primary_stack')}</code>\n"
+            f"IP: <code>{s.get('external_ip', 'N/A')}</code>\n"
             f"Uptime: {_uptime(s.get('uptime_seconds', 0))}\n"
-            f"Failover: {s.get('last_failover') or 'никогда'}\n\n"
-            f"CPU: {sys.get('cpu_percent', '?')}%  "
-            f"RAM: {sys.get('ram_percent', '?')}%  "
-            f"Диск: {sys.get('disk_percent', '?')}%"
+            f"Failover: {failover}\n"
+            f"Ротация: {rotation}\n\n"
+            f"CPU: <b>{cpu}%</b>  RAM: <b>{ram}%</b>  Диск: <b>{disk}%</b>"
         )
     except WatchdogError as e:
         text = f"❌ Watchdog недоступен: {e}"
-    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+    await cb.message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "adm:tunnel")
@@ -1094,23 +1133,40 @@ async def cb_adm_tunnel(cb: CallbackQuery, **kw):
     await cb.answer("Загружаю...")
     try:
         s = await _wc().get_status()
-        peers = await _wc().get_peers()
-        plugins = "\n".join(
-            f"  {'🟢' if p['name'] == s.get('active_stack') else '⚪'} `{p['name']}` (устойчивость {p['resilience']})"
-            for p in s.get("plugins", [])
+        peers_data = await _wc().get_peers()
+        now = int(asyncio.get_event_loop().time())
+        import time as _time; now_ts = int(_time.time())
+
+        # Стеки
+        stacks_lines = []
+        for p in s.get("plugins", []):
+            active = p["name"] == s.get("active_stack")
+            icon = "🟢" if active else "⚪"
+            stacks_lines.append(f"  {icon} <code>{p['name']}</code> (устойч. {p['resilience']})")
+
+        # Пиры: считаем активные (handshake < 3 мин назад)
+        peers = peers_data.get("peers", [])
+        active_peers = sum(
+            1 for p in peers
+            if p.get("last_handshake", 0) > 0 and now_ts - p.get("last_handshake", 0) < 180
         )
+        total_peers = len(peers)
+
+        failover = s.get("last_failover") or "никогда"
+        rotation = (s.get("next_rotation") or "N/A")[:16].replace("T", " ")
+
         text = (
-            f"*Туннель*\n\n"
-            f"Активный стек: `{s.get('active_stack')}`\n"
-            f"Primary: `{s.get('primary_stack')}`\n"
-            f"Последний failover: {s.get('last_failover') or 'никогда'}\n"
-            f"Следующая ротация: {s.get('next_rotation', 'N/A')[:16]}\n\n"
-            f"*Стеки:*\n{plugins}\n\n"
-            f"*WG peers:* {peers.get('count', 0)}"
+            f"<b>Туннель</b>\n\n"
+            f"Активный стек: <code>{s.get('active_stack')}</code>\n"
+            f"Primary: <code>{s.get('primary_stack')}</code>\n"
+            f"Последний failover: {failover}\n"
+            f"Следующая ротация: {rotation}\n\n"
+            f"<b>Стеки:</b>\n" + "\n".join(stacks_lines) +
+            f"\n\n<b>WG пиры:</b> {active_peers} активных / {total_peers} всего"
         )
     except WatchdogError as e:
         text = f"❌ Ошибка: {e}"
-    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+    await cb.message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "adm:ip")
@@ -1118,46 +1174,93 @@ async def cb_adm_ip(cb: CallbackQuery, **kw):
     await cb.answer("Загружаю...")
     try:
         s = await _wc().get_status()
-        text = f"Внешний IP: `{s.get('external_ip', 'неизвестен')}`"
+        ip = s.get("external_ip") or "неизвестен"
+        text = f"<b>Внешний IP:</b> <code>{ip}</code>"
     except WatchdogError as e:
         text = f"❌ {e}"
-    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+    await cb.message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "adm:docker")
 async def cb_adm_docker(cb: CallbackQuery, **kw):
     await cb.answer("Загружаю...")
     try:
-        result = subprocess.run(
-            ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}\t{{.Image}}"],
-            capture_output=True, text=True, timeout=10,
-        )
-        lines = result.stdout.strip().splitlines()
-        if not lines:
+        import aiohttp as _aiohttp
+        docker_host = os.getenv("DOCKER_HOST", "tcp://socket-proxy:2375").replace("tcp://", "http://")
+        async with _aiohttp.ClientSession() as session:
+            async with session.get(f"{docker_host}/containers/json?all=1", timeout=_aiohttp.ClientTimeout(total=10)) as r:
+                containers = await r.json()
+        if not containers:
             text = "Нет контейнеров."
         else:
             rows = []
-            for line in lines:
-                parts = line.split("\t")
-                name   = parts[0] if len(parts) > 0 else "?"
-                status = parts[1] if len(parts) > 1 else "?"
-                emoji  = "🟢" if "Up" in status else ("🔴" if "Exited" in status else "🟡")
-                rows.append(f"{emoji} `{name}` — {status}")
-            text = "*Docker контейнеры:*\n\n" + "\n".join(rows)
+            for c in sorted(containers, key=lambda x: x.get("Names", [""])[0]):
+                name   = (c.get("Names") or ["?"])[0].lstrip("/")
+                state  = c.get("State", "?")
+                status = c.get("Status", "?")
+                if state == "running":
+                    emoji = "🟢"
+                elif state == "exited":
+                    emoji = "🔴"
+                else:
+                    emoji = "🟡"
+                rows.append(f"{emoji} <code>{name}</code> — {status}")
+            text = "<b>Docker контейнеры:</b>\n\n" + "\n".join(rows)
     except Exception as e:
         text = f"❌ {e}"
-    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+    await cb.message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "adm:speed")
 async def cb_adm_speed(cb: CallbackQuery, **kw):
     await cb.answer("Загружаю...")
     try:
-        metrics = await _wc().get_metrics()
-        text = f"*Метрики:*\n```\n{metrics[:3000]}\n```"
+        s = await _wc().get_status()
+        metrics_raw = await _wc().get_metrics()
+
+        # Парсим Prometheus метрики
+        metrics: dict[str, str] = {}
+        for line in metrics_raw.splitlines():
+            if line.startswith("#") or not line.strip():
+                continue
+            key = line.split("{")[0].split(" ")[0]
+            val = line.rsplit(" ", 1)[-1]
+            metrics[key] = val
+
+        sys_info = s.get("system", {})
+        cpu  = sys_info.get("cpu_percent", metrics.get("vpn_cpu_percent", "?"))
+        ram  = sys_info.get("ram_percent",  metrics.get("vpn_ram_used_percent", "?"))
+        disk = sys_info.get("disk_percent", metrics.get("vpn_disk_used_percent", "?"))
+
+        def _fmt_bytes(b_str: str) -> str:
+            try:
+                b = int(float(b_str))
+                if b >= 1_000_000_000:
+                    return f"{b/1_000_000_000:.1f} GB"
+                if b >= 1_000_000:
+                    return f"{b/1_000_000:.1f} MB"
+                return f"{b/1_000:.1f} KB"
+            except Exception:
+                return "?"
+
+        rx = _fmt_bytes(metrics.get("vpn_bytes_recv_total", "0"))
+        tx = _fmt_bytes(metrics.get("vpn_bytes_sent_total", "0"))
+
+        text = (
+            f"<b>Мониторинг ресурсов</b>\n\n"
+            f"<b>Система:</b>\n"
+            f"  CPU: <b>{cpu}%</b>\n"
+            f"  RAM: <b>{ram}%</b>\n"
+            f"  Диск: <b>{disk}%</b>\n\n"
+            f"<b>Трафик (всего):</b>\n"
+            f"  ↓ Получено: <b>{rx}</b>\n"
+            f"  ↑ Отправлено: <b>{tx}</b>\n\n"
+            f"<b>Стек:</b> <code>{s.get('active_stack')}</code>\n"
+            f"Uptime: {_uptime(s.get('uptime_seconds', 0))}"
+        )
     except WatchdogError as e:
         text = f"❌ {e}"
-    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+    await cb.message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------

@@ -1483,19 +1483,28 @@ async def get_peer_list(_: bool = Depends(_auth)):
         rc, out, _ = await run_cmd([tool, "show", "all", "dump"], timeout=10)
         if rc == 0:
             combined_out += out
+    # awg/wg show all dump формат строки пира (9 полей):
+    # iface  pubkey  psk  endpoint  allowed_ips  last_handshake  rx_bytes  tx_bytes  keepalive
+    # Интерфейсные строки имеют другое число полей (5 для wg, 21+ для awg) — пропускаем их.
     peers = []
     for line in combined_out.strip().splitlines():
         parts = line.split("\t")
-        if len(parts) >= 5:
-            peers.append({
-                "interface":      parts[0],
-                "public_key":     parts[1],
-                "preshared_key":  "(hidden)",
-                "endpoint":       parts[3],
-                "last_handshake": parts[4],
-                "rx_bytes":       parts[5] if len(parts) > 5 else None,
-                "tx_bytes":       parts[6] if len(parts) > 6 else None,
-            })
+        if len(parts) != 9:
+            continue  # интерфейсная строка или нестандартный вывод
+        iface, pubkey, _psk, endpoint, allowed_ips, handshake_ts, rx, tx, _ka = parts
+        try:
+            hs_int = int(handshake_ts)
+        except ValueError:
+            continue
+        peers.append({
+            "interface":      iface,
+            "public_key":     pubkey,
+            "endpoint":       endpoint if endpoint != "(none)" else None,
+            "allowed_ips":    allowed_ips,
+            "last_handshake": hs_int,
+            "rx_bytes":       int(rx) if rx.isdigit() else 0,
+            "tx_bytes":       int(tx) if tx.isdigit() else 0,
+        })
     return {"peers": peers, "count": len(peers)}
 
 
