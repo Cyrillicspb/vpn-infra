@@ -461,6 +461,15 @@ else
         vps_exec "cd /opt/vpn && sudo docker compose ps 2>/dev/null || true"
     fi
 
+    # Проверяем, что iperf3 запустился (слушает только на tier-2 интерфейсе)
+    sleep 5
+    IPERF3_STATUS=$(vps_exec "sudo docker inspect --format='{{.State.Status}}' iperf3 2>/dev/null || echo 'not_found'")
+    if [[ "$IPERF3_STATUS" == "running" ]]; then
+        log_ok "iperf3 запущен на VPS (будет доступен на 10.177.2.2:5201 после tier-2 туннеля)"
+    else
+        log_warn "iperf3 статус: ${IPERF3_STATUS} — проверьте 'sudo docker compose ps' на VPS"
+    fi
+
     log_ok "Docker Compose на VPS запущен"
     step_done "step38_vps_docker_compose"
 fi
@@ -541,3 +550,11 @@ chmod +x /opt/vpn/scripts/vps-healthcheck.sh"
 fi
 
 log_info "═══ Фаза 2 (VPS) завершена ═══"
+echo ""
+echo -e "${YELLOW}ВАЖНО — SSH к VPS после настройки:${NC}"
+echo "  Прямой SSH к VPS (порт 22) доступен ТОЛЬКО через SOCKS5-прокси xray-client-2."
+echo "  После запуска VPN-стеков используйте команду с домашнего сервера:"
+echo "    ssh -i /root/.ssh/vpn_id_ed25519 \\"
+echo "        -o ProxyCommand=\"nc -X 5 -x 127.0.0.1:1081 %h %p\" \\"
+echo "        sysadmin@${VPS_IP:-<VPS_IP>}"
+echo "  (xray-client-2 должен быть запущен: docker ps | grep xray-client-2)"
