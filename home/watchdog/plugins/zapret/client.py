@@ -67,11 +67,16 @@ def _get_best_preset() -> dict:
             return json.loads(result.stdout.strip())
     except Exception:
         pass
-    # Дефолтный пресет (C01: fake+badsum+ttl8 — наиболее универсальный)
+    # Дефолтный пресет (C01: fakedsplit+midsld+autottl+badsum — проверен на этом ISP)
     return {
         "id": "C01",
-        "args": ["--dpi-desync=fake", "--dpi-desync-ttl=8", "--dpi-desync-fooling=badsum"],
-        "desc": "fake+badsum+ttl8 (default)",
+        "args": [
+            "--dpi-desync=fakedsplit",
+            "--dpi-desync-split-pos=midsld",
+            "--dpi-desync-autottl",
+            "--dpi-desync-fooling=badsum",
+        ],
+        "desc": "fakedsplit+midsld+autottl+badsum (default)",
     }
 
 

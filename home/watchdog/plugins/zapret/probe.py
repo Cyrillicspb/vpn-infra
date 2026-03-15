@@ -32,165 +32,191 @@ PROBE_NFQUEUE_NUM = 201
 PROBE_MARK        = 0x50   # SO_MARK для probe-сокетов → попадают в nft OUTPUT rule
 ETH_IFACE         = os.getenv("NET_INTERFACE", "eth0")
 
-# Хосты для тестирования — заблокированы в России, HTTPS 443
+# Хосты для тестирования — заблокированы в России через SNI-DPI (не IP-блок), HTTPS 443
+# discord.com: SNI-DPI блокировка, идеальный индикатор работы fakedsplit
+# store.steampowered.com: SNI-DPI блокировка Steam
+# www.youtube.com: заблокирован/замедлен через ТСПУ
 TEST_HOSTS = [
+    "discord.com",
+    "store.steampowered.com",
     "www.youtube.com",
-    "www.instagram.com",
-    "www.facebook.com",
 ]
 
 # Таймаут одного TCP+TLS теста (секунды)
 TEST_TIMEOUT = 8
 
 # ---------------------------------------------------------------------------
-# Пресеты параметров zapret (17 конфигов, проверенных против ТСПУ/РКН)
+# Пресеты параметров zapret (v72+, проверенных против ТСПУ/РКН/SNI-DPI)
 # ---------------------------------------------------------------------------
 # Формат: {"id": str, "args": list[str], "desc": str}
 #
-# Техники:
-#   fake       — отправить фейковый TLS ClientHello (DPI обрабатывает его,
-#                пока настоящий проходит следом)
-#   split2     — разделить пакет после позиции 1 (DPI не успевает сшить)
-#   synfake    — фейк в фазе SYN (для продвинутых DPI)
-#   badsum     — фейковый пакет с неверной контрольной суммой (DPI принимает,
-#                хост-назначение отбрасывает — прозрачно для реального соединения)
-#   badseq     — неверный sequence number в фейке
-#   md5sig     — фейк с TCP MD5 signature (многие DPI игнорируют md5 пакеты)
-#   ttl N      — TTL фейкового пакета: должен достичь DPI но НЕ сервера
-#                (обычно 6–10 hop до DPI провайдера)
+# Техники (nfqws v72+):
+#   fakedsplit  — split TLS ClientHello на заданной позиции + фейковый пакет перед ним.
+#                 DPI получает фейк и обрезанный ClientHello — не может прочитать SNI.
+#   midsld      — позиция разбивки: середина SLD (e.g. "disc|ord.com").
+#                 Эффективнее чем фиксированная позиция против SNI-DPI.
+#   autottl     — автоматически определяет TTL до DPI (не сервера).
+#                 Надёжнее чем хардкод ttl=6/8/10 при разных топологиях.
+#   fake        — отправить фейковый TLS ClientHello с заданным TTL.
+#   split2      — разделить пакет после позиции 1.
+#   multisplit  — несколько точек разбивки.
+#   badsum      — фейковый пакет с неверной контрольной суммой.
+#   badseq      — неверный sequence number в фейке.
+#   md5sig      — фейк с TCP MD5 signature.
+#   ttl N       — TTL фейкового пакета (fallback если autottl недоступен).
 # ---------------------------------------------------------------------------
 PRESETS: list[dict] = [
-    # ── Основные fake + badsum (работают против большинства ТСПУ) ───────────
+    # ── ПОБЕДИТЕЛЬ: fakedsplit+midsld+autottl+badsum ─────────────────────────
+    # Проверено на этом ISP: discord=OK, steam=OK, youtube=OK
+    # Разбивает ClientHello посередине SLD + autottl — обходит SNI-DPI полностью
     {
         "id": "C01",
-        "args": ["--dpi-desync=fake", "--dpi-desync-ttl=8", "--dpi-desync-fooling=badsum"],
-        "desc": "fake+badsum+ttl8 (базовый)",
+        "args": [
+            "--dpi-desync=fakedsplit",
+            "--dpi-desync-split-pos=midsld",
+            "--dpi-desync-autottl",
+            "--dpi-desync-fooling=badsum",
+        ],
+        "desc": "fakedsplit+midsld+autottl+badsum (победитель)",
     },
+    # ── fakedsplit вариации ───────────────────────────────────────────────────
     {
         "id": "C02",
-        "args": ["--dpi-desync=fake", "--dpi-desync-ttl=6", "--dpi-desync-fooling=badsum"],
-        "desc": "fake+badsum+ttl6 (ближний DPI)",
+        "args": [
+            "--dpi-desync=fakedsplit",
+            "--dpi-desync-split-pos=midsld",
+            "--dpi-desync-autottl",
+            "--dpi-desync-fooling=md5sig",
+        ],
+        "desc": "fakedsplit+midsld+autottl+md5sig",
     },
     {
         "id": "C03",
-        "args": ["--dpi-desync=fake", "--dpi-desync-ttl=10", "--dpi-desync-fooling=badsum"],
-        "desc": "fake+badsum+ttl10 (дальний DPI)",
-    },
-    # ── fake + md5sig (DPI не проверяет MD5, хост отбрасывает молча) ────────
-    {
-        "id": "C04",
-        "args": ["--dpi-desync=fake", "--dpi-desync-fooling=md5sig"],
-        "desc": "fake+md5sig (без TTL)",
-    },
-    {
-        "id": "C05",
-        "args": ["--dpi-desync=fake", "--dpi-desync-ttl=8", "--dpi-desync-fooling=md5sig"],
-        "desc": "fake+md5sig+ttl8",
-    },
-    # ── fake + badseq ────────────────────────────────────────────────────────
-    {
-        "id": "C06",
-        "args": ["--dpi-desync=fake", "--dpi-desync-ttl=8", "--dpi-desync-fooling=badseq"],
-        "desc": "fake+badseq+ttl8",
-    },
-    # ── fake + split2 (двойной удар: фейк + фрагментация) ───────────────────
-    {
-        "id": "C07",
         "args": [
-            "--dpi-desync=fake,split2",
+            "--dpi-desync=fakedsplit",
+            "--dpi-desync-split-pos=midsld",
             "--dpi-desync-ttl=8",
             "--dpi-desync-fooling=badsum",
         ],
-        "desc": "fake+split2+badsum+ttl8",
+        "desc": "fakedsplit+midsld+ttl8+badsum",
+    },
+    {
+        "id": "C04",
+        "args": [
+            "--dpi-desync=fakedsplit",
+            "--dpi-desync-split-pos=midsld",
+            "--dpi-desync-ttl=6",
+            "--dpi-desync-fooling=badsum",
+        ],
+        "desc": "fakedsplit+midsld+ttl6+badsum",
+    },
+    # ── fakedsplit без midsld (фиксированная позиция) ────────────────────────
+    {
+        "id": "C05",
+        "args": [
+            "--dpi-desync=fakedsplit",
+            "--dpi-desync-autottl",
+            "--dpi-desync-fooling=badsum",
+        ],
+        "desc": "fakedsplit+autottl+badsum",
+    },
+    {
+        "id": "C06",
+        "args": [
+            "--dpi-desync=fakedsplit",
+            "--dpi-desync-ttl=8",
+            "--dpi-desync-fooling=badsum",
+        ],
+        "desc": "fakedsplit+ttl8+badsum",
+    },
+    # ── fake+autottl (классический, без split) ────────────────────────────────
+    {
+        "id": "C07",
+        "args": [
+            "--dpi-desync=fake",
+            "--dpi-desync-autottl",
+            "--dpi-desync-fooling=badsum",
+        ],
+        "desc": "fake+autottl+badsum",
     },
     {
         "id": "C08",
         "args": [
-            "--dpi-desync=fake,split2",
-            "--dpi-desync-ttl=6",
-            "--dpi-desync-fooling=badsum",
-        ],
-        "desc": "fake+split2+badsum+ttl6",
-    },
-    {
-        "id": "C09",
-        "args": [
-            "--dpi-desync=fake,split2",
+            "--dpi-desync=fake",
+            "--dpi-desync-autottl",
             "--dpi-desync-fooling=md5sig",
         ],
-        "desc": "fake+split2+md5sig",
+        "desc": "fake+autottl+md5sig",
+    },
+    # ── fake + hardcoded TTL (fallback если autottl не работает) ─────────────
+    {
+        "id": "C09",
+        "args": ["--dpi-desync=fake", "--dpi-desync-ttl=8", "--dpi-desync-fooling=badsum"],
+        "desc": "fake+ttl8+badsum",
     },
     {
         "id": "C10",
-        "args": [
-            "--dpi-desync=fake,split2",
-            "--dpi-desync-ttl=8",
-            "--dpi-desync-fooling=badseq",
-        ],
-        "desc": "fake+split2+badseq+ttl8",
+        "args": ["--dpi-desync=fake", "--dpi-desync-ttl=6", "--dpi-desync-fooling=badsum"],
+        "desc": "fake+ttl6+badsum",
     },
-    # ── synfake (продвинутый — фейк в SYN, до TLS handshake) ────────────────
     {
         "id": "C11",
-        "args": [
-            "--dpi-desync=synfake",
-            "--dpi-desync-ttl=8",
-            "--dpi-desync-fooling=badsum",
-        ],
-        "desc": "synfake+badsum+ttl8",
+        "args": ["--dpi-desync=fake", "--dpi-desync-ttl=10", "--dpi-desync-fooling=badsum"],
+        "desc": "fake+ttl10+badsum",
     },
+    # ── fake + split2 ─────────────────────────────────────────────────────────
     {
         "id": "C12",
         "args": [
-            "--dpi-desync=fake,synfake",
+            "--dpi-desync=fake,split2",
+            "--dpi-desync-autottl",
+            "--dpi-desync-fooling=badsum",
+        ],
+        "desc": "fake+split2+autottl+badsum",
+    },
+    {
+        "id": "C13",
+        "args": [
+            "--dpi-desync=fake,split2",
             "--dpi-desync-ttl=8",
             "--dpi-desync-fooling=badsum",
         ],
-        "desc": "fake+synfake+badsum+ttl8",
+        "desc": "fake+split2+ttl8+badsum",
+    },
+    # ── multisplit (несколько точек разбивки) ────────────────────────────────
+    {
+        "id": "C14",
+        "args": [
+            "--dpi-desync=multisplit",
+            "--dpi-desync-split-pos=midsld",
+            "--dpi-desync-fooling=badsum",
+        ],
+        "desc": "multisplit+midsld+badsum",
+    },
+    # ── fake + md5sig (без TTL) ──────────────────────────────────────────────
+    {
+        "id": "C15",
+        "args": ["--dpi-desync=fake", "--dpi-desync-fooling=md5sig"],
+        "desc": "fake+md5sig",
     },
     # ── split2 без fake (чистая фрагментация) ────────────────────────────────
     {
-        "id": "C13",
+        "id": "C16",
         "args": ["--dpi-desync=split2", "--dpi-desync-fooling=badsum"],
         "desc": "split2+badsum",
     },
+    # ── wssize (уменьшение TCP window — для некоторых ISP) ───────────────────
     {
-        "id": "C14",
-        "args": ["--dpi-desync=split2", "--dpi-desync-fooling=md5sig"],
-        "desc": "split2+md5sig",
-    },
-    # ── с уменьшением TCP window (wssize — для некоторых ISP) ────────────────
-    {
-        "id": "C15",
+        "id": "C17",
         "args": [
-            "--dpi-desync=fake",
-            "--dpi-desync-ttl=8",
+            "--dpi-desync=fakedsplit",
+            "--dpi-desync-split-pos=midsld",
+            "--dpi-desync-autottl",
             "--dpi-desync-fooling=badsum",
             "--wssize=1",
             "--wssize-cutoff=n3",
         ],
-        "desc": "fake+badsum+ttl8+wssize1",
-    },
-    # ── split position 2 (разрезаем после 2-го байта) ────────────────────────
-    {
-        "id": "C16",
-        "args": [
-            "--dpi-desync=fake,split2",
-            "--dpi-desync-split-pos=2",
-            "--dpi-desync-ttl=8",
-            "--dpi-desync-fooling=badsum",
-        ],
-        "desc": "fake+split@2+badsum+ttl8",
-    },
-    # ── hopbyhop (IPv6 extension header trick, нечасто но работает) ─────────
-    {
-        "id": "C17",
-        "args": [
-            "--dpi-desync=fake",
-            "--dpi-desync-ttl=8",
-            "--dpi-desync-fooling=hopbyhop",
-        ],
-        "desc": "fake+hopbyhop+ttl8",
+        "desc": "fakedsplit+midsld+autottl+badsum+wssize1",
     },
 ]
 

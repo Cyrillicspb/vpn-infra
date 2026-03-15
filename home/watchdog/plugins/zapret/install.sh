@@ -148,7 +148,8 @@ CRON_FILE="/etc/cron.d/zapret-probe"
 cat > "$CRON_FILE" << 'CRON_EOF'
 # zapret adaptive probe — полный re-probe каждую ночь в 02:30
 # Обновляет Thompson Sampling параметры под текущий DPI провайдера
-30 2 * * * root /opt/vpn/watchdog/venv/bin/python3 /opt/vpn/watchdog/plugins/zapret/probe.py full >> /var/log/zapret-probe.log 2>&1
+# source .env чтобы подхватить NET_INTERFACE и другие переменные окружения
+30 2 * * * root bash -c 'set -a; [ -f /opt/vpn/.env ] && . /opt/vpn/.env; set +a; exec /opt/vpn/watchdog/venv/bin/python3 /opt/vpn/watchdog/plugins/zapret/probe.py full' >> /var/log/zapret-probe.log 2>&1
 CRON_EOF
 chmod 644 "$CRON_FILE"
 log "Ночной cron добавлен: $CRON_FILE"
