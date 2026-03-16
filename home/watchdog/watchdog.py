@@ -89,7 +89,7 @@ ALL_STACKS_DOWN_MINUTES   = 5
 # ---------------------------------------------------------------------------
 DPI_FWMARK       = "0x2"
 DPI_TABLE        = 201
-DPI_DNSMASQ_CONF = Path("/opt/vpn/dnsmasq/dnsmasq.d/dpi-domains.conf")
+DPI_DNSMASQ_CONF = Path("/etc/dnsmasq.d/dpi-domains.conf")
 DPI_VPS_DNS      = os.getenv("VPS_TUNNEL_IP", "10.177.2.2")
 
 DPI_SERVICE_PRESETS: dict[str, dict] = {
@@ -112,6 +112,40 @@ DPI_SERVICE_PRESETS: dict[str, dict] = {
         "domains": [
             "discord.com", "discordapp.com", "discordapp.net",
             "discord.gg", "discord.media",
+        ],
+    },
+    "instagram": {
+        "display": "Instagram",
+        "domains": [
+            "instagram.com", "cdninstagram.com", "fbcdn.net",
+        ],
+    },
+    "twitter": {
+        "display": "Twitter/X",
+        "domains": [
+            "twitter.com", "x.com", "t.co", "twimg.com",
+        ],
+    },
+    "spotify": {
+        "display": "Spotify",
+        "domains": [
+            "spotify.com", "scdn.co", "spotilocal.com",
+            "audio-ak.spotify.com", "audio4.spotify.com",
+        ],
+    },
+    "steam": {
+        "display": "Steam",
+        "domains": [
+            "store.steampowered.com", "steamcommunity.com",
+            "steampowered.com", "steamstatic.com",
+            "steamusercontent.com", "steam-chat.com",
+        ],
+    },
+    "tiktok": {
+        "display": "TikTok",
+        "domains": [
+            "tiktok.com", "tiktokcdn.com", "tiktokv.com",
+            "musical.ly", "byteoversea.com",
         ],
     },
 }
