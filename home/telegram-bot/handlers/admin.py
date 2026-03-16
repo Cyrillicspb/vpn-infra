@@ -41,6 +41,7 @@ from handlers.keyboards import (
     admin_clients_list_kb,
     admin_clients_menu,
     admin_diagnose_kb,
+    admin_dpi_menu,
     admin_graph_menu,
     admin_logs_menu,
     admin_main_menu,
@@ -53,6 +54,7 @@ from handlers.keyboards import (
     admin_vps_list_kb,
     admin_vps_menu,
     back_to_admin_menu,
+    client_main_menu,
     domains_inline_kb,
     menu_reply_kb,
 )
@@ -2093,3 +2095,101 @@ async def cmd_dpi(message: Message, state: FSMContext, **kw):
 
     except WatchdogError as e:
         await message.answer(f"❌ Watchdog недоступен: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Callback: adm:dpi — inline-меню DPI bypass
+# ---------------------------------------------------------------------------
+
+async def _show_dpi_menu(cb: CallbackQuery):
+    """Отрисовать меню DPI bypass с текущим статусом."""
+    wc = _wc()
+    try:
+        st = await wc.get_dpi_status()
+    except WatchdogError as e:
+        await cb.answer(f"Watchdog недоступен: {e}", show_alert=True)
+        return
+    enabled = st.get("enabled", False)
+    services = st.get("services", [])
+    zapret = st.get("zapret_running", False)
+    ip_count = st.get("dpi_direct_ip_count", 0)
+    status_icon = "✅ ВКЛЮЧЁН" if enabled else "❌ ВЫКЛЮЧЕН"
+    zapret_icon = "🟢" if zapret else "🔴"
+    text = (
+        f"⚡ <b>DPI bypass: {status_icon}</b>\n"
+        f"nfqws: {zapret_icon}  |  IP в dpi_direct: {ip_count}"
+    )
+    await _edit_or_answer(cb, text, admin_dpi_menu(enabled, services))
+
+
+@router.callback_query(F.data == "adm:dpi")
+async def cb_adm_dpi(cb: CallbackQuery, **kw):
+    await cb.answer()
+    await _show_dpi_menu(cb)
+
+
+@router.callback_query(F.data == "adm:dpi_on")
+async def cb_adm_dpi_on(cb: CallbackQuery, **kw):
+    await cb.answer("Включаю DPI bypass...")
+    try:
+        await _wc().dpi_enable()
+    except WatchdogError as e:
+        await cb.answer(f"Ошибка: {e}", show_alert=True)
+        return
+    await _show_dpi_menu(cb)
+
+
+@router.callback_query(F.data == "adm:dpi_off")
+async def cb_adm_dpi_off(cb: CallbackQuery, **kw):
+    await cb.answer("Выключаю DPI bypass...")
+    try:
+        await _wc().dpi_disable()
+    except WatchdogError as e:
+        await cb.answer(f"Ошибка: {e}", show_alert=True)
+        return
+    await _show_dpi_menu(cb)
+
+
+@router.callback_query(F.data.startswith("adm:dpi_add:"))
+async def cb_adm_dpi_add(cb: CallbackQuery, **kw):
+    preset = cb.data.split(":", 2)[2]
+    await cb.answer(f"Добавляю {preset}...")
+    try:
+        await _wc().dpi_add_service(preset=preset)
+    except WatchdogError as e:
+        await cb.answer(f"Ошибка: {e}", show_alert=True)
+        return
+    await _show_dpi_menu(cb)
+
+
+@router.callback_query(F.data.startswith("adm:dpi_tog:"))
+async def cb_adm_dpi_toggle(cb: CallbackQuery, **kw):
+    name = cb.data.split(":", 2)[2]
+    await cb.answer()
+    wc = _wc()
+    try:
+        st = await wc.get_dpi_status()
+        svc = next((s for s in st.get("services", []) if s["name"] == name), None)
+        if not svc:
+            await cb.answer(f"Сервис {name} не найден", show_alert=True)
+            return
+        new_state = not svc.get("enabled", True)
+        await wc.dpi_toggle_service(name, new_state)
+    except WatchdogError as e:
+        await cb.answer(f"Ошибка: {e}", show_alert=True)
+        return
+    await _show_dpi_menu(cb)
+
+
+# ---------------------------------------------------------------------------
+# Callback: adm:user_menu — показать меню пользователя
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:user_menu")
+async def cb_adm_user_menu(cb: CallbackQuery, **kw):
+    await cb.answer()
+    await _edit_or_answer(
+        cb,
+        "👤 <b>Меню пользователя</b>\n\nВы просматриваете меню клиента.",
+        client_main_menu(),
+    )

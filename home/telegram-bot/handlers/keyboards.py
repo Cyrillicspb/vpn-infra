@@ -40,6 +40,9 @@ def admin_main_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🖥️ VPS",          callback_data="adm:vps"),
             InlineKeyboardButton(text="🔐 Безопасность", callback_data="adm:security"),
         ],
+        [
+            InlineKeyboardButton(text="👤 Меню пользователя", callback_data="adm:user_menu"),
+        ],
     ])
 
 
@@ -190,9 +193,49 @@ def admin_routes_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔄 Обновить маршруты", callback_data="adm:routes_update"),
         ],
         [
+            InlineKeyboardButton(text="⚡ DPI bypass",      callback_data="adm:dpi"),
+        ],
+        [
             InlineKeyboardButton(text="◀️ Назад", callback_data="adm:menu"),
         ],
     ])
+
+
+# ── Администратор: DPI bypass (zapret lane) ───────────────────────────────────
+
+def admin_dpi_menu(enabled: bool, services: list[dict]) -> InlineKeyboardMarkup:
+    """Динамическое меню DPI bypass с текущим статусом."""
+    rows: list[list[InlineKeyboardButton]] = []
+
+    # Глобальный вкл/выкл
+    if enabled:
+        rows.append([InlineKeyboardButton(text="❌ Выключить DPI bypass", callback_data="adm:dpi_off")])
+    else:
+        rows.append([InlineKeyboardButton(text="✅ Включить DPI bypass",  callback_data="adm:dpi_on")])
+
+    # Пресеты (добавить если нет)
+    preset_names = {s["name"] for s in services}
+    presets = [("🎬 YouTube", "youtube"), ("🎮 Twitch", "twitch"), ("💬 Discord", "discord")]
+    add_row = []
+    for label, name in presets:
+        if name not in preset_names:
+            add_row.append(InlineKeyboardButton(
+                text=f"➕ {label}", callback_data=f"adm:dpi_add:{name}",
+            ))
+    if add_row:
+        rows.append(add_row)
+
+    # Переключатели для существующих сервисов
+    for svc in services[:10]:
+        icon = "✅" if svc.get("enabled", True) else "❌"
+        display = svc.get("display") or svc["name"]
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} {display}",
+            callback_data=f"adm:dpi_tog:{svc['name'][:20]}",
+        )])
+
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:routes")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def domains_inline_kb(domains: list[str], prefix: str, back: str) -> InlineKeyboardMarkup:
