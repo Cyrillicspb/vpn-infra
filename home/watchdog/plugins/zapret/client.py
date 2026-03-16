@@ -4,17 +4,30 @@ zapret плагин для watchdog.
 Управляет nfqws (netfilter queue worker) — Linux-аналог GoodbyeDPI.
 
 Режим работы:
-  - direct_mode: трафик идёт через eth0 напрямую (без VPS).
-  - nfqueue перехватывает пакеты FORWARD chain (от wg0/wg1 к eth0)
-    и применяет DPI-bypass техники (fake/split/TTL манипуляции).
+  - nfqws перехватывает TCP 80/443 в FORWARD chain (от wg0/wg1 к eth0)
+    и применяет DPI-bypass техники (fakedsplit/TTL манипуляции).
   - Параметры выбираются через Thompson Sampling (probe.py).
+  - zapret НЕ является частью основного стека failover (tier-2, hysteria2 и т.д.).
+    Он работает ПАРАЛЛЕЛЬНО: поднят всегда, трафик заводится отдельным решением.
+
+Жизненный цикл:
+  start     — запускает nfqws-демон (готов обрабатывать очередь), probe если нужно.
+              БЕЗ активации nft FORWARD правил. Мониторинг и probe работают.
+  activate  — добавляет nft FORWARD правила: трафик WireGuard-клиентов идёт через nfqws.
+  deactivate— убирает nft FORWARD правила (nfqws продолжает работать).
+  stop      — останавливает nfqws + убирает все nft правила.
+  test      — проверка работоспособности (pid жив, модуль загружен, скорость).
+  rotate    — quick probe → перезапуск с новым лучшим пресетом.
+  probe [full] — адаптивный поиск параметров.
 
 Команды:
-  start [--temp]  — запуск (--temp: только nfqws+nft, без изменения routing)
-  stop            — остановка
-  test            — проверка работоспособности
-  rotate          — re-probe + перезапуск с новыми параметрами
-  probe [full]    — запуск адаптивного поиска параметров
+  start             — запуск nfqws без активации трафика
+  activate          — активировать nft FORWARD (завести трафик)
+  deactivate        — убрать nft FORWARD (трафик идёт мимо)
+  stop              — полная остановка
+  test              — проверка состояния
+  rotate            — re-probe + перезапуск с новым пресетом
+  probe [full]      — адаптивный поиск параметров
 """
 import asyncio
 import json
@@ -85,7 +98,6 @@ def _nfqws_args(preset: dict) -> list[str]:
         NFQWS_BIN,
         "--daemon",
         f"--pidfile={PID_FILE}",
-        "--user=daemon",
         f"--qnum={NFQUEUE_NUM}",
     ] + preset["args"]
 
@@ -98,16 +110,24 @@ async def _stop_nfqws() -> None:
             PID_FILE.unlink(missing_ok=True)
         except Exception:
             pass
-    # На случай если pidfile устарел
-    await run_cmd(["pkill", "-f", f"nfqws.*--pidfile={PID_FILE}"], timeout=3)
+    await run_cmd(["pkill", "-f", f"nfqws.*qnum={NFQUEUE_NUM}[^0-9]"], timeout=3)
 
 
-async def _nft_add_rules() -> None:
+def _is_forward_active() -> bool:
+    """Проверить, добавлены ли nft FORWARD правила (трафик заведён)."""
+    import subprocess as sp
+    r = sp.run(["nft", "list", "table", "inet", "zapret_main"],
+               capture_output=True, timeout=3)
+    return r.returncode == 0
+
+
+async def _nft_add_forward_rules() -> None:
     """
-    Добавить nft таблицу zapret_main:
-      Перехватывает TCP 443/80 от VPN клиентов (wg0/wg1) выходящих через eth0.
+    Добавить nft таблицу zapret_main (FORWARD chain).
+    Перехватывает TCP 443/80 от VPN клиентов (wg0/wg1) выходящих через eth0.
+    Вызывается ТОЛЬКО при явной активации трафика через zapret.
     """
-    nft_script = f"""
+    nft_script = f"""\
 table inet zapret_main {{
     chain forward {{
         type filter hook forward priority filter + 1;
@@ -123,11 +143,11 @@ table inet zapret_main {{
     )
     _, err = await proc.communicate(input=nft_script.encode())
     if proc.returncode != 0:
-        print(f"[zapret] nft add rules: {err.decode().strip()}", file=sys.stderr)
+        print(f"[zapret] nft add forward rules: {err.decode().strip()}", file=sys.stderr)
 
 
-async def _nft_del_rules() -> None:
-    """Удалить nft таблицу zapret_main."""
+async def _nft_del_forward_rules() -> None:
+    """Удалить nft таблицу zapret_main (убрать FORWARD правила)."""
     await run_cmd(["nft", "delete", "table", "inet", "zapret_main"], timeout=5)
 
 
@@ -147,11 +167,15 @@ def _check_nfqueue_module() -> bool:
 # ---------------------------------------------------------------------------
 # Основные функции
 # ---------------------------------------------------------------------------
-async def start(temp: bool = False) -> int:
+async def start() -> int:
     """
-    Запустить zapret стек.
-    temp=True: только nfqws + nft rules (без изменения routing) — для тестирования.
-    temp=False: полный старт (watchdog сам изменит routing через _do_switch).
+    Запустить nfqws-демон.
+
+    Запускает nfqws (готов обрабатывать пакеты из очереди 200),
+    но НЕ добавляет nft FORWARD правила — трафик WireGuard-клиентов
+    пока не заводится через nfqws. Мониторинг и Thompson Sampling probe работают.
+
+    Для активации трафика вызвать: activate()
     """
     if not _check_binary():
         print(json.dumps({"status": "error", "message": f"{NFQWS_BIN} не найден. Запусти install.sh"}))
@@ -162,8 +186,7 @@ async def start(temp: bool = False) -> int:
         await run_cmd(["modprobe", "nfnetlink_queue"], timeout=5)
         await asyncio.sleep(0.5)
 
-    # Выбор лучшего пресета через Thompson Sampling
-    # Если probe ещё не запускался — сначала запустить quick probe
+    # Quick probe при первом запуске
     needs_probe = subprocess.run(
         [sys.executable, str(PLUGIN_DIR / "probe.py"), "needs-probe"],
         capture_output=True, timeout=3,
@@ -196,23 +219,62 @@ async def start(temp: bool = False) -> int:
         print(json.dumps({"status": "error", "message": "nfqws не запустился (нет pidfile)"}))
         return 1
 
-    # Добавить nft правила
-    await _nft_add_rules()
-
-    mode = "temp" if temp else "main"
+    # nft FORWARD правила НЕ добавляются — трафик не заводится до явного activate()
     print(json.dumps({
         "status": "started",
         "preset": preset["id"],
         "desc": preset["desc"],
-        "mode": mode,
-        "direct_mode": True,
+        "traffic_active": False,   # трафик не заведён, только демон запущен
     }))
     return 0
 
 
+async def activate() -> int:
+    """
+    Активировать перехват трафика WireGuard-клиентов через nfqws.
+
+    Добавляет nft FORWARD правило: TCP 80/443 от wg0/wg1 идёт через очередь 200.
+    nfqws должен быть уже запущен (start).
+    """
+    if not PID_FILE.exists():
+        print(json.dumps({"status": "error", "message": "nfqws не запущен, сначала start"}))
+        return 1
+
+    try:
+        pid = int(PID_FILE.read_text().strip())
+        rc, _, _ = await run_cmd(["kill", "-0", str(pid)], timeout=3)
+        if rc != 0:
+            print(json.dumps({"status": "error", "message": "nfqws процесс не отвечает"}))
+            return 1
+    except Exception:
+        pass
+
+    await _nft_add_forward_rules()
+    preset = _get_best_preset()
+    print(json.dumps({
+        "status": "activated",
+        "preset": preset["id"],
+        "desc": preset["desc"],
+        "traffic_active": True,
+    }))
+    return 0
+
+
+async def deactivate() -> int:
+    """
+    Убрать перехват трафика, оставив nfqws-демон запущенным.
+    Трафик WireGuard-клиентов перестаёт идти через nfqws.
+    nfqws продолжает работать (мониторинг, probe).
+    """
+    await _nft_del_forward_rules()
+    print(json.dumps({"status": "deactivated", "traffic_active": False}))
+    return 0
+
+
 async def stop() -> int:
+    """Полная остановка: убить nfqws + убрать все nft правила."""
     await _stop_nfqws()
-    await _nft_del_rules()
+    await _nft_del_forward_rules()
     print(json.dumps({"status": "stopped"}))
     return 0
 
@@ -246,36 +308,32 @@ async def _measure_direct_throughput() -> float:
 
 async def test() -> int:
     """
-    Проверка работоспособности zapret стека.
+    Проверка работоспособности zapret.
 
-    Режимы:
-      - Активный (nfqws запущен): проверяем pid + nft таблицу + замеряем скорость.
-      - Standby (nfqws не запущен): проверяем бинарник + ядерный модуль + замеряем скорость.
+    Режимы (определяются по наличию pidfile):
+      - running+active:  pid жив + nft таблица есть → трафик идёт через nfqws
+      - running+standby: pid жив, nft таблицы нет → демон запущен, трафик не заведён
+      - stopped:         pidfile нет → только проверка бинарника и модуля
 
-    ВАЖНО: curl --interface eth0 к заблокированным сайтам НЕ работает как тест —
-    трафик идёт через OUTPUT chain, а nft запрет_main перехватывает только FORWARD chain
-    (трафик от wg0/wg1 клиентов). Поэтому тест connectivity здесь не выполняется;
-    реальная проверка DPI bypass происходит в probe.py через SO_MARK + OUTPUT chain.
+    ВАЖНО: тест connectivity здесь не делаем — трафик сервера через OUTPUT chain,
+    а nft zapret_main перехватывает FORWARD chain (трафик WG-клиентов).
+    DPI bypass тестируется в probe.py через SO_MARK + OUTPUT chain.
     """
-    # Проверить наличие бинарника — базовое требование
     if not _check_binary():
         print(json.dumps({"status": "fail", "throughput_mbps": 0,
                           "message": f"{NFQWS_BIN} не найден — запустите install.sh"}))
         return 1
 
-    # Проверить ядерный модуль
     if not _check_nfqueue_module():
         print(json.dumps({"status": "fail", "throughput_mbps": 0,
                           "message": "nfnetlink_queue не загружен"}))
         return 1
 
     if PID_FILE.exists():
-        # ── Активный режим ────────────────────────────────────────────────────
         try:
             pid = int(PID_FILE.read_text().strip())
             rc, _, _ = await run_cmd(["kill", "-0", str(pid)], timeout=3)
             if rc != 0:
-                # Записать неудачу в Thompson Sampling
                 subprocess.run(
                     [sys.executable, str(PLUGIN_DIR / "probe.py"), "record", "0"],
                     capture_output=True, timeout=3,
@@ -286,35 +344,27 @@ async def test() -> int:
         except Exception:
             pass
 
-        # Проверить nft таблицу
-        rc_nft, _, _ = await run_cmd(
-            ["nft", "list", "table", "inet", "zapret_main"], timeout=3,
-        )
-        if rc_nft != 0:
-            print(json.dumps({"status": "fail", "throughput_mbps": 0,
-                              "message": "nft таблица zapret_main отсутствует"}))
-            return 1
-
-        # Замер пропускной способности
+        forward_active = _is_forward_active()
         throughput = await _measure_direct_throughput()
 
-        # Записать успех в Thompson Sampling
-        subprocess.run(
-            [sys.executable, str(PLUGIN_DIR / "probe.py"), "record", "1"],
-            capture_output=True, timeout=3,
-        )
+        if forward_active:
+            subprocess.run(
+                [sys.executable, str(PLUGIN_DIR / "probe.py"), "record", "1"],
+                capture_output=True, timeout=3,
+            )
 
         preset = _get_best_preset()
+        mode = "active" if forward_active else "running"
         print(json.dumps({
             "status": "ok",
             "throughput_mbps": max(throughput, 1.0),
             "preset": preset["id"],
-            "mode": "active",
+            "mode": mode,            # active=трафик заведён, running=демон запущен без трафика
+            "traffic_active": forward_active,
         }))
         return 0
 
     else:
-        # ── Standby режим: бинарник и модуль уже проверены выше ──────────────
         throughput = await _measure_direct_throughput()
         preset = _get_best_preset()
         print(json.dumps({
@@ -322,15 +372,18 @@ async def test() -> int:
             "throughput_mbps": max(throughput, 1.0),
             "preset": preset["id"],
             "mode": "standby",
+            "traffic_active": False,
         }))
         return 0
 
 
 async def rotate() -> int:
     """
-    Ротация: запуск quick probe → перезапуск с новым лучшим пресетом.
+    Ротация пресета: quick probe → перезапуск с новым лучшим пресетом.
+    Сохраняет текущее состояние активации трафика.
     """
     print("[zapret] Ротация: запуск quick probe...", flush=True)
+    was_active = _is_forward_active()
     await stop()
 
     rc = subprocess.run(
@@ -340,7 +393,10 @@ async def rotate() -> int:
     if rc != 0:
         print("[zapret] probe не удался при ротации", file=sys.stderr)
 
-    return await start()
+    rc = await start()
+    if rc == 0 and was_active:
+        rc = await activate()
+    return rc
 
 
 async def probe(full: bool = False) -> int:
@@ -359,10 +415,13 @@ async def probe(full: bool = False) -> int:
 # ---------------------------------------------------------------------------
 async def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "test"
-    temp = "--temp" in sys.argv
 
     if cmd == "start":
-        sys.exit(await start(temp=temp))
+        sys.exit(await start())
+    elif cmd == "activate":
+        sys.exit(await activate())
+    elif cmd == "deactivate":
+        sys.exit(await deactivate())
     elif cmd == "stop":
         sys.exit(await stop())
     elif cmd == "test":
