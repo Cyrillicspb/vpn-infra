@@ -414,6 +414,7 @@ class WatchdogState:
         self.upload_util_pct: float = 0.0      # утилизация upload-канала %
         self.blocked_sites_reachable: int = 1  # 1=OK, 0=недоступны
         self.failover_count: int = 0           # счётчик failover-переключений
+        self.rotation_log: list[dict] = []     # история переключений стека (max 20)
         self.dnsmasq_up: int = 1               # 1=работает, 0=нет
         self.docker_health: dict[str, int] = {}  # {container: 1/0}
         self.cached_peers: list[dict] = []      # последний дамп WG пиров
@@ -450,6 +451,7 @@ class WatchdogState:
             "active_vps_idx": self.active_vps_idx,
             "dpi_enabled": self.dpi_enabled,
             "dpi_services": self.dpi_services,
+            "rotation_log": self.rotation_log[-20:],
         }
 
     def save(self) -> None:
@@ -472,6 +474,7 @@ class WatchdogState:
                 self.is_first_run   = data.get("is_first_run", True)
                 self.dpi_enabled    = data.get("dpi_enabled", False)
                 self.dpi_services   = data.get("dpi_services", [])
+                self.rotation_log   = data.get("rotation_log", [])
                 logger.info(f"Состояние загружено: стек={self.active_stack}, dpi={self.dpi_enabled}")
         except Exception as exc:
             logger.error(f"Не удалось загрузить состояние: {exc}")
@@ -1435,6 +1438,14 @@ async def _do_switch(new_stack: str, reason: str) -> bool:
     state.last_failover = datetime.now()
     state.all_stacks_down_since = None
     state.failover_count += 1
+    state.rotation_log.append({
+        "ts":     datetime.now().isoformat(timespec="seconds"),
+        "from":   old_stack,
+        "to":     new_stack,
+        "reason": reason,
+    })
+    if len(state.rotation_log) > 20:
+        state.rotation_log = state.rotation_log[-20:]
     state.save()
 
     logger.info(f"Стек переключён: {old_stack} → {new_stack}")
@@ -2498,6 +2509,89 @@ async def post_vps_remove(request: Request, req: VpsRequest, _: bool = Depends(_
     state.active_vps_idx = 0
     state.save()
     return {"status": "removed", "ip": req.ip}
+
+
+# ---------------------------------------------------------------------------
+# NFT sets stats
+# ---------------------------------------------------------------------------
+@app.get("/nft/stats")
+async def get_nft_stats(_: bool = Depends(_auth)):
+    """Количество элементов в каждом nft set."""
+    sets = {
+        "blocked_static":  ("inet", "vpn", "blocked_static"),
+        "blocked_dynamic": ("inet", "vpn", "blocked_dynamic"),
+        "dpi_direct":      ("inet", "vpn", "dpi_direct"),
+    }
+    result = {}
+    for name, (family, table, set_name) in sets.items():
+        rc, out, _ = await run_cmd(
+            ["nft", "list", "set", family, table, set_name], timeout=5
+        )
+        if rc == 0:
+            count = out.count(",") + (1 if "elements" in out and "{" in out else 0)
+            result[name] = count
+        else:
+            result[name] = -1
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Rotation log
+# ---------------------------------------------------------------------------
+@app.get("/rotation-log")
+async def get_rotation_log(_: bool = Depends(_auth)):
+    """История переключений стека (последние 20)."""
+    return {"log": list(reversed(state.rotation_log))}
+
+
+# ---------------------------------------------------------------------------
+# DPI test
+# ---------------------------------------------------------------------------
+class DpiTestRequest(BaseModel):
+    domains: Optional[list[str]] = None  # None = тест всех активных сервисов
+
+
+@app.post("/dpi/test")
+@limiter.limit("5/minute")
+async def post_dpi_test(request: Request, req: DpiTestRequest, _: bool = Depends(_auth)):
+    """Проверить что домены резолвятся в dpi_direct nft set."""
+    if not state.dpi_enabled:
+        return {"status": "disabled", "results": []}
+
+    # Домены для теста
+    test_domains: list[str] = []
+    if req.domains:
+        test_domains = req.domains
+    else:
+        for svc in state.dpi_services:
+            if svc.get("enabled") and svc.get("domains"):
+                test_domains.extend(svc["domains"][:1])  # первый домен каждого сервиса
+
+    results = []
+    for domain in test_domains[:10]:
+        # 1. Резолвим через dnsmasq
+        rc, out, _ = await run_cmd(["dig", "+short", "@127.0.0.1", domain, "A"], timeout=5)
+        resolved_ips = [ln.strip() for ln in out.splitlines() if ln.strip() and not ln.startswith(";")]
+
+        # 2. Проверяем наличие IP в dpi_direct
+        in_set = False
+        for ip in resolved_ips:
+            rc2, out2, _ = await run_cmd(
+                ["nft", "list", "set", "inet", "vpn", "dpi_direct"], timeout=5
+            )
+            if rc2 == 0 and ip in out2:
+                in_set = True
+                break
+
+        results.append({
+            "domain":      domain,
+            "resolved":    resolved_ips[:3],
+            "in_dpi_set":  in_set,
+            "ok":          in_set,
+        })
+
+    all_ok = all(r["ok"] for r in results) if results else False
+    return {"status": "ok" if all_ok else "partial", "results": results}
 
 
 # ---------------------------------------------------------------------------

@@ -2417,3 +2417,140 @@ async def cb_adm_user_menu(cb: CallbackQuery, **kw):
         "👤 <b>Меню пользователя</b>\n\nВы просматриваете меню клиента.",
         client_main_menu(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Callback: adm:nft_stats — статистика nft sets
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:nft_stats")
+async def cb_adm_nft_stats(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю...")
+    try:
+        stats = await _wc().get_nft_stats()
+        blocked_static  = stats.get("blocked_static", -1)
+        blocked_dynamic = stats.get("blocked_dynamic", -1)
+        dpi_direct      = stats.get("dpi_direct", -1)
+        text = (
+            f"<b>📊 Статистика nft sets</b>\n\n"
+            f"<b>blocked_static</b> (базы РКН): <b>{blocked_static}</b> IP\n"
+            f"<b>blocked_dynamic</b> (DNS кэш): <b>{blocked_dynamic}</b> IP\n"
+            f"<b>dpi_direct</b> (zapret): <b>{dpi_direct}</b> IP\n\n"
+            f"<i>blocked_static</i> — обновляется раз в сутки из antifilter/opencck\n"
+            f"<i>blocked_dynamic</i> — наполняется dnsmasq при резолве заблокированных доменов\n"
+            f"<i>dpi_direct</i> — домены из DPI bypass (zapret)"
+        )
+    except WatchdogError as e:
+        text = f"❌ {e}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
+# Callback: adm:dpi_test — тест DPI bypass
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:dpi_test")
+async def cb_adm_dpi_test(cb: CallbackQuery, **kw):
+    await cb.answer("Тестирую DPI...")
+    try:
+        data = await _wc().dpi_test()
+        status = data.get("status", "?")
+        results = data.get("results", [])
+        if status == "disabled":
+            await cb.message.answer("⚡ DPI bypass выключен.", reply_markup=back_to_admin_menu())
+            return
+        if not results:
+            await cb.message.answer("Нет активных DPI сервисов для теста.", reply_markup=back_to_admin_menu())
+            return
+        lines = [f"<b>🧪 Тест DPI bypass</b>\n"]
+        for r in results:
+            icon = "✅" if r["ok"] else "❌"
+            ips = ", ".join(r.get("resolved", [])[:2]) or "не резолвится"
+            lines.append(f"{icon} <code>{r['domain']}</code>\n   IP: {ips}\n   В dpi_direct: {'да' if r['in_dpi_set'] else 'нет'}")
+        text = "\n\n".join(lines)
+    except WatchdogError as e:
+        text = f"❌ {e}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
+# Callback: adm:rotation_log — журнал переключений стека
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:rotation_log")
+async def cb_adm_rotation_log(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю...")
+    try:
+        data = await _wc().get_rotation_log()
+        log = data.get("log", [])
+        if not log:
+            text = "📋 <b>Журнал ротаций</b>\n\nИстория переключений пуста."
+        else:
+            lines = ["📋 <b>Журнал переключений стека</b>\n"]
+            for entry in log[:15]:
+                ts = entry.get("ts", "?")[:16].replace("T", " ")
+                frm = entry.get("from", "?")
+                to = entry.get("to", "?")
+                reason = entry.get("reason", "?")
+                lines.append(f"<code>{ts}</code>\n  {frm} → <b>{to}</b>\n  <i>{reason}</i>")
+            text = "\n\n".join(lines)
+    except WatchdogError as e:
+        text = f"❌ {e}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
+# Callback: adm:broadcast_configs — рассылка конфигов всем клиентам
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:broadcast_configs")
+async def cb_adm_broadcast_configs(cb: CallbackQuery, **kw):
+    await cb.answer("Запускаю рассылку...")
+    db: Database = kw.get("db")
+    bot: "Bot" = kw.get("bot")
+    from services.config_builder import ConfigBuilder
+    import asyncio as _asyncio
+
+    async def _do_broadcast():
+        devices = await db.get_all_devices()
+        builder = ConfigBuilder()
+        sent = 0
+        failed = 0
+        for device in devices:
+            try:
+                chat_id = str(device["chat_id"])
+                excludes_raw = await db.get_excludes(device["id"])
+                excludes = [e["subnet"] for e in excludes_raw]
+                conf_text, qr_bytes, version = await builder.build(device, excludes)
+                if version == device.get("config_version"):
+                    continue  # не изменился
+                caption = (
+                    f"📋 Конфиг <b>{device['device_name']}</b> обновлён\n"
+                    f"⚠️ Приватный ключ — не пересылайте!"
+                )
+                await bot.send_document(
+                    chat_id,
+                    BufferedInputFile(conf_text.encode(), filename=f"{device['device_name']}.conf"),
+                    caption=caption,
+                    parse_mode="HTML",
+                )
+                if qr_bytes:
+                    await bot.send_photo(chat_id, BufferedInputFile(qr_bytes, filename="qr.png"))
+                await db.update_config_version(device["id"], version)
+                sent += 1
+                await _asyncio.sleep(0.3)  # rate limit Telegram
+            except Exception as exc:
+                logger.warning(f"broadcast_configs: {device.get('device_name')}: {exc}")
+                failed += 1
+        await bot.send_message(
+            str(cb.from_user.id),
+            f"📤 <b>Рассылка завершена</b>\n✅ Отправлено: {sent}\n⏭ Без изменений: {len(devices)-sent-failed}\n❌ Ошибки: {failed}",
+            parse_mode="HTML",
+        )
+
+    asyncio.create_task(_do_broadcast())
+    await cb.message.answer(
+        "📤 <b>Рассылка конфигов запущена</b>\n\nОбновлённые конфиги будут отправлены всем активным клиентам. Результат придёт отдельным сообщением.",
+        reply_markup=back_to_admin_menu(),
+        parse_mode="HTML",
+    )

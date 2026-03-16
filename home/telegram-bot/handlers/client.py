@@ -38,6 +38,7 @@ from handlers.keyboards import (
     devices_inline_kb,
     excludes_inline_kb,
     menu_reply_kb,
+    platform_inline_kb,
     proto_inline_kb,
 )
 
@@ -351,8 +352,25 @@ async def cmd_update(message: Message, state: FSMContext, **kw):
         await message.answer("Нет активных устройств.")
         return
 
+    builder = ConfigBuilder()
+    updated = 0
+    same = 0
     for device in active:
-        await _send_config(message, db, device, kw)
+        try:
+            excludes_raw = await db.get_excludes(device["id"])
+            excludes = [e["subnet"] for e in excludes_raw]
+            conf_text, _, version = await builder.build(device, excludes)
+            if version == device.get("config_version"):
+                same += 1
+                continue
+            await _send_config(message, db, device, kw)
+            updated += 1
+        except Exception as exc:
+            logger.warning(f"cmd_update: {device.get('device_name')}: {exc}")
+    if same > 0 and updated == 0:
+        await message.answer("✅ Все конфиги актуальны (версия не изменилась).")
+    elif same > 0:
+        await message.answer(f"ℹ️ {same} устройств без изменений.")
 
 
 # ---------------------------------------------------------------------------
@@ -1036,8 +1054,25 @@ async def cb_cl_update(cb: CallbackQuery, **kw):
     if not active:
         await cb.message.answer("Нет активных устройств.", reply_markup=client_main_menu())
         return
+    builder = ConfigBuilder()
+    updated = 0
+    same = 0
     for device in active:
-        await _send_config(cb.message, db, device, kw)
+        try:
+            excludes_raw = await db.get_excludes(device["id"])
+            excludes = [e["subnet"] for e in excludes_raw]
+            conf_text, _, version = await builder.build(device, excludes)
+            if version == device.get("config_version"):
+                same += 1
+                continue
+            await _send_config(cb.message, db, device, kw)
+            updated += 1
+        except Exception as exc:
+            logger.warning(f"cb_cl_update: {device.get('device_name')}: {exc}")
+    if same > 0 and updated == 0:
+        await cb.message.answer("✅ Все конфиги актуальны (версия не изменилась).", reply_markup=client_main_menu())
+    elif same > 0:
+        await cb.message.answer(f"ℹ️ {same} устройств без изменений.")
 
 
 @router.callback_query(F.data == "cl:status")
@@ -1112,7 +1147,99 @@ async def cb_device_config(cb: CallbackQuery, **kw):
     if device.get("pending_approval"):
         await cb.message.answer("⏳ Устройство ещё ожидает одобрения администратора.")
         return
-    await _send_config(cb.message, db, device, kw)
+    await cb.message.answer(
+        f"📱 <b>{device['device_name']}</b> — выберите формат конфига:",
+        reply_markup=platform_inline_kb(device_id),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("cfgp:"))
+async def cb_device_config_platform(cb: CallbackQuery, **kw):
+    """Отправить конфиг устройства в выбранном формате."""
+    await cb.answer()
+    parts = cb.data.split(":", 2)
+    if len(parts) < 3:
+        await cb.message.answer("Некорректный запрос.")
+        return
+    device_id = int(parts[1])
+    platform = parts[2]
+    db: Database = kw.get("db")
+    device = await db.get_device_by_id(device_id)
+    if not device:
+        await cb.message.answer("Устройство не найдено.")
+        return
+    if device.get("pending_approval"):
+        await cb.message.answer("⏳ Устройство ещё ожидает одобрения администратора.")
+        return
+
+    builder = ConfigBuilder()
+    excludes_raw = await db.get_excludes(device["id"])
+    excludes = [e["subnet"] for e in excludes_raw]
+
+    had_keys = bool(device.get("private_key"))
+    device = await builder.ensure_keys(device)
+    if not had_keys and device.get("private_key"):
+        from database import Database as _DB
+        await db.update_device_keys(device["id"], device["private_key"], device["public_key"])
+    conf_text, qr_bytes, version = await builder.build(device, excludes)
+
+    if platform == "ios":
+        # QR + инструкция
+        await cb.message.answer(
+            "⚠️ <b>Конфигурация содержит приватный ключ!</b> Не передавайте никому.\n\n"
+            "📱 <b>Установка на iOS/Android:</b>\n"
+            "1. Установите приложение:\n"
+            "   • iOS: <a href='https://apps.apple.com/app/amneziavpn/id1600529900'>AmneziaVPN</a> / <a href='https://apps.apple.com/app/wireguard/id1441195209'>WireGuard</a>\n"
+            "   • Android: <a href='https://play.google.com/store/apps/details?id=org.amnezia.vpn'>AmneziaVPN</a> / <a href='https://play.google.com/store/apps/details?id=com.wireguard.android'>WireGuard</a>\n"
+            "2. Отсканируйте QR-код ниже или импортируйте .conf файл.",
+            parse_mode="HTML",
+        )
+        if qr_bytes:
+            await cb.message.answer_photo(
+                BufferedInputFile(qr_bytes, filename="qr.png"),
+                caption=f"QR-код `{device['device_name']}`",
+            )
+        await cb.message.answer_document(
+            BufferedInputFile(conf_text.encode(), filename=f"vpn-{device['device_name']}.conf"),
+            caption=f"Конфигурация `{device['device_name']}`",
+        )
+    elif platform == "conf":
+        await cb.message.answer(
+            "⚠️ <b>Конфигурация содержит приватный ключ!</b> Не передавайте никому.",
+            parse_mode="HTML",
+        )
+        if qr_bytes:
+            await cb.message.answer_photo(
+                BufferedInputFile(qr_bytes, filename="qr.png"),
+                caption=f"QR-код `{device['device_name']}`",
+            )
+        await cb.message.answer_document(
+            BufferedInputFile(conf_text.encode(), filename=f"vpn-{device['device_name']}.conf"),
+            caption=f"Конфигурация `{device['device_name']}`",
+        )
+    else:
+        # windows / macos / linux — отправить .conf + installer script
+        from services.config_builder import build_installer
+        installer_bytes = build_installer(device["device_name"], conf_text, platform)
+        await cb.message.answer(
+            "⚠️ <b>Конфигурация содержит приватный ключ!</b> Не передавайте никому.",
+            parse_mode="HTML",
+        )
+        await cb.message.answer_document(
+            BufferedInputFile(conf_text.encode(), filename=f"vpn-{device['device_name']}.conf"),
+            caption=f"Конфигурация `{device['device_name']}`",
+        )
+        if installer_bytes:
+            from services.config_builder import PLATFORM_SCRIPTS
+            ext = PLATFORM_SCRIPTS[platform]["ext"]
+            label = PLATFORM_SCRIPTS[platform]["label"]
+            await cb.message.answer_document(
+                BufferedInputFile(installer_bytes, filename=f"install-vpn-{device['device_name']}.{ext}"),
+                caption=f"Установщик для {label}\nЗапустите от имени администратора.",
+            )
+
+    await db.update_config_version(device["id"], version)
 
 
 @router.callback_query(F.data.startswith("rm:"))

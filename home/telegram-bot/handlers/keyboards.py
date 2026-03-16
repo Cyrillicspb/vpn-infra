@@ -105,6 +105,9 @@ def admin_manage_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔌 Перезагрузить сервер", callback_data="adm:reboot"),
         ],
         [
+            InlineKeyboardButton(text="📋 Журнал ротаций",       callback_data="adm:rotation_log"),
+        ],
+        [
             InlineKeyboardButton(text="🗄 Бэкап",               callback_data="adm:backup"),
         ],
         [
@@ -200,6 +203,7 @@ def admin_routes_menu() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="⚡ DPI bypass",      callback_data="adm:dpi"),
+            InlineKeyboardButton(text="📊 Наборы IP",       callback_data="adm:nft_stats"),
         ],
         [
             InlineKeyboardButton(text="◀️ Назад", callback_data="adm:menu"),
@@ -240,6 +244,7 @@ def admin_dpi_menu(enabled: bool, services: list[dict]) -> InlineKeyboardMarkup:
             callback_data=f"adm:dpi_tog:{svc['name'][:20]}",
         )])
 
+    rows.append([InlineKeyboardButton(text="🧪 Тест DPI", callback_data="adm:dpi_test")])
     rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:routes")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -264,6 +269,9 @@ def admin_clients_menu() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="📋 Запросы на модерацию", callback_data="adm:requests"),
+        ],
+        [
+            InlineKeyboardButton(text="📤 Разослать конфиги",    callback_data="adm:broadcast_configs"),
         ],
         [
             InlineKeyboardButton(text="◀️ Назад", callback_data="adm:menu"),
@@ -451,6 +459,23 @@ def devices_inline_kb(devices: list, prefix: str, back: str = "cl:menu") -> Inli
             callback_data=f"{prefix}{d['id']}",
         )])
     rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data=back)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def platform_inline_kb(device_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура выбора платформы при получении конфига."""
+    platforms = [
+        ("📱 iOS / Android", "ios"),
+        ("💻 Стандартный .conf", "conf"),
+        ("🪟 Windows (.ps1)", "windows"),
+        ("🍎 macOS (.command)", "macos"),
+        ("🐧 Linux (.sh)", "linux"),
+    ]
+    rows = [
+        [InlineKeyboardButton(text=label, callback_data=f"cfgp:{device_id}:{platform}")]
+        for label, platform in platforms
+    ]
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="cl:myconfig")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -120,6 +120,113 @@ def _make_qr(content: str) -> Optional[bytes]:
         return None
 
 
+PLATFORM_SCRIPTS: dict[str, dict] = {
+    "windows": {
+        "ext": "ps1",
+        "label": "Windows (.ps1)",
+        "template": """\
+# AmneziaWG / WireGuard installer for Windows
+# Run as Administrator in PowerShell
+
+$ErrorActionPreference = "Stop"
+$configContent = @'
+{conf}
+'@
+
+Write-Host "Installing WireGuard..." -ForegroundColor Cyan
+if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {{
+    Write-Host "winget not found. Download WireGuard from https://www.wireguard.com/install/" -ForegroundColor Red
+    exit 1
+}}
+winget install --id WireGuard.WireGuard -e --silent
+
+$configDir = "$env:ProgramFiles\\WireGuard\\Data\\Configurations"
+New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+$configPath = "$configDir\\{name}.conf"
+$configContent | Set-Content -Path $configPath -Encoding UTF8
+Write-Host "Config saved to $configPath" -ForegroundColor Green
+
+# Install tunnel service
+& "$env:ProgramFiles\\WireGuard\\wireguard.exe" /installtunnelservice $configPath
+Write-Host "Tunnel service installed. VPN is starting..." -ForegroundColor Green
+Write-Host "Open WireGuard from the system tray to manage the connection." -ForegroundColor Cyan
+""",
+    },
+    "macos": {
+        "ext": "command",
+        "label": "macOS (.command)",
+        "template": """\
+#!/bin/bash
+# AmneziaWG / WireGuard installer for macOS
+set -e
+
+CONFIG='{conf_escaped}'
+NAME="{name}"
+
+echo "Installing WireGuard via Homebrew..."
+if ! command -v brew &>/dev/null; then
+    echo "Homebrew not found. Install it from https://brew.sh"
+    exit 1
+fi
+brew install wireguard-tools
+
+CONFIG_DIR="/usr/local/etc/wireguard"
+sudo mkdir -p "$CONFIG_DIR"
+echo "$CONFIG" | sudo tee "$CONFIG_DIR/$NAME.conf" > /dev/null
+sudo chmod 600 "$CONFIG_DIR/$NAME.conf"
+echo "Config saved. Starting VPN..."
+sudo wg-quick up "$NAME"
+echo "VPN started! To stop: sudo wg-quick down $NAME"
+""",
+    },
+    "linux": {
+        "ext": "sh",
+        "label": "Linux (.sh)",
+        "template": """\
+#!/bin/bash
+# AmneziaWG / WireGuard installer for Linux
+set -e
+
+CONFIG='{conf_escaped}'
+NAME="{name}"
+
+echo "Installing WireGuard..."
+if command -v apt-get &>/dev/null; then
+    sudo apt-get update -qq && sudo apt-get install -y wireguard
+elif command -v dnf &>/dev/null; then
+    sudo dnf install -y wireguard-tools
+elif command -v pacman &>/dev/null; then
+    sudo pacman -S --noconfirm wireguard-tools
+else
+    echo "Unknown package manager. Install wireguard-tools manually."
+    exit 1
+fi
+
+sudo mkdir -p /etc/wireguard
+echo "$CONFIG" | sudo tee "/etc/wireguard/$NAME.conf" > /dev/null
+sudo chmod 600 "/etc/wireguard/$NAME.conf"
+echo "Starting VPN..."
+sudo systemctl enable --now "wg-quick@$NAME"
+echo "VPN started! Status: sudo systemctl status wg-quick@$NAME"
+""",
+    },
+}
+
+
+def build_installer(device_name: str, conf_text: str, platform: str) -> Optional[bytes]:
+    """Сгенерировать скрипт-установщик с вшитым конфигом для указанной платформы."""
+    info = PLATFORM_SCRIPTS.get(platform)
+    if not info:
+        return None
+    conf_escaped = conf_text.replace("'", "'\\''")  # для bash heredoc
+    script = info["template"].format(
+        conf=conf_text,
+        conf_escaped=conf_escaped,
+        name=device_name,
+    )
+    return script.encode("utf-8")
+
+
 class ConfigBuilder:
     """Строит .conf + опционально QR для устройства."""
 

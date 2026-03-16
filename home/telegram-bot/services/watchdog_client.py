@@ -191,3 +191,15 @@ class WatchdogClient:
     # -----------------------------------------------------------------------
     async def backup(self) -> dict:
         return await self._post("/backup", timeout=30)
+
+    # -----------------------------------------------------------------------
+    # NFT stats / rotation log / DPI test
+    # -----------------------------------------------------------------------
+    async def get_nft_stats(self) -> dict:
+        return await self._get("/nft/stats")
+
+    async def get_rotation_log(self) -> dict:
+        return await self._get("/rotation-log")
+
+    async def dpi_test(self, domains: list | None = None) -> dict:
+        return await self._post("/dpi/test", {"domains": domains}, timeout=30)
