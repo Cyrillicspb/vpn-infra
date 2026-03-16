@@ -110,8 +110,27 @@ class Database:
                         ON domain_requests(status);
                 """)
                 conn.commit()
-                # Миграция: добавить недостающие колонки clients
+                # Миграция: пересоздать clients если старая схема (device_name NOT NULL)
                 cols = {r[1] for r in conn.execute("PRAGMA table_info(clients)")}
+                if "device_name" in cols:
+                    # Старая схема: 1 строка на устройство, device_name обязателен —
+                    # мешает регистрации по новой схеме. Пересоздаём (таблица пустая).
+                    conn.executescript("""
+                        DROP TABLE IF EXISTS clients;
+                        CREATE TABLE clients (
+                            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                            chat_id       TEXT    NOT NULL UNIQUE,
+                            username      TEXT,
+                            first_name    TEXT,
+                            is_admin      INTEGER NOT NULL DEFAULT 0,
+                            is_disabled   INTEGER NOT NULL DEFAULT 0,
+                            device_limit  INTEGER NOT NULL DEFAULT 5,
+                            created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_clients_chat_id ON clients(chat_id);
+                    """)
+                    conn.commit()
+                    cols = {r[1] for r in conn.execute("PRAGMA table_info(clients)")}
                 if "first_name" not in cols:
                     conn.execute("ALTER TABLE clients ADD COLUMN first_name TEXT")
                     conn.commit()
