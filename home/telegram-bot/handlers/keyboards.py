@@ -51,19 +51,22 @@ def admin_main_menu() -> InlineKeyboardMarkup:
 def admin_monitor_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📈 Статус",   callback_data="adm:status"),
-            InlineKeyboardButton(text="🔗 Туннель",  callback_data="adm:tunnel"),
+            InlineKeyboardButton(text="📈 Статус",       callback_data="adm:status"),
+            InlineKeyboardButton(text="🔗 Туннель",      callback_data="adm:tunnel"),
         ],
         [
-            InlineKeyboardButton(text="🌍 IP",       callback_data="adm:ip"),
-            InlineKeyboardButton(text="🐳 Docker",   callback_data="adm:docker"),
+            InlineKeyboardButton(text="🌍 IP",           callback_data="adm:ip"),
+            InlineKeyboardButton(text="🐳 Docker",       callback_data="adm:docker"),
         ],
         [
-            InlineKeyboardButton(text="⚡ Метрики",  callback_data="adm:speed"),
-            InlineKeyboardButton(text="📉 Графики",  callback_data="adm:graph_menu"),
+            InlineKeyboardButton(text="⚡ Метрики",      callback_data="adm:speed"),
+            InlineKeyboardButton(text="📉 Графики",      callback_data="adm:graph_menu"),
         ],
         [
-            InlineKeyboardButton(text="◀️ Назад",    callback_data="adm:menu"),
+            InlineKeyboardButton(text="📊 Трафик клиентов", callback_data="adm:stats"),
+        ],
+        [
+            InlineKeyboardButton(text="◀️ Назад",        callback_data="adm:menu"),
         ],
     ])
 
@@ -100,6 +103,9 @@ def admin_manage_menu() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🔌 Перезагрузить сервер", callback_data="adm:reboot"),
+        ],
+        [
+            InlineKeyboardButton(text="🗄 Бэкап",               callback_data="adm:backup"),
         ],
         [
             InlineKeyboardButton(text="◀️ Назад", callback_data="adm:menu"),

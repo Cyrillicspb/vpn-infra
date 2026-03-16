@@ -755,8 +755,11 @@ async def check_wg_peers() -> None:
             continue
         try:
             peers.append({
-                "interface": p[0], "public_key": p[1],
+                "interface":      p[0],
+                "public_key":     p[1],
                 "last_handshake": int(p[5]),
+                "rx_bytes":       int(p[6]) if p[6].isdigit() else 0,
+                "tx_bytes":       int(p[7]) if p[7].isdigit() else 0,
             })
         except Exception:
             continue
@@ -2429,6 +2432,22 @@ async def post_vps_remove(request: Request, req: VpsRequest, _: bool = Depends(_
     state.active_vps_idx = 0
     state.save()
     return {"status": "removed", "ip": req.ip}
+
+
+# ---------------------------------------------------------------------------
+# Backup
+# ---------------------------------------------------------------------------
+@app.post("/backup")
+@limiter.limit("2/minute")
+async def post_backup(request: Request, bg: BackgroundTasks, _: bool = Depends(_auth)):
+    """Запустить backup.sh в фоне. Скрипт сам отправляет архив в Telegram."""
+    async def _run_backup():
+        rc, out, err = await run_cmd(["/opt/vpn/scripts/backup.sh"], timeout=120)
+        if rc != 0:
+            await tg_alert(f"⚠️ Backup завершился с ошибкой (rc={rc}):\n<code>{err[:400]}</code>")
+
+    bg.add_task(_run_backup)
+    return {"status": "started"}
 
 
 # ---------------------------------------------------------------------------

@@ -185,3 +185,9 @@ class WatchdogClient:
 
     async def dpi_toggle_service(self, name: str, enabled: bool) -> dict:
         return await self._post("/dpi/service/toggle", {"name": name, "enabled": enabled})
+
+    # -----------------------------------------------------------------------
+    # Backup
+    # -----------------------------------------------------------------------
+    async def backup(self) -> dict:
+        return await self._post("/backup", timeout=30)

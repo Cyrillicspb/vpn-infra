@@ -1341,6 +1341,105 @@ async def cb_adm_speed(cb: CallbackQuery, **kw):
     await cb.message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
 
 
+@router.callback_query(F.data == "adm:stats")
+async def cb_adm_stats(cb: CallbackQuery, **kw):
+    """Статистика трафика по клиентам (из wg show dump)."""
+    await cb.answer("Загружаю...")
+    db: Database = kw.get("db")
+
+    def _fmt_bytes(n: int) -> str:
+        if n >= 1_000_000_000:
+            return f"{n/1_000_000_000:.2f} GB"
+        if n >= 1_000_000:
+            return f"{n/1_000_000:.1f} MB"
+        return f"{n/1_000:.0f} KB"
+
+    try:
+        peers_data = await _wc().get_peers()
+        peers = peers_data.get("peers", [])
+
+        clients = await db.get_all_clients()
+        # Строим map: public_key -> device info
+        pk_to_dev: dict[str, dict] = {}
+        for client in clients:
+            chat_id = str(client["chat_id"])
+            devices = await db.get_devices(chat_id)
+            for d in devices:
+                pk = d.get("public_key") or d.get("peer_id")
+                if pk:
+                    pk_to_dev[pk] = {
+                        "chat_id": chat_id,
+                        "device_name": d.get("device_name", "?"),
+                        "first_name": client.get("first_name") or client.get("username") or chat_id,
+                    }
+
+        # Агрегируем трафик по клиентам
+        import time as _time
+        now_ts = int(_time.time())
+        client_traffic: dict[str, dict] = {}
+        orphans = []
+        for p in peers:
+            pk = p.get("public_key", "")
+            rx = p.get("rx_bytes", 0)
+            tx = p.get("tx_bytes", 0)
+            hs = p.get("last_handshake", 0)
+            dev_info = pk_to_dev.get(pk)
+            if dev_info:
+                cid = dev_info["chat_id"]
+                if cid not in client_traffic:
+                    client_traffic[cid] = {
+                        "name": dev_info["first_name"],
+                        "rx": 0, "tx": 0,
+                        "devices": [],
+                        "active": 0,
+                    }
+                client_traffic[cid]["rx"] += rx
+                client_traffic[cid]["tx"] += tx
+                active = hs > 0 and now_ts - hs < 180
+                if active:
+                    client_traffic[cid]["active"] += 1
+                hs_str = f"{(now_ts - hs) // 60} мин" if hs > 0 else "никогда"
+                client_traffic[cid]["devices"].append(
+                    f"  {'🟢' if active else '⚪'} {dev_info['device_name']}: "
+                    f"↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)} | {hs_str}"
+                )
+            else:
+                orphans.append(f"  <code>{pk[:20]}…</code> ↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)}")
+
+        if not client_traffic:
+            text = "📊 <b>Статистика трафика</b>\n\nНет данных."
+        else:
+            lines = ["📊 <b>Статистика трафика по клиентам</b>\n"]
+            for cid, info in sorted(client_traffic.items(), key=lambda x: -(x[1]["rx"] + x[1]["tx"])):
+                lines.append(
+                    f"👤 <b>{info['name']}</b> ({cid})\n"
+                    f"  Итого: ↓{_fmt_bytes(info['rx'])} ↑{_fmt_bytes(info['tx'])}\n"
+                    + "\n".join(info["devices"])
+                )
+            if orphans:
+                lines.append("\n⚠️ <b>Неизвестные пиры:</b>\n" + "\n".join(orphans))
+            text = "\n\n".join(lines)
+
+    except WatchdogError as e:
+        text = f"❌ {e}"
+
+    await cb.message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "adm:backup")
+async def cb_adm_backup(cb: CallbackQuery, **kw):
+    await cb.answer("Запускаю бэкап...")
+    try:
+        await _wc().backup()
+        await cb.message.answer(
+            "🗄 <b>Бэкап запущен</b>\n\nАрхив будет отправлен в этот чат по завершении.",
+            reply_markup=back_to_admin_menu(),
+            parse_mode="HTML",
+        )
+    except WatchdogError as e:
+        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
 # ---------------------------------------------------------------------------
 # Действия управления
 # ---------------------------------------------------------------------------
@@ -1850,12 +1949,50 @@ async def cb_adm_client(cb: CallbackQuery, **kw):
         return
     name = client.get("first_name") or client.get("username") or chat_id
     devices = await db.get_devices(chat_id)
+
+    # Загружаем трафик из WG
+    def _fmt_bytes(n: int) -> str:
+        if n >= 1_000_000_000:
+            return f"{n/1_000_000_000:.2f} GB"
+        if n >= 1_000_000:
+            return f"{n/1_000_000:.1f} MB"
+        return f"{n/1_000:.0f} KB"
+
+    import time as _time
+    now_ts = int(_time.time())
+    try:
+        peers_data = await _wc().get_peers()
+        pk_to_peer = {p["public_key"]: p for p in peers_data.get("peers", [])}
+    except WatchdogError:
+        pk_to_peer = {}
+
+    dev_lines = []
+    for d in devices:
+        pk = d.get("public_key") or d.get("peer_id", "")
+        proto = d.get("protocol", "?").upper()
+        dname = d.get("device_name", "?")
+        p = pk_to_peer.get(pk, {})
+        hs = p.get("last_handshake", 0)
+        rx = p.get("rx_bytes", 0)
+        tx = p.get("tx_bytes", 0)
+        if hs > 0:
+            mins = (now_ts - hs) // 60
+            hs_str = f"{mins} мин" if mins < 120 else f"{mins//60} ч"
+            icon = "🟢" if mins < 3 else "🟡"
+        else:
+            hs_str = "никогда"
+            icon = "⚪"
+        dev_lines.append(
+            f"{icon} <b>{dname}</b> [{proto}] — {hs_str} | ↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)}"
+        )
+
+    devs_text = "\n".join(dev_lines) if dev_lines else "нет"
     text = (
-        f"👤 *{name}*\n"
-        f"ID: `{chat_id}`\n"
-        f"Устройств: {len(devices)}\n"
+        f"👤 <b>{name}</b>\n"
+        f"ID: <code>{chat_id}</code>\n"
         f"Статус: {'🚫 отключён' if client.get('is_disabled') else '✅ активен'}\n"
-        f"Лимит устройств: {client.get('device_limit', 5)}"
+        f"Устройств: {len(devices)} / {client.get('device_limit', 5)}\n\n"
+        f"<b>Устройства:</b>\n{devs_text}"
     )
     await _edit_or_answer(cb, text, admin_client_actions_kb(chat_id, bool(client.get("is_disabled"))))
 
