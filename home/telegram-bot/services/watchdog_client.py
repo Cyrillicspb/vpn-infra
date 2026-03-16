@@ -122,6 +122,14 @@ class WatchdogClient:
     async def add_vps(self, ip: str, ssh_port: int = 443, tunnel_ip: str = "") -> dict:
         return await self._post("/vps/add", {"ip": ip, "ssh_port": ssh_port, "tunnel_ip": tunnel_ip})
 
+    async def install_vps(self, ip: str, password: str, ssh_port: int = 22) -> dict:
+        """Запустить полную установку VPS через add-vps.sh (202 Accepted, прогресс в Telegram)."""
+        return await self._post(
+            "/vps/install",
+            {"ip": ip, "password": password, "ssh_port": ssh_port},
+            timeout=15,
+        )
+
     async def remove_vps(self, ip: str) -> dict:
         return await self._post("/vps/remove", {"ip": ip})
 

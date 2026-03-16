@@ -115,6 +115,9 @@ class AdminFSM(StatesGroup):
     direct_add_domain  = State()
     check_domain       = State()
     vps_add_ip         = State()
+    vps_install_ip     = State()
+    vps_install_port   = State()
+    vps_install_pass   = State()
     client_limit_input = State()
 
 
@@ -1903,8 +1906,67 @@ async def fsm_client_limit_input(message: Message, state: FSMContext, **kw):
 @router.callback_query(F.data == "adm:vps_add")
 async def cb_adm_vps_add(cb: CallbackQuery, state: FSMContext, **kw):
     await cb.answer()
-    await cb.message.answer("Введите IP-адрес нового VPS\n(опционально: `IP:PORT`, по умолчанию порт 443):")
-    await state.set_state(AdminFSM.vps_add_ip)
+    await cb.message.answer(
+        "🖥️ *Установка нового VPS*\n\n"
+        "Введите *IP-адрес* свежеустановленного сервера Ubuntu:",
+        parse_mode="Markdown",
+    )
+    await state.set_state(AdminFSM.vps_install_ip)
+
+
+@router.message(AdminFSM.vps_install_ip)
+async def fsm_vps_install_ip(message: Message, state: FSMContext, **kw):
+    ip = message.text.strip()
+    if not ip.replace(".", "").isdigit() or len(ip.split(".")) != 4:
+        await message.answer("❌ Неверный формат IP. Попробуйте снова:")
+        return
+    await state.update_data(vps_ip=ip)
+    await message.answer(
+        f"IP: `{ip}` ✅\n\nВведите *SSH порт* (нажмите Enter или отправьте `22` для стандартного):",
+        parse_mode="Markdown",
+    )
+    await state.set_state(AdminFSM.vps_install_port)
+
+
+@router.message(AdminFSM.vps_install_port)
+async def fsm_vps_install_port(message: Message, state: FSMContext, **kw):
+    text = message.text.strip()
+    port = int(text) if text.isdigit() else 22
+    await state.update_data(vps_port=port)
+    await message.answer(
+        f"Порт: `{port}` ✅\n\n"
+        "⚠️ *Введите root пароль.*\n"
+        "Сообщение будет немедленно удалено из чата после получения.\n\n"
+        "Пароль используется однократно для первичной настройки SSH-ключей "
+        "и после установки root-доступ будет закрыт.",
+        parse_mode="Markdown",
+    )
+    await state.set_state(AdminFSM.vps_install_pass)
+
+
+@router.message(AdminFSM.vps_install_pass)
+async def fsm_vps_install_pass(message: Message, state: FSMContext, **kw):
+    password = message.text.strip()
+    data = await state.get_data()
+    ip = data.get("vps_ip", "")
+    port = data.get("vps_port", 22)
+    await state.clear()
+
+    # Удалить сообщение с паролем из чата
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    await message.answer(
+        f"🚀 Запускаю установку VPS `{ip}:{port}`...\n\n"
+        f"Прогресс будет приходить сюда. Установка занимает *5–10 минут*.",
+        parse_mode="Markdown",
+    )
+    try:
+        await _wc().install_vps(ip, password, port)
+    except WatchdogError as e:
+        await message.answer(f"❌ Не удалось запустить установку: {e}", reply_markup=back_to_admin_menu())
 
 
 @router.message(AdminFSM.vps_add_ip)

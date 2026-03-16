@@ -1712,6 +1712,13 @@ class GraphRequest(BaseModel):
 
 class VpsRequest(BaseModel):
     ip: str
+    ssh_port: int = 22
+    tunnel_ip: str = ""
+
+class VpsInstallRequest(BaseModel):
+    ip: str
+    password: str
+    ssh_port: int = 22
 
 class DpiServiceRequest(BaseModel):
     name: str = ""
@@ -2309,6 +2316,62 @@ async def post_vps_add(request: Request, req: VpsRequest, _: bool = Depends(_aut
     })
     state.save()
     return {"status": "added", "ip": req.ip}
+
+
+@app.post("/vps/install")
+@limiter.limit("5/minute")
+async def post_vps_install(request: Request, req: VpsInstallRequest, _: bool = Depends(_auth)):
+    """Запустить установку нового VPS через add-vps.sh (background task)."""
+    script = Path("/opt/vpn/add-vps.sh")
+    if not script.exists():
+        raise HTTPException(status_code=500, detail="add-vps.sh не найден")
+    asyncio.create_task(_run_vps_install(req.ip, req.password, req.ssh_port))
+    return {"status": "started", "ip": req.ip}
+
+
+async def _run_vps_install(ip: str, password: str, ssh_port: int) -> None:
+    """Запускает add-vps.sh, отправляет прогресс в Telegram."""
+    tg.enqueue(f"🚀 <b>Установка VPS {ip} началась...</b>\nЭто займёт 5–10 минут.")
+    last_error_lines: list[str] = []
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "/bin/bash", "/opt/vpn/add-vps.sh", ip, password, str(ssh_port),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        assert proc.stdout
+        async for raw in proc.stdout:
+            line = raw.decode(errors="replace").rstrip()
+            # Шаги установки — отправляем в Telegram
+            if "━━━" in line:
+                step = line.replace("━", "").strip()
+                tg.enqueue(f"⏳ <b>{step}</b>")
+            # Успешные шаги — копим для финального отчёта
+            elif "[✓]" in line or "[✗]" in line:
+                last_error_lines.append(line)
+                if len(last_error_lines) > 10:
+                    last_error_lines.pop(0)
+
+        await proc.wait()
+
+        if proc.returncode == 0:
+            tg.enqueue(
+                f"✅ <b>VPS {ip} установлен успешно!</b>\n\n"
+                f"⚠️ Осталось вручную настроить 3x-ui inbounds на VPS:\n"
+                f"1. Открыть панель 3x-ui\n"
+                f"2. Добавить inbounds: REALITY, gRPC, Hysteria2\n"
+                f"3. Скопировать UUID/ключи в плагины watchdog"
+            )
+        else:
+            summary = "\n".join(last_error_lines[-5:]) if last_error_lines else "Нет деталей"
+            tg.enqueue(
+                f"❌ <b>Установка VPS {ip} провалилась</b> (код {proc.returncode})\n\n"
+                f"<code>{summary}</code>\n\n"
+                f"Подробности: <code>journalctl -u watchdog -n 50</code> на сервере"
+            )
+    except Exception as exc:
+        logger.error(f"_run_vps_install {ip}: {exc}")
+        tg.enqueue(f"❌ <b>Ошибка установки VPS {ip}:</b> {exc}")
 
 
 @app.post("/vps/remove")
