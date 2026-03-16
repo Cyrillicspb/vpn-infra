@@ -17,7 +17,9 @@ set -euo pipefail
 # ── Конфигурация ────────────────────────────────────────────────────────────
 TABLE_MARKED=200          # fwmark 0x1 → заблокированное → VPS
 TABLE_VPN=100             # VPN-клиенты → незаблокированное → eth0
+TABLE_DPI=201             # fwmark 0x2 → DPI-throttled → eth0 + zapret
 FWMARK=0x1
+FWMARK_DPI=0x2
 
 AWG_SUBNET="10.177.1.0/24"
 WG_SUBNET="10.177.3.0/24"
@@ -106,7 +108,19 @@ setup_routing() {
     LOCAL_SUBNET="${HOME_SUBNET:-$(ip -4 addr show dev "$ETH_IFACE" | awk '/inet / {print $2}' | head -1 | cut -d'/' -f1 | sed 's/\.[0-9]*$/\.0/')/24}"
     ip route add "$LOCAL_SUBNET" dev "$ETH_IFACE" table $TABLE_VPN 2>/dev/null || true
 
+    # --- Table 201: DPI-bypass (fwmark 0x2) → eth0 + zapret ---
+
+    ip route flush table $TABLE_DPI 2>/dev/null || true
+    ip route add default via "$GATEWAY" dev "$ETH_IFACE" table $TABLE_DPI
+    log "Table $TABLE_DPI: default via $GATEWAY dev $ETH_IFACE (DPI bypass)"
+
     # --- ip rules ---
+
+    # Priority 90: fwmark 0x2 → table 201 (DPI bypass → eth0 + zapret)
+    if ! rule_exists "fwmark $FWMARK_DPI lookup $TABLE_DPI"; then
+        ip rule add fwmark $FWMARK_DPI lookup $TABLE_DPI priority 90
+        log "Rule: fwmark $FWMARK_DPI → table $TABLE_DPI (priority 90)"
+    fi
 
     # Priority 100: fwmark 0x1 → table 200 (заблокированное → VPN)
     if ! rule_exists "fwmark $FWMARK lookup $TABLE_MARKED"; then
@@ -171,6 +185,7 @@ teardown_routing() {
     log "Удаление policy routing"
 
     # Удаляем ip rules
+    ip rule del fwmark $FWMARK_DPI lookup $TABLE_DPI 2>/dev/null || true
     ip rule del fwmark $FWMARK lookup $TABLE_MARKED 2>/dev/null || true
     ip rule del to $AWG_SUBNET lookup main 2>/dev/null || true
     ip rule del to $WG_SUBNET lookup main 2>/dev/null || true
@@ -178,6 +193,7 @@ teardown_routing() {
     ip rule del from $WG_SUBNET lookup $TABLE_VPN 2>/dev/null || true
 
     # Очищаем routing tables
+    ip route flush table $TABLE_DPI    2>/dev/null || true
     ip route flush table $TABLE_MARKED 2>/dev/null || true
     ip route flush table $TABLE_VPN    2>/dev/null || true
 
@@ -200,6 +216,9 @@ case "$ACTION" in
     status)
         echo "=== ip rules ==="
         ip rule show | grep -E "($TABLE_MARKED|$TABLE_VPN|$FWMARK)"
+        echo ""
+        echo "=== table $TABLE_DPI (dpi-bypass → eth0) ==="
+        ip route show table $TABLE_DPI
         echo ""
         echo "=== table $TABLE_MARKED (blocked → tun) ==="
         ip route show table $TABLE_MARKED

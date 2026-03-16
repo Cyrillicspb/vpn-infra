@@ -85,6 +85,38 @@ ROUTES_CACHE_ALERT_DAYS   = 3
 ALL_STACKS_DOWN_MINUTES   = 5
 
 # ---------------------------------------------------------------------------
+# DPI bypass (zapret lane)
+# ---------------------------------------------------------------------------
+DPI_FWMARK       = "0x2"
+DPI_TABLE        = 201
+DPI_DNSMASQ_CONF = Path("/opt/vpn/dnsmasq/dnsmasq.d/dpi-domains.conf")
+DPI_VPS_DNS      = os.getenv("VPS_TUNNEL_IP", "10.177.2.2")
+
+DPI_SERVICE_PRESETS: dict[str, dict] = {
+    "youtube": {
+        "display": "YouTube",
+        "domains": [
+            "youtube.com", "googlevideo.com", "ytimg.com",
+            "yt3.ggpht.com", "youtu.be",
+        ],
+    },
+    "twitch": {
+        "display": "Twitch",
+        "domains": [
+            "twitch.tv", "twitchsvc.net", "jtvnw.net",
+            "static.twitchsvc.net",
+        ],
+    },
+    "discord": {
+        "display": "Discord",
+        "domains": [
+            "discord.com", "discordapp.com", "discordapp.net",
+            "discord.gg", "discord.media",
+        ],
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Логирование
 # ---------------------------------------------------------------------------
 logging.basicConfig(
@@ -338,6 +370,9 @@ class WatchdogState:
         self.dnsmasq_up: int = 1               # 1=работает, 0=нет
         self.docker_health: dict[str, int] = {}  # {container: 1/0}
         self.cached_peers: list[dict] = []      # последний дамп WG пиров
+        # ── DPI bypass (zapret lane) ─────────────────────────────────────────
+        self.dpi_enabled: bool = False          # глобальный on/off
+        self.dpi_services: list[dict] = []      # [{name, display, domains, enabled}]
 
     @property
     def active_vps(self) -> Optional[dict]:
@@ -366,6 +401,8 @@ class WatchdogState:
             "is_first_run": self.is_first_run,
             "vps_list": self.vps_list,
             "active_vps_idx": self.active_vps_idx,
+            "dpi_enabled": self.dpi_enabled,
+            "dpi_services": self.dpi_services,
         }
 
     def save(self) -> None:
@@ -386,7 +423,9 @@ class WatchdogState:
                 self.active_vps_idx = data.get("active_vps_idx", 0)
                 self.degraded_mode  = data.get("degraded_mode", False)
                 self.is_first_run   = data.get("is_first_run", True)
-                logger.info(f"Состояние загружено: стек={self.active_stack}")
+                self.dpi_enabled    = data.get("dpi_enabled", False)
+                self.dpi_services   = data.get("dpi_services", [])
+                logger.info(f"Состояние загружено: стек={self.active_stack}, dpi={self.dpi_enabled}")
         except Exception as exc:
             logger.error(f"Не удалось загрузить состояние: {exc}")
 
@@ -1089,6 +1128,124 @@ async def _run_zapret_probe() -> None:
 
 
 # ---------------------------------------------------------------------------
+# DPI bypass management (zapret lane)
+# ---------------------------------------------------------------------------
+async def _regen_dpi_dnsmasq() -> None:
+    """Перегенерировать dpi-domains.conf + SIGHUP dnsmasq."""
+    enabled = [s for s in state.dpi_services if s.get("enabled")]
+    if not enabled:
+        DPI_DNSMASQ_CONF.parent.mkdir(parents=True, exist_ok=True)
+        DPI_DNSMASQ_CONF.write_text(
+            "# dpi-domains.conf — нет активных DPI-bypass сервисов (генерируется watchdog)\n"
+        )
+    else:
+        lines = [
+            "# dpi-domains.conf — DPI-bypass сервисы (генерируется watchdog)",
+            "# Изменять вручную не нужно — обновляется через /dpi",
+            "",
+        ]
+        for svc in enabled:
+            lines.append(f"# {svc.get('display', svc['name'])}")
+            for domain in svc.get("domains", []):
+                lines.append(f"nftset=/{domain}/4#inet#vpn#dpi_direct")
+                lines.append(f"server=/{domain}/{DPI_VPS_DNS}")
+            lines.append("")
+        DPI_DNSMASQ_CONF.parent.mkdir(parents=True, exist_ok=True)
+        DPI_DNSMASQ_CONF.write_text("\n".join(lines))
+
+    rc, _, _ = await run_cmd(["pkill", "-HUP", "dnsmasq"], timeout=5)
+    logger.info(f"[DPI] dpi-domains.conf обновлён ({len(enabled)} сервисов), dnsmasq SIGHUP rc={rc}")
+
+
+async def _dpi_apply_routing() -> None:
+    """Применить ip rule fwmark 0x2 → table 201 и маршрут в table 201."""
+    rc, out, _ = await run_cmd(["ip", "rule", "show"], timeout=5)
+    if f"fwmark {DPI_FWMARK} lookup {DPI_TABLE}" not in out:
+        await run_cmd(
+            ["ip", "rule", "add", "fwmark", DPI_FWMARK,
+             "lookup", str(DPI_TABLE), "priority", "90"],
+            timeout=5,
+        )
+    gw = GATEWAY_IP
+    eth = NET_INTERFACE or "eth0"
+    if gw:
+        await run_cmd(
+            ["ip", "route", "replace", "default", "via", gw,
+             "dev", eth, "table", str(DPI_TABLE)],
+            timeout=5,
+        )
+    logger.info(f"[DPI] ip rule fwmark {DPI_FWMARK} → table {DPI_TABLE} применён")
+
+
+async def _dpi_remove_routing() -> None:
+    """Убрать ip rule fwmark 0x2 и очистить nft set dpi_direct."""
+    await run_cmd(
+        ["ip", "rule", "del", "fwmark", DPI_FWMARK, "lookup", str(DPI_TABLE)],
+        timeout=5,
+    )
+    await run_cmd(["nft", "flush", "set", "inet", "vpn", "dpi_direct"], timeout=5)
+    logger.info("[DPI] ip rule fwmark 0x2 удалён, dpi_direct очищен")
+
+
+async def _dpi_enable_impl() -> None:
+    """Включить DPI bypass: routing + zapret activate + dnsmasq."""
+    state.dpi_enabled = True
+    state.save()
+    await _dpi_apply_routing()
+    zp = plugins.get("zapret")
+    if zp:
+        if not (await zp.test(timeout=5))[0]:
+            await zp.start()
+        await zp.activate()
+    await _regen_dpi_dnsmasq()
+    enabled_names = [s["display"] for s in state.dpi_services if s.get("enabled")]
+    alert(
+        f"⚡ *DPI bypass включён*\n"
+        f"Сервисы: {', '.join(enabled_names) if enabled_names else 'нет (добавьте /dpi add)'}\n"
+        f"Трафик к ним идёт напрямую через zapret, минуя VPS."
+    )
+    logger.info("[DPI] включён")
+
+
+async def _dpi_disable_impl() -> None:
+    """Выключить DPI bypass: routing убрать, zapret deactivate, dnsmasq очистить."""
+    state.dpi_enabled = False
+    state.save()
+    await _dpi_remove_routing()
+    zp = plugins.get("zapret")
+    if zp:
+        await zp.deactivate()
+    await _regen_dpi_dnsmasq()
+    alert("⚡ *DPI bypass выключен*\nВесь трафик идёт через VPN-туннель.")
+    logger.info("[DPI] выключен")
+
+
+async def _check_dpi_effectiveness() -> None:
+    """Проверить что прямой канал не деградировал (каждые 30 мин при dpi_enabled)."""
+    if not state.dpi_enabled:
+        return
+    eth = NET_INTERFACE or "eth0"
+    rc, out, _ = await run_cmd(
+        ["curl", "-s", "--max-time", "10", "--interface", eth,
+         "-o", "/dev/null", "-w", "%{speed_download}",
+         "http://speedtest.corbina.ru/speedtest/random1000x1000.jpg"],
+        timeout=15,
+    )
+    if rc != 0 or not out.strip():
+        return
+    try:
+        isp_mbps = float(out.strip()) * 8 / 1_000_000
+    except Exception:
+        return
+    if isp_mbps < 5.0:
+        alert(
+            f"⚠️ *zapret DPI bypass*: прямой интернет очень медленный ({isp_mbps:.1f} Mbps).\n"
+            "Возможно блокировка стала IP-level или ISP деградировал.\n"
+            "Проверьте: /dpi"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Мониторинг: проверка standby туннелей (04:30)
 # ---------------------------------------------------------------------------
 async def test_standby_tunnels() -> None:
@@ -1441,6 +1598,10 @@ async def monitoring_loop() -> None:
                 await check_wg_peers()
                 await check_containers()
 
+            # Каждые 30 мин: проверка эффективности DPI bypass
+            if tick % 180 == 0:
+                asyncio.create_task(_check_dpi_effectiveness())
+
             # Каждые 6 ч: large speedtest, кэш маршрутов, сертификаты, DKMS
             if now - last_large_speedtest >= 6 * 3600:
                 mbps = await speedtest_large()
@@ -1541,6 +1702,16 @@ class GraphRequest(BaseModel):
 
 class VpsRequest(BaseModel):
     ip: str
+
+class DpiServiceRequest(BaseModel):
+    name: str = ""
+    display: Optional[str] = None
+    domains: Optional[list[str]] = None
+    preset: Optional[str] = None   # "youtube" | "twitch" | "discord"
+
+class DpiToggleRequest(BaseModel):
+    name: str
+    enabled: bool
     ssh_port: int = 443
     tunnel_ip: str = ""
 
@@ -1947,6 +2118,105 @@ async def post_assess(request: Request, _: bool = Depends(_auth)):
     asyncio.create_task(_manual_reassessment(), name="manual-reassessment")
     return {"status": "started", "stacks": stacks, "eta_seconds": len(stacks) * 10 + 15}
 
+
+# ---------------------------------------------------------------------------
+# DPI bypass API
+# ---------------------------------------------------------------------------
+@app.get("/dpi/status")
+async def get_dpi_status(_: bool = Depends(_auth)):
+    import re as _re
+    rc, out, _ = await run_cmd(
+        ["nft", "list", "set", "inet", "vpn", "dpi_direct"], timeout=5
+    )
+    ip_count = len(_re.findall(r'\d+\.\d+\.\d+\.\d+', out)) if rc == 0 else 0
+    zp = plugins.get("zapret")
+    zapret_ok = False
+    if zp:
+        try:
+            zapret_ok, _ = await zp.test(timeout=5)
+        except Exception:
+            pass
+    return {
+        "enabled": state.dpi_enabled,
+        "zapret_running": zapret_ok,
+        "services": state.dpi_services,
+        "presets": list(DPI_SERVICE_PRESETS.keys()),
+        "dpi_direct_ip_count": ip_count,
+    }
+
+
+@app.post("/dpi/enable")
+@limiter.limit("10/second")
+async def post_dpi_enable(request: Request, _: bool = Depends(_auth)):
+    asyncio.create_task(_dpi_enable_impl())
+    return {"status": "enabling"}
+
+
+@app.post("/dpi/disable")
+@limiter.limit("10/second")
+async def post_dpi_disable(request: Request, _: bool = Depends(_auth)):
+    asyncio.create_task(_dpi_disable_impl())
+    return {"status": "disabling"}
+
+
+@app.post("/dpi/service/add")
+@limiter.limit("10/second")
+async def post_dpi_service_add(request: Request, req: DpiServiceRequest,
+                               _: bool = Depends(_auth)):
+    if req.preset:
+        if req.preset not in DPI_SERVICE_PRESETS:
+            raise HTTPException(400, f"Неизвестный пресет: {req.preset}. "
+                                f"Доступны: {list(DPI_SERVICE_PRESETS)}")
+        preset = DPI_SERVICE_PRESETS[req.preset]
+        name, display, domains = req.preset, preset["display"], preset["domains"]
+    else:
+        if not req.name or not req.domains:
+            raise HTTPException(400, "Требуется name + domains, или preset")
+        name = req.name
+        display = req.display or req.name
+        domains = req.domains
+
+    if any(s["name"] == name for s in state.dpi_services):
+        raise HTTPException(409, f"Сервис '{name}' уже добавлен")
+
+    state.dpi_services.append({
+        "name": name, "display": display,
+        "domains": domains, "enabled": True,
+    })
+    state.save()
+    if state.dpi_enabled:
+        asyncio.create_task(_regen_dpi_dnsmasq())
+    return {"status": "added", "name": name, "domains": domains}
+
+
+@app.post("/dpi/service/remove")
+@limiter.limit("10/second")
+async def post_dpi_service_remove(request: Request, req: DpiServiceRequest,
+                                  _: bool = Depends(_auth)):
+    before = len(state.dpi_services)
+    state.dpi_services = [s for s in state.dpi_services if s["name"] != req.name]
+    if len(state.dpi_services) == before:
+        raise HTTPException(404, f"Сервис '{req.name}' не найден")
+    state.save()
+    if state.dpi_enabled:
+        asyncio.create_task(_regen_dpi_dnsmasq())
+    return {"status": "removed", "name": req.name}
+
+
+@app.post("/dpi/service/toggle")
+@limiter.limit("10/second")
+async def post_dpi_service_toggle(request: Request, req: DpiToggleRequest,
+                                  _: bool = Depends(_auth)):
+    for svc in state.dpi_services:
+        if svc["name"] == req.name:
+            svc["enabled"] = req.enabled
+            state.save()
+            if state.dpi_enabled:
+                asyncio.create_task(_regen_dpi_dnsmasq())
+            return {"status": "toggled", "name": req.name, "enabled": req.enabled}
+    raise HTTPException(404, f"Сервис '{req.name}' не найден")
+
+
 @app.post("/graph")
 @limiter.limit("10/second")
 async def post_graph(request: Request, req: GraphRequest, _: bool = Depends(_auth)):
@@ -2085,6 +2355,24 @@ async def on_startup() -> None:
                 timeout=5,
             )
             logger.info(f"Маршрут table marked → {tun_name} установлен")
+
+    # Всегда запускать zapret (DPI bypass, независимо от активного VPN-стека)
+    # Activate только если dpi_enabled — иначе просто крутится в режиме standby
+    _zapret_already_started = (
+        state.active_stack == "zapret" and active_plugin is None
+    )
+    if not _zapret_already_started:
+        zp = plugins.get("zapret")
+        if zp:
+            logger.info("Запуск zapret (DPI bypass, standby)...")
+            await zp.start()
+    if state.dpi_enabled and state.dpi_services:
+        zp = plugins.get("zapret")
+        if zp:
+            await zp.activate()
+        await _dpi_apply_routing()
+        await _regen_dpi_dnsmasq()
+        logger.info("[DPI] DPI bypass восстановлен при старте")
 
     # Consistency recovery
     ok, _ = await ping_vps()

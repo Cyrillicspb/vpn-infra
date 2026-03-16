@@ -140,3 +140,39 @@ class WatchdogClient:
 
     async def assess(self) -> dict:
         return await self._post("/assess")
+
+    # -----------------------------------------------------------------------
+    # DPI bypass (zapret lane)
+    # -----------------------------------------------------------------------
+    async def get_dpi_status(self) -> dict:
+        return await self._get("/dpi/status")
+
+    async def dpi_enable(self) -> dict:
+        return await self._post("/dpi/enable")
+
+    async def dpi_disable(self) -> dict:
+        return await self._post("/dpi/disable")
+
+    async def dpi_add_service(
+        self,
+        name: str = "",
+        display: str = "",
+        domains: Optional[list] = None,
+        preset: Optional[str] = None,
+    ) -> dict:
+        data: dict = {}
+        if preset:
+            data["preset"] = preset
+        else:
+            data["name"] = name
+            if display:
+                data["display"] = display
+            if domains:
+                data["domains"] = domains
+        return await self._post("/dpi/service/add", data)
+
+    async def dpi_remove_service(self, name: str) -> dict:
+        return await self._post("/dpi/service/remove", {"name": name})
+
+    async def dpi_toggle_service(self, name: str, enabled: bool) -> dict:
+        return await self._post("/dpi/service/toggle", {"name": name, "enabled": enabled})

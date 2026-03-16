@@ -7,6 +7,7 @@ handlers/admin.py — Все команды администратора
   /invite /clients /broadcast /requests
   /vpn add|remove   /direct add|remove   /list vpn|direct   /check
   /routes update    /vps list|add|remove  /migrate-vps
+  /dpi [on|off|add|remove|toggle]
   /client disable|enable|kick|limit
   /rotate-keys  /renew-cert  /renew-ca
   /diagnose     /reboot      /menu
@@ -1969,3 +1970,126 @@ def _file_remove_line(path: Path, line: str) -> None:
     lines = {ln.strip() for ln in path.read_text().splitlines() if ln.strip()}
     lines.discard(line)
     path.write_text("\n".join(sorted(lines)) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# /dpi — управление DPI bypass (zapret lane)
+# ---------------------------------------------------------------------------
+KNOWN_PRESETS = {"youtube", "twitch", "discord"}
+
+
+@router.message(Command("dpi"), StateFilter("*"))
+async def cmd_dpi(message: Message, state: FSMContext, **kw):
+    """
+    /dpi                  — статус
+    /dpi on               — включить
+    /dpi off              — выключить
+    /dpi add <preset|домен> [домен2 ...]  — добавить сервис
+    /dpi remove <name>    — удалить
+    /dpi toggle <name>    — вкл/выкл конкретный сервис
+    """
+    if not _is_admin(message):
+        return
+    await state.clear()
+
+    parts = (message.text or "").split()
+    sub = parts[1].lower() if len(parts) > 1 else ""
+    arg = parts[2] if len(parts) > 2 else ""
+    extra = parts[3:] if len(parts) > 3 else []
+
+    wc = _wc()
+    try:
+        if sub == "on":
+            await wc.dpi_enable()
+            await message.answer("⚡ DPI bypass включается...")
+
+        elif sub == "off":
+            await wc.dpi_disable()
+            await message.answer("⚡ DPI bypass выключается...")
+
+        elif sub == "add":
+            if not arg:
+                await message.answer(
+                    "Использование:\n"
+                    "/dpi add youtube\n"
+                    "/dpi add twitch\n"
+                    "/dpi add discord\n"
+                    "/dpi add <домен> [домен2 ...] — произвольные домены\n\n"
+                    "Пресеты: youtube, twitch, discord"
+                )
+                return
+            if arg.lower() in KNOWN_PRESETS:
+                await wc.dpi_add_service(preset=arg.lower())
+                await message.answer(f"✅ Сервис *{arg}* добавлен из пресета.")
+            else:
+                # Произвольные домены
+                domains = [arg] + extra
+                name = arg.split(".")[0]  # первый домен как имя
+                await wc.dpi_add_service(name=name, display=arg, domains=domains)
+                await message.answer(
+                    f"✅ Добавлен кастомный сервис `{name}`:\n"
+                    + "\n".join(f"• `{d}`" for d in domains)
+                )
+
+        elif sub == "remove":
+            if not arg:
+                await message.answer("Использование: /dpi remove <name>")
+                return
+            await wc.dpi_remove_service(arg)
+            await message.answer(f"🗑 Сервис `{arg}` удалён.")
+
+        elif sub == "toggle":
+            if not arg:
+                await message.answer("Использование: /dpi toggle <name>")
+                return
+            st = await wc.get_dpi_status()
+            svc = next((s for s in st.get("services", []) if s["name"] == arg), None)
+            if not svc:
+                await message.answer(f"❌ Сервис `{arg}` не найден.")
+                return
+            new_state = not svc.get("enabled", True)
+            await wc.dpi_toggle_service(arg, new_state)
+            icon = "✅" if new_state else "❌"
+            await message.answer(f"{icon} Сервис `{arg}`: {'включён' if new_state else 'выключен'}.")
+
+        else:
+            # Статус
+            st = await wc.get_dpi_status()
+            enabled = st.get("enabled", False)
+            zapret = st.get("zapret_running", False)
+            services = st.get("services", [])
+            ip_count = st.get("dpi_direct_ip_count", 0)
+            presets = st.get("presets", [])
+
+            status_icon = "✅ ВКЛЮЧЁН" if enabled else "❌ ВЫКЛЮЧЕН"
+            zapret_icon = "🟢" if zapret else "🔴"
+
+            lines = [
+                f"⚡ *DPI bypass: {status_icon}*",
+                f"nfqws: {zapret_icon}  |  IP в dpi_direct: {ip_count}",
+                "",
+            ]
+            if services:
+                lines.append("*Сервисы:*")
+                for svc in services:
+                    icon = "✅" if svc.get("enabled") else "❌"
+                    n = len(svc.get("domains", []))
+                    lines.append(
+                        f"{icon} {svc.get('display', svc['name'])} "
+                        f"(`{svc['name']}`, {n} доменов)"
+                    )
+            else:
+                lines.append("_Сервисы не добавлены_")
+                lines.append(f"\nДоступные пресеты: {', '.join(presets)}")
+
+            lines += [
+                "",
+                "/dpi on · /dpi off",
+                "/dpi add youtube · /dpi add twitch · /dpi add discord",
+                "/dpi add <домен> — произвольный",
+                "/dpi toggle <name> · /dpi remove <name>",
+            ]
+            await message.answer("\n".join(lines), parse_mode="Markdown")
+
+    except WatchdogError as e:
+        await message.answer(f"❌ Watchdog недоступен: {e}")
