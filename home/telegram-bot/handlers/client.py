@@ -1190,8 +1190,8 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
             "⚠️ <b>Конфигурация содержит приватный ключ!</b> Не передавайте никому.\n\n"
             "📱 <b>Установка на iOS/Android:</b>\n"
             "1. Установите приложение:\n"
-            "   • iOS: <a href='https://apps.apple.com/app/amneziavpn/id1600529900'>AmneziaVPN</a> / <a href='https://apps.apple.com/app/wireguard/id1441195209'>WireGuard</a>\n"
-            "   • Android: <a href='https://play.google.com/store/apps/details?id=org.amnezia.vpn'>AmneziaVPN</a> / <a href='https://play.google.com/store/apps/details?id=com.wireguard.android'>WireGuard</a>\n"
+            "   • iOS: <a href='https://apps.apple.com/app/amneziawg/id6478942951'>AmneziaWG</a> / <a href='https://apps.apple.com/app/wireguard/id1441195209'>WireGuard</a>\n"
+            "   • Android: <a href='https://play.google.com/store/apps/details?id=org.amnezia.awg'>AmneziaWG</a> / <a href='https://play.google.com/store/apps/details?id=com.wireguard.android'>WireGuard</a>\n"
             "2. Отсканируйте QR-код ниже или импортируйте .conf файл.",
             parse_mode="HTML",
         )
