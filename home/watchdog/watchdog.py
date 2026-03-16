@@ -2371,9 +2371,6 @@ async def on_startup() -> None:
             logger.info("Запуск zapret (DPI bypass, standby)...")
             await zp.start()
     if state.dpi_enabled and state.dpi_services:
-        zp = plugins.get("zapret")
-        if zp:
-            await zp.activate()
         await _dpi_apply_routing()
         await _regen_dpi_dnsmasq()
         logger.info("[DPI] DPI bypass восстановлен при старте")
