@@ -14,6 +14,7 @@ RestartSec=5
 StartLimitBurst=5
 StartLimitIntervalSec=300
 WatchdogSec=30
+KillMode=process
 
 # Логирование (watchdog пишет сам в LOG_FILE, stderr — для критических ошибок до старта)
 StandardOutput=null
