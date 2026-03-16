@@ -51,6 +51,7 @@ from handlers.keyboards import (
     admin_routes_menu,
     admin_security_menu,
     admin_switch_menu,
+    admin_vps_actions_kb,
     admin_vps_list_kb,
     admin_vps_menu,
     back_to_admin_menu,
@@ -1664,11 +1665,65 @@ async def cb_adm_vps_list(cb: CallbackQuery, **kw):
             return
         await _edit_or_answer(
             cb,
-            "🖥️ <b>VPS серверы</b> — нажмите для удаления:",
+            "🖥️ <b>VPS серверы</b> — выберите для управления:",
             admin_vps_list_kb(vps_list, data.get("active_idx", 0)),
         )
     except WatchdogError as e:
         await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data.startswith("adm:vps_detail:"))
+async def cb_adm_vps_detail(cb: CallbackQuery, **kw):
+    ip = cb.data[len("adm:vps_detail:"):]
+    await cb.answer()
+    try:
+        data = await _wc().get_vps_list()
+        vps_list = data.get("vps_list", [])
+        vps = next((v for v in vps_list if v["ip"] == ip), None)
+        if not vps:
+            await cb.message.answer("VPS не найден.", reply_markup=back_to_admin_menu())
+            return
+        idx = vps_list.index(vps)
+        status = "✅ Активный" if idx == data.get("active_idx", 0) else "⚪ Резервный"
+        ssh_port = vps.get("ssh_port", 22)
+        text = f"🖥️ <b>VPS: {ip}</b>\nSSH порт: {ssh_port}\nСтатус: {status}"
+        await _edit_or_answer(cb, text, admin_vps_actions_kb(ip, ssh_port))
+    except WatchdogError as e:
+        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data.startswith("adm:vps_test:"))
+async def cb_adm_vps_test(cb: CallbackQuery, **kw):
+    ip = cb.data[len("adm:vps_test:"):]
+    await cb.answer("Тестирую...")
+    try:
+        result = await _wc().post("diagnose/vps", {"ip": ip})
+        status = result.get("status", "неизвестно")
+        latency = result.get("latency_ms")
+        text = f"🔍 <b>Тест VPS {ip}</b>\nСтатус: {status}"
+        if latency is not None:
+            text += f"\nЗадержка: {latency} мс"
+        await cb.message.answer(text, reply_markup=back_to_admin_menu())
+    except WatchdogError as e:
+        await cb.message.answer(f"❌ Тест не удался: {e}", reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data.startswith("adm:vps_migrate:"))
+async def cb_adm_vps_migrate(cb: CallbackQuery, state: FSMContext, **kw):
+    ip = cb.data[len("adm:vps_migrate:"):]
+    await cb.answer()
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Да", callback_data=f"migrate_{ip}_0"),
+        InlineKeyboardButton(text="❌ Нет", callback_data="migrate_cancel"),
+    ]])
+    await cb.message.answer(
+        f"🔄 Мигрировать на VPS <code>{ip}</code>?\n\n"
+        "Текущий активный VPS будет заменён. "
+        "Для восстановления из бэкапа используйте `/migrate_vps {ip} --from-backup`.",
+        reply_markup=kb,
+        parse_mode="HTML",
+    )
+    await state.set_state(AdminFSM.migrate_confirm)
 
 
 # ---------------------------------------------------------------------------
