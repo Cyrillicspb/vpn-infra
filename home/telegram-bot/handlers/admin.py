@@ -1404,7 +1404,11 @@ async def cb_adm_stats(cb: CallbackQuery, **kw):
                     f"↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)} | {hs_str}"
                 )
             else:
-                orphans.append(f"  <code>{pk[:20]}…</code> ↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)}")
+                iface = p.get("interface", "")
+                if iface == "wg-tier2":
+                    orphans.append(f"  🔗 <b>Tier-2 VPS туннель</b> (wg-tier2) ↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)}")
+                else:
+                    orphans.append(f"  <code>{pk[:20]}…</code> [{iface}] ↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)}")
 
         if not client_traffic:
             text = "📊 <b>Статистика трафика</b>\n\nНет данных."
