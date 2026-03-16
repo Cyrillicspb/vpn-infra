@@ -1484,6 +1484,7 @@ async def decision_loop() -> None:
     Tick 10 сек.
     """
     ping_fails = 0
+    rtt_degrade_count = 0
     logger.info("decision_loop запущен")
 
     if state.is_first_run:
@@ -1516,15 +1517,20 @@ async def decision_loop() -> None:
                 state.all_stacks_down_since = None
                 state.degraded_mode = False
 
+                # Проверяем RTT деградацию (ДО добавления в baseline)
+                avg = state.rtt_avg(state.active_stack)
+                if avg > 0 and rtt > avg * RTT_DEGRADATION_FACTOR:
+                    rtt_degrade_count += 1
+                    logger.warning(f"RTT деградация #{rtt_degrade_count}: {rtt:.0f}ms (avg {avg:.0f}ms)")
+                    if rtt_degrade_count >= 3:
+                        rtt_degrade_count = 0
+                        await _do_failover("rtt_degradation")
+                else:
+                    rtt_degrade_count = 0
+
                 # Обновляем RTT baseline (только для VPN-стеков из STACK_ORDER)
                 if state.active_stack in state.rtt_baseline:
                     state.rtt_baseline[state.active_stack].append(rtt)
-
-                # Проверяем RTT деградацию
-                avg = state.rtt_avg(state.active_stack)
-                if avg > 0 and rtt > avg * RTT_DEGRADATION_FACTOR:
-                    logger.warning(f"RTT деградация: {rtt:.0f}ms (avg {avg:.0f}ms)")
-                    await _do_failover("rtt_degradation")
 
             else:
                 ping_fails += 1
