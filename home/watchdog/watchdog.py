@@ -1188,15 +1188,13 @@ async def _dpi_remove_routing() -> None:
 
 
 async def _dpi_enable_impl() -> None:
-    """Включить DPI bypass: routing + zapret activate + dnsmasq."""
+    """Включить DPI bypass: routing + zapret start + dnsmasq."""
     state.dpi_enabled = True
     state.save()
     await _dpi_apply_routing()
     zp = plugins.get("zapret")
-    if zp:
-        if not (await zp.test(timeout=5))[0]:
-            await zp.start()
-        await zp.activate()
+    if zp and not (await zp.test(timeout=5))[0]:
+        await zp.start()
     await _regen_dpi_dnsmasq()
     enabled_names = [s["display"] for s in state.dpi_services if s.get("enabled")]
     alert(
@@ -1208,13 +1206,10 @@ async def _dpi_enable_impl() -> None:
 
 
 async def _dpi_disable_impl() -> None:
-    """Выключить DPI bypass: routing убрать, zapret deactivate, dnsmasq очистить."""
+    """Выключить DPI bypass: routing убрать, dnsmasq очистить."""
     state.dpi_enabled = False
     state.save()
     await _dpi_remove_routing()
-    zp = plugins.get("zapret")
-    if zp:
-        await zp.deactivate()
     await _regen_dpi_dnsmasq()
     alert("⚡ *DPI bypass выключен*\nВесь трафик идёт через VPN-туннель.")
     logger.info("[DPI] выключен")
