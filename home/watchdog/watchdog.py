@@ -1502,6 +1502,13 @@ async def decision_loop() -> None:
             await _full_reassessment()
         asyncio.create_task(_delayed_reassessment(), name="startup-reassessment")
 
+    # Если после рестарта active_stack — direct_mode стек (zapret),
+    # немедленно переключиться на лучший VPN-стек
+    _active = plugins.get(state.active_stack)
+    if _active and _active.meta.get("direct_mode"):
+        logger.warning(f"active_stack={state.active_stack} — direct_mode, запускаем failover...")
+        await _do_failover("direct_mode_recovery")
+
     while True:
         try:
             ok, rtt = await ping_vps()
@@ -1514,8 +1521,9 @@ async def decision_loop() -> None:
                 state.all_stacks_down_since = None
                 state.degraded_mode = False
 
-                # Обновляем RTT baseline
-                state.rtt_baseline[state.active_stack].append(rtt)
+                # Обновляем RTT baseline (только для VPN-стеков из STACK_ORDER)
+                if state.active_stack in state.rtt_baseline:
+                    state.rtt_baseline[state.active_stack].append(rtt)
 
                 # Проверяем RTT деградацию
                 avg = state.rtt_avg(state.active_stack)
