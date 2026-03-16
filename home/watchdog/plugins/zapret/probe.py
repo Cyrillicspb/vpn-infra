@@ -380,7 +380,8 @@ async def _stop_nfqws() -> None:
             pidfile.unlink(missing_ok=True)
         except Exception:
             pass
-    await run_cmd(["pkill", "-f", f"nfqws.*--qnum={PROBE_NFQUEUE_NUM}.*pidfile=/run/nfqws-probe"], timeout=3)
+    # Широкий паттерн — убивает любой nfqws на очереди 201 (включая ручные тесты)
+    await run_cmd(["pkill", "-f", f"nfqws.*qnum={PROBE_NFQUEUE_NUM}"], timeout=3)
 
 
 async def _add_nft_probe_rules() -> None:
