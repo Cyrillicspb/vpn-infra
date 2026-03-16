@@ -110,10 +110,16 @@ class Database:
                         ON domain_requests(status);
                 """)
                 conn.commit()
-                # Миграция: добавить first_name если отсутствует
+                # Миграция: добавить недостающие колонки clients
                 cols = {r[1] for r in conn.execute("PRAGMA table_info(clients)")}
                 if "first_name" not in cols:
                     conn.execute("ALTER TABLE clients ADD COLUMN first_name TEXT")
+                    conn.commit()
+                if "username" not in cols:
+                    conn.execute("ALTER TABLE clients ADD COLUMN username TEXT")
+                    conn.commit()
+                if "is_admin" not in cols:
+                    conn.execute("ALTER TABLE clients ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
                     conn.commit()
                 # Миграция: добавить is_router если отсутствует
                 dev_cols = {r[1] for r in conn.execute("PRAGMA table_info(devices)")}
