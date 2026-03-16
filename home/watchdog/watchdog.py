@@ -662,11 +662,14 @@ async def check_wg_peers() -> None:
         return
     out = combined_out
     now = int(time.time())
+    CLIENT_IFACES = {"wg0", "wg1"}
     seen_keys: set[str] = set()
     for line in out.strip().splitlines():
         parts = line.split()
         if len(parts) >= 3:
             iface, pubkey, ts_str = parts[0], parts[1], parts[2]
+            if iface not in CLIENT_IFACES:
+                continue
             peer_key = f"{iface}:{pubkey}"
             seen_keys.add(peer_key)
             try:
@@ -707,10 +710,14 @@ async def check_wg_peers() -> None:
         rc, out, _ = await run_cmd([tool, "show", "all", "dump"], timeout=10)
         if rc == 0:
             dump_out += out
+    # Исключаем транзитные интерфейсы (tier-2 туннель до VPS — не клиентские пиры)
+    CLIENT_IFACES = {"wg0", "wg1"}
     peers: list[dict] = []
     for line in dump_out.strip().splitlines():
         p = line.split("\t")
         if len(p) != 9:
+            continue
+        if p[0] not in CLIENT_IFACES:
             continue
         try:
             peers.append({
