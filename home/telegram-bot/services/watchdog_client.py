@@ -69,10 +69,11 @@ class WatchdogClient:
     async def get_peers(self) -> dict:
         return await self._get("/peer/list")
 
-    async def add_peer(self, name: str, protocol: str, public_key: str = "") -> dict:
-        return await self._post("/peer/add", {
-            "name": name, "protocol": protocol, "public_key": public_key,
-        })
+    async def add_peer(self, name: str, protocol: str, public_key: str = "", ip: str = "") -> dict:
+        data: dict = {"name": name, "protocol": protocol, "public_key": public_key}
+        if ip:
+            data["ip"] = ip
+        return await self._post("/peer/add", data)
 
     async def remove_peer(self, peer_id: str, interface: Optional[str] = None) -> dict:
         data: dict = {"peer_id": peer_id}

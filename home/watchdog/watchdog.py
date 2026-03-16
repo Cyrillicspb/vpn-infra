@@ -1690,6 +1690,7 @@ class PeerAddRequest(BaseModel):
     name: str
     protocol: str       # "awg" | "wg"
     public_key: Optional[str] = None
+    ip: Optional[str] = None        # желаемый IP (выдаётся ботом из DB-пула)
 
 class PeerRemoveRequest(BaseModel):
     peer_id: str
@@ -1913,22 +1914,25 @@ async def _peer_add_task(req: PeerAddRequest) -> None:
             out, _ = await proc.communicate(privkey.encode())
             pubkey = out.decode().strip()
 
-        # Выбираем свободный IP
+        # IP: используем запрошенный ботом, иначе ищем свободный в WireGuard
         wg = _wg_tool(iface)
-        rc, used_out, _ = await run_cmd([wg, "show", iface, "allowed-ips"], timeout=10)
-        used_ips = set()
-        for line in used_out.splitlines():
-            for part in line.split():
-                if "/" in part:
-                    used_ips.add(part.split("/")[0])
+        if req.ip:
+            peer_ip = req.ip
+        else:
+            rc, used_out, _ = await run_cmd([wg, "show", iface, "allowed-ips"], timeout=10)
+            used_ips = set()
+            for line in used_out.splitlines():
+                for part in line.split():
+                    if "/" in part:
+                        used_ips.add(part.split("/")[0])
 
-        subnet = "10.177.1" if iface == "wg0" else "10.177.3"
-        peer_ip = None
-        for i in range(2, 254):
-            candidate = f"{subnet}.{i}"
-            if candidate not in used_ips:
-                peer_ip = candidate
-                break
+            subnet = "10.177.1" if iface == "wg0" else "10.177.3"
+            peer_ip = None
+            for i in range(2, 254):
+                candidate = f"{subnet}.{i}"
+                if candidate not in used_ips:
+                    peer_ip = candidate
+                    break
 
         if not peer_ip:
             logger.error(f"IP pool исчерпан для {iface}")

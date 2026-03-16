@@ -201,7 +201,7 @@ async def reg_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
     try:
         from services.watchdog_client import WatchdogClient
         await WatchdogClient(config.watchdog_url, config.watchdog_token).add_peer(
-            device_name, protocol, device.get("public_key", "")
+            device_name, protocol, device.get("public_key", ""), device.get("ip_address", "")
         )
     except Exception:
         pass
@@ -249,7 +249,7 @@ async def reg_protocol(message: Message, state: FSMContext, **kw):
 
     # Добавляем WG пир
     try:
-        await _wc().add_peer(device_name, protocol, device.get("public_key", ""))
+        await _wc().add_peer(device_name, protocol, device.get("public_key", ""), device.get("ip_address", ""))
     except Exception:
         pass
 
