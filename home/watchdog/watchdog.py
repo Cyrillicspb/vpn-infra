@@ -409,7 +409,8 @@ class WatchdogState:
         # ── Метрики для Prometheus /metrics ──────────────────────────────────────
         self.last_rtt: float = 0.0              # последний RTT (ms)
         self.ping_results: deque = deque(maxlen=30)  # 1=ok, 0=fail (для packet_loss_pct)
-        self.last_download_mbps: float = 0.0   # последний speedtest (Mbps)
+        self.last_download_mbps: float = 0.0   # последний speedtest download (Mbps)
+        self.last_upload_mbps: float = 0.0     # последний speedtest upload (Mbps)
         self.upload_util_pct: float = 0.0      # утилизация upload-канала %
         self.blocked_sites_reachable: int = 1  # 1=OK, 0=недоступны
         self.failover_count: int = 0           # счётчик failover-переключений
@@ -596,6 +597,38 @@ async def speedtest_large() -> float:
     if mbps > 0:
         state.large_speedtest.append(mbps)
     return mbps
+
+
+async def speedtest_upload() -> float:
+    """100KB upload-тест через активный стек. Возвращает Mbps."""
+    tun = _get_active_tun()
+    tmp = "/tmp/wdg_upload_100k.bin"
+    # Генерируем 100KB случайных данных
+    rc, _, _ = await run_cmd(
+        ["dd", "if=/dev/urandom", f"of={tmp}", "bs=1024", "count=100"],
+        timeout=5,
+    )
+    if rc != 0:
+        return 0.0
+    cmd = ["curl", "-s", "--max-time", "30",
+           "-X", "POST", "--data-binary", f"@{tmp}",
+           "-o", "/dev/null", "-w", "%{speed_upload}",
+           "https://speed.cloudflare.com/__up"]
+    if tun:
+        cmd = ["curl", "-s", "--max-time", "30", "--interface", tun,
+               "-X", "POST", "--data-binary", f"@{tmp}",
+               "-o", "/dev/null", "-w", "%{speed_upload}",
+               "https://speed.cloudflare.com/__up"]
+    rc, out, _ = await run_cmd(cmd, timeout=35)
+    if rc == 0:
+        try:
+            mbps = round(float(out.strip()) * 8 / 1_000_000, 2)
+            if mbps > 0:
+                state.last_upload_mbps = mbps
+            return mbps
+        except Exception:
+            pass
+    return 0.0
 
 
 async def speedtest_direct() -> float:
@@ -1671,7 +1704,9 @@ async def monitoring_loop() -> None:
                 await check_external_ip()
                 await check_disk()
                 mbps = await speedtest_small()
-                logger.debug(f"Speedtest (100KB): {mbps:.1f} Mbps")
+                logger.debug(f"Speedtest down (100KB): {mbps:.1f} Mbps")
+                up_mbps = await speedtest_upload()
+                logger.debug(f"Speedtest up (100KB): {up_mbps:.1f} Mbps")
                 vol_shaping = detect_volume_shaping()
                 if vol_shaping:
                     alert(f"⚠️ {vol_shaping}")
@@ -1861,7 +1896,7 @@ async def get_metrics(_: bool = Depends(_auth)):
         f'vpn_tunnel_rtt_baseline_ms {rtt_baseline}',
         f'vpn_tunnel_packet_loss_pct {loss_pct}',
         f'vpn_tunnel_download_mbps {state.last_download_mbps}',
-        f'vpn_tunnel_upload_mbps 0',          # upload тест не реализован
+        f'vpn_tunnel_upload_mbps {state.last_upload_mbps}',
         f'vpn_tunnel_upload_util_pct {state.upload_util_pct}',
         f'vpn_blocked_sites_reachable {max(0, state.blocked_sites_reachable)}',
         f'vpn_failover_total {state.failover_count}',
