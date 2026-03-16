@@ -122,6 +122,31 @@ class AdminFSM(StatesGroup):
 
 
 # ---------------------------------------------------------------------------
+# FSM-прерыватели — приоритет выше всех FSM-состояний
+# Любая команда или кнопка «Меню» → сброс FSM
+# ---------------------------------------------------------------------------
+@router.message(Command("cancel"), StateFilter("*"))
+async def cmd_cancel_any(message: Message, state: FSMContext, **kw):
+    if not _is_admin(message):
+        return
+    current = await state.get_state()
+    await state.clear()
+    if current:
+        await message.answer("❌ Действие отменено.", reply_markup=menu_reply_kb())
+    else:
+        await message.answer("Нет активного действия.", reply_markup=menu_reply_kb())
+
+
+@router.message(F.text == "📋 Меню", StateFilter("*"))
+async def reply_menu_any_state(message: Message, state: FSMContext, **kw):
+    if not _is_admin(message):
+        return
+    await state.clear()
+    await message.answer("📋 Меню", reply_markup=menu_reply_kb())
+    await message.answer("<b>Меню администратора</b>", reply_markup=admin_main_menu(), parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
 # /status
 # ---------------------------------------------------------------------------
 @router.message(Command("status"), StateFilter("*"))
