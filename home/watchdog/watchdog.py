@@ -309,6 +309,18 @@ class Plugin:
                 return True, 5.0
         return False, 0.0
 
+    async def activate(self) -> bool:
+        rc, _, err = await self._run("activate", timeout=15)
+        if rc != 0:
+            logger.error(f"[{self.name}] activate: {err.strip()}")
+        return rc == 0
+
+    async def deactivate(self) -> bool:
+        rc, _, err = await self._run("deactivate", timeout=15)
+        if rc != 0:
+            logger.warning(f"[{self.name}] deactivate: {err.strip()}")
+        return rc == 0
+
     async def rotate(self) -> bool:
         rc, _, err = await self._run("rotate", timeout=40)
         if rc != 0:
