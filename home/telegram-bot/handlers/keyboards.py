@@ -413,13 +413,24 @@ def client_excludes_menu() -> InlineKeyboardMarkup:
 # ── Клиент: выбор протокола (инлайн) ─────────────────────────────────────────
 
 def proto_inline_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(
-            text="🛡️ AmneziaWG (рекомендуется)",
-            callback_data="proto:awg",
-        ),
-        InlineKeyboardButton(text="🔒 WireGuard", callback_data="proto:wg"),
-    ]])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="🛡️ AmneziaWG (телефон/ноутбук)",
+                callback_data="proto:awg",
+            ),
+            InlineKeyboardButton(
+                text="🔒 WireGuard (телефон/ноутбук)",
+                callback_data="proto:wg",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="🖥️ WireGuard Роутер",
+                callback_data="proto:wg_router",
+            ),
+        ],
+    ])
 
 
 # ── Клиент: выбор устройства (инлайн) ────────────────────────────────────────

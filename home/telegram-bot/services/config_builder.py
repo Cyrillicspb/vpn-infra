@@ -137,10 +137,16 @@ class ConfigBuilder:
     ) -> tuple[str, Optional[bytes], str]:
         """
         Возвращает (conf_text, qr_png_or_None, version_hash).
+        Роутеры (is_router=True) получают AllowedIPs = 0.0.0.0/0 — split tunneling
+        выполняется на сервере через nftables.
         """
         excludes   = excludes or []
         protocol   = device.get("protocol", "awg")
-        allowed    = _load_allowed_ips(protocol, excludes)
+        if device.get("is_router"):
+            dns = "10.177.1.1/32" if protocol == "awg" else "10.177.3.1/32"
+            allowed = [dns, "0.0.0.0/0"]
+        else:
+            allowed = _load_allowed_ips(protocol, excludes)
         conf_text  = _render(device, allowed)
         version    = _version(conf_text)
         qr: Optional[bytes] = _make_qr(conf_text) if len(allowed) <= QR_MAX_IPS else None

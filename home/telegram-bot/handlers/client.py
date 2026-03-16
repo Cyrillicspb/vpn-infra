@@ -173,7 +173,9 @@ async def reg_name(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data.startswith("proto:"), RegFSM.protocol)
 async def reg_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
-    protocol = cb.data.split(":")[1]   # "awg" или "wg"
+    raw      = cb.data.split(":")[1]   # "awg", "wg" или "wg_router"
+    is_router = raw == "wg_router"
+    protocol  = "wg" if is_router else raw
     await cb.answer()
     # Используем общую логику завершения регистрации
     db: Database = kw.get("db")
@@ -192,7 +194,7 @@ async def reg_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
         return
 
     builder = ConfigBuilder()
-    device = await db.add_device(chat_id, device_name, protocol, pending=False)
+    device = await db.add_device(chat_id, device_name, protocol, pending=False, is_router=is_router)
     device = await builder.ensure_keys(device)
     await db.update_device_keys(device["id"], device["private_key"], device["public_key"])
 
@@ -393,14 +395,16 @@ async def adddev_name(message: Message, state: FSMContext, **kw):
 @router.callback_query(F.data.startswith("proto:"), AddDeviceFSM.protocol)
 async def adddev_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
     db: Database = kw.get("db")
-    protocol = cb.data.split(":")[1]
-    data     = await state.get_data()
-    chat_id  = str(cb.from_user.id)
+    raw       = cb.data.split(":")[1]
+    is_router = raw == "wg_router"
+    protocol  = "wg" if is_router else raw
+    data      = await state.get_data()
+    chat_id   = str(cb.from_user.id)
     await state.clear()
     await cb.answer()
 
     try:
-        await db.add_device(chat_id, data["device_name"], protocol, pending=True)
+        await db.add_device(chat_id, data["device_name"], protocol, pending=True, is_router=is_router)
         await cb.message.answer(
             f"✅ Запрос на устройство `{data['device_name']}` отправлен администратору.\n"
             f"Конфиг придёт после одобрения.",
@@ -1156,8 +1160,21 @@ async def _send_config(message: Message, db: Database, device: dict, kw: dict) -
         await db.update_device_keys(device["id"], device["private_key"], device["public_key"])
     conf_text, qr_bytes, version = await builder.build(device, excludes)
 
-    # Предупреждение
+    # Предупреждение + пояснение типа конфига
+    if device.get("is_router"):
+        mode_note = (
+            "🖥️ *Конфиг для роутера* — `AllowedIPs = 0.0.0.0/0`\n"
+            "Весь трафик устройств за роутером идёт через VPN-сервер. "
+            "Разделение трафика (российские сайты напрямую, заблокированные через VPN) "
+            "выполняется автоматически на сервере.\n\n"
+        )
+    else:
+        mode_note = (
+            "📱 *Конфиг для телефона/ноутбука* — split tunneling на клиенте.\n"
+            "Только заблокированные ресурсы идут через VPN, остальное — напрямую.\n\n"
+        )
     await message.answer(
+        mode_note +
         "⚠️ *Конфигурация содержит приватный ключ!*\n"
         "Не передавайте никому. Рекомендуется включить 2FA."
     )

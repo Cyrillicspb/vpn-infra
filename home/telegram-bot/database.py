@@ -60,6 +60,7 @@ class Database:
                         client_id        INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
                         device_name      TEXT    NOT NULL,
                         protocol         TEXT    NOT NULL DEFAULT 'awg',
+                        is_router        INTEGER NOT NULL DEFAULT 0,
                         peer_id          TEXT    UNIQUE,
                         public_key       TEXT,
                         private_key      TEXT,
@@ -113,6 +114,11 @@ class Database:
                 cols = {r[1] for r in conn.execute("PRAGMA table_info(clients)")}
                 if "first_name" not in cols:
                     conn.execute("ALTER TABLE clients ADD COLUMN first_name TEXT")
+                    conn.commit()
+                # Миграция: добавить is_router если отсутствует
+                dev_cols = {r[1] for r in conn.execute("PRAGMA table_info(devices)")}
+                if "is_router" not in dev_cols:
+                    conn.execute("ALTER TABLE devices ADD COLUMN is_router INTEGER NOT NULL DEFAULT 0")
                     conn.commit()
                 logger.info("БД инициализирована")
             finally:
@@ -351,6 +357,7 @@ class Database:
         public_key: str = "",
         private_key: str = "",
         pending: bool = False,
+        is_router: bool = False,
     ) -> dict:
         async with self._lock:
             conn = self._conn()
@@ -382,11 +389,11 @@ class Database:
 
                 conn.execute("""
                     INSERT INTO devices
-                      (client_id, device_name, protocol, public_key, private_key,
+                      (client_id, device_name, protocol, is_router, public_key, private_key,
                        ip_address, pending_approval)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    client["id"], device_name, protocol,
+                    client["id"], device_name, protocol, 1 if is_router else 0,
                     public_key, private_key,
                     ip_address, 1 if pending else 0,
                 ))
