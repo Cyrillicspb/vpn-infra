@@ -66,8 +66,8 @@ ROUTES_DIR   = Path("/etc/vpn-routes")
 LOG_FILE     = "/var/log/vpn-watchdog.log"
 
 # Порядок по устойчивости (индекс 0 = самый устойчивый)
-# zapret (resilience=2): прямой обход DPI без VPS, между hysteria2 и reality
-STACK_ORDER = ["cloudflare-cdn", "reality-grpc", "reality", "zapret", "hysteria2"]
+# zapret исключён: прямой обход DPI без VPS, работает параллельно (direct_mode=true)
+STACK_ORDER = ["cloudflare-cdn", "reality-grpc", "reality", "hysteria2"]
 
 # Пороги мониторинга
 RTT_DEGRADATION_FACTOR   = 3.0   # RTT > 3× baseline → деградация
@@ -400,6 +400,23 @@ state = WatchdogState()
 async def ping_vps(target: str = "") -> tuple[bool, float]:
     """Проверяет связь через активный стек (curl via SOCKS5). Возвращает (success, rtt_ms)."""
     plugin = plugins.get(state.active_stack)
+
+    # direct_mode (zapret): нет SOCKS5 прокси, пинг = прямой curl через eth0
+    if plugin and plugin.meta.get("direct_mode"):
+        import time as _time
+        start = _time.time()
+        eth = NET_INTERFACE or "eth0"
+        rc, out, _ = await run_cmd(
+            ["curl", "-s", "--max-time", "8", "--interface", eth,
+             "-o", "/dev/null", "-w", "%{http_code}",
+             "http://www.gstatic.com/generate_204"],
+            timeout=12,
+        )
+        elapsed_ms = (_time.time() - start) * 1000
+        if rc == 0 and out.strip() in ("200", "204", "301", "302"):
+            return True, elapsed_ms
+        return False, 0.0
+
     socks_port = 1080
     if plugin:
         cy_path = plugin.dir / "client.yaml"
@@ -1083,7 +1100,7 @@ async def test_standby_tunnels() -> None:
         if name == current:
             continue
         plugin = plugins.get(name)
-        if not plugin:
+        if not plugin or plugin.meta.get("direct_mode"):
             continue
         ok, mbps = await plugin.test(timeout=15)
         if not ok:
@@ -1177,7 +1194,7 @@ async def _failover_impl(reason: str) -> None:
         candidates = ordered[:cur_pos] + ordered[cur_pos + 1:]
         for candidate in candidates:
             plugin = plugins.get(candidate)
-            if not plugin:
+            if not plugin or plugin.meta.get("direct_mode"):
                 continue
             logger.info(f"Тест кандидата: {candidate}")
             ok, mbps = await plugin.test(timeout=10)
@@ -1260,7 +1277,7 @@ async def _first_run_assessment() -> None:
 
     for name in plugins.all_names():
         plugin = plugins.get(name)
-        if not plugin:
+        if not plugin or plugin.meta.get("direct_mode"):
             continue
         ok, mbps = await plugin.test(timeout=10)
         logger.info(f"Оценка {name}: {'OK' if ok else 'FAIL'} {mbps:.1f} Mbps")
@@ -1289,7 +1306,7 @@ async def _full_reassessment() -> None:
 
         for name in plugins.all_names():
             plugin = plugins.get(name)
-            if not plugin:
+            if not plugin or plugin.meta.get("direct_mode"):
                 continue
             ok, mbps = await plugin.test(timeout=10)
             logger.info(f"Переоценка {name}: {'OK' if ok else 'FAIL'} {mbps:.1f} Mbps")
@@ -2042,7 +2059,12 @@ async def on_startup() -> None:
 
     # Поднимаем активный стек при старте
     active_plugin = plugins.get(state.active_stack)
-    if active_plugin:
+    if active_plugin and active_plugin.meta.get("direct_mode"):
+        # direct_mode (zapret): не создаёт tun, запускаем через свой метод
+        logger.info(f"Поднимаем direct_mode стек {state.active_stack} при старте...")
+        await active_plugin.start()
+        active_plugin = None  # не устанавливать маршрут table marked через tun
+    elif active_plugin:
         tun_name = active_plugin.meta.get("tun_name", f"tun-{state.active_stack}")
         rc, _, _ = await run_cmd(["ip", "link", "show", tun_name], timeout=5)
         if rc != 0:
