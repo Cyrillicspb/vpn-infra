@@ -89,7 +89,7 @@ ALL_STACKS_DOWN_MINUTES   = 5
 # ---------------------------------------------------------------------------
 DPI_FWMARK       = "0x2"
 DPI_TABLE        = 201
-DPI_DNSMASQ_CONF = Path("/etc/dnsmasq.d/dpi-domains.conf")
+DPI_DNSMASQ_CONF = Path("/etc/dnsmasq.d/zzz-dpi.conf")  # zzz = загружается после vpn-*.conf
 DPI_VPS_DNS      = os.getenv("VPS_TUNNEL_IP", "10.177.2.2")
 
 DPI_SERVICE_PRESETS: dict[str, dict] = {
