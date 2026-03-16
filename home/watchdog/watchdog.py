@@ -1237,8 +1237,10 @@ async def _dpi_enable_impl() -> None:
     state.save()
     await _dpi_apply_routing()
     zp = plugins.get("zapret")
-    if zp and not (await zp.test(timeout=5))[0]:
-        await zp.start()
+    if zp:
+        if not (await zp.test(timeout=5))[0]:
+            await zp.start()
+        await zp.activate()   # добавить NFQUEUE-правила в nftables (inet zapret_main)
     await _regen_dpi_dnsmasq()
     enabled_names = [s["display"] for s in state.dpi_services if s.get("enabled")]
     alert(
@@ -2505,8 +2507,11 @@ async def on_startup() -> None:
             await zp.start()
     if state.dpi_enabled and state.dpi_services:
         await _dpi_apply_routing()
+        zp_restore = plugins.get("zapret")
+        if zp_restore:
+            await zp_restore.activate()   # добавить NFQUEUE-правила (nfqws уже запущен выше)
         await _regen_dpi_dnsmasq()
-        logger.info("[DPI] DPI bypass восстановлен при старте")
+        logger.info("[DPI] DPI bypass восстановлен при старте (NFQUEUE активирован)")
 
     # Consistency recovery
     ok, _ = await ping_vps()
