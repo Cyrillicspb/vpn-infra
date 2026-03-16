@@ -548,12 +548,14 @@ DIRECT_TEST_SERVERS = [
 ]
 
 
-async def _measure_throughput(url: str, proxy: str = "") -> float:
-    """Замер throughput (Mbps) через URL, опционально через прокси."""
-    cmd = ["curl", "-s", "--max-time", "30", "-o", "/dev/null", "-w", "%{speed_download}", url]
+async def _measure_throughput(url: str, proxy: str = "", interface: str = "") -> float:
+    """Замер throughput (Mbps) через URL, опционально через прокси или интерфейс."""
+    cmd = ["curl", "-s", "--max-time", "30", "-o", "/dev/null", "-w", "%{speed_download}"]
     if proxy:
-        cmd = ["curl", "-s", "--max-time", "30", "--proxy", proxy,
-               "-o", "/dev/null", "-w", "%{speed_download}", url]
+        cmd += ["--proxy", proxy]
+    if interface:
+        cmd += ["--interface", interface]
+    cmd.append(url)
     rc, out, _ = await run_cmd(cmd, timeout=35)
     if rc == 0:
         try:
@@ -564,9 +566,23 @@ async def _measure_throughput(url: str, proxy: str = "") -> float:
     return 0.0
 
 
+def _get_active_tun() -> str:
+    """Вернуть имя активного tun-интерфейса, или '' для direct_mode (zapret) и при ошибке."""
+    try:
+        plugin = plugins.get(state.active_stack)
+        if not plugin or plugin.meta.get("direct_mode"):
+            return ""   # zapret: нет tun, трафик идёт напрямую
+        tun = plugin.meta.get("tun_name", f"tun-{state.active_stack}")
+        rc = subprocess.run(["ip", "link", "show", tun], capture_output=True).returncode
+        return tun if rc == 0 else ""
+    except Exception:
+        return ""
+
+
 async def speedtest_small() -> float:
     """100KB тест через активный стек. Возвращает Mbps."""
-    mbps = await _measure_throughput(SPEED_URL_SMALL)
+    tun = _get_active_tun()
+    mbps = await _measure_throughput(SPEED_URL_SMALL, interface=tun)
     if mbps > 0:
         state.small_speedtest.append(mbps)
         state.last_download_mbps = mbps
@@ -575,7 +591,8 @@ async def speedtest_small() -> float:
 
 async def speedtest_large() -> float:
     """10MB тест через активный стек. Возвращает Mbps."""
-    mbps = await _measure_throughput(SPEED_URL_LARGE)
+    tun = _get_active_tun()
+    mbps = await _measure_throughput(SPEED_URL_LARGE, interface=tun)
     if mbps > 0:
         state.large_speedtest.append(mbps)
     return mbps
