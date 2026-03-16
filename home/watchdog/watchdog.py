@@ -1259,6 +1259,7 @@ async def test_standby_tunnels() -> None:
         plugin = plugins.get(name)
         if not plugin or plugin.meta.get("direct_mode"):
             continue
+
         ok, mbps = await plugin.test(timeout=15)
         if not ok:
             failed.append(name)
@@ -2053,7 +2054,7 @@ async def _manual_reassessment() -> None:
     async with _LOCK:
         for name in plugins.all_names():
             plugin = plugins.get(name)
-            if not plugin:
+            if not plugin or plugin.meta.get("direct_mode"):
                 continue
             ok, mbps = await plugin.test(timeout=10)
             results.append((name, ok, mbps))
