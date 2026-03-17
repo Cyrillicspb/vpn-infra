@@ -34,6 +34,13 @@
 - **deploy.sh**: `rsync home/xray/ xray/` заменён на `envsubst` — прямой rsync шаблонов с `${VAR}` приводил к падению xray-client (exit 23, «invalid password: ${XRAY_PUBLIC_KEY}»)
 - **fail2ban VPS**: исправлен SSH-доступ через SOCKS5-прокси (`127.0.0.1:1081`), правильный ключ (`vpn_id_ed25519`), `sudo` для sysadmin, порт из `VPS_SSH_PORT` (env), а не из state (state хранил 443)
 - **CF_WORKER_HOSTNAME → CF_CDN_HOSTNAME**: переименована переменная окружения по всему проекту
+- **setup.sh**: `XRAY_SERVER` не писался в `.env` → `deploy.sh` не мог подставить адрес VPS через `envsubst`
+- **xray-setup.sh**: CDN инбаунд на VPS создавался как WebSocket `/vpn` — исправлен на splithttp `/vpn-cdn` (совпадает с клиентом)
+
+### Миграции (применяются автоматически при `deploy.sh`)
+
+- `004`: `CF_WORKER_HOSTNAME` → `CF_CDN_HOSTNAME` в `.env`
+- `005`: автозаполнение `XRAY_SERVER` из `VPS_IP` и паролей xHTTP из 3x-ui sqlite
 
 ---
 
