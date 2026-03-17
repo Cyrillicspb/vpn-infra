@@ -27,6 +27,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
+    InlineKeyboardButton,
     Message,
     ReplyKeyboardRemove,
 )
@@ -35,6 +36,7 @@ from handlers.keyboards import (
     client_excludes_menu,
     client_main_menu,
     client_request_type_kb,
+    client_sites_menu,
     device_detail_kb,
     devices_inline_kb,
     excludes_inline_kb,
@@ -812,15 +814,32 @@ async def cmd_menu_client(message: Message, state: FSMContext, **kw):
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+async def _menu_header() -> str:
+    """Однострочный статус VPN для шапки клиентского меню."""
+    try:
+        s = await _wc().get_status()
+        ok = s.get("status") == "ok"
+        stack = s.get("active_stack", "—")
+        icon = "✅" if ok else "⚠️"
+        label = "работает" if ok else "деградирован"
+        return f"{icon} <b>VPN {label}</b> · <code>{stack}</code>"
+    except Exception:
+        return "📋 <b>Меню</b>"
+
+
 # Callback «cl:menu» — вернуться в главное меню клиента
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data == "cl:menu")
 async def cb_cl_menu(cb: CallbackQuery, **kw):
     await cb.answer()
+    header = await _menu_header()
     try:
-        await cb.message.edit_text("*Меню*", reply_markup=client_main_menu())
+        await cb.message.edit_text(header, reply_markup=client_main_menu(), parse_mode="HTML")
     except Exception:
-        await cb.message.answer("*Меню*", reply_markup=client_main_menu())
+        await cb.message.answer(header, reply_markup=client_main_menu(), parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------
@@ -846,6 +865,23 @@ async def cb_cl_removedevice(cb: CallbackQuery, **kw):
 # ---------------------------------------------------------------------------
 # Запрос маршрута через меню (FSM)
 # ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "cl:sites")
+async def cb_cl_sites(cb: CallbackQuery, **kw):
+    await cb.answer()
+    try:
+        await cb.message.edit_text(
+            "🌐 <b>Сайты через VPN</b>\n\nЗапросить добавление сайта или посмотреть статус запросов.",
+            reply_markup=client_sites_menu(),
+            parse_mode="HTML",
+        )
+    except Exception:
+        await cb.message.answer(
+            "🌐 <b>Сайты через VPN</b>",
+            reply_markup=client_sites_menu(),
+            parse_mode="HTML",
+        )
+
 
 @router.callback_query(F.data == "cl:request")
 async def cb_cl_request(cb: CallbackQuery, **kw):
@@ -1112,7 +1148,10 @@ async def cb_cl_mydevices(cb: CallbackQuery, **kw):
     # Show device list with buttons to device detail page
     await cb.message.answer(
         "📱 <b>Ваши устройства</b> — выберите для управления:",
-        reply_markup=devices_inline_kb(devices, "cl:dev:", "cl:menu"),
+        reply_markup=devices_inline_kb(
+            devices, "cl:dev:", "cl:menu",
+            footer=[InlineKeyboardButton(text="🔄 Обновить все конфиги", callback_data="cl:update")],
+        ),
         parse_mode="HTML",
     )
 
@@ -1267,6 +1306,38 @@ async def cb_cl_update(cb: CallbackQuery, **kw):
         await cb.message.answer(f"ℹ️ {same} устройств без изменений.")
 
 
+@router.callback_query(F.data.startswith("cl:upd1:"))
+async def cb_cl_upd1_device(cb: CallbackQuery, **kw):
+    """Обновить конфиг конкретного устройства (из device detail)."""
+    await cb.answer("Проверяю конфиг...")
+    device_id = int(cb.data[len("cl:upd1:"):])
+    db: Database = kw.get("db")
+    device = await db.get_device_by_id(device_id)
+    if not device:
+        await cb.message.answer("Устройство не найдено.", reply_markup=client_main_menu())
+        return
+    if device.get("pending_approval"):
+        await cb.message.answer(
+            "⏳ Устройство ожидает одобрения администратора.",
+            reply_markup=device_detail_kb(device_id),
+        )
+        return
+    try:
+        builder = ConfigBuilder()
+        excludes_raw = await db.get_excludes(device_id)
+        excludes = [e["subnet"] for e in excludes_raw]
+        _, _, version = await builder.build(device, excludes)
+        if version == device.get("config_version"):
+            await cb.message.answer(
+                "✅ Конфиг актуален, изменений нет.",
+                reply_markup=device_detail_kb(device_id),
+            )
+        else:
+            await _send_config(cb.message, db, device, kw)
+    except Exception as exc:
+        await cb.message.answer(f"❌ Ошибка: {exc}", reply_markup=device_detail_kb(device_id))
+
+
 @router.callback_query(F.data == "cl:status")
 async def cb_cl_status(cb: CallbackQuery, **kw):
     await cb.answer("Загружаю...")
@@ -1289,17 +1360,24 @@ async def cb_cl_myrequests(cb: CallbackQuery, **kw):
     db: Database = kw.get("db")
     reqs = await db.get_requests_by_client(str(cb.from_user.id))
     if not reqs:
-        await cb.message.answer("У вас нет запросов.", reply_markup=client_main_menu())
+        await cb.message.answer("У вас нет запросов.", reply_markup=client_sites_menu())
         return
     icons = {"pending": "⏳", "approved": "✅", "rejected": "❌"}
-    lines = ["*Ваши запросы:*\n"]
+    lines = ["<b>Ваши запросы:</b>\n"]
     for r in reqs[:15]:
         icon = icons.get(r["status"], "?")
         lines.append(
-            f"{icon} `{r['domain']}` ({r['direction']}) — {r['status']}\n"
+            f"{icon} <code>{r['domain']}</code> ({r['direction']}) — {r['status']}\n"
             f"   {r['created_at'][:10]}"
         )
-    await cb.message.answer("\n".join(lines), reply_markup=client_main_menu())
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton as IKB
+    await cb.message.answer(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [IKB(text="◀️ Назад", callback_data="cl:sites")],
+        ]),
+    )
 
 
 @router.callback_query(F.data == "cl:help")

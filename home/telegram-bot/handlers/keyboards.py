@@ -399,27 +399,29 @@ def back_to_admin_menu() -> InlineKeyboardMarkup:
 def client_main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📱 Устройства и конфиги", callback_data="cl:mydevices"),
-        ],
-        [
+            InlineKeyboardButton(text="📱 Устройства",          callback_data="cl:mydevices"),
             InlineKeyboardButton(text="➕ Добавить устройство",  callback_data="cl:adddevice"),
-            InlineKeyboardButton(text="➖ Удалить устройство",   callback_data="cl:removedevice"),
         ],
         [
-            InlineKeyboardButton(text="🔄 Обновить настройки VPN", callback_data="cl:update"),
-            InlineKeyboardButton(text="📊 Статус VPN",             callback_data="cl:status"),
+            InlineKeyboardButton(text="🌐 Сайты через VPN",     callback_data="cl:sites"),
         ],
         [
-            InlineKeyboardButton(text="🌐 Открыть сайт через VPN", callback_data="cl:request"),
-            InlineKeyboardButton(text="📝 Мои запросы",            callback_data="cl:myrequests"),
+            InlineKeyboardButton(text="🔍 Не работает сайт?",   callback_data="cl:checksite"),
+            InlineKeyboardButton(text="🚫 Исключения",           callback_data="cl:excludes"),
         ],
         [
-            InlineKeyboardButton(text="🚫 Не пускать через VPN",  callback_data="cl:excludes"),
-            InlineKeyboardButton(text="🆘 Сообщить о проблеме",   callback_data="cl:report"),
+            InlineKeyboardButton(text="🆘 Сообщить о проблеме", callback_data="cl:report"),
         ],
-        [
-            InlineKeyboardButton(text="🔍 Почему не работает сайт?", callback_data="cl:checksite"),
-        ],
+    ])
+
+
+# ── Клиент: сайты через VPN ───────────────────────────────────────────────────
+
+def client_sites_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌐 Запросить сайт через VPN", callback_data="cl:request")],
+        [InlineKeyboardButton(text="📋 Мои запросы",              callback_data="cl:myrequests")],
+        [InlineKeyboardButton(text="◀️ Назад",                    callback_data="cl:menu")],
     ])
 
 
@@ -431,7 +433,7 @@ def client_request_type_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔒 Через VPN",    callback_data="cl:req:vpn"),
             InlineKeyboardButton(text="🌐 Напрямую",     callback_data="cl:req:direct"),
         ],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="cl:menu")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="cl:sites")],
     ])
 
 
@@ -471,7 +473,12 @@ def proto_inline_kb() -> InlineKeyboardMarkup:
 
 # ── Клиент: выбор устройства (инлайн) ────────────────────────────────────────
 
-def devices_inline_kb(devices: list, prefix: str, back: str = "cl:menu") -> InlineKeyboardMarkup:
+def devices_inline_kb(
+    devices: list,
+    prefix: str,
+    back: str = "cl:menu",
+    footer: list | None = None,
+) -> InlineKeyboardMarkup:
     """Кнопка на каждое устройство; callback = prefix + device_id."""
     rows = []
     for d in devices:
@@ -480,6 +487,8 @@ def devices_inline_kb(devices: list, prefix: str, back: str = "cl:menu") -> Inli
             text=f"{icon} {d['device_name']} ({d['protocol'].upper()})",
             callback_data=f"{prefix}{d['id']}",
         )])
+    if footer:
+        rows.append(footer)
     rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data=back)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -487,9 +496,10 @@ def devices_inline_kb(devices: list, prefix: str, back: str = "cl:menu") -> Inli
 def device_detail_kb(device_id: int) -> InlineKeyboardMarkup:
     """Действия с конкретным устройством клиента."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📥 Получить конфиг", callback_data=f"cl:getconf:{device_id}")],
+        [InlineKeyboardButton(text="📥 Получить конфиг",    callback_data=f"cl:getconf:{device_id}")],
+        [InlineKeyboardButton(text="🔄 Обновить конфиг",    callback_data=f"cl:upd1:{device_id}")],
         [InlineKeyboardButton(text="🗑 Удалить устройство", callback_data=f"cl:del:{device_id}")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="cl:mydevices")],
+        [InlineKeyboardButton(text="◀️ Назад",              callback_data="cl:mydevices")],
     ])
 
 
