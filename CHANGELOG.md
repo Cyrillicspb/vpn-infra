@@ -81,13 +81,6 @@
 - **Telegram**: бот (token от @BotFather) + chat_id администратора
 - **Опционально**: Cloudflare аккаунт (бесплатный) для CDN-стека
 
-### Планируется в v0.2.0
-
-- Стек 3: обход блокировки microsoft.com (2087) ТСПУ
-- /graph команда (Grafana → Telegram PNG)
-- mTLS клиентские сертификаты
-- Документация по настройке клиентских устройств
-
 ---
 
 *Формат: [Keep a Changelog](https://keepachangelog.com/)*
