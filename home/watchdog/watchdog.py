@@ -2794,7 +2794,8 @@ async def _f2b_jails(ssh_prefix: list[str], use_sudo: bool = False) -> list[dict
 def _vps_ssh_prefix(vps: dict) -> list[str]:
     ssh_key = os.getenv("VPS_SSH_KEY", "/root/.ssh/vpn_id_ed25519")
     ssh_user = os.getenv("BACKUP_VPS_USER", "sysadmin")
-    ssh_port = str(vps.get("ssh_port", 22))
+    # VPS_SSH_PORT из .env имеет приоритет над ssh_port из state (который хранит внешний порт)
+    ssh_port = os.getenv("VPS_SSH_PORT", str(vps.get("ssh_port", 22)))
     cmd = [
         "ssh", "-i", ssh_key,
         "-p", ssh_port,
