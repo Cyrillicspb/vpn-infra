@@ -318,11 +318,23 @@ deploy_vps() {
 }
 
 # =============================================================================
-# Проверить изменился ли watchdog.py
+# Проверить изменились ли подсистемы
 # =============================================================================
 watchdog_changed() {
     git -C "$REPO_DIR" diff HEAD@{1} HEAD -- \
         home/watchdog/watchdog.py home/watchdog/requirements.txt \
+        2>/dev/null | grep -q "."
+}
+
+bot_changed() {
+    git -C "$REPO_DIR" diff HEAD@{1} HEAD -- \
+        home/telegram-bot/ \
+        2>/dev/null | grep -q "."
+}
+
+xray_changed() {
+    git -C "$REPO_DIR" diff HEAD@{1} HEAD -- \
+        home/xray/ \
         2>/dev/null | grep -q "."
 }
 
@@ -363,6 +375,13 @@ do_deploy() {
     local restart_watchdog=false
     watchdog_changed && restart_watchdog=true
 
+    # Нужно ли пересобрать локальные образы?
+    local rebuild_bot=false
+    local rebuild_xray=false
+    bot_changed && rebuild_bot=true
+    xray_changed && rebuild_xray=true
+    [[ "$force" == "--force" ]] && rebuild_bot=true && rebuild_xray=true
+
     # Обновляем Python venv если requirements изменились
     if git -C "$REPO_DIR" diff HEAD@{1} HEAD -- home/watchdog/requirements.txt 2>/dev/null | grep -q "."; then
         log_info "Обновление watchdog venv..."
@@ -396,6 +415,19 @@ json.dump(cfg, open('$REPO_DIR/xray/config-cdn.json', 'w'), indent=4)
     # Docker Compose обновление
     log_step "Обновление Docker контейнеров"
     (cd "$REPO_DIR" && docker compose pull --quiet 2>/dev/null || true)
+
+    # Пересборка локальных образов при изменении исходников
+    if $rebuild_bot; then
+        log_info "telegram-bot изменился — пересборка образа..."
+        (cd "$REPO_DIR" && docker compose build --no-cache telegram-bot)
+        log_ok "telegram-bot пересобран"
+    fi
+    if $rebuild_xray; then
+        log_info "xray конфиги изменились — пересборка xray контейнеров..."
+        (cd "$REPO_DIR" && docker compose build --no-cache xray-client xray-client-2 xray-client-cdn)
+        log_ok "xray контейнеры пересобраны"
+    fi
+
     (cd "$REPO_DIR" && docker compose up -d --remove-orphans)
 
     # Перезапуск watchdog как отдельный процесс (переживёт собственный рестарт)
