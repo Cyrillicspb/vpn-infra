@@ -227,3 +227,9 @@ class WatchdogClient:
 
     async def dpi_test(self, domains: list | None = None) -> dict:
         return await self._post("/dpi/test", {"domains": domains}, timeout=30)
+
+    async def zapret_probe(self, mode: str = "quick") -> dict:
+        return await self._post("/zapret/probe", {"mode": mode})
+
+    async def get_zapret_history(self) -> dict:
+        return await self._get("/zapret/history")

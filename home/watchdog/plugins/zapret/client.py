@@ -30,6 +30,7 @@ zapret плагин для watchdog.
   probe [full]      — адаптивный поиск параметров
 """
 import asyncio
+import datetime
 import json
 import os
 import subprocess
@@ -151,6 +152,24 @@ async def _nft_del_forward_rules() -> None:
     await run_cmd(["nft", "delete", "table", "inet", "zapret_main"], timeout=5)
 
 
+HISTORY_FILE = PLUGIN_DIR / "preset_history.log"
+
+
+def _log_preset_history(preset: dict) -> None:
+    """Записать активацию пресета в историю."""
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    line = f"{ts}  {preset['id']}  {preset.get('desc', '')}"
+    try:
+        with HISTORY_FILE.open("a") as f:
+            f.write(line + "\n")
+        # Ограничить 200 строками
+        lines = HISTORY_FILE.read_text().splitlines()
+        if len(lines) > 200:
+            HISTORY_FILE.write_text("\n".join(lines[-200:]) + "\n")
+    except Exception:
+        pass
+
+
 def _check_binary() -> bool:
     return Path(NFQWS_BIN).exists()
 
@@ -202,6 +221,7 @@ async def start() -> int:
             print("[zapret] probe не удался, используем дефолтный пресет", file=sys.stderr)
 
     preset = _get_best_preset()
+    _log_preset_history(preset)
     print(f"[zapret] Используем пресет {preset['id']}: {preset['desc']}", flush=True)
 
     # Остановить предыдущий экземпляр

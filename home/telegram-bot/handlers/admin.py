@@ -2942,6 +2942,55 @@ async def cb_adm_dpi_test(cb: CallbackQuery, **kw):
 
 
 # ---------------------------------------------------------------------------
+# Callback: adm:dpi_recheck — запустить probe zapret
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:dpi_recheck")
+async def cb_adm_dpi_recheck(cb: CallbackQuery, **kw):
+    await cb.answer("Запускаю quick probe zapret...")
+    try:
+        data = await _wc().zapret_probe(mode="quick")
+        status = data.get("status", "?")
+        await cb.message.answer(
+            f"🔄 <b>zapret probe запущен</b>\n\nРежим: quick\nСтатус: {status}\n\n"
+            "Результат придёт в этот чат через ~30–60 секунд.",
+            parse_mode="HTML",
+            reply_markup=back_to_admin_menu(),
+        )
+    except WatchdogError as e:
+        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
+# ---------------------------------------------------------------------------
+# Callback: adm:dpi_history — история смен пресета zapret
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "adm:dpi_history")
+async def cb_adm_dpi_history(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю...")
+    try:
+        data = await _wc().get_zapret_history()
+        history = data.get("history", [])
+        if not history:
+            text = "📋 <b>История пресетов zapret</b>\n\nИстория пуста — probe ещё не запускался."
+        else:
+            lines = ["📋 <b>История пресетов zapret</b>\n"]
+            for entry in history:
+                parts = entry.split(None, 2)
+                if len(parts) >= 2:
+                    ts = f"{parts[0]} {parts[1]}"
+                    preset_id = parts[2].split(None, 1)[0] if len(parts) > 2 else "?"
+                    desc = parts[2].split(None, 1)[1] if len(parts[2].split(None, 1)) > 1 else ""
+                    lines.append(f"<code>{ts}</code>  <b>{preset_id}</b>  <i>{desc}</i>")
+                else:
+                    lines.append(f"<code>{entry}</code>")
+            text = "\n".join(lines)
+    except WatchdogError as e:
+        text = f"❌ {e}"
+    await cb.message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
 # Callback: adm:rotation_log — журнал переключений стека
 # ---------------------------------------------------------------------------
 

@@ -5,6 +5,38 @@
 
 ---
 
+## [v0.2.0] — 2026-03-18 — UX бота, Xray xHTTP, zapret probe
+
+### Новое
+
+**Telegram-бот — администратор**
+- Просмотр fail2ban jails для домашнего сервера и VPS прямо из бота (меню «Система»)
+- Разбан IP одной кнопкой из Telegram без SSH
+- `/renew-cert` и `/renew-ca` теперь работают через watchdog API (бот не требует доступа к хосту)
+
+**Telegram-бот — клиент**
+- Переработанное главное меню (вариант A): статус VPN в шапке, убраны дубли, сайты выделены в подменю
+- Обновление конфига одного устройства кнопкой из детального вида
+- Кнопка «Обновить все конфиги» в списке устройств
+
+**DPI Bypass (zapret)**
+- On-demand probe из бота: кнопка «🔄 Пересобрать пресет» в меню DPI запускает quick probe и шлёт результат в Telegram
+- История смен пресетов: кнопка «📋 История» показывает последние 20 переключений с временными метками
+- Логирование пресета при каждом старте nfqws в `preset_history.log`
+- Watchdog API: `POST /zapret/probe` (quick/full), `GET /zapret/history`
+
+**Xray — улучшение транспорта**
+- REALITY стеки (microsoft.com, cdn.jsdelivr.net): добавлены `xPaddingBytes: 100-1000` и `mode: auto` — снижение fingerprint-детектируемости
+- CDN стек: миграция с WebSocket на xHTTP (splithttp H2) — WebSocket устарел в Xray 26.x
+
+### Исправления
+
+- **deploy.sh**: `rsync home/xray/ xray/` заменён на `envsubst` — прямой rsync шаблонов с `${VAR}` приводил к падению xray-client (exit 23, «invalid password: ${XRAY_PUBLIC_KEY}»)
+- **fail2ban VPS**: исправлен SSH-доступ через SOCKS5-прокси (`127.0.0.1:1081`), правильный ключ (`vpn_id_ed25519`), `sudo` для sysadmin, порт из `VPS_SSH_PORT` (env), а не из state (state хранил 443)
+- **CF_WORKER_HOSTNAME → CF_CDN_HOSTNAME**: переименована переменная окружения по всему проекту
+
+---
+
 ## [v0.1.0] — 2026-03-17 — Первая рабочая бета
 
 ### Что работает

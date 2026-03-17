@@ -2715,6 +2715,52 @@ async def post_dpi_test(request: Request, req: DpiTestRequest, _: bool = Depends
 
 
 # ---------------------------------------------------------------------------
+# zapret on-demand probe + history
+# ---------------------------------------------------------------------------
+ZAPRET_HISTORY_FILE = PLUGINS_DIR / "zapret" / "preset_history.log"
+
+
+class ZapretProbeRequest(BaseModel):
+    mode: str = "quick"  # "quick" | "full"
+
+
+@app.post("/zapret/probe")
+@limiter.limit("3/hour")
+async def post_zapret_probe(request: Request, req: ZapretProbeRequest, bg: BackgroundTasks, _: bool = Depends(_auth)):
+    """Запустить on-demand probe zapret (quick или full) в фоне."""
+    if req.mode not in ("quick", "full"):
+        raise HTTPException(status_code=400, detail="mode must be 'quick' or 'full'")
+    probe_script = PLUGINS_DIR / "zapret" / "probe.py"
+    if not probe_script.exists():
+        raise HTTPException(status_code=503, detail="zapret plugin не установлен")
+
+    async def _run_probe():
+        await tg_alert(f"🔍 zapret: запущен {req.mode} probe...")
+        rc, out, err = await run_cmd(
+            [sys.executable, str(probe_script), req.mode],
+            timeout=600 if req.mode == "full" else 120,
+        )
+        if rc == 0:
+            best = next((l.strip() for l in out.splitlines() if "Лучший пресет:" in l), "")
+            msg = f"✅ zapret {req.mode} probe завершён.\n{best}" if best else f"✅ zapret {req.mode} probe завершён."
+            await tg_alert(msg)
+        else:
+            await tg_alert(f"⚠️ zapret probe завершился с ошибкой:\n<code>{err.strip()[:300]}</code>")
+
+    bg.add_task(_run_probe)
+    return {"status": "started", "mode": req.mode}
+
+
+@app.get("/zapret/history")
+async def get_zapret_history(_: bool = Depends(_auth)):
+    """Последние 20 записей истории смен пресета zapret."""
+    if not ZAPRET_HISTORY_FILE.exists():
+        return {"history": []}
+    lines = [l for l in ZAPRET_HISTORY_FILE.read_text().splitlines() if l.strip()]
+    return {"history": list(reversed(lines[-20:]))}
+
+
+# ---------------------------------------------------------------------------
 # Backup
 # ---------------------------------------------------------------------------
 @app.post("/backup")

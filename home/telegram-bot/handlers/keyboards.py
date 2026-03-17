@@ -270,6 +270,10 @@ def admin_dpi_menu(enabled: bool, services: list[dict]) -> InlineKeyboardMarkup:
         )])
 
     rows.append([InlineKeyboardButton(text="🧪 Тест DPI", callback_data="adm:dpi_test")])
+    rows.append([
+        InlineKeyboardButton(text="🔄 Пересобрать пресет", callback_data="adm:dpi_recheck"),
+        InlineKeyboardButton(text="📋 История",            callback_data="adm:dpi_history"),
+    ])
     rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:routes")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
