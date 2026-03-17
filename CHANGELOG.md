@@ -20,8 +20,12 @@
 - AmneziaWG (wg0, 10.177.1.0/24, порт 51820) — клиентский
 - WireGuard (wg1, 10.177.3.0/24, порт 51821) — клиентский
 - Tier-2 WireGuard туннель (wg-tier2, 10.177.2.0/30, порт 51822) — мониторинг и SSH к VPS
-- Стек 2 — VLESS+XHTTP+REALITY (cdn.jsdelivr.net, порт 2083): **работает, трафик идёт через VPS**
+- Стек 1 — Cloudflare CDN (VLESS+WS через Cloudflare Workers): **работает** ✅
+- Стек 2 — VLESS+XHTTP+REALITY (cdn.jsdelivr.net, порт 2083): **работает** ✅
+- Стек 4 — Hysteria2 (QUIC + Salamander, UDP 443): **работает** ✅
+- Адаптивный failover между стеками
 - Ротация соединений (make-before-break, 30–60 мин)
+- End-to-end тест пройден: AWG/WG клиент → домашний сервер → VPS → заблокированные сайты ✅
 
 **Маршрутизация и фильтрация**
 - Split tunneling Hybrid B+: AllowedIPs на клиенте (266 CIDR) + nftables fwmark на сервере
@@ -64,10 +68,6 @@
 ### Известные проблемы и ограничения
 
 - **Стек 3 (REALITY, microsoft.com, порт 2087)**: заблокирован ТСПУ в России — не работает
-- **Стек 1 (Cloudflare CDN)**: cloudflared установлен, но VLESS+WS inbound не настроен — не работает
-- **Стек 4 (Hysteria2)**: не настроен (standalone, отдельно от 3x-ui)
-- **Failover**: работает переключение, но в текущей конфигурации доступен один рабочий стек (reality-grpc)
-- **Сквозной тест клиента**: end-to-end тест (WG/AWG клиент → home → tun → VPS → сайт) не проводился
 - **/graph команда**: Grafana Render API не настроен
 - **mTLS**: CA создаётся, но клиентские сертификаты не выданы
 - **CGNAT**: не работает без реального (белого) IP или bridge mode на роутере
@@ -83,10 +83,9 @@
 
 ### Планируется в v0.2.0
 
-- Настройка Hysteria2 (стек 4)
-- Настройка Cloudflare CDN (стек 1)
-- Сквозное end-to-end тестирование всех стеков
+- Стек 3: обход блокировки microsoft.com (2087) ТСПУ
 - /graph команда (Grafana → Telegram PNG)
+- mTLS клиентские сертификаты
 - Документация по настройке клиентских устройств
 
 ---
