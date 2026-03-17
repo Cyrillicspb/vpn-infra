@@ -27,6 +27,13 @@
 - Ротация соединений (make-before-break, 30–60 мин)
 - End-to-end тест пройден: AWG/WG клиент → домашний сервер → VPS → заблокированные сайты ✅
 
+**DPI Bypass — прямой обход без VPS (zapret/nfqws)**
+- Перехват TCP 80/443 через nfqueue (Linux kernel), обход SNI-DPI без туннеля
+- Техники: fakedsplit, fake+autottl, split2, multisplit (17 пресетов)
+- Адаптивный подбор параметров: Thompson Sampling per-ISP, quick probe при старте
+- Тест на реальных заблокированных хостах: discord.com, store.steampowered.com, youtube.com
+- Работает параллельно с туннельными стеками; активируется через watchdog `/switch zapret`
+
 **Маршрутизация и фильтрация**
 - Split tunneling Hybrid B+: AllowedIPs на клиенте (266 CIDR) + nftables fwmark на сервере
 - nftables table `inet vpn`: blocked_static (36 946 правил), blocked_dynamic (timeout 24h)
