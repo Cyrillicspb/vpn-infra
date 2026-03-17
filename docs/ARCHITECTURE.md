@@ -1,67 +1,89 @@
-# Архитектура VPN-инфраструктуры
+# Архитектура VPN-инфраструктуры v4.0
 
 ## Содержание
 
-1. [Общая топология](#1-общая-топология)
-2. [Адресное пространство](#2-адресное-пространство)
-3. [Split Tunneling — Гибрид B+](#3-split-tunneling--гибрид-b)
-4. [Четыре стека защищённого соединения](#4-четыре-стека-защищённого-соединения)
-5. [Адаптивный failover](#5-адаптивный-failover)
-6. [Watchdog — центральный агент](#6-watchdog--центральный-агент)
-7. [nftables — два набора правил](#7-nftables--два-набора-правил)
-8. [DNS и dnsmasq](#8-dns-и-dnsmasq)
-9. [Порядок загрузки systemd](#9-порядок-загрузки-systemd)
-10. [Telegram-бот](#10-telegram-бот)
-11. [Мониторинг](#11-мониторинг)
+1. [Цели системы](#1-цели-системы)
+2. [Сетевая топология](#2-сетевая-топология)
+3. [Адресное пространство](#3-адресное-пространство)
+4. [Компоненты домашнего сервера](#4-компоненты-домашнего-сервера)
+5. [Компоненты VPS](#5-компоненты-vps)
+6. [Tier-2 туннель](#6-tier-2-туннель)
+7. [Четыре стека защищённого соединения](#7-четыре-стека-защищённого-соединения)
+8. [Адаптивный failover](#8-адаптивный-failover)
+9. [Split Tunneling — Гибрид B+](#9-split-tunneling--гибрид-b)
+10. [nftables — правила и наборы](#10-nftables--правила-и-наборы)
+11. [DNS и dnsmasq](#11-dns-и-dnsmasq)
+12. [Policy routing](#12-policy-routing)
+13. [Watchdog — центральный агент](#13-watchdog--центральный-агент)
+14. [Telegram-бот](#14-telegram-бот)
+15. [Мониторинг](#15-мониторинг)
+16. [Безопасность](#16-безопасность)
+17. [Автообновления](#17-автообновления)
 
 ---
 
-## 1. Общая топология
+## 1. Цели системы
+
+Инфраструктура решает три конкретные проблемы:
+
+**1. Обход DPI-фильтрации (ТСПУ/РКН).** Российские провайдеры применяют глубокую инспекцию пакетов для блокировки сервисов. Система маскирует трафик под легитимные HTTPS-соединения к крупным CDN и облачным провайдерам. При блокировке одного метода автоматически переключается на другой.
+
+**2. Split tunneling без компромиссов.** Весь незаблокированный трафик идёт напрямую через домашнее соединение — не замедляется, не нагружает VPS. Через VPN проходит только то, что заблокировано. Списки обновляются автоматически ночью из баз РКН.
+
+**3. Распространение среди нетехнических пользователей.** Клиент получает `.conf` файл через Telegram, импортирует в WireGuard/AmneziaWG и больше ни о чём не думает. Все переключения стеков, обновления маршрутов, мониторинг — прозрачны для клиента.
+
+**Для кого:** небольшая группа доверенных пользователей (семья, коллеги), управляемая одним администратором.
+
+**Почему два уровня (двухуровневая):** домашний сервер обслуживает клиентов по WireGuard (знакомый протокол, простые конфиги, низкая латентность внутри сети). Сам домашний сервер подключается к VPS за рубежом через один из четырёх стеков, устойчивых к блокировкам. Такая схема позволяет менять стеки на VPS без пересоздания конфигов у клиентов.
+
+---
+
+## 2. Сетевая топология
 
 ```mermaid
 graph TD
     subgraph CLIENTS["Клиенты"]
-        C1[📱 Телефон AWG]
-        C2[💻 Ноутбук WG]
-        C3[🔌 Роутер AWG]
+        C1[Телефон\nAmneziaWG]
+        C2[Ноутбук\nWireGuard]
+        C3[Роутер\nAmneziaWG]
     end
 
-    subgraph ROUTER["Роутер (port forward UDP 51820/51821)"]
-        RT[NAT + Port Forward]
+    subgraph ROUTER["Роутер (port forward)"]
+        RT[UDP 51820 AWG\nUDP 51821 WG]
     end
 
     subgraph HOME["Домашний сервер — Ubuntu 24.04"]
-        subgraph HOST["На хосте (systemd)"]
+        subgraph SYSTEMD["systemd-сервисы"]
             WG0[wg0 AWG\n10.177.1.0/24]
             WG1[wg1 WG\n10.177.3.0/24]
-            NFT[nftables\nkill switch + fwmark]
-            DNSM[dnsmasq\n:53 split DNS]
-            WD[watchdog\n:8080 async Python]
-            H2[hysteria2\nQuic+Salamander]
-            T2S[tun2socks\ntun0/1/2]
-            AUTOSSH[autossh\nSSH fallback]
+            WT2[wg-tier2\n10.177.2.1]
+            NFT[nftables\ntable inet vpn]
+            DNSM[dnsmasq :53\nsplit DNS + nftset]
+            WD[watchdog.py\nFastAPI :8080]
+            H2S[hysteria2\nsystemd]
         end
-
-        subgraph DOCKER["Docker 172.20.0.0/24"]
-            BOT[telegram-bot\n172.20.0.11]
+        subgraph DOCKER_H["Docker 172.20.0.0/24"]
+            BOT[telegram-bot\naiogram 3.x]
             XRAY1[xray-client\nSOCKS :1080]
             XRAY2[xray-client-2\nSOCKS :1081]
             CLD[cloudflared\nCDN-стек]
-            NE[node-exporter\n:9100]
+            NE1[node-exporter :9100]
+            SP[socket-proxy]
         end
     end
 
     subgraph VPS["VPS (зарубежный)"]
-        XUI[3x-ui / Xray\n:443 REALITY + Hysteria2]
-        NGINX[nginx :8443\nmTLS панели]
-        CLDVPS[cloudflared\nтуннель → Xray WS]
+        XUI[3x-ui network_mode:host\nXray: XHTTP REALITY]
+        H2V[hysteria2\nstandalone Docker]
+        NGINX[nginx :8443\nmTLS]
+        CLDVPS[cloudflared\nтуннель]
         PROM[Prometheus\n+ Alertmanager]
-        GRAF[Grafana\n+ Image Renderer]
-        NE2[node-exporter]
+        GRAF[Grafana]
+        NE2[node-exporter :9100]
     end
 
-    subgraph CF["Cloudflare CDN"]
-        CDN[Cloudflare Network]
+    subgraph CF["Cloudflare"]
+        CDN[Cloudflare Worker\n+ CDN]
     end
 
     C1 -->|UDP 51820| RT
@@ -72,421 +94,748 @@ graph TD
 
     WG0 --> NFT
     WG1 --> NFT
-    NFT -->|fwmark 0x1\nблокир. трафик| T2S
-    NFT -->|незаблокир.| ETH[eth0 → интернет]
+    NFT -->|fwmark 0x1\nзаблокированный трафик| TUN[tun-reality\nили tun-grpc]
+    NFT -->|незаблокированный| ETH[eth0\nпрямой интернет]
 
-    T2S -->|SOCKS :1080| XRAY1
-    T2S -->|SOCKS :1081| XRAY2
-    T2S -->|через cloudflared| CLD
+    TUN -->|SOCKS :1080| XRAY1
+    TUN -->|SOCKS :1081| XRAY2
+    TUN -->|cloudflared access| CLD
 
-    XRAY1 -->|VLESS+REALITY TCP 443| XUI
-    XRAY2 -->|VLESS+gRPC TCP 8444| XUI
-    CLD -->|WebSocket| CDN
-    CDN -->|tunnel| CLDVPS
+    XRAY1 -->|VLESS+XHTTP REALITY\nmicrosoft.com :2087| XUI
+    XRAY2 -->|VLESS+XHTTP REALITY\ncdn.jsdelivr.net :2083| XUI
+    CLD -->|HTTPS| CDN
+    CDN -->|Cloudflare Worker| CLDVPS
     CLDVPS -->|WS localhost:8080| XUI
-    H2 -->|Hysteria2 UDP 443| XUI
+    H2S -->|QUIC+Salamander UDP 443| H2V
 
-    WD -->|HTTP API| BOT
+    WT2 <-->|WireGuard Tier-2\n10.177.2.0/30| XUI
+
+    BOT -->|HTTP Bearer| WD
     DNSM -->|nftset=| NFT
 
-    BOT -.->|Tier-2 туннель\n10.177.2.0/30| XUI
-    PROM -.->|scrape через Tier-2| WD
-    PROM -.->|scrape через Tier-2| NE
+    PROM -->|scrape через Tier-2| NE1
+    PROM -->|scrape через Tier-2| WD
+    PROM -->|scrape localhost| NE2
+```
+
+**ASCII-схема потока трафика:**
+
+```
+Клиент → Роутер (port forward) → Домашний сервер
+                                        │
+                              nftables prerouting
+                            dst ∈ blocked? ──────────────────────────────┐
+                                │ нет                                     │ да
+                                ▼                                         ▼
+                          table vpn (100)                        fwmark 0x1
+                          via gateway eth0                        │
+                          прямой интернет                  table marked (200)
+                                                           via tun-* (активный)
+                                                                  │
+                                             ┌────────────────────┴────────────────────┐
+                                             │                                         │
+                                       XHTTP/REALITY                            CDN/Hysteria2
+                                       VPS :2083 / :2087                   Cloudflare / UDP 443
 ```
 
 ---
 
-## 2. Адресное пространство
+## 3. Адресное пространство
 
-| Сегмент | Подсеть | Описание |
-|---------|---------|----------|
-| AWG клиенты | `10.177.1.0/24` | wg0 интерфейс |
-| WG клиенты | `10.177.3.0/24` | wg1 интерфейс |
-| Tier-2 туннель | `10.177.2.0/30` | домашний ↔ VPS (WireGuard Tier-2) |
-| Docker (домашний) | `172.20.0.0/24` | docker bridge br-vpn |
-| Docker (VPS) | `172.21.0.0/24` | docker bridge br-vps |
-| Альтернативная | `172.29.177.0/24` | при конфликте с офисным /8 |
+| Сегмент | Подсеть | Интерфейс | Описание |
+|---------|---------|-----------|----------|
+| AWG клиенты | `10.177.1.0/24` | wg0 | AmneziaWG, DNS: 10.177.1.1 |
+| Tier-2 туннель | `10.177.2.0/30` | wg-tier2 | дом (.1) ↔ VPS (.2) |
+| WG клиенты | `10.177.3.0/24` | wg1 | WireGuard, DNS: 10.177.3.1 |
+| Docker домашний | `172.20.0.0/24` | br-vpn | все контейнеры дома |
+| Docker VPS | `172.21.0.0/24` | br-vps | контейнеры VPS |
+| Альтернативная | `172.29.177.0/24` | wg0/wg1 | при конфликте с офисным /8 |
 
 **Tier-2 туннель:**
-- `10.177.2.1` — домашний сервер
-- `10.177.2.2` — VPS
-
-Через Tier-2: Prometheus scrape, Watchdog heartbeat, DNS upstream (для заблокированных доменов).
+- `10.177.2.1` — домашний сервер (инициатор)
+- `10.177.2.2` — VPS (peer)
 
 ---
 
-## 3. Split Tunneling — Гибрид B+
+## 4. Компоненты домашнего сервера
 
-Два уровня работают совместно:
+### Порядок загрузки systemd
 
-```mermaid
-flowchart LR
-    subgraph CLIENT["Клиент"]
-        PKT[Пакет от приложения]
-        AI[AllowedIPs\n≤500 записей\nCIDR-агрегация]
-    end
+| № | Сервис | Тип | Роль |
+|---|--------|-----|------|
+| 1 | `nftables.service` | oneshot | Загружает `/etc/nftables.conf`: создаёт `table inet vpn`, цепочки, пустые sets |
+| 2 | `vpn-sets-restore.service` | oneshot | `nft -f /etc/nftables-blocked-static.conf` — заполняет `blocked_static` из файла |
+| 3 | `awg-quick@wg0` | simple | AmneziaWG интерфейс, клиентская подсеть 10.177.1.0/24, порт 51820 |
+| 4 | `wg-quick@wg1` | simple | WireGuard интерфейс, клиентская подсеть 10.177.3.0/24, порт 51821 |
+| 5 | `wg-quick@wg-tier2` | simple | Tier-2 WireGuard к VPS, 10.177.2.0/30, входящий порт на VPS :51822 |
+| 6 | `vpn-routes.service` | oneshot | Создаёт ip rule и ip route для таблиц `vpn` (100) и `marked` (200) |
+| 7 | `dnsmasq.service` | simple | Split DNS: резолв заблокированных доменов через VPS, nftset= для blocked_dynamic |
+| 8 | `hysteria2.service` | simple | QUIC+Salamander клиент, управляется watchdog (стек hysteria2) |
+| 9 | `watchdog.service` | notify | FastAPI Python, Type=notify, WatchdogSec=30, управляет стеками |
+| 10 | `docker.service` | — | Все контейнеры с `restart: always` стартуют автоматически |
+| 11 | `vpn-postboot.service` | oneshot | Проверяет состояние после загрузки, отправляет отчёт в Telegram |
 
-    subgraph HOME["Домашний сервер"]
-        subgraph NFTABLES["nftables"]
-            BS[blocked_static\nflags interval\nбазы РКН]
-            BD[blocked_dynamic\ntimeout 24h\ndnsmasq nftset=]
-        end
-        FM{fwmark 0x1?}
-        TUN[tun0 → VPS]
-        ETH[eth0 → интернет]
-    end
+### Docker-контейнеры (домашний сервер)
 
-    PKT --> AI
-    AI -->|dst в AllowedIPs| HOME
-    AI -->|dst НЕ в AllowedIPs| LOCAL[прямой интернет\nна клиенте]
-
-    HOME --> FM
-    FM -->|dst в blocked_static\nили blocked_dynamic| TUN
-    FM -->|dst не заблокирован| ETH
-```
-
-### Уровень 1 — AllowedIPs на клиенте
-
-Клиент отправляет через VPN только трафик к подсетям из AllowedIPs:
-- Крупные AS: Google (AS15169), Meta (AS32934), Cloudflare (AS13335), Akamai, Twitter
-- Конкретные CIDR из баз РКН (antifilter, zapret-info, opencck, RockBlack)
-- DNS: `10.177.1.1/32` + `1.1.1.1/32` (резервный)
-- **Лимит ≤ 500 записей** (CIDR-агрегация через progressive prefix expansion)
-
-### Уровень 2 — nftables на сервере (точный split)
-
-Трафик, попавший на домашний сервер, маршрутизируется:
-- `dst ∈ blocked_static` или `dst ∈ blocked_dynamic` → fwmark 0x1 → table 200 → tun
-- иначе → table 100 → default via gateway → eth0 (прямой интернет)
-
-### Policy routing
-
-```
-ip rule pri 100: fwmark 0x1          → table 200  (blocked → tun)
-ip rule pri 150: to 1.1.1.1          → table 200  (DNS через VPN)
-ip rule pri 150: to 8.8.8.8          → table 200  (DNS через VPN)
-ip rule pri 200: from 10.177.1.0/24  → table 100  (AWG → gateway)
-ip rule pri 200: from 10.177.3.0/24  → table 100  (WG  → gateway)
-
-table 200: default dev tun<активный>
-table 100: default via <GATEWAY> dev <ETH_IFACE>
-```
-
-### Kill Switch (двойная защита)
-
-1. **fwmark routing:** заблокированный трафик → tun; при падении tun → UNREACHABLE → drop
-2. **nftables forward chain:** `oifname != "tun*" drop` — стоит **ДО** `ct state established accept`
+| Контейнер | Образ | Порт/Сокет | Роль |
+|-----------|-------|-----------|------|
+| `telegram-bot` | локальный build | — | Telegram-бот, aiogram 3.x, SQLite WAL |
+| `xray-client` | `teddysun/xray:latest` | SOCKS :1080 | Xray-клиент для стека reality (XHTTP/microsoft.com) |
+| `xray-client-2` | `teddysun/xray:latest` | SOCKS :1081 | Xray-клиент для стека reality-grpc (XHTTP/cdn.jsdelivr.net) |
+| `cloudflared` | `cloudflare/cloudflared` | — | CDN-стек: cloudflared access → Cloudflare Worker → VPS |
+| `socket-proxy` | `tecnativa/docker-socket-proxy` | TCP :2375 | Безопасный проброс Docker socket для бота и Portainer |
+| `node-exporter` | `prom/node-exporter` | :9100 | Метрики хоста для Prometheus |
 
 ---
 
-## 4. Четыре стека защищённого соединения
+## 5. Компоненты VPS
 
-Стеки упорядочены по **устойчивости к блокировкам** (от максимальной):
+### Docker-контейнеры VPS
 
-```mermaid
-graph LR
-    subgraph STACKS["Стеки (по устойчивости ↑)"]
-        direction TB
-        S4[☁️ CDN\nVLESS+WS\nCloudflare\nрезильентс: 4]
-        S3[🔒 gRPC\nVLESS+REALITY\ncdn.jsdelivr.net\nрезильентс: 3]
-        S2[🔐 REALITY\nVLESS+REALITY\nmicrosoft.com\nрезильентс: 2]
-        S1[⚡ Hysteria2\nQUIC+Salamander\nрезильентс: 1]
-    end
-    S1 -.->|медленно блокируется| S2
-    S2 -.->|DPI| S3
-    S3 -.->|SNI анализ| S4
-```
+| Контейнер | Образ | network_mode / Порт | Роль |
+|-----------|-------|-------------------|------|
+| `3x-ui` | `ghcr.io/mhsanaei/3x-ui` | `host` | Xray-сервер: VLESS+XHTTP+REALITY инбаунды на портах 2083 и 2087 |
+| `nginx` | `nginx:alpine` | :8443 | mTLS reverse proxy: панели, Prometheus endpoint |
+| `cloudflared` | `cloudflare/cloudflared` | — | CDN-стек: туннель Cloudflare → localhost:8080 (Xray WS inbound) |
+| `hysteria2` | `tobyxdd/hysteria` | UDP :443 | Standalone Hysteria2-сервер (Salamander obfs) |
+| `prometheus` | `prom/prometheus` | :9090 | Pull-метрики: scrape домашний сервер через Tier-2 |
+| `alertmanager` | `prom/alertmanager` | :9093 | Алерты → webhook → watchdog → Telegram |
+| `grafana` | `grafana/grafana` | :3000 | Dashboards + Image Renderer для /graph |
+| `node-exporter` | `prom/node-exporter` | :9100 | Метрики VPS-хоста |
 
-| Стек | Протокол | Порт | Маскировка | Скорость | Устойчивость |
-|------|----------|------|------------|----------|--------------|
-| Hysteria2 | QUIC + Salamander | UDP 443 | — | ★★★★★ | ★☆☆☆☆ |
-| REALITY | VLESS+TCP | TCP 443 | microsoft.com | ★★★★☆ | ★★★☆☆ |
-| gRPC | VLESS+gRPC | TCP 8444 | cdn.jsdelivr.net | ★★★☆☆ | ★★★★☆ |
-| CDN | VLESS+WS | TCP 443 (CF) | Cloudflare network | ★★☆☆☆ | ★★★★★ |
+**3x-ui инбаунды:**
 
-### Параметры протоколов
+| Имя | Порт | Протокол | SNI (REALITY dest) |
+|-----|------|----------|--------------------|
+| VLESS-XHTTP-jsdelivr | TCP 2083 | VLESS + splithttp + REALITY | cdn.jsdelivr.net |
+| VLESS-XHTTP-microsoft | TCP 2087 | VLESS + splithttp + REALITY | microsoft.com |
 
-**AmneziaWG:**
+---
+
+## 6. Tier-2 туннель
+
+**Что это:** WireGuard-туннель между домашним сервером (10.177.2.1) и VPS (10.177.2.2). Работает всегда, независимо от активного стека обхода блокировок. Слушает порт 51822 на стороне VPS.
+
+**Зачем нужен:**
+- Prometheus на VPS scrape-ит метрики домашнего сервера (node-exporter :9100, watchdog /metrics) через этот туннель
+- Watchdog отправляет heartbeat к VPS каждые 60 секунд через Tier-2
+- dnsmasq резолвит заблокированные домены через DNS VPS (`server=/youtube.com/10.177.2.2`)
+- SSH-доступ к VPS с домашнего сервера для деплоя и синхронизации git-зеркала
+
+**Почему отдельный туннель, а не через стек обхода:** стеки обхода могут переключаться при failover. Tier-2 — стабильный служебный канал, не зависящий от состояния основных стеков.
+
+---
+
+## 7. Четыре стека защищённого соединения
+
+Стеки упорядочены по устойчивости к блокировкам от наименее (1) до наиболее (4) устойчивого:
+
+### Стек 1 — Hysteria2
+
+| Параметр | Значение |
+|----------|----------|
+| Протокол | QUIC + Salamander obfuscation |
+| Порт | UDP 443 |
+| Маскировка | нет (QUIC-паттерн виден DPI) |
+| Скорость | максимальная |
+| Устойчивость | минимальная — QUIC легко блокируется |
+
+**Как работает:** клиентский `hysteria2.service` (systemd) подключается к standalone `hysteria2` контейнеру на VPS. Watchdog управляет запуском/остановкой сервиса. tun2socks поднимает TUN-интерфейс поверх SOCKS5, который предоставляет Hysteria2.
+
+### Стек 2 — reality (XHTTP/microsoft.com)
+
+| Параметр | Значение |
+|----------|----------|
+| Протокол | VLESS + splithttp (XHTTP) + REALITY |
+| Порт | TCP 2087 на VPS |
+| SNI / dest | microsoft.com |
+| SOCKS-прокси | xray-client → localhost:1080 |
+| tun-интерфейс | tun-reality |
+| Устойчивость | средняя — REALITY маскирует под TLS к Microsoft |
+
+**Как работает:** `xray-client` (Docker) подключается через XHTTP/splithttp к VPS:2087. 3x-ui на VPS обрабатывает соединение через инбаунд VLESS-XHTTP-microsoft. tun2socks поднимает `tun-reality` поверх SOCKS5 :1080.
+
+### Стек 3 — reality-grpc (XHTTP/cdn.jsdelivr.net)
+
+| Параметр | Значение |
+|----------|----------|
+| Протокол | VLESS + splithttp (XHTTP) + REALITY |
+| Порт | TCP 2083 на VPS |
+| SNI / dest | cdn.jsdelivr.net |
+| SOCKS-прокси | xray-client-2 → localhost:1081 |
+| tun-интерфейс | tun-grpc |
+| Устойчивость | высокая — cdn.jsdelivr.net типичен для CDN-трафика |
+
+**Как работает:** аналогично стеку reality, но использует `xray-client-2` и другой инбаунд на VPS. Имя `reality-grpc` историческое (ранее использовался gRPC, сейчас splithttp/XHTTP).
+
+### Стек 4 — CDN (VLESS+WS через Cloudflare)
+
+| Параметр | Значение |
+|----------|----------|
+| Протокол | VLESS + WebSocket → Cloudflare Worker → VPS |
+| Транспорт | HTTPS через Cloudflare CDN |
+| Компоненты | cloudflared (дом) + Cloudflare Worker + cloudflared (VPS) |
+| tun-интерфейс | управляется плагином cloudflare-cdn |
+| Устойчивость | максимальная — блокировка = блокировка Cloudflare |
+
+**Как работает:** `cloudflared` на домашнем сервере (Docker) устанавливает соединение через Cloudflare Access к туннелю. Cloudflare Worker проксирует трафик к `cloudflared` на VPS, который передаёт его на Xray WebSocket inbound на localhost:8080.
+
+### Параметры AmneziaWG
+
 ```
 Jc=4, Jmin=50, Jmax=1000, S1=30, S2=40
 H1/H2/H3/H4 = random uint32 (генерируются setup.sh)
 PersistentKeepalive=25, MTU=1320
 ```
 
-**REALITY:**
-```
-flow:        xtls-rprx-vision (голый), пустой (gRPC)
-fingerprint: chrome
-dest:        microsoft.com:443 (голый), cdn.jsdelivr.net:443 (gRPC)
-```
-
-**Hysteria2:**
-```
-obfs: salamander, password: из HYSTERIA2_OBFS
-quic keepAlive: 20s
-bandwidth: up 50, down 200 mbps
-```
-
 ---
 
-## 5. Адаптивный failover
+## 8. Адаптивный failover
+
+### Алгоритм
 
 ```mermaid
 stateDiagram-v2
     [*] --> Evaluation: первый запуск
 
-    Evaluation: Полная оценка стеков\n(throughput тест 10с каждый)
-    Evaluation --> Primary: промотировать\nнаиболее быстрый
+    Evaluation: Полная оценка всех стеков\nthroughput тест 10с каждый
+    Evaluation --> Primary: промотировать наиболее быстрый
 
-    Primary: Активный стек\nPing каждые 10с
-    Primary --> Degradation: RTT > 3× baseline\nили packet loss > 5%\nили 3 ping fail
+    Primary: Активный стек\nping VPS каждые 10с
+    Primary --> Degraded: 3 ping fail\nили RTT > 3x baseline\nили throughput < порог
 
-    Degradation: Деградация обнаружена\nАсцендирующий проход ↑
-    Degradation --> Primary: следующий\nстек работает
+    Degraded: Деградация\nасцендирующий проход по устойчивости
+    Degraded --> Primary: следующий стек работает
 
-    Primary --> Hourly: каждый час
-    Hourly: Фоновая переоценка\nвсех стеков
-    Hourly --> Primary: demote если\nнашёлся более быстрый
+    Primary --> HourlyReview: каждый час
+    HourlyReview: Фоновая переоценка\nвсех стеков
+    HourlyReview --> Primary: переключить если быстрее
 
-    Primary --> Rotation: 30–60 мин (рандом)
-    Rotation: Make-before-break\nмерез temp порт 1082
-    Rotation --> Primary: ротация\nзавершена
+    Primary --> Rotation: 30-60 мин (рандом ±15мин)
+    Rotation: Make-before-break\nчерез tmp порт 1082
+    Rotation --> Primary: ротация завершена
 ```
 
-**Детекция деградации (три типа):**
-- Ping fail 3 раза подряд (30 сек) → полная потеря связи
-- RTT > 3× от 7-дневного скользящего baseline → latency-деградация
-- Speedtest throughput < порог от baseline → шейпинг
-  - Маленький (100 KB каждые 5 мин) + большой (10 MB раз в 6ч)
-  - Расхождение → детекция объёмного шейпинга
+### Детекция деградации
 
-**Make-before-break ротация:**
+Три независимых типа:
+
+1. **Полная потеря связи:** 3 ping fail подряд за 30 секунд → немедленный failover
+2. **Latency-деградация:** RTT > 3× от 7-дневного скользящего baseline → failover
+3. **Шейпинг:** throughput ниже порога от baseline:
+   - Маленький тест: 100 KB каждые 5 минут (детекция базового шейпинга)
+   - Большой тест: 10 MB каждые 6 часов (детекция объёмного шейпинга)
+   - Расхождение между маленьким и большим тестом → детекция порогового шейпинга
+
+### Порядок переключения при failover
+
+Переход **только вверх по шкале устойчивости** (не прыжок сразу на CDN):
+
+```
+Hysteria2 (1) → reality (2) → reality-grpc (3) → CDN (4)
+```
+
+При деградации стека N watchdog тестирует N+1. Если не работает — N+2 и т.д.
+Worst case: от Hysteria2 до CDN ≈ 30 секунд (3 теста × 10 сек).
+
+### Make-before-break ротация
+
+Ротация соединений (анти-DPI, интервал 30–60 мин рандомный):
+
 1. Поднять новое соединение через временный порт 1082
-2. Переключить ip route на новый tun
-3. Закрыть старое соединение
-4. Обрыв: ~1–3 секунды (панели переподключаются сами)
+2. Дождаться успешного подключения к новому tun
+3. Переключить `ip route` в таблице `marked` на новый tun
+4. Закрыть старое соединение
+5. Обрыв трафика: ≈1–3 секунды
+
+### Восстановление
+
+- Фоновая полная переоценка всех стеков раз в час
+- Если более быстрый стек восстановился → promot на роль primary
+- Protocol failback: автоматически
+- VPS failback: с подтверждением администратора
 
 ---
 
-## 6. Watchdog — центральный агент
+## 9. Split Tunneling — Гибрид B+
 
-```mermaid
-graph TD
-    subgraph WATCHDOG["watchdog.py (FastAPI + aiohttp, :8080)"]
-        DL[decision_loop\n10с тик]
-        TQ[TelegramQueue\nasyncio.Queue + retry×5]
-        PM[PluginManager\nSIGHUP hot reload]
-        WS[WatchdogState\nrtt_baseline, next_rotation]
-    end
+Два уровня работают одновременно и дополняют друг друга.
 
-    DL -->|ping VPS| PING[ICMP/HTTP]
-    DL -->|RTT деградация| SWITCH[_do_switch\nmake-before-break]
-    DL -->|стек не работает| FAIL[_do_failover\nascending resilience]
+### Уровень 1 — AllowedIPs на клиенте
 
-    PM -->|плагины| P1[hysteria2/]
-    PM -->|плагины| P2[reality/]
-    PM -->|плагины| P3[reality-grpc/]
-    PM -->|плагины| P4[cloudflare-cdn/]
+WireGuard-клиент отправляет через VPN только трафик к подсетям из `AllowedIPs`:
 
-    BOT[telegram-bot] -->|HTTP + Bearer| API[REST API\n/status /switch /peer/add ...]
-    PROM[Prometheus] -->|scrape| METRICS[/metrics\nvpn_tunnel_*, vpn_peer_*, ...]
+- Крупные AS CDN-провайдеров: Google, Meta, Cloudflare, Akamai, Twitter (агрегированные CIDR)
+- Конкретные CIDR из баз РКН: antifilter.download, community.antifilter.download, iplist.opencck.org, zapret-info/z-i, RockBlack-VPN
+- DNS-серверы: `10.177.1.1/32` (AWG) / `10.177.3.1/32` (WG) + `1.1.1.1/32` резервный
+- **Лимит: ≤ 500 записей** (CIDR-агрегация через progressive prefix expansion)
 
-    TQ -->|алерты| TG[Telegram API]
+Всё остальное — идёт напрямую через интернет-соединение клиента, VPN не нагружается.
+
+### Уровень 2 — nftables fwmark на домашнем сервере
+
+Трафик, попавший на домашний сервер через wg0/wg1, проходит через `prerouting`:
+
+```
+dst ∈ blocked_static  → meta mark 0x1  → table marked (200) → tun-* (VPS)
+dst ∈ blocked_dynamic → meta mark 0x1  → table marked (200) → tun-* (VPS)
+dst — незаблокирован  → без mark       → table vpn (100)    → via gateway eth0
 ```
 
-**API endpoints:**
+### blocked_static
 
-| Метод | Путь | Описание |
-|-------|------|----------|
-| GET | `/status` | Статус туннеля, активный стек, пиры |
-| GET | `/metrics` | Prometheus-метрики |
-| POST | `/switch` | Переключить стек |
-| POST | `/peer/add` | Добавить WG peer (mutex) |
-| POST | `/peer/remove` | Удалить WG peer |
-| POST | `/peer/list` | Список пиров |
-| POST | `/routes/update` | Обновить базы РКН |
-| POST | `/service/restart` | Перезапустить сервис |
-| POST | `/deploy` | Обновить из git |
-| POST | `/rollback` | Откат к снимку |
-| POST | `/notify-clients` | Разослать конфиги |
-| POST | `/graph` | PNG через Grafana Render API |
-| POST | `/diagnose/<device>` | Диагностика устройства |
-| POST | `/vps/add` | Добавить VPS |
-| POST | `/vps/remove` | Удалить VPS |
+- Содержимое: базы РКН + `manual-vpn.txt`
+- Обновление: cron 03:00 ежесуточно, скрипт `update-routes.py`
+- Обновление атомарное: `nft -f` генерирует полный файл → одна транзакция ядра, без окна утечки
+- Восстановление после перезагрузки: `vpn-sets-restore.service` читает `/etc/nftables-blocked-static.conf`
 
-**Безопасность API:** nftables INPUT accept только `172.20.0.0/24` (Docker-сеть) + Bearer token + rate limit 10 req/sec на все POST.
+### blocked_dynamic
+
+- Источник: dnsmasq через директиву `nftset=/domain/4#inet#vpn#blocked_dynamic`
+- При DNS-резолве заблокированного домена IP автоматически добавляется в set
+- Timeout 24h: записи удаляются сами, `gc-interval 1h`
+- После перезагрузки: пустой → dnsmasq прогрев DNS-кэша (`dns-warmup.sh`) наполнит
+
+### Kill switch (двойная защита)
+
+Два независимых механизма блокируют утечку заблокированного трафика через eth0:
+
+**1. fwmark routing:**
+- Заблокированный трафик помечен fwmark 0x1 → таблица marked → dev tun-*
+- При падении tun-интерфейса: маршрут исчезает → kernel возвращает UNREACHABLE → пакет дропается
+- Незаблокированный трафик продолжает работать через eth0
+
+**2. nftables forward chain (явное DROP):**
+```
+iifname { "wg0", "wg1" } ip daddr @blocked_static  oifname != "tun*" drop
+iifname { "wg0", "wg1" } ip daddr @blocked_dynamic oifname != "tun*" drop
+```
+Правило стоит **до** `ct state established,related accept` — это критично.
+
+### Обновление баз маршрутов (cron 03:00)
+
+Источники (per-source кэш, при недоступности → предыдущая версия):
+- antifilter.download, community.antifilter.download
+- iplist.opencck.org, github.com/zapret-info/z-i
+- github.com/RockBlack-VPN (геоблок)
+- Статический список AS-подсетей CDN (в репозитории)
+- `/etc/vpn-routes/manual-vpn.txt`, `manual-direct.txt`
+
+Валидация: формат IP/CIDR, размер >100 записей, дельта <50% от предыдущей версии.
+Конкурентный доступ: `flock /var/run/vpn-routes.lock`.
+Алерт при возрасте кэша >3 дней.
 
 ---
 
-## 7. nftables — два набора правил
+## 10. nftables — правила и наборы
+
+Вся логика — в единой таблице `inet vpn`.
 
 ```
 table inet vpn {
+
+    # --- НАБОРЫ ---
+
     set blocked_static {
         type ipv4_addr
-        flags interval, auto-merge     # CIDR-агрегация
-        # содержит: базы РКН, manual-vpn.txt
+        flags interval, auto-merge
+        # Источник: базы РКН, обновляются cron 03:00
+        # Восстанавливаются vpn-sets-restore.service после перезагрузки
     }
 
     set blocked_dynamic {
         type ipv4_addr
         flags timeout
-        timeout 24h                     # автоочистка
+        timeout 24h
         gc-interval 1h
-        # заполняется dnsmasq через nftset=/domain/4#inet#vpn#blocked_dynamic
+        # Заполняется dnsmasq через nftset= при DNS-резолве
     }
 
+    # --- ЦЕПОЧКИ ---
+
     chain prerouting {
-        type filter hook prerouting priority mangle
+        type filter hook prerouting priority mangle; policy accept;
+        # Пометить заблокированный трафик от WG-клиентов
         iifname { "wg0", "wg1" } ip daddr @blocked_static  meta mark set 0x1
         iifname { "wg0", "wg1" } ip daddr @blocked_dynamic meta mark set 0x1
     }
 
     chain forward {
-        type filter hook forward priority filter; policy drop
-        # Kill switch: ПЕРЕД ct established (критично!)
+        type filter hook forward priority filter; policy drop;
+        # Kill switch: ПЕРЕД ct established (критично для корректной защиты)
         iifname { "wg0", "wg1" } ip daddr @blocked_static  oifname != "tun*" drop
         iifname { "wg0", "wg1" } ip daddr @blocked_dynamic oifname != "tun*" drop
+        # Разрешить установленные соединения
         ct state established,related accept
-        iifname { "wg0", "wg1" } oifname <eth> accept
-        iifname { "wg0", "wg1" } oifname "tun*" accept
+        # Разрешить WG-клиентам выход в интернет и в tun
+        iifname { "wg0", "wg1" } oifname <ETH_IFACE> accept
+        iifname { "wg0", "wg1" } oifname "tun*"      accept
     }
 
     chain input {
-        # Rate limit: UDP flood protection
-        iifname <eth> udp dport { 51820, 51821 } limit rate 100/second burst 200 accept
-        iifname <eth> udp dport { 51820, 51821 } drop
+        type filter hook input priority filter; policy drop;
+        # Защита от UDP flood на WG-портах
+        iifname <ETH_IFACE> udp dport { 51820, 51821 } \
+            limit rate 100/second burst 200 packets accept
+        iifname <ETH_IFACE> udp dport { 51820, 51821 } drop
+        # Watchdog API: только из Docker-сети
+        tcp dport 8080 ip saddr 172.20.0.0/24 accept
+        tcp dport 8080 drop
+        # Tier-2 WireGuard (входящий, если VPS инициирует)
+        udp dport 51822 accept
+        # Loopback, established
+        iifname "lo" accept
+        ct state established,related accept
     }
 
     chain postrouting {
-        type nat hook postrouting priority srcnat
-        ip saddr 10.177.1.0/24 oifname <eth> masquerade
-        ip saddr 10.177.3.0/24 oifname <eth> masquerade
+        type nat hook postrouting priority srcnat; policy accept;
+        # NAT для трафика WG-клиентов, уходящего в интернет или tun
+        ip saddr 10.177.1.0/24 oifname <ETH_IFACE> masquerade
+        ip saddr 10.177.3.0/24 oifname <ETH_IFACE> masquerade
+        ip saddr 10.177.1.0/24 oifname "tun*"      masquerade
+        ip saddr 10.177.3.0/24 oifname "tun*"      masquerade
     }
 }
 ```
 
-**Атомарное обновление blocked_static:**
+**Атомарное обновление blocked_static:** скрипт генерирует полный файл и вызывает `nft -f` — одна транзакция ядра, нет окна утечки трафика.
+
+---
+
+## 11. DNS и dnsmasq
+
+dnsmasq запущен как systemd-сервис на хосте (не в Docker). Порт 53.
+
+### Что делает dnsmasq
+
+1. **Split DNS:** домены из баз РКН резолвятся через VPS DNS (10.177.2.2), остальные — через upstream (8.8.8.8 / 1.1.1.1)
+2. **nftset=:** при резолве заблокированного домена IP автоматически добавляется в `blocked_dynamic`
+3. **Кэш:** 10 000 записей, TTL до 24 часов
+4. **Прогрев:** `dns-warmup.sh` после загрузки пре-резолвит популярные домены → заполняет `blocked_dynamic`
+
+### Конфигурационные файлы
+
+| Файл | Содержимое | Как генерируется |
+|------|-----------|-----------------|
+| `dnsmasq.d/vpn-domains.conf` | server= + nftset= для баз РКН | `update-routes.py` cron 03:00 |
+| `dnsmasq.d/vpn-force.conf` | server= + nftset= для ручных `/vpn add` | watchdog при добавлении домена |
+
+### Формат директив
+
+```
+# Для каждого заблокированного домена:
+server=/youtube.com/10.177.2.2
+nftset=/youtube.com/4#inet#vpn#blocked_dynamic
+
+# Поддомены покрываются автоматически:
+# server=/youtube.com/ работает для *.youtube.com
+```
+
+### Приватность
+
+dnsmasq **не логирует** DNS-запросы в production (`no-resolv` логирование отключено). Это соответствует принципу минимального сбора данных.
+
+---
+
+## 12. Policy routing
+
+Две таблицы маршрутизации дополняют друг друга:
+
+```
+Таблица "vpn" (100):
+  Назначение: WG-клиентский трафик, не помеченный как заблокированный
+  Маршрут:    default via <GATEWAY_IP> dev <ETH_IFACE>
+
+Таблица "marked" (200):
+  Назначение: трафик с fwmark 0x1 (заблокированные IP)
+  Маршрут:    default dev tun-reality  (или tun-grpc — зависит от активного стека)
+```
+
+**ip rule (приоритеты):**
+
+```
+100: fwmark 0x1          → lookup marked  # заблокированное → VPS
+150: to 1.1.1.1          → lookup marked  # DNS Cloudflare через VPN
+150: to 8.8.8.8          → lookup marked  # DNS Google через VPN
+200: from 10.177.1.0/24  → lookup vpn     # AWG клиенты → gateway
+200: from 10.177.3.0/24  → lookup vpn     # WG клиенты → gateway
+```
+
+**Управление маршрутом в таблице marked при failover:**
+
 ```bash
-# ОДИН вызов nft -f = одна транзакция ядра = ноль окно утечки
-flush set inet vpn blocked_static
-add element inet vpn blocked_static { 1.2.3.0/24, 5.6.7.0/22, ... }
+# Переключение с tun-reality на tun-grpc:
+ip route replace default dev tun-grpc table marked
 ```
+
+Watchdog выполняет эту команду при переключении стека.
 
 ---
 
-## 8. DNS и dnsmasq
+## 13. Watchdog — центральный агент
 
-```mermaid
-flowchart TD
-    CLIENT[Клиент\nDNS: 10.177.1.1] -->|DNS запрос\nyoutube.com| DNSM
+`/opt/vpn/watchdog/watchdog.py` — Python async FastAPI, systemd unit, порт 8080.
 
-    subgraph DNSM["dnsmasq (домашний сервер :53)"]
-        CACHE[Кэш 10000 записей]
-        MATCH{Домен в\nvpn-domains.conf?}
-    end
+### Архитектура
 
-    MATCH -->|да: youtube.com| VPS_DNS[server=/youtube.com/\n→ 10.177.2.2\nVPS DNS]
-    MATCH -->|нет| DIRECT_DNS[upstream DNS\n8.8.8.8 / 1.1.1.1]
-
-    VPS_DNS --> NFTSET[nftset=/youtube.com/\n4#inet#vpn#blocked_dynamic\n→ IP добавляется в blocked_dynamic]
-    NFTSET --> ANSWER[DNS ответ клиенту]
-    DIRECT_DNS --> ANSWER
+```
+watchdog.py
+├── FastAPI приложение (порт 8080, bearer token)
+├── monitoring_loop (asyncio task, тик 10 сек)
+│   ├── ping VPS через tun каждые 10 сек
+│   ├── curl заблокированных сайтов каждые 5 мин
+│   ├── speedtest 100KB каждые 5 мин
+│   ├── speedtest 10MB каждые 6 ч
+│   ├── внешний IP каждые 5 мин → DDNS update
+│   ├── dnsmasq healthcheck каждые 30 сек
+│   ├── WG peer stale проверка
+│   └── принятие решений failover/rotation
+├── PluginManager
+│   ├── plugins/reality/        (tun-reality, SOCKS :1080)
+│   ├── plugins/reality-grpc/   (tun-grpc, SOCKS :1081)
+│   ├── plugins/cloudflare-cdn/ (cloudflared)
+│   └── plugins/hysteria2/      (hysteria2.service)
+│   └── SIGHUP → hot reload плагинов без полного рестарта
+└── TelegramQueue (asyncio.Queue, retry×5, graceful degradation)
 ```
 
-**Два конфиг-файла dnsmasq:**
-- `vpn-domains.conf` — генерируется из баз РКН + STATIC_BLOCKED_DOMAINS
-- `vpn-force.conf` — генерируется из `manual-vpn.txt` (ручные /vpn add)
+### Plugin-система
 
-**Формат директив:**
+Каждый плагин — директория с файлами:
+
 ```
-server=/youtube.com/10.177.2.2          # резолв через VPS
-nftset=/youtube.com/4#inet#vpn#blocked_dynamic   # IP → в nft set
+plugins/reality/
+├── client.py        — управление tun-интерфейсом и xray-клиентом
+├── metadata.yaml    — имя, resilience (1-4), tun_name, порты
 ```
 
-Поддомены покрываются автоматически: `server=/youtube.com/` работает для `*.youtube.com`.
+`metadata.yaml` пример:
+```yaml
+name: reality
+resilience: 2
+tun_name: tun-reality
+socks_port: 1080
+```
+
+### API endpoints
+
+| Метод | Путь | Описание |
+|-------|------|----------|
+| GET | `/status` | Статус: активный стек, RTT, пиры, uptime |
+| GET | `/metrics` | Prometheus-метрики |
+| POST | `/switch` | Ручное переключение стека |
+| POST | `/peer/add` | Добавить WG peer (mutex — защита от race condition) |
+| POST | `/peer/remove` | Удалить WG peer |
+| POST | `/peer/list` | Список пиров всех интерфейсов |
+| POST | `/routes/update` | Обновить базы РКН (202 Accepted, фоновая задача) |
+| POST | `/deploy` | Обновить из git (202 Accepted, фоновая задача) |
+| POST | `/rollback` | Откат к снимку |
+| POST | `/reload-plugins` | Пересканировать директорию plugins |
+| POST | `/notify-clients` | Разослать конфиги клиентам |
+| POST | `/graph` | PNG через Grafana Render API |
+| POST | `/diagnose/<device>` | Диагностика конкретного устройства |
+
+**Безопасность API:** nftables INPUT accept только `172.20.0.0/24` + Bearer token в заголовке + rate limit 10 req/sec на все POST endpoints.
+
+### Prometheus-метрики (`/metrics`)
+
+| Метрика | Описание |
+|---------|----------|
+| `vpn_tunnel_up` | 1/0 — активность туннеля |
+| `vpn_tunnel_rtt_ms` | RTT к VPS через tun |
+| `vpn_tunnel_rtt_baseline_ms` | 7-дневный скользящий baseline RTT |
+| `vpn_tunnel_packet_loss_pct` | процент потерь пакетов |
+| `vpn_tunnel_download_mbps` | download speedtest |
+| `vpn_tunnel_upload_mbps` | upload speedtest |
+| `vpn_active_stack` | номер активного стека (1–4) |
+| `vpn_peer_count{interface}` | количество пиров на интерфейсе |
+| `vpn_peer_last_handshake_sec{peer}` | секунды с последнего handshake |
+| `vpn_dnsmasq_up` | 1/0 — dnsmasq отвечает |
+| `vpn_routes_cache_age_sec` | возраст кэша баз РКН |
+| `vpn_cert_days{cert}` | дней до истечения сертификата |
+| `vpn_docker_healthy{container}` | 1/0 — состояние контейнера |
+| `vpn_failover_total` | счётчик переключений failover |
+
+### Защита watchdog от сбоя
+
+- `Type=notify`: systemd ждёт `sd_notify(READY=1)` перед пометкой сервиса запущенным
+- `WatchdogSec=30`: systemd убивает и перезапускает если нет `sd_notify(WATCHDOG=1)` более 30 сек
+- `Restart=always, RestartSec=5, StartLimitBurst=5`
+- Cron failsafe: каждые 5 мин `systemctl is-active watchdog || curl telegram "WATCHDOG МЁРТВ"`
+- SIGTERM handler: алерт «сервер выключается», сохранить состояние, без запуска failover
+- Consistency recovery при старте: проверить все сервисы → при неконсистентности → стоп всё → начать с PRIMARY
 
 ---
 
-## 9. Порядок загрузки systemd
+## 14. Telegram-бот
 
-```mermaid
-graph TD
-    NF[nftables.service\n1. правила ядра + пустые sets] -->
-    VR[vpn-sets-restore.service\n2. заполнить blocked_static] -->
-    WG0[wg-quick@wg0\n3. AWG интерфейс] -->
-    WG1[wg-quick@wg1\n3. WG интерфейс] -->
-    VRT[vpn-routes.service\n4. ip rule/route] -->
-    DNS[dnsmasq.service\n5. split DNS] -->
-    H2[hysteria2.service\n6. QUIC стек] -->
-    WD[watchdog.service\n7. Type=notify WatchdogSec=30] -->
-    DK[docker.service\n8. все контейнеры] -->
-    PB[vpn-postboot.service\n9. проверка + Telegram отчёт]
+`/opt/vpn/telegram-bot/` — Python, aiogram 3.x, Docker-контейнер.
+
+### Два режима
+
+| Режим | Кто | Доступ |
+|-------|-----|--------|
+| Администратор | `TELEGRAM_ADMIN_CHAT_ID` из `.env` | Все команды |
+| Клиент | Зарегистрированные через invite-код | Самообслуживание |
+| Незарегистрированный | Все остальные | Только `/start`, остальное — молчание |
+
+### SQLite (WAL mode)
+
+| Таблица | Содержимое |
+|---------|-----------|
+| `clients` | chat_id, device_name, protocol, peer_id, config_version, created_at |
+| `domain_requests` | запросы клиентов на добавление/удаление доменов |
+| `invite_codes` | код, создатель, TTL 24ч, используется-кем |
+| `excludes` | per-device исключения из split tunneling |
+
+### FSM регистрации
+
+```
+/start (новый пользователь)
+    │
+    ▼
+[WaitInvite] — ввод invite-кода (резервируется на 10 мин)
+    │ код верен
+    ▼
+[WaitName] — ввод имени устройства (например: iPhone)
+    │
+    ▼
+[WaitProtocol] — выбор AWG / WG
+    │
+    ▼
+Peer создан → конфиг отправлен → [Registered]
 ```
 
-**watchdog.service** — `Type=notify` означает что systemd ждёт `sd_notify(READY=1)` перед тем как пометить сервис запущенным. `WatchdogSec=30` — systemd убивает и перезапускает если нет `WATCHDOG=1` более 30 сек.
+- Timeout FSM: 10 минут (invite-код освобождается автоматически)
+- Любая команда из другого состояния → сброс FSM → выполнить команду
+- `/start` для уже зарегистрированного → показать устройства (не запускать FSM)
+
+### Конфиг-билдер
+
+- Шаблонизатор `.conf`: ключи + AllowedIPs из `combined.cidr` + Endpoint + DNS + MTU + AWG-параметры
+- Версия по хешу содержимого (не инкрементальная)
+- `/update`: не отправлять если конфиг не изменился
+- QR-код: только если AllowedIPs ≤ 50 записей (иначе не влезает → отправить `.conf` файлом)
+- Предупреждение о приватном ключе при каждой отправке `.conf`
+
+### Авторассылка конфигов
+
+Триггеры (с debounce 5 минут):
+1. Обновление баз РКН (cron 03:00, если есть изменения)
+2. `/routes update`
+3. Одобрение запроса `/request vpn`
+4. Смена внешнего IP (только если DDNS не настроен)
+5. `/migrate-vps`
+
+Поведение: все устройства одного клиента — одно сообщение. Напоминание через 24ч если клиент не обновил конфиг.
 
 ---
 
-## 10. Telegram-бот
+## 15. Мониторинг
 
-```mermaid
-stateDiagram-v2
-    [*] --> Idle: /start (новый пользователь)
-    Idle --> WaitInvite: запрос invite-кода
-    WaitInvite --> WaitName: код верен
-    WaitName --> WaitProtocol: имя введено
-    WaitProtocol --> Registered: AWG/WG выбран\nпир создан\nконфиг отправлен
-    Registered --> [*]
+### Схема
 
-    note right of Idle: Timeout 10 мин\nЛюбая команда\n→ сброс FSM
+```
+Prometheus (VPS :9090)
+    ├── scrape через Tier-2 → node-exporter (дом :9100)
+    ├── scrape через Tier-2 → watchdog /metrics (дом :8080)
+    └── scrape localhost → node-exporter (VPS :9100)
+
+Alertmanager (VPS :9093)
+    └── webhook → watchdog → TelegramQueue → Telegram
+
+Grafana (VPS :3000)
+    └── /graph команда → watchdog → Grafana Render API → PNG → Telegram
+
+VPS healthcheck (cron каждые 5 мин)
+    └── vps-healthcheck.sh → curl Telegram напрямую
+
+Cron failsafe (каждые 5 мин, домашний сервер)
+    └── systemctl is-active watchdog || curl Telegram
 ```
 
-**Архитектура:**
-- `FSMControlMiddleware` (outer) — перехватывает все сообщения, управляет состояниями
-- `DependencyMiddleware` — инжектирует db, watchdog_client
-- SQLite WAL mode — безопасная конкурентная запись
+### Grafana dashboards
 
-**Авторассылка конфигов (debounce 5 мин):**
-Триггеры: обновление баз РКН, /routes update, одобрение /request, смена IP (без DDNS), /migrate-vps
+Доступны через команду `/graph [тип] [период]`:
+- `tunnel` — RTT, стеки, failover
+- `speed` — история speedtest
+- `clients` — активность пиров, трафик
+- `system` — CPU, RAM, диск (домашний + VPS)
+
+Периоды: `1h`, `6h` (default), `24h`, `7d`.
 
 ---
 
-## 11. Мониторинг
+## 16. Безопасность
 
-```mermaid
-graph LR
-    subgraph PULL["Pull (Prometheus на VPS)"]
-        P[Prometheus\nVPS :9090]
-        P -->|scrape через Tier-2| NE1[node-exporter\nдомашний :9100]
-        P -->|scrape через Tier-2| WD[watchdog :8080\n/metrics]
-        P -->|scrape localhost| NE2[node-exporter\nVPS :9100]
-    end
+### Пользователи и SSH
 
-    subgraph PUSH["Push (прямые алерты)"]
-        WD2[watchdog] -->|TelegramQueue| TG[Telegram]
-        AM[Alertmanager] -->|webhook /notify| WD2
-        VHC[vps-healthcheck.sh\ncron 5 мин] -->|curl| TG
-        CRON[vpn-watchdog-failsafe\ncron 5 мин] -->|curl| TG
-    end
+- `setup.sh` создаёт пользователя `sysadmin`, root SSH закрыт (`PermitRootLogin no`)
+- `sysadmin` имеет `sudo NOPASSWD` для операций с сервисами
+- VPS: SSH доступен на порту 22 и 443 (для обхода блокировок провайдеров)
 
-    subgraph GRAPH["Графики /graph"]
-        WD3[watchdog\n/graph] -->|Grafana Render API| GR[grafana-renderer]
-        GR -->|PNG| WD3
-        WD3 -->|sendPhoto| TG
-    end
+### Секреты
+
+- Все секреты в `.env` файлах, `chmod 600`
+- `.env` в `.gitignore` — никогда не попадает в репозиторий
+- Автогенерация `setup.sh`: WG-ключи, UUID Xray, пароли, REALITY key pair
+
+### TLS и сертификаты
+
+- **mTLS:** собственный CA (4096 bit, TTL 10 лет), клиентский cert (TTL 2 года)
+- Nginx на VPS принимает только запросы с валидным клиентским сертификатом
+- `/renew-cert` — обновить клиентский сертификат, `/renew-ca` — обновить CA (редко)
+- Алерты: клиентский cert ≤14 дней, CA ≤30 дней
+
+### Сетевая безопасность
+
+- **fail2ban:** оба узла, SSH + порт Xray на VPS
+- **IPv6:** отключён на обоих серверах (`99-disable-ipv6.conf`)
+- **Rate limiting nftables:** UDP 51820/51821 — 100/сек burst 200; Watchdog API POST — 10 req/сек
+- **Docker socket proxy:** бот обращается к Docker через `socket-proxy` (tecnativa/docker-socket-proxy), не напрямую к сокету
+
+### Ядро и обновления
+
+- `apt-mark hold` + `Pin-Priority -1` на пакеты ядра — нет автоматических kernel upgrades
+- DKMS: проверка после каждого обновления ядра, алерт если AmneziaWG модуль не собран
+- `unattended-upgrades`: только security-патчи ОС
+- `do-release-upgrade` запрещено (обновление ОС только через переустановку + restore.sh)
+
+---
+
+## 17. Автообновления
+
+### Git-зеркало на VPS
+
+VPS каждый час синхронизирует локальную копию репозитория с GitHub:
+
+```bash
+# cron на VPS, каждый час
+cd /opt/vpn/vpn-repo.git && git fetch origin
 ```
 
-**Метрики watchdog** (`/metrics` endpoint):
-- `vpn_tunnel_up` — активность туннеля
-- `vpn_tunnel_rtt_ms` / `vpn_tunnel_rtt_baseline_ms` — RTT и baseline
-- `vpn_tunnel_packet_loss_pct` — потери пакетов
-- `vpn_tunnel_download_mbps` / `vpn_tunnel_upload_mbps` — speedtest
-- `vpn_active_stack` — номер активного стека
-- `vpn_peer_count{interface}` — количество пиров
-- `vpn_peer_last_handshake{interface,peer}` — секунды с handshake
-- `vpn_dnsmasq_up` — здоровье dnsmasq
-- `vpn_routes_cache_age_sec` — возраст кэша баз РКН
-- `vpn_cert_days{cert}` — дней до истечения сертификата
-- `vpn_docker_healthy{container}` — состояние Docker-контейнеров
-- `vpn_failover_total` — счётчик failover
+Домашний сервер тянет обновления через SSH к VPS (через Tier-2 туннель), не напрямую к GitHub. Это решает проблему блокировки GitHub из России.
+
+### deploy.sh
+
+1. Создать `.deploy-snapshot/` (для rollback)
+2. `git pull` с VPS-зеркала через SSH
+3. `rsync` конфигов на хост и VPS
+4. Избирательный рестарт только изменившихся сервисов
+5. Автоматический smoke-test
+6. При провале: авто-rollback + алерт в Telegram
+7. При успехе: уведомление с diff версий
+
+**Особый случай — обновление самого watchdog.py:** `deploy.sh` запускается как отдельный процесс (`nohup`), переживающий рестарт watchdog. Результат отправляется напрямую через `curl` к Telegram API.
+
+### Уведомление администратора об обновлениях
+
+Watchdog проверяет VPS-зеркало каждый час. При доступности новой версии — уведомление:
+
+```
+Доступно обновление v1.3 → v1.4
+[Обновить] [Пропустить] [Подробнее]
+```
+
+Security-обновления помечаются предупреждением.

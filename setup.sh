@@ -772,6 +772,9 @@ phase3() {
         step_skip "step46_tier2_tunnel"
     else
         step "Настройка Tier-2 WireGuard туннеля (10.177.2.0/30)"
+        log_info "Tier-2 — стандартный WireGuard между домашним сервером и VPS."
+        log_info "Используется для: мониторинга watchdog↔Prometheus, git-зеркала, SSH к VPS."
+        log_info "НЕ для клиентского трафика — только для служебных соединений."
 
         AWG_PUB="${AWG_SERVER_PUBLIC_KEY:-}"
         VPS_PRIV="${VPS_WG_PRIVATE_KEY:-}"
@@ -843,6 +846,9 @@ TIER2EOF
         step_skip "step47_xray_client_configs"
     else
         step "Генерация конфигов Xray-клиента (VLESS+XHTTP+REALITY)"
+        log_info "config-reality.json → SOCKS :1080 → VPS:2087 (XHTTP, microsoft.com)"
+        log_info "config-grpc.json    → SOCKS :1081 → VPS:2083 (XHTTP, cdn.jsdelivr.net)"
+        log_info "tun2socks создаёт tun-устройство, маршрутизируя трафик fwmark 0x1 в SOCKS."
 
         XRAY_PUB="${XRAY_PUBLIC_KEY:-}"
         XRAY_GRPC_PUB="${XRAY_GRPC_PUBLIC_KEY:-}"
@@ -1101,6 +1107,7 @@ phase4() {
 
     # Шаг 50 — DNS
     step "Тест DNS (dnsmasq)"
+    log_info "Проверяем: dig @127.0.0.1 youtube.com — должен вернуть IP VPS (через туннель)"
     run_test "DNS резолвинг через 127.0.0.1" \
         "dig @127.0.0.1 youtube.com +short +time=5 2>/dev/null | grep -qE '^[0-9]'" \
         "systemctl status dnsmasq; journalctl -u dnsmasq -n 30"
@@ -1113,6 +1120,7 @@ phase4() {
 
     # Шаг 52 — Watchdog API
     step "Тест Watchdog HTTP API"
+    log_info "Watchdog управляет стеками, мониторит туннели и отправляет алерты в Telegram"
     run_test "GET /status на :8080" \
         "curl -sf --max-time 5 \
             -H 'Authorization: Bearer ${WATCHDOG_API_TOKEN:-tok}' \

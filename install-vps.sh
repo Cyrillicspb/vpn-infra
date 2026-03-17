@@ -216,6 +216,8 @@ if is_done "step36_vps_nftables"; then
     step_skip "step36_vps_nftables"
 else
     step "Настройка nftables на VPS (rate limiting + защита портов)"
+    log_info "Rate limiting: TCP/UDP 443 — 200/сек, burst 500 (защита Xray + Hysteria2)"
+    log_info "Открытые порты: 22 (SSH), 443 (Xray/Hysteria2), 51822 UDP (Tier-2 WG)"
 
     vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables"
 
@@ -366,6 +368,8 @@ if is_done "step40_vps_mtls_ca"; then
     step_skip "step40_vps_mtls_ca"
 else
     step "Генерация mTLS CA (корневой сертификат)"
+    log_info "mTLS CA: 4096 bit RSA, 10 лет — для защиты панели Grafana/3x-ui"
+    log_info "Клиентский сертификат: запрос через Telegram /renew-cert"
 
     vps_exec "mkdir -p /opt/vpn/nginx/mtls /opt/vpn/nginx/ssl"
 
@@ -466,6 +470,8 @@ if is_done "step42_vps_docker_compose"; then
     step_skip "step42_vps_docker_compose"
 else
     step "Запуск Docker Compose на VPS"
+    log_info "Запускаем: 3x-ui (Xray inbounds), nginx (mTLS :8443),"
+    log_info "           cloudflared, prometheus, alertmanager, grafana, node-exporter, hysteria2"
 
     # Проверяем наличие docker-compose.yml на VPS
     if ! vps_exec "[ -f /opt/vpn/docker-compose.yml ] && echo exists" 2>/dev/null \
@@ -506,6 +512,10 @@ if is_done "step43_vps_3xui_inbounds"; then
     step_skip "step43_vps_3xui_inbounds"
 else
     step "Настройка VLESS-XHTTP инбаундов в 3x-ui"
+    log_info "Создаём 3 inbound в 3x-ui через API:"
+    log_info "  VLESS-XHTTP-microsoft  :2087  (стек reality,      SNI: microsoft.com)"
+    log_info "  VLESS-XHTTP-jsdelivr   :2083  (стек reality-grpc, SNI: cdn.jsdelivr.net)"
+    log_info "  VLESS-WS-cdn           :8080  (стек cdn, для Cloudflare Worker)"
 
     SETUP_SCRIPT="${REPO_DIR}/vps/scripts/xray-setup.sh"
     if [[ ! -f "$SETUP_SCRIPT" ]]; then

@@ -323,6 +323,8 @@ if is_done "step16_install_amneziawg"; then
     step_skip "step16_install_amneziawg"
 else
     step "Установка AmneziaWG (DKMS модуль)"
+    log_info "AmneziaWG — модификация WireGuard с дополнительной обфускацией (junk packets)."
+    log_info "Защищает от DPI-детекции WireGuard по сигнатурам пакетов."
 
     AWG_INSTALLED=0
 
@@ -428,6 +430,8 @@ if is_done "step19_generate_reality_keys"; then
     step_skip "step19_generate_reality_keys"
 else
     step "Генерация REALITY x25519 ключей (через Docker/xray)"
+    log_info "x25519 keypair нужен для VLESS+XHTTP+REALITY — имитация TLS к легитимному домену."
+    log_info "Генерируем два keypair: для microsoft.com (стек 3) и cdn.jsdelivr.net (стек 2)."
 
     # Загружаем актуальные переменные
     set -o allexport; source "$ENV_FILE"; set +o allexport
@@ -481,6 +485,10 @@ if is_done "step20_configure_nftables"; then
     step_skip "step20_configure_nftables"
 else
     step "Настройка nftables (правила + nft sets)"
+    log_info "nftables: таблица inet vpn с двумя sets:"
+    log_info "  blocked_static  — базы РКН, обновляется ежедневно в 03:00"
+    log_info "  blocked_dynamic — IP из DNS-ответов (dnsmasq nftset=), TTL 24h"
+    log_info "Kill switch: DROP если dst в blocked_sets и oifname != tun* (VPN не поднят)"
 
     # Копируем конфиг из репозитория
     if [[ -f /opt/vpn/home/nftables/nftables.conf ]]; then
@@ -655,6 +663,9 @@ if is_done "step22_wireguard_configs"; then
     step_skip "step22_wireguard_configs"
 else
     step "Создание конфигов WireGuard-интерфейсов (wg0 AWG + wg1 WG)"
+    log_info "wg0 (AmneziaWG): клиенты AWG, 10.177.1.0/24, порт 51820"
+    log_info "wg1 (WireGuard): клиенты WG,  10.177.3.0/24, порт 51821"
+    log_info "Пиры добавляются через Telegram-бот (/adddevice) или watchdog API."
 
     set -o allexport; source "$ENV_FILE"; set +o allexport
 
@@ -1165,6 +1176,8 @@ if is_done "step31_docker_compose_home"; then
     step_skip "step31_docker_compose_home"
 else
     step "Запуск Docker Compose (домашний сервер)"
+    log_info "Запускаем: telegram-bot, xray-client (:1080), xray-client-2 (:1081),"
+    log_info "           cloudflared (CDN-стек), socket-proxy, node-exporter"
 
     set -o allexport; source "$ENV_FILE"; set +o allexport
 

@@ -91,10 +91,11 @@
 |------|----------|------------|
 | 22 | TCP | SSH (или альтернативный порт) |
 | 443 | TCP | REALITY + nginx |
-| 443 | UDP | Hysteria2 |
-| 8444 | TCP | REALITY-gRPC |
-| 8443 | TCP | Nginx admin panels |
-| 51820 | UDP | Tier-2 WireGuard туннель |
+| 443 | UDP | Hysteria2 (standalone, не через 3x-ui) |
+| 2087 | TCP | VLESS-XHTTP-microsoft (REALITY, стек 3) |
+| 2083 | TCP | VLESS-XHTTP-jsdelivr (REALITY, стек 2) |
+| 8443 | TCP | Nginx admin panels (mTLS) |
+| 51822 | UDP | Tier-2 WireGuard туннель |
 
 ---
 

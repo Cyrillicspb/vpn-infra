@@ -566,6 +566,124 @@ sudo bash /opt/vpn/home/scripts/watchdog-failsafe.sh
 
 ---
 
+## XHTTP стек не работает
+
+### Симптом: xray-client или xray-client-2 не подключается, тоннель не поднимается
+
+**Шаг 1: Проверьте порты инбаундов на VPS**
+
+```bash
+# На VPS (через Tier-2 туннель):
+ssh -i /root/.ssh/vpn_id_ed25519 sysadmin@10.177.2.2
+ss -tulpn | grep -E '2087|2083'
+# Должно быть: 0.0.0.0:2087 и 0.0.0.0:2083 (3x-ui / xray)
+```
+
+Если порты не слушают — инбаунды в 3x-ui не созданы или Xray упал:
+```bash
+sudo docker logs 3x-ui --tail 50
+sudo docker restart 3x-ui
+```
+
+**Шаг 2: Проверьте password в splithttpSettings**
+
+Xray 26.x требует непустой `password` в конфиге XHTTP-инбаунда. Проверьте через 3x-ui API:
+```bash
+curl -s http://localhost:2053/login \
+    -d "username=admin&password=${XRAY_PANEL_PASSWORD}" \
+    -c /tmp/3xui-cookies.txt
+curl -s http://localhost:2053/panel/api/inbounds \
+    -b /tmp/3xui-cookies.txt | python3 -m json.tool | grep -A2 '"password"'
+```
+
+Если `password` пустой — запустите заново скрипт настройки инбаундов:
+```bash
+bash /opt/vpn/vps/scripts/xray-setup.sh
+```
+
+**Шаг 3: Проверьте конфиг xray-клиента на домашнем сервере**
+
+```bash
+docker logs xray-client --tail 50    # стек reality (SOCKS :1080)
+docker logs xray-client-2 --tail 50  # стек reality-grpc (SOCKS :1081)
+cat /opt/vpn/xray/config-reality.json | python3 -m json.tool | head -30
+```
+
+Endpoint должен быть `VPS_IP:2087` (reality) и `VPS_IP:2083` (reality-grpc).
+
+---
+
+## Hysteria2 не подключается
+
+### Симптом: стек hysteria2 не поднимается, тоннель недоступен
+
+**Шаг 1: Проверьте UDP 443 на VPS**
+
+```bash
+# На VPS:
+ss -ulpn | grep 443
+# Должно быть: *:443 (hysteria2, standalone сервис)
+sudo docker logs hysteria2 --tail 50
+```
+
+> Hysteria2 работает как отдельный Docker-контейнер на VPS — **не через 3x-ui**.
+> 3x-ui не поддерживает Hysteria2. Конфиг: `/opt/vpn/hysteria2/server.yaml`.
+
+**Шаг 2: Проверьте пароль obfs salamander**
+
+```bash
+# На VPS: проверьте конфиг сервера
+sudo cat /opt/vpn/hysteria2/server.yaml | grep -A3 obfs
+
+# На домашнем сервере: проверьте конфиг клиента
+cat /etc/hysteria/config.yaml | grep -A3 obfs
+```
+
+Пароли должны совпадать. Оба берутся из `.env` переменной `HYSTERIA2_OBFS_PASSWORD`.
+
+**Шаг 3: Проверьте QUIC / UDP блокировку**
+
+Hysteria2 использует QUIC поверх UDP. Провайдер или ТСПУ могут блокировать QUIC-паттерны.
+
+```bash
+# Тест UDP 443 к VPS с домашнего сервера:
+nc -zu ${VPS_IP} 443 && echo "UDP открыт" || echo "UDP заблокирован"
+```
+
+Если UDP заблокирован — переключитесь на другой стек: `/switch reality-grpc`
+
+---
+
+## Нет совпадения step ID в .setup-state
+
+### Симптом: setup.sh пишет "Пропуск" для шагов, которые нужно выполнить заново
+
+При переименовании шагов между версиями setup.sh `.setup-state` может содержать старые ID.
+
+**Как проверить:**
+```bash
+cat /opt/vpn/.setup-state
+```
+
+**Как принудительно перевыполнить конкретный шаг:**
+```bash
+# Удалите строку с ID шага, который нужно повторить:
+sed -i '/step43_vps_3xui_inbounds/d' /opt/vpn/.setup-state
+sudo bash setup.sh
+```
+
+**Если нужно выполнить несколько шагов с определённого:**
+```bash
+# Оставьте только шаги, выполненные до нужного места:
+# (вручную отредактируйте .setup-state, удалив строки от нужного шага и ниже)
+nano /opt/vpn/.setup-state
+sudo bash setup.sh
+```
+
+Выполненные шаги повторно не запускаются — только те, чьи ID отсутствуют в файле.
+
+---
+
 ## Ошибки установки
 
 ### setup.sh: "Шаг N провалился"
