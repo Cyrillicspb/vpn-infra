@@ -498,9 +498,17 @@ do_deploy() {
     rsync -a "$REPO_DIR/home/watchdog/plugins/" "$REPO_DIR/watchdog/plugins/" 2>/dev/null || true
     rsync -a "$REPO_DIR/home/scripts/" "$REPO_DIR/scripts/" 2>/dev/null && chmod +x "$REPO_DIR/scripts/"*.sh 2>/dev/null || true
 
+    # Xray конфиги: шаблоны из home/xray/ → подставить .env → xray/
+    # ВАЖНО: home/xray/*.json — шаблоны с ${VAR}, нельзя rsync напрямую
+    source "$REPO_DIR/.env" 2>/dev/null || true
+    for tmpl in "$REPO_DIR/home/xray/"*.json; do
+        name=$(basename "$tmpl")
+        envsubst < "$tmpl" > "$REPO_DIR/xray/$name"
+    done
+    log_ok "Xray конфиги обновлены (envsubst)"
+
     # CDN конфиг: регенерировать из .env если CF_CDN_HOSTNAME задан
     # Транспорт: splithttp (xHTTP H2) — WS устарел в Xray 26.x
-    source "$REPO_DIR/.env" 2>/dev/null || true
     if [[ -n "${CF_CDN_HOSTNAME:-}" ]]; then
         CF_CDN_UUID="${CF_CDN_UUID:-$(python3 -c "import uuid; print(uuid.uuid4())")}"
         python3 -c "
