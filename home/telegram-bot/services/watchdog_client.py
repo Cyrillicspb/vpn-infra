@@ -153,6 +153,9 @@ class WatchdogClient:
     async def assess(self) -> dict:
         return await self._post("/assess")
 
+    async def check_domain(self, domain: str) -> dict:
+        return await self._post("/check", {"domain": domain})
+
     # -----------------------------------------------------------------------
     # DPI bypass (zapret lane)
     # -----------------------------------------------------------------------
@@ -194,6 +197,24 @@ class WatchdogClient:
     # -----------------------------------------------------------------------
     async def backup(self) -> dict:
         return await self._post("/backup", timeout=30)
+
+    # -----------------------------------------------------------------------
+    # Fail2ban
+    # -----------------------------------------------------------------------
+    async def get_fail2ban_status(self) -> dict:
+        return await self._get("/fail2ban/status", timeout=40)
+
+    async def fail2ban_unban(self, server: str, jail: str, ip: str) -> dict:
+        return await self._post("/fail2ban/unban", {"server": server, "jail": jail, "ip": ip})
+
+    # -----------------------------------------------------------------------
+    # mTLS renew
+    # -----------------------------------------------------------------------
+    async def renew_cert(self) -> dict:
+        return await self._post("/renew-cert", timeout=65)
+
+    async def renew_ca(self) -> dict:
+        return await self._post("/renew-ca", timeout=65)
 
     # -----------------------------------------------------------------------
     # NFT stats / rotation log / DPI test

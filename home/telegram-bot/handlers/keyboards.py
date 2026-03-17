@@ -29,19 +29,41 @@ def menu_reply_kb() -> ReplyKeyboardMarkup:
 def admin_main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📊 Мониторинг",   callback_data="adm:monitor"),
-            InlineKeyboardButton(text="⚙️ Управление",   callback_data="adm:manage"),
+            InlineKeyboardButton(text="🏠 Дашборд", callback_data="adm:dashboard"),
         ],
         [
-            InlineKeyboardButton(text="🌐 Маршруты",     callback_data="adm:routes"),
+            InlineKeyboardButton(text="📡 Туннель",      callback_data="adm:tunnel_menu"),
             InlineKeyboardButton(text="👥 Клиенты",      callback_data="adm:clients"),
         ],
         [
-            InlineKeyboardButton(text="🖥️ VPS",          callback_data="adm:vps"),
-            InlineKeyboardButton(text="🔐 Безопасность", callback_data="adm:security"),
+            InlineKeyboardButton(text="🌐 Маршруты",     callback_data="adm:routes"),
+            InlineKeyboardButton(text="🔧 Система",      callback_data="adm:system"),
         ],
         [
+            InlineKeyboardButton(text="📊 Мониторинг",   callback_data="adm:monitor"),
             InlineKeyboardButton(text="👤 Меню пользователя", callback_data="adm:user_menu"),
+        ],
+    ])
+
+
+# ── Администратор: туннель ────────────────────────────────────────────────────
+
+def admin_tunnel_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔗 Стеки",           callback_data="adm:tunnel"),
+            InlineKeyboardButton(text="🔄 Сменить стек",    callback_data="adm:switch_menu"),
+        ],
+        [
+            InlineKeyboardButton(text="🔍 Тест стеков",     callback_data="adm:assess"),
+            InlineKeyboardButton(text="📋 Журнал ротаций",  callback_data="adm:rotation_log"),
+        ],
+        [
+            InlineKeyboardButton(text="🖥️ VPS",             callback_data="adm:vps"),
+            InlineKeyboardButton(text="⚡ DPI bypass",      callback_data="adm:dpi"),
+        ],
+        [
+            InlineKeyboardButton(text="◀️ Назад",           callback_data="adm:menu"),
         ],
     ])
 
@@ -51,24 +73,15 @@ def admin_main_menu() -> InlineKeyboardMarkup:
 def admin_monitor_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📈 Статус",          callback_data="adm:status"),
-            InlineKeyboardButton(text="🔗 Туннель",         callback_data="adm:tunnel"),
-        ],
-        [
-            InlineKeyboardButton(text="🌍 IP",              callback_data="adm:ip"),
             InlineKeyboardButton(text="🐳 Docker",          callback_data="adm:docker"),
+            InlineKeyboardButton(text="📊 Трафик клиентов", callback_data="adm:stats"),
         ],
         [
-            InlineKeyboardButton(text="⚡ Метрики",         callback_data="adm:speed"),
+            InlineKeyboardButton(text="⚡ Спидтест",        callback_data="adm:speedtest"),
             InlineKeyboardButton(text="📉 Графики",         callback_data="adm:graph_menu"),
         ],
         [
-            InlineKeyboardButton(text="📊 Трафик клиентов", callback_data="adm:stats"),
-            InlineKeyboardButton(text="🔄 Журнал ротаций",  callback_data="adm:rotation_log"),
-        ],
-        [
-            InlineKeyboardButton(text="🔍 Тест стеков",     callback_data="adm:assess"),
-            InlineKeyboardButton(text="🩺 Диагностика",     callback_data="adm:diagnose_menu"),
+            InlineKeyboardButton(text="📋 Логи",            callback_data="adm:logs_menu"),
         ],
         [
             InlineKeyboardButton(text="◀️ Назад",           callback_data="adm:menu"),
@@ -89,25 +102,31 @@ def admin_graph_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# ── Администратор: управление ─────────────────────────────────────────────────
+# ── Администратор: система (объединяет управление + безопасность) ─────────────
 
-def admin_manage_menu() -> InlineKeyboardMarkup:
+def admin_system_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🔄 Сменить стек",    callback_data="adm:switch_menu"),
-            InlineKeyboardButton(text="🔃 Перезапуск",      callback_data="adm:restart_menu"),
-        ],
-        [
-            InlineKeyboardButton(text="📄 Логи",            callback_data="adm:logs_menu"),
-            InlineKeyboardButton(text="📢 Рассылка",        callback_data="adm:broadcast"),
-        ],
-        [
-            InlineKeyboardButton(text="⬆️ Обновить Docker", callback_data="adm:update"),
-            InlineKeyboardButton(text="💾 Бэкап",           callback_data="adm:backup"),
-        ],
         [
             InlineKeyboardButton(text="🚀 Deploy",          callback_data="adm:deploy"),
             InlineKeyboardButton(text="⏮️ Откат",           callback_data="adm:rollback"),
+        ],
+        [
+            InlineKeyboardButton(text="💾 Бэкап",           callback_data="adm:backup"),
+            InlineKeyboardButton(text="⬆️ Обновить Docker", callback_data="adm:update"),
+        ],
+        [
+            InlineKeyboardButton(text="🔃 Перезапуск",      callback_data="adm:restart_menu"),
+            InlineKeyboardButton(text="📋 Логи",            callback_data="adm:logs_menu"),
+        ],
+        [
+            InlineKeyboardButton(text="🔑 Ротация ключей",  callback_data="adm:rotate_keys"),
+            InlineKeyboardButton(text="📜 Сертификат mTLS", callback_data="adm:renew_cert"),
+        ],
+        [
+            InlineKeyboardButton(text="🏛️ Обновить CA",     callback_data="adm:renew_ca"),
+        ],
+        [
+            InlineKeyboardButton(text="🛡️ Fail2ban",        callback_data="adm:fail2ban"),
         ],
         [
             InlineKeyboardButton(text="⚠️ Перезагрузить сервер", callback_data="adm:reboot"),
@@ -118,18 +137,23 @@ def admin_manage_menu() -> InlineKeyboardMarkup:
     ])
 
 
-def admin_switch_menu() -> InlineKeyboardMarkup:
+def admin_manage_menu() -> InlineKeyboardMarkup:
+    """Обратная совместимость — возвращает admin_system_menu()."""
+    return admin_system_menu()
+
+
+def admin_switch_menu(active_stack: str = "") -> InlineKeyboardMarkup:
     stacks = [
         ("☁️ Cloudflare CDN", "cloudflare-cdn"),
         ("🔒 REALITY + gRPC",  "reality-grpc"),
         ("🔒 REALITY",         "reality"),
         ("⚡ Hysteria2",        "hysteria2"),
     ]
-    rows = [
-        [InlineKeyboardButton(text=name, callback_data=f"adm:sw:{key}")]
-        for name, key in stacks
-    ]
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:manage")])
+    rows = []
+    for name, key in stacks:
+        prefix = "✅ " if active_stack and key == active_stack else ""
+        rows.append([InlineKeyboardButton(text=f"{prefix}{name}", callback_data=f"adm:sw:{key}")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:tunnel_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -152,7 +176,7 @@ def admin_restart_menu() -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:manage")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:system")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -176,7 +200,7 @@ def admin_logs_menu() -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:manage")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:system")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -265,14 +289,15 @@ def domains_inline_kb(domains: list[str], prefix: str, back: str) -> InlineKeybo
 def admin_clients_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
+            InlineKeyboardButton(text="👤 Все клиенты",         callback_data="adm:clients_list"),
             InlineKeyboardButton(text="🎫 Создать инвайт",      callback_data="adm:invite"),
-            InlineKeyboardButton(text="👥 Все клиенты",         callback_data="adm:clients_list"),
         ],
         [
-            InlineKeyboardButton(text="📨 Запросы на модерацию", callback_data="adm:requests"),
-        ],
-        [
+            InlineKeyboardButton(text="📨 Запросы",              callback_data="adm:requests"),
             InlineKeyboardButton(text="📤 Разослать конфиги",    callback_data="adm:broadcast_configs"),
+        ],
+        [
+            InlineKeyboardButton(text="🩺 Диагностика",          callback_data="adm:diagnose_menu"),
         ],
         [
             InlineKeyboardButton(text="◀️ Назад", callback_data="adm:menu"),
@@ -303,6 +328,7 @@ def admin_client_actions_kb(chat_id: str, is_disabled: bool) -> InlineKeyboardMa
             InlineKeyboardButton(text="🔢 Лимит устройств", callback_data=f"adm:cl_lim:{chat_id}"),
             InlineKeyboardButton(text="🦵 Кик",             callback_data=f"adm:cl_kick:{chat_id}"),
         ],
+        [InlineKeyboardButton(text="🔄 Реконнект", callback_data=f"adm:cl_reconnect:{chat_id}")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="adm:clients_list")],
     ])
 
@@ -316,7 +342,7 @@ def admin_vps_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="➕ Добавить VPS", callback_data="adm:vps_add"),
         ],
         [
-            InlineKeyboardButton(text="◀️ Назад", callback_data="adm:menu"),
+            InlineKeyboardButton(text="◀️ Назад", callback_data="adm:tunnel_menu"),
         ],
     ])
 
@@ -346,29 +372,19 @@ def admin_vps_actions_kb(ip: str, ssh_port: int = 22) -> InlineKeyboardMarkup:
 # ── Администратор: безопасность ───────────────────────────────────────────────
 
 def admin_security_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🔑 Ротация ключей",   callback_data="adm:rotate_keys"),
-            InlineKeyboardButton(text="📜 Сертификат mTLS",  callback_data="adm:renew_cert"),
-        ],
-        [
-            InlineKeyboardButton(text="🏛️ Обновить CA",      callback_data="adm:renew_ca"),
-        ],
-        [
-            InlineKeyboardButton(text="◀️ Назад", callback_data="adm:menu"),
-        ],
-    ])
+    """Обратная совместимость — возвращает admin_system_menu()."""
+    return admin_system_menu()
 
 
 def admin_diagnose_kb(devices: list[dict]) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(
-            text=f"🔍 {d['device_name']} ({d['protocol'].upper()})",
+            text=f"🔍 {d.get('owner_name', '?')} / {d['device_name']} ({d['protocol'].upper()})",
             callback_data=f"adm:diag:{d['device_name'][:30]}",
         )]
         for d in devices[:20]
     ]
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:monitor")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:clients")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -383,24 +399,26 @@ def back_to_admin_menu() -> InlineKeyboardMarkup:
 def client_main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📱 Мои устройства",    callback_data="cl:mydevices"),
-            InlineKeyboardButton(text="📥 Скачать конфиг",    callback_data="cl:myconfig"),
+            InlineKeyboardButton(text="📱 Устройства и конфиги", callback_data="cl:mydevices"),
         ],
         [
             InlineKeyboardButton(text="➕ Добавить устройство",  callback_data="cl:adddevice"),
             InlineKeyboardButton(text="➖ Удалить устройство",   callback_data="cl:removedevice"),
         ],
         [
-            InlineKeyboardButton(text="🔄 Обновить маршруты",   callback_data="cl:update"),
-            InlineKeyboardButton(text="📊 Статус VPN",          callback_data="cl:status"),
+            InlineKeyboardButton(text="🔄 Обновить настройки VPN", callback_data="cl:update"),
+            InlineKeyboardButton(text="📊 Статус VPN",             callback_data="cl:status"),
         ],
         [
-            InlineKeyboardButton(text="🌐 Запросить маршрут",   callback_data="cl:request"),
-            InlineKeyboardButton(text="📝 Мои запросы",         callback_data="cl:myrequests"),
+            InlineKeyboardButton(text="🌐 Открыть сайт через VPN", callback_data="cl:request"),
+            InlineKeyboardButton(text="📝 Мои запросы",            callback_data="cl:myrequests"),
         ],
         [
-            InlineKeyboardButton(text="✂️ Исключения",           callback_data="cl:excludes"),
-            InlineKeyboardButton(text="🆘 Сообщить о проблеме", callback_data="cl:report"),
+            InlineKeyboardButton(text="🚫 Не пускать через VPN",  callback_data="cl:excludes"),
+            InlineKeyboardButton(text="🆘 Сообщить о проблеме",   callback_data="cl:report"),
+        ],
+        [
+            InlineKeyboardButton(text="🔍 Почему не работает сайт?", callback_data="cl:checksite"),
         ],
     ])
 
@@ -466,6 +484,15 @@ def devices_inline_kb(devices: list, prefix: str, back: str = "cl:menu") -> Inli
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def device_detail_kb(device_id: int) -> InlineKeyboardMarkup:
+    """Действия с конкретным устройством клиента."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📥 Получить конфиг", callback_data=f"cl:getconf:{device_id}")],
+        [InlineKeyboardButton(text="🗑 Удалить устройство", callback_data=f"cl:del:{device_id}")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="cl:mydevices")],
+    ])
+
+
 def platform_inline_kb(device_id: int) -> InlineKeyboardMarkup:
     """Клавиатура выбора платформы при получении конфига."""
     platforms = [
@@ -479,7 +506,7 @@ def platform_inline_kb(device_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=label, callback_data=f"cfgp:{device_id}:{platform}")]
         for label, platform in platforms
     ]
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="cl:myconfig")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"cl:dev:{device_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -2440,18 +2440,92 @@ async def post_graph(request: Request, req: GraphRequest, _: bool = Depends(_aut
         raise HTTPException(status_code=502, detail=f"Grafana недоступна: {exc}")
 
 
+@app.post("/check")
+@limiter.limit("10/second")
+async def post_check_domain(request: Request, _: bool = Depends(_auth)):
+    """Проверить домен: резолв → nft set lookup → manual lists."""
+    body = await request.json()
+    domain = body.get("domain", "").strip().lower().strip(".").split("/")[0]
+    if not domain:
+        raise HTTPException(status_code=400, detail="domain required")
+
+    result: dict[str, Any] = {"domain": domain}
+
+    # 1. Резолв
+    rc, out, _ = await run_cmd(["dig", "+short", "+time=3", domain], timeout=8)
+    ips = [ln.strip() for ln in out.splitlines() if ln.strip() and not ln.startswith(";") and "." in ln]
+    result["ips"] = ips
+
+    # 2. Проверка в nft sets
+    in_static = False
+    in_dynamic = False
+    for ip in ips:
+        rc_s, _, _ = await run_cmd(["nft", "get", "element", "inet", "vpn", "blocked_static",  f"{{ {ip} }}"], timeout=3)
+        if rc_s == 0:
+            in_static = True
+        rc_d, _, _ = await run_cmd(["nft", "get", "element", "inet", "vpn", "blocked_dynamic", f"{{ {ip} }}"], timeout=3)
+        if rc_d == 0:
+            in_dynamic = True
+
+    result["in_blocked_static"]  = in_static
+    result["in_blocked_dynamic"] = in_dynamic
+
+    # 3. Manual lists
+    MANUAL_VPN    = Path("/etc/vpn-routes/manual-vpn.txt")
+    MANUAL_DIRECT = Path("/etc/vpn-routes/manual-direct.txt")
+    result["in_manual_vpn"]    = MANUAL_VPN.exists()    and domain in MANUAL_VPN.read_text()
+    result["in_manual_direct"] = MANUAL_DIRECT.exists() and domain in MANUAL_DIRECT.read_text()
+
+    # 4. Итоговый вердикт
+    if result["in_manual_vpn"] or in_static or in_dynamic:
+        result["verdict"] = "vpn"
+    elif result["in_manual_direct"]:
+        result["verdict"] = "direct"
+    else:
+        result["verdict"] = "unknown"
+
+    return result
+
+
 @app.post("/diagnose/{device}")
 @limiter.limit("10/second")
 async def post_diagnose(request: Request, device: str, _: bool = Depends(_auth)):
     results: dict[str, Any] = {"device": device, "ts": datetime.now().isoformat()}
 
     # WG peer (проверяем оба стека)
-    wg_dump = ""
-    for tool in ("awg", "wg"):
-        rc, out, _ = await run_cmd([tool, "show", "all", "dump"], timeout=10)
-        if rc == 0:
-            wg_dump += out
-    results["wg_peer_found"] = device in wg_dump
+    # Ищем публичный ключ устройства в БД
+    peer_pubkey = ""
+    if BOT_DB_PATH.exists():
+        try:
+            import sqlite3 as _sqlite3
+            with _sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=3) as conn:
+                row = conn.execute(
+                    "SELECT d.public_key FROM devices d WHERE LOWER(d.device_name) = LOWER(?) LIMIT 1",
+                    (device,),
+                ).fetchone()
+            if row:
+                peer_pubkey = row[0] or ""
+        except Exception:
+            pass
+
+    wg_peer_ok = False
+    if peer_pubkey:
+        for tool in ("awg", "wg"):
+            rc, out, _ = await run_cmd([tool, "show", "all", "latest-handshakes"], timeout=10)
+            if rc == 0:
+                for line in out.splitlines():
+                    parts = line.split()
+                    # формат: <iface> <pubkey> <timestamp>
+                    if len(parts) >= 3 and parts[1] == peer_pubkey:
+                        try:
+                            hs_age = int(time.time()) - int(parts[2])
+                            wg_peer_ok = hs_age < PEER_STALE_SECONDS
+                        except ValueError:
+                            pass
+                        break
+            if wg_peer_ok:
+                break
+    results["wg_peer_found"] = wg_peer_ok
 
     # DNS
     rc, out, _ = await run_cmd(["dig", "@127.0.0.1", "youtube.com", "+short", "+time=3"], timeout=10)
@@ -2654,6 +2728,123 @@ async def post_backup(request: Request, bg: BackgroundTasks, _: bool = Depends(_
 
     bg.add_task(_run_backup)
     return {"status": "started"}
+
+
+# ---------------------------------------------------------------------------
+# mTLS renew
+# ---------------------------------------------------------------------------
+@app.post("/renew-cert")
+@limiter.limit("3/minute")
+async def post_renew_cert(request: Request, _: bool = Depends(_auth)):
+    """Обновить клиентский сертификат mTLS."""
+    rc, out, err = await run_cmd(
+        ["bash", "/opt/vpn/scripts/renew-mtls.sh", "client"], timeout=60
+    )
+    return {"ok": rc == 0, "output": (out or err)[:500]}
+
+
+@app.post("/renew-ca")
+@limiter.limit("1/minute")
+async def post_renew_ca(request: Request, _: bool = Depends(_auth)):
+    """Обновить CA (корневой сертификат)."""
+    rc, out, err = await run_cmd(
+        ["bash", "/opt/vpn/scripts/renew-mtls.sh", "ca"], timeout=60
+    )
+    return {"ok": rc == 0, "output": (out or err)[:500]}
+
+
+# ---------------------------------------------------------------------------
+# Fail2ban
+# ---------------------------------------------------------------------------
+async def _f2b_jails(ssh_prefix: list[str]) -> list[dict]:
+    """Получить список jails и забаненных IP. ssh_prefix=[] для localhost."""
+    rc, out, _ = await run_cmd(ssh_prefix + ["fail2ban-client", "status"], timeout=10)
+    if rc != 0:
+        return []
+    jails = []
+    for line in out.splitlines():
+        if "Jail list" in line or "список" in line.lower():
+            # Jail list:   sshd, xray
+            parts = line.split(":", 1)
+            if len(parts) == 2:
+                jails = [j.strip() for j in parts[1].split(",") if j.strip()]
+    result = []
+    for jail in jails:
+        rc2, out2, _ = await run_cmd(
+            ssh_prefix + ["fail2ban-client", "status", jail], timeout=10
+        )
+        banned: list[str] = []
+        total_banned = 0
+        if rc2 == 0:
+            for line in out2.splitlines():
+                if "Banned IP list" in line or "Список забаненных" in line.lower():
+                    parts = line.split(":", 1)
+                    if len(parts) == 2:
+                        banned = [ip.strip() for ip in parts[1].split() if ip.strip()]
+                if "Currently banned" in line or "Заблокировано" in line.lower():
+                    try:
+                        total_banned = int(line.split(":", 1)[1].strip())
+                    except (ValueError, IndexError):
+                        pass
+        result.append({"jail": jail, "banned": banned, "total_banned": total_banned})
+    return result
+
+
+def _vps_ssh_prefix(vps: dict) -> list[str]:
+    ssh_key = os.getenv("VPS_SSH_KEY", "/root/.ssh/id_rsa")
+    return [
+        "ssh", "-i", ssh_key,
+        "-p", str(vps.get("ssh_port", 443)),
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "ConnectTimeout=8",
+        "-o", "BatchMode=yes",
+        f"sysadmin@{vps['ip']}",
+    ]
+
+
+@app.get("/fail2ban/status")
+async def get_fail2ban_status(_: bool = Depends(_auth)):
+    """Статус fail2ban: домашний сервер + все VPS."""
+    home_jails = await _f2b_jails([])
+    vps_results = []
+    for i, vps in enumerate(state.vps_list):
+        prefix = _vps_ssh_prefix(vps)
+        jails = await _f2b_jails(prefix)
+        vps_results.append({"ip": vps["ip"], "idx": i, "jails": jails})
+    # Добавить первичный VPS если его нет в списке
+    if VPS_IP and not any(v["ip"] == VPS_IP for v in state.vps_list):
+        ssh_port = int(os.getenv("VPS_SSH_PORT", "443"))
+        prefix = _vps_ssh_prefix({"ip": VPS_IP, "ssh_port": ssh_port})
+        jails = await _f2b_jails(prefix)
+        vps_results.insert(0, {"ip": VPS_IP, "idx": -1, "jails": jails})
+    return {"home": home_jails, "vps": vps_results}
+
+
+class F2bUnbanRequest(BaseModel):
+    server: str          # "home" или IP VPS
+    jail: str
+    ip: str
+
+
+@app.post("/fail2ban/unban")
+@limiter.limit("20/minute")
+async def post_fail2ban_unban(request: Request, req: F2bUnbanRequest, _: bool = Depends(_auth)):
+    """Разбанить IP в указанном jail."""
+    if req.server == "home":
+        ssh_prefix: list[str] = []
+    else:
+        # Найти VPS по IP
+        vps = next((v for v in state.vps_list if v["ip"] == req.server), None)
+        if not vps and req.server == VPS_IP:
+            vps = {"ip": VPS_IP, "ssh_port": int(os.getenv("VPS_SSH_PORT", "443"))}
+        if not vps:
+            raise HTTPException(status_code=404, detail="VPS не найден")
+        ssh_prefix = _vps_ssh_prefix(vps)
+    rc, out, err = await run_cmd(
+        ssh_prefix + ["fail2ban-client", "set", req.jail, "unbanip", req.ip],
+        timeout=15,
+    )
+    return {"ok": rc == 0, "output": (out or err)[:200]}
 
 
 # ---------------------------------------------------------------------------

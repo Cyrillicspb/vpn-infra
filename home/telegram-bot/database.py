@@ -114,8 +114,34 @@ class Database:
                 cols = {r[1] for r in conn.execute("PRAGMA table_info(clients)")}
                 if "device_name" in cols:
                     # Старая схема: 1 строка на устройство, device_name обязателен —
-                    # мешает регистрации по новой схеме. Пересоздаём (таблица пустая).
-                    conn.executescript("""
+                    # мешает регистрации по новой схеме. Пересоздаём только если таблица пустая.
+                    has_data = conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0] > 0
+                    if has_data:
+                        # Данные есть — только удаляем колонку через пересоздание с сохранением данных
+                        conn.executescript("""
+                            CREATE TABLE clients_new (
+                                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                                chat_id       TEXT    NOT NULL UNIQUE,
+                                username      TEXT,
+                                first_name    TEXT,
+                                is_admin      INTEGER NOT NULL DEFAULT 0,
+                                is_disabled   INTEGER NOT NULL DEFAULT 0,
+                                device_limit  INTEGER NOT NULL DEFAULT 5,
+                                created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+                            );
+                            INSERT INTO clients_new (id, chat_id, username, first_name, is_admin, is_disabled, device_limit, created_at)
+                                SELECT id, chat_id, username, first_name,
+                                       COALESCE(is_admin, 0), COALESCE(is_disabled, 0),
+                                       COALESCE(device_limit, 5), COALESCE(created_at, datetime('now'))
+                                FROM clients;
+                            DROP TABLE clients;
+                            ALTER TABLE clients_new RENAME TO clients;
+                            CREATE INDEX IF NOT EXISTS idx_clients_chat_id ON clients(chat_id);
+                        """)
+                        conn.commit()
+                    else:
+                        # Таблица пустая — просто пересоздаём
+                        conn.executescript("""
                         DROP TABLE IF EXISTS clients;
                         CREATE TABLE clients (
                             id            INTEGER PRIMARY KEY AUTOINCREMENT,

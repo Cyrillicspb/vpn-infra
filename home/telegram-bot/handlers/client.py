@@ -35,6 +35,7 @@ from handlers.keyboards import (
     client_excludes_menu,
     client_main_menu,
     client_request_type_kb,
+    device_detail_kb,
     devices_inline_kb,
     excludes_inline_kb,
     menu_reply_kb,
@@ -83,6 +84,10 @@ class ExcludeFSM(StatesGroup):
 
 class ReportFSM(StatesGroup):
     text = State()
+
+
+class CheckSiteFSM(StatesGroup):
+    domain = State()
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +225,29 @@ async def reg_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
     if autodist:
         asyncio.create_task(autodist.send_to_device(chat_id, device, "Регистрация"))
 
+    # Онбординг — инструкция по установке
+    if protocol == "awg":
+        await cb.message.answer(
+            "📖 <b>Как установить:</b>\n"
+            "1. Скачайте AmneziaWG: "
+            "<a href='https://apps.apple.com/app/amneziawg/id1600529900'>iOS</a> | "
+            "<a href='https://play.google.com/store/apps/details?id=org.amnezia.awg'>Android</a>\n"
+            "2. Откройте приложение → \"+\" → \"Импортировать из QR-кода\" (или из файла)\n"
+            "3. Включите переключатель — готово!\n\n"
+            "❓ Если что-то не работает — нажмите \"🔍 Почему не работает сайт?\"",
+            parse_mode="HTML",
+        )
+    else:
+        await cb.message.answer(
+            "📖 <b>Как установить:</b>\n"
+            "1. Скачайте WireGuard: "
+            "<a href='https://apps.apple.com/app/wireguard/id1441195209'>iOS</a> | "
+            "<a href='https://play.google.com/store/apps/details?id=com.wireguard.android'>Android</a>\n"
+            "2. Откройте приложение → \"+\" → \"Создать из QR-кода\" (или импортируйте файл)\n"
+            "3. Включите переключатель — готово!",
+            parse_mode="HTML",
+        )
+
 
 # ---------------------------------------------------------------------------
 # Регистрация: протокол через текст (fallback)
@@ -268,6 +296,29 @@ async def reg_protocol(message: Message, state: FSMContext, **kw):
     autodist: "AutoDist" = kw.get("autodist")
     if autodist:
         asyncio.create_task(autodist.send_to_device(chat_id, device, "Регистрация"))
+
+    # Онбординг — инструкция по установке
+    if protocol == "awg":
+        await message.answer(
+            "📖 <b>Как установить:</b>\n"
+            "1. Скачайте AmneziaWG: "
+            "<a href='https://apps.apple.com/app/amneziawg/id1600529900'>iOS</a> | "
+            "<a href='https://play.google.com/store/apps/details?id=org.amnezia.awg'>Android</a>\n"
+            "2. Откройте приложение → \"+\" → \"Импортировать из QR-кода\" (или из файла)\n"
+            "3. Включите переключатель — готово!\n\n"
+            "❓ Если что-то не работает — нажмите \"🔍 Почему не работает сайт?\"",
+            parse_mode="HTML",
+        )
+    else:
+        await message.answer(
+            "📖 <b>Как установить:</b>\n"
+            "1. Скачайте WireGuard: "
+            "<a href='https://apps.apple.com/app/wireguard/id1441195209'>iOS</a> | "
+            "<a href='https://play.google.com/store/apps/details?id=com.wireguard.android'>Android</a>\n"
+            "2. Откройте приложение → \"+\" → \"Создать из QR-кода\" (или импортируйте файл)\n"
+            "3. Включите переключатель — готово!",
+            parse_mode="HTML",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -954,6 +1005,79 @@ async def fsm_report_text(message: Message, state: FSMContext, **kw):
 
 
 # ---------------------------------------------------------------------------
+# Проверка сайта: почему не работает?
+# ---------------------------------------------------------------------------
+
+_MANUAL_VPN    = "/etc/vpn-routes/manual-vpn.txt"
+_MANUAL_DIRECT = "/etc/vpn-routes/manual-direct.txt"
+
+
+@router.callback_query(F.data == "cl:checksite")
+async def cb_cl_checksite(cb: CallbackQuery, state: FSMContext, **kw):
+    await cb.answer()
+    db: Database = kw.get("db")
+    client = await db.get_client(str(cb.from_user.id))
+    if not client:
+        await cb.message.answer("Сначала зарегистрируйтесь: /start")
+        return
+    await cb.message.answer("Введите адрес сайта (например: <code>youtube.com</code>):", parse_mode="HTML")
+    await state.update_data(_fsm_ts=_now())
+    await state.set_state(CheckSiteFSM.domain)
+
+
+@router.message(CheckSiteFSM.domain)
+async def fsm_checksite_domain(message: Message, state: FSMContext, **kw):
+    import os as _os
+    domain = message.text.strip().lower().strip(".").replace("https://", "").replace("http://", "").split("/")[0]
+    await state.clear()
+
+    try:
+        r = await _wc().check_domain(domain)
+        verdict   = r.get("verdict", "unknown")
+        ips       = r.get("ips", [])
+        in_static = r.get("in_blocked_static", False)
+        in_dyn    = r.get("in_blocked_dynamic", False)
+        in_manual = r.get("in_manual_vpn", False)
+        ip_str    = ", ".join(ips[:3]) + ("…" if len(ips) > 3 else "") if ips else "не резолвится"
+
+        if verdict == "vpn":
+            source = []
+            if in_manual:  source.append("ручной список")
+            if in_static:  source.append("база РКН")
+            if in_dyn:     source.append("DNS-кэш")
+            src_str = " + ".join(source) if source else ""
+            text = (
+                f"✅ <b>{domain}</b> — идёт через VPN\n"
+                f"IP: <code>{ip_str}</code>\n"
+                + (f"Источник: {src_str}\n" if src_str else "") +
+                "\nЕсли сайт не открывается:\n"
+                "• Переподключите VPN\n"
+                "• Нажмите «🔄 Обновить настройки VPN»\n"
+                "• Если не помогло — «🆘 Сообщить о проблеме»"
+            )
+        elif verdict == "direct":
+            text = (
+                f"🌐 <b>{domain}</b> — идёт напрямую (без VPN)\n"
+                f"IP: <code>{ip_str}</code>\n\n"
+                "Этот сайт настроен на прямое соединение. "
+                "Чтобы пустить через VPN — нажмите «🌐 Открыть сайт через VPN»."
+            )
+        else:
+            text = (
+                f"❓ <b>{domain}</b> — не в списках блокировок\n"
+                f"IP: <code>{ip_str}</code>\n\n"
+                "Этот сайт не числится заблокированным — скорее всего открывается напрямую.\n"
+                "Если он не открывается:\n"
+                "• Нажмите «🌐 Открыть сайт через VPN»\n"
+                "• Или «🆘 Сообщить о проблеме»"
+            )
+    except Exception:
+        text = f"⚠️ Не удалось проверить <b>{domain}</b>. Попробуйте позже."
+
+    await message.answer(text, reply_markup=client_main_menu(), parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
 # Default handler
 # ---------------------------------------------------------------------------
 @router.message()
@@ -985,13 +1109,81 @@ async def cb_cl_mydevices(cb: CallbackQuery, **kw):
             reply_markup=client_main_menu(),
         )
         return
-    lines = ["*Ваши устройства:*\n"]
-    for d in devices:
-        icon = "⏳" if d.get("pending_approval") else "✅"
-        lines.append(
-            f"{icon} `{d['device_name']}` ({d['protocol'].upper()}) — `{d.get('ip_address', 'N/A')}`"
+    # Show device list with buttons to device detail page
+    await cb.message.answer(
+        "📱 <b>Ваши устройства</b> — выберите для управления:",
+        reply_markup=devices_inline_kb(devices, "cl:dev:", "cl:menu"),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("cl:dev:"))
+async def cb_cl_device_detail(cb: CallbackQuery, **kw):
+    await cb.answer()
+    device_id = int(cb.data[len("cl:dev:"):])
+    db: Database = kw.get("db")
+    device = await db.get_device_by_id(device_id)
+    if not device:
+        await cb.message.answer("Устройство не найдено.", reply_markup=client_main_menu())
+        return
+    # Get peer status
+    import time as _time
+    now_ts = int(_time.time())
+    hs_str = "никогда"
+    try:
+        peers_data = await _wc().get_peers()
+        pk = device.get("public_key", "")
+        for p in peers_data.get("peers", []):
+            if p.get("public_key") == pk:
+                hs = p.get("last_handshake", 0)
+                if hs > 0:
+                    mins = (now_ts - hs) // 60
+                    hs_str = f"{mins} мин назад" if mins < 120 else f"{mins//60} ч назад"
+                break
+    except Exception:
+        pass
+    icon = "⏳" if device.get("pending_approval") else "✅"
+    text = (
+        f"{icon} <b>{device['device_name']}</b>\n"
+        f"Протокол: <code>{device['protocol'].upper()}</code>\n"
+        f"IP: <code>{device.get('ip_address', 'N/A')}</code>\n"
+        f"Последний handshake: {hs_str}"
+    )
+    await cb.message.answer(text, reply_markup=device_detail_kb(device_id), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("cl:getconf:"))
+async def cb_cl_getconf(cb: CallbackQuery, **kw):
+    await cb.answer()
+    device_id = int(cb.data[len("cl:getconf:"):])
+    db: Database = kw.get("db")
+    device = await db.get_device_by_id(device_id)
+    if not device:
+        await cb.message.answer("Устройство не найдено.")
+        return
+    if device.get("pending_approval"):
+        await cb.message.answer(
+            "⏳ Устройство ещё ожидает одобрения администратора.",
+            reply_markup=client_main_menu(),
         )
-    await cb.message.answer("\n".join(lines), reply_markup=client_main_menu())
+        return
+    await cb.message.answer(
+        f"📱 <b>{device['device_name']}</b> — выберите формат конфига:",
+        reply_markup=platform_inline_kb(device_id),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("cl:del:"))
+async def cb_cl_del_device(cb: CallbackQuery, **kw):
+    await cb.answer()
+    device_id = int(cb.data[len("cl:del:"):])
+    db: Database = kw.get("db")
+    device = await db.get_device_by_id(device_id)
+    if not device:
+        await cb.message.answer("Устройство не найдено.")
+        return
+    await _do_remove_device(cb.message, db, device)
 
 
 @router.callback_query(F.data == "cl:myconfig")

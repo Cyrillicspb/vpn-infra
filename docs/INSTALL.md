@@ -170,7 +170,7 @@ sudo bash setup.sh
 - Шаг 20: Установка hysteria2 (клиент)
 - Шаг 21: Установка tun2socks
 - Шаг 22: Настройка systemd-юнитов (порядок загрузки, vpn-routes, vpn-sets-restore)
-- Шаг 23: Первоначальная загрузка баз РКН (antifilter, zapret-info) в blocked_static
+- Шаг 23: Первоначальная загрузка баз в blocked_static (antifilter, opencck, zapret-info, RockBlack геоблок)
 - Шаг 24: Настройка cron (03:00 update-routes, 04:00 backup, watchdog failsafe)
 - Шаг 25: Установка fail2ban
 - Шаг 26: Настройка sysctl (отключение IPv6, BBR)

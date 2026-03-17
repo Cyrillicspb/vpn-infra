@@ -51,6 +51,8 @@ from handlers.keyboards import (
     admin_routes_menu,
     admin_security_menu,
     admin_switch_menu,
+    admin_system_menu,
+    admin_tunnel_menu,
     admin_vps_actions_kb,
     admin_vps_list_kb,
     admin_vps_menu,
@@ -945,10 +947,24 @@ async def cmd_check(message: Message, state: FSMContext, **kw):
         await message.answer("Использование: `/check <домен>`")
         return
     domain = args[1].lower().strip(".")
-    in_vpn    = MANUAL_VPN.exists() and domain in MANUAL_VPN.read_text()
-    in_direct = MANUAL_DIRECT.exists() and domain in MANUAL_DIRECT.read_text()
-    label = "VPN" if in_vpn else ("прямой" if in_direct else "не задан")
-    await message.answer(f"`{domain}`: {label}")
+    try:
+        r = await _wc().check_domain(domain)
+        verdict   = r.get("verdict", "unknown")
+        ips       = r.get("ips", [])
+        ip_str    = ", ".join(ips[:4]) if ips else "не резолвится"
+        sources   = []
+        if r.get("in_manual_vpn"):     sources.append("manual-vpn")
+        if r.get("in_blocked_static"): sources.append("blocked_static")
+        if r.get("in_blocked_dynamic"):sources.append("blocked_dynamic")
+        if r.get("in_manual_direct"):  sources.append("manual-direct")
+        src = " | ".join(sources) if sources else "—"
+        icon = {"vpn": "🔒", "direct": "🌐", "unknown": "❓"}.get(verdict, "❓")
+        await message.answer(
+            f"{icon} <code>{domain}</code>\nВердикт: <b>{verdict}</b>\nIP: <code>{ip_str}</code>\nИсточники: {src}",
+            parse_mode="HTML",
+        )
+    except WatchdogError as e:
+        await message.answer(f"❌ {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1083,14 +1099,15 @@ async def cmd_renew_cert(message: Message, state: FSMContext, **kw):
     if not _is_admin(message):
         return
     await state.clear()
-    result = subprocess.run(
-        ["bash", "/opt/vpn/scripts/renew-mtls.sh", "client"],
-        capture_output=True, text=True, timeout=60,
-    )
-    ok = result.returncode == 0
+    try:
+        data = await _wc().renew_cert()
+        ok = data.get("ok", False)
+        out = data.get("output", "")
+    except Exception as e:
+        ok, out = False, str(e)
     await message.answer(
         f"{'✅' if ok else '❌'} Обновление клиентского сертификата mTLS:\n"
-        f"```\n{(result.stdout or result.stderr)[:500]}\n```"
+        f"```\n{out[:500]}\n```"
     )
 
 
@@ -1099,14 +1116,15 @@ async def cmd_renew_ca(message: Message, state: FSMContext, **kw):
     if not _is_admin(message):
         return
     await state.clear()
-    result = subprocess.run(
-        ["bash", "/opt/vpn/scripts/renew-mtls.sh", "ca"],
-        capture_output=True, text=True, timeout=60,
-    )
-    ok = result.returncode == 0
+    try:
+        data = await _wc().renew_ca()
+        ok = data.get("ok", False)
+        out = data.get("output", "")
+    except Exception as e:
+        ok, out = False, str(e)
     await message.answer(
         f"{'✅' if ok else '❌'} Обновление CA:\n"
-        f"```\n{(result.stdout or result.stderr)[:500]}\n```"
+        f"```\n{out[:500]}\n```"
     )
 
 
@@ -1174,14 +1192,115 @@ async def cb_adm_menu(cb: CallbackQuery, **kw):
     await _edit_or_answer(cb, "<b>Меню администратора</b>", admin_main_menu())
 
 
+@router.callback_query(F.data == "adm:tunnel_menu")
+async def cb_adm_tunnel_menu(cb: CallbackQuery, **kw):
+    await _edit_or_answer(cb, "📡 <b>Туннель</b>", admin_tunnel_menu())
+
+
+@router.callback_query(F.data == "adm:system")
+async def cb_adm_system(cb: CallbackQuery, **kw):
+    await _edit_or_answer(cb, "🔧 <b>Система</b>", admin_system_menu())
+
+
 @router.callback_query(F.data == "adm:monitor")
 async def cb_adm_monitor(cb: CallbackQuery, **kw):
     await _edit_or_answer(cb, "📊 <b>Мониторинг</b>", admin_monitor_menu())
 
 
+@router.callback_query(F.data == "adm:dashboard")
+async def cb_adm_dashboard(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю дашборд...")
+    import time as _time
+    now_ts = int(_time.time())
+
+    try:
+        s, metrics_raw = await asyncio.gather(
+            _wc().get_status(),
+            _wc().get_metrics(),
+            return_exceptions=True,
+        )
+        if isinstance(s, Exception):
+            raise WatchdogError(str(s))
+
+        # Parse metrics
+        metrics: dict[str, str] = {}
+        if not isinstance(metrics_raw, Exception):
+            for line in str(metrics_raw).splitlines():
+                if line.startswith("#") or not line.strip():
+                    continue
+                key = line.split("{")[0].split(" ")[0]
+                val = line.rsplit(" ", 1)[-1]
+                metrics[key] = val
+
+        sys_info = s.get("system", {})
+        active_stack = s.get("active_stack", "N/A")
+        primary = s.get("primary_stack", "—")
+        external_ip = s.get("external_ip", "N/A")
+        uptime = _uptime(s.get("uptime_seconds", 0))
+        last_failover = s.get("last_failover") or "никогда"
+        disk = sys_info.get("disk_percent", metrics.get("vpn_disk_used_percent", "?"))
+        cpu = sys_info.get("cpu_percent", "?")
+        ram = sys_info.get("ram_percent", "?")
+        mode_str = "⚠️ Деградированный" if s.get("degraded_mode") else "✅ Нормальный"
+        rotation = (s.get("next_rotation") or "—")[:16].replace("T", " ")
+
+        # Count online peers
+        online_peers = 0
+        try:
+            peers_data = await _wc().get_peers()
+            peers = peers_data.get("peers", [])
+            online_peers = sum(
+                1 for p in peers
+                if p.get("last_handshake", 0) > 0
+                and now_ts - p.get("last_handshake", 0) < 180
+                and p.get("interface", "") != "wg-tier2"
+            )
+        except WatchdogError:
+            pass
+
+        # VPS RTT from metrics
+        rtt_str = ""
+        rtt_val = metrics.get("vpn_tunnel_rtt_ms")
+        if rtt_val and rtt_val not in ("", "0"):
+            try:
+                rtt_str = f" | RTT: {float(rtt_val):.0f}ms"
+            except Exception:
+                pass
+
+        vps_ips = [v["ip"] for v in s.get("vps_list", [])]
+        vps_str = ", ".join(f"<code>{ip}</code>" for ip in vps_ips) if vps_ips else "—"
+
+        text = (
+            f"<b>🏠 Дашборд</b>\n\n"
+            f"<b>Режим:</b> {mode_str}\n"
+            f"<b>Туннель:</b> <code>{active_stack}</code>{rtt_str}\n"
+            f"<b>Primary:</b> <code>{primary}</code>\n"
+            f"<b>Ротация:</b> {rotation}\n"
+            f"<b>Домашний IP:</b> <code>{external_ip}</code>\n"
+            f"<b>VPS:</b> {vps_str}\n"
+            f"<b>Онлайн клиентов:</b> {online_peers}\n\n"
+            f"<b>Ресурсы:</b>\n"
+            f"  CPU: <b>{cpu}%</b>  RAM: <b>{ram}%</b>  Диск: <b>{disk}%</b>\n\n"
+            f"<b>Uptime:</b> {uptime}\n"
+            f"<b>Последний failover:</b> {last_failover}"
+        )
+    except WatchdogError as e:
+        text = f"❌ Watchdog недоступен: {e}"
+
+    refresh_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="adm:dashboard")],
+        [InlineKeyboardButton(text="◀️ В меню",   callback_data="adm:menu")],
+    ])
+    try:
+        await cb.message.edit_text(text, reply_markup=refresh_kb, parse_mode="HTML")
+    except Exception:
+        await cb.message.answer(text, reply_markup=refresh_kb, parse_mode="HTML")
+
+
 @router.callback_query(F.data == "adm:manage")
 async def cb_adm_manage(cb: CallbackQuery, **kw):
-    await _edit_or_answer(cb, "⚙️ <b>Управление</b>", admin_manage_menu())
+    """Обратная совместимость — перенаправляет в раздел Система."""
+    await _edit_or_answer(cb, "🔧 <b>Система</b>", admin_system_menu())
 
 
 @router.callback_query(F.data == "adm:routes")
@@ -1201,12 +1320,19 @@ async def cb_adm_vps(cb: CallbackQuery, **kw):
 
 @router.callback_query(F.data == "adm:security")
 async def cb_adm_security(cb: CallbackQuery, **kw):
-    await _edit_or_answer(cb, "🔐 <b>Безопасность</b>", admin_security_menu())
+    """Обратная совместимость — перенаправляет в раздел Система."""
+    await _edit_or_answer(cb, "🔧 <b>Система</b>", admin_system_menu())
 
 
 @router.callback_query(F.data == "adm:switch_menu")
 async def cb_adm_switch_menu(cb: CallbackQuery, **kw):
-    await _edit_or_answer(cb, "🔄 <b>Выберите стек:</b>", admin_switch_menu())
+    active_stack = ""
+    try:
+        s = await _wc().get_status()
+        active_stack = s.get("active_stack", "")
+    except WatchdogError:
+        pass
+    await _edit_or_answer(cb, "🔄 <b>Выберите стек:</b>", admin_switch_menu(active_stack))
 
 
 @router.callback_query(F.data == "adm:assess")
@@ -1273,9 +1399,11 @@ async def cb_adm_tunnel(cb: CallbackQuery, **kw):
         now = int(asyncio.get_event_loop().time())
         import time as _time; now_ts = int(_time.time())
 
-        # Стеки
+        # Стеки (только туннельные — без zapret, он DPI bypass, не туннель)
         stacks_lines = []
         for p in s.get("plugins", []):
+            if p["name"] == "zapret":
+                continue
             active = p["name"] == s.get("active_stack")
             icon = "🟢" if active else "⚪"
             stacks_lines.append(f"  {icon} <code>{p['name']}</code> (устойч. {p['resilience']})")
@@ -1302,7 +1430,10 @@ async def cb_adm_tunnel(cb: CallbackQuery, **kw):
         )
     except WatchdogError as e:
         text = f"❌ Ошибка: {e}"
-    await cb.message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
+    tunnel_back_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Туннель", callback_data="adm:tunnel_menu")],
+    ])
+    await cb.message.answer(text, reply_markup=tunnel_back_kb, parse_mode="HTML")
 
 
 @router.callback_query(F.data == "adm:ip")
@@ -1436,6 +1567,7 @@ async def cb_adm_stats(cb: CallbackQuery, **kw):
         now_ts = int(_time.time())
         client_traffic: dict[str, dict] = {}
         orphans = []
+        system_peers = []
         for p in peers:
             pk = p.get("public_key", "")
             rx = p.get("rx_bytes", 0)
@@ -1464,7 +1596,7 @@ async def cb_adm_stats(cb: CallbackQuery, **kw):
             else:
                 iface = p.get("interface", "")
                 if iface == "wg-tier2":
-                    orphans.append(f"  🔗 <b>Tier-2 VPS туннель</b> (wg-tier2) ↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)}")
+                    system_peers.append(f"  🔗 Tier-2 VPS туннель ↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)}")
                 else:
                     orphans.append(f"  <code>{pk[:20]}…</code> [{iface}] ↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)}")
 
@@ -1478,14 +1610,63 @@ async def cb_adm_stats(cb: CallbackQuery, **kw):
                     f"  Итого: ↓{_fmt_bytes(info['rx'])} ↑{_fmt_bytes(info['tx'])}\n"
                     + "\n".join(info["devices"])
                 )
+            if system_peers:
+                lines.append("🖧 <b>Системные пиры:</b>\n" + "\n".join(system_peers))
             if orphans:
-                lines.append("\n⚠️ <b>Неизвестные пиры:</b>\n" + "\n".join(orphans))
+                lines.append("⚠️ <b>Неизвестные пиры:</b>\n" + "\n".join(orphans))
             text = "\n\n".join(lines)
 
     except WatchdogError as e:
         text = f"❌ {e}"
 
     await cb.message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "adm:speedtest")
+async def cb_adm_speedtest(cb: CallbackQuery, **kw):
+    await cb.answer("Получаю данные...")
+    try:
+        status = await _wc().get_status()
+        active = status.get("active_stack", "—")
+
+        metrics_raw = await _wc().get_metrics()
+        metrics: dict[str, str] = {}
+        for line in str(metrics_raw).splitlines():
+            if line.startswith("#") or not line.strip():
+                continue
+            key = line.split("{")[0].split(" ")[0]
+            val = line.rsplit(" ", 1)[-1]
+            metrics[key] = val
+
+        def _f(key: str) -> str:
+            try:
+                v = float(metrics.get(key, "0"))
+                return f"{v:.1f}" if v > 0 else "—"
+            except Exception:
+                return "—"
+
+        rtt_val = metrics.get("vpn_tunnel_rtt_ms", "")
+        rtt_str = f"{float(rtt_val):.0f} мс" if rtt_val and rtt_val not in ("0", "") else "—"
+
+        dl = _f("vpn_tunnel_download_mbps")
+        ul = _f("vpn_tunnel_upload_mbps")
+
+        text = (
+            f"<b>⚡ Скорость туннеля</b>\n\n"
+            f"Активный стек: <b>{active}</b>\n"
+            f"RTT до VPS: <b>{rtt_str}</b>\n\n"
+            f"↓ Скачивание: <b>{dl} Мбит/с</b>\n"
+            f"↑ Загрузка:   <b>{ul} Мбит/с</b>\n\n"
+            f"<i>Фоновый пробник 100 KB — показывает актуальность канала.\n"
+            f"Для реального замера throughput используйте «Тест стеков».</i>"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔍 Тест стеков", callback_data="adm:assess")],
+            [InlineKeyboardButton(text="◀️ Мониторинг", callback_data="adm:monitor")],
+        ])
+        await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    except WatchdogError as e:
+        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
 
 
 @router.callback_query(F.data == "adm:backup")
@@ -1801,14 +1982,15 @@ async def cb_adm_rotate_keys(cb: CallbackQuery, **kw):
 @router.callback_query(F.data == "adm:renew_cert")
 async def cb_adm_renew_cert(cb: CallbackQuery, **kw):
     await cb.answer("Обновляю сертификат...")
-    result = subprocess.run(
-        ["bash", "/opt/vpn/scripts/renew-mtls.sh", "client"],
-        capture_output=True, text=True, timeout=60,
-    )
-    ok = result.returncode == 0
+    try:
+        data = await _wc().renew_cert()
+        ok = data.get("ok", False)
+        out = data.get("output", "")
+    except Exception as e:
+        ok, out = False, str(e)
     await cb.message.answer(
         f"{'✅' if ok else '❌'} Обновление клиентского сертификата mTLS:\n"
-        f"```\n{(result.stdout or result.stderr)[:500]}\n```",
+        f"```\n{out[:500]}\n```",
         reply_markup=back_to_admin_menu(),
     )
 
@@ -1816,28 +1998,137 @@ async def cb_adm_renew_cert(cb: CallbackQuery, **kw):
 @router.callback_query(F.data == "adm:renew_ca")
 async def cb_adm_renew_ca(cb: CallbackQuery, **kw):
     await cb.answer("Обновляю CA...")
-    result = subprocess.run(
-        ["bash", "/opt/vpn/scripts/renew-mtls.sh", "ca"],
-        capture_output=True, text=True, timeout=60,
-    )
-    ok = result.returncode == 0
+    try:
+        data = await _wc().renew_ca()
+        ok = data.get("ok", False)
+        out = data.get("output", "")
+    except Exception as e:
+        ok, out = False, str(e)
     await cb.message.answer(
         f"{'✅' if ok else '❌'} Обновление CA:\n"
-        f"```\n{(result.stdout or result.stderr)[:500]}\n```",
+        f"```\n{out[:500]}\n```",
         reply_markup=back_to_admin_menu(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Fail2ban
+# ---------------------------------------------------------------------------
+def _f2b_format_server(label: str, server_id: str, jails: list[dict]) -> tuple[str, list]:
+    """Возвращает (текст, кнопки_разбана) для одного сервера."""
+    if not jails:
+        return f"<b>{label}</b>: fail2ban недоступен\n", []
+    lines = [f"<b>{label}</b>"]
+    buttons = []
+    has_any = False
+    for j in jails:
+        banned = j["banned"]
+        total = j["total_banned"]
+        lines.append(f"  🔒 <code>{j['jail']}</code>: {total} забанено")
+        if banned:
+            has_any = True
+            for ip in banned[:10]:  # показываем до 10 IP
+                lines.append(f"    • <code>{ip}</code>")
+                # callback_data: f2b:u:{server_id}:{jail}:{ip}
+                cd = f"f2b:u:{server_id}:{j['jail']}:{ip}"
+                if len(cd) <= 64:
+                    buttons.append(
+                        InlineKeyboardButton(
+                            text=f"🔓 {ip} ({j['jail']})",
+                            callback_data=cd,
+                        )
+                    )
+    if not has_any:
+        lines.append("  ✅ нет заблокированных IP")
+    return "\n".join(lines) + "\n", buttons
+
+
+@router.callback_query(F.data == "adm:fail2ban")
+async def cb_adm_fail2ban(cb: CallbackQuery, **kw):
+    await cb.answer("Запрашиваю fail2ban...")
+    try:
+        data = await _wc().get_fail2ban_status()
+    except Exception as e:
+        await cb.message.answer(f"❌ Ошибка: {e}", reply_markup=back_to_admin_menu())
+        return
+
+    home_jails = data.get("home", [])
+    vps_list = data.get("vps", [])
+
+    text_parts = []
+    all_unban_buttons = []
+
+    h_text, h_buttons = _f2b_format_server("🏠 Домашний сервер", "home", home_jails)
+    text_parts.append(h_text)
+    all_unban_buttons.extend(h_buttons)
+
+    for vps in vps_list:
+        vps_ip = vps["ip"]
+        label = f"🖥️ VPS {vps_ip}"
+        v_text, v_buttons = _f2b_format_server(label, vps_ip, vps.get("jails", []))
+        text_parts.append(v_text)
+        all_unban_buttons.extend(v_buttons)
+
+    # Собираем клавиатуру: по 1 кнопке разбана в ряд + обновить + назад
+    rows = [[btn] for btn in all_unban_buttons]
+    rows.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="adm:fail2ban")])
+    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:system")])
+
+    await _edit_or_answer(
+        cb,
+        "🛡️ <b>Fail2ban</b>\n\n" + "\n".join(text_parts),
+        InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
+
+@router.callback_query(F.data.startswith("f2b:u:"))
+async def cb_f2b_unban(cb: CallbackQuery, **kw):
+    # f2b:u:{server}:{jail}:{ip}
+    parts = cb.data.split(":", 4)  # ["f2b", "u", server, jail, ip]
+    if len(parts) < 5:
+        await cb.answer("Ошибка формата", show_alert=True)
+        return
+    _, _, server, jail, ip = parts
+    await cb.answer(f"Разбаниваю {ip}...")
+    try:
+        result = await _wc().fail2ban_unban(server=server, jail=jail, ip=ip)
+        ok = result.get("ok", False)
+        out = result.get("output", "")
+    except Exception as e:
+        ok, out = False, str(e)
+
+    label = "домашний сервер" if server == "home" else f"VPS {server}"
+    if ok:
+        await cb.message.answer(
+            f"✅ IP <code>{ip}</code> разбанен в jail <code>{jail}</code> ({label})",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🛡️ Обновить список", callback_data="adm:fail2ban")],
+                [InlineKeyboardButton(text="◀️ Система", callback_data="adm:system")],
+            ]),
+        )
+    else:
+        await cb.message.answer(
+            f"❌ Не удалось разбанить <code>{ip}</code>:\n<code>{out[:200]}</code>",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🛡️ К списку", callback_data="adm:fail2ban")],
+            ]),
+        )
 
 
 @router.callback_query(F.data == "adm:diagnose_menu")
 async def cb_adm_diagnose_menu(cb: CallbackQuery, **kw):
     await cb.answer()
     db: Database = kw.get("db")
-    # Все устройства всех клиентов
+    # Все устройства всех клиентов с owner_name
     clients = await db.get_all_clients()
     devices = []
     for c in clients:
+        owner_name = c.get("first_name") or c.get("username") or c["chat_id"]
         devs = await db.get_devices(c["chat_id"])
-        devices.extend(devs)
+        for d in devs:
+            d_copy = dict(d)
+            d_copy["owner_name"] = owner_name
+            devices.append(d_copy)
     if not devices:
         await cb.message.answer("Нет устройств для диагностики.", reply_markup=back_to_admin_menu())
         return
@@ -2015,12 +2306,29 @@ async def cb_adm_check(cb: CallbackQuery, state: FSMContext, **kw):
 
 @router.message(AdminFSM.check_domain)
 async def fsm_check_domain(message: Message, state: FSMContext, **kw):
-    domain = message.text.strip().lower().strip(".")
+    domain = message.text.strip().lower().strip(".").split("/")[0]
     await state.clear()
-    in_vpn    = MANUAL_VPN.exists() and domain in MANUAL_VPN.read_text()
-    in_direct = MANUAL_DIRECT.exists() and domain in MANUAL_DIRECT.read_text()
-    label = "🔒 VPN" if in_vpn else ("🌐 Direct" if in_direct else "❓ не задан")
-    await message.answer(f"`{domain}`: {label}", reply_markup=back_to_admin_menu())
+    try:
+        r = await _wc().check_domain(domain)
+        verdict = r.get("verdict", "unknown")
+        ips     = r.get("ips", [])
+        ip_str  = ", ".join(ips[:4]) if ips else "не резолвится"
+        sources = []
+        if r.get("in_manual_vpn"):      sources.append("manual-vpn")
+        if r.get("in_blocked_static"):  sources.append("blocked_static")
+        if r.get("in_blocked_dynamic"): sources.append("blocked_dynamic")
+        if r.get("in_manual_direct"):   sources.append("manual-direct")
+        src  = " | ".join(sources) if sources else "—"
+        icon = {"vpn": "🔒", "direct": "🌐", "unknown": "❓"}.get(verdict, "❓")
+        text = (
+            f"{icon} <code>{domain}</code>\n"
+            f"Вердикт: <b>{verdict}</b>\n"
+            f"IP: <code>{ip_str}</code>\n"
+            f"Источники: {src}"
+        )
+    except WatchdogError as e:
+        text = f"❌ {e}"
+    await message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------
@@ -2177,6 +2485,43 @@ async def fsm_client_limit_input(message: Message, state: FSMContext, **kw):
     db: Database = kw.get("db")
     await db.set_client_limit(chat_id, limit)
     await message.answer(f"✅ Лимит для `{chat_id}` = {limit}", reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data.startswith("adm:cl_reconnect:"))
+async def cb_adm_client_reconnect(cb: CallbackQuery, **kw):
+    chat_id = cb.data[len("adm:cl_reconnect:"):]
+    await cb.answer("Сбрасываю подключения...")
+    db: Database = kw.get("db")
+    devices = await db.get_devices(chat_id)
+    if not devices:
+        await cb.message.answer("Нет устройств у клиента.", reply_markup=back_to_admin_menu())
+        return
+    results = []
+    for d in devices:
+        pubkey = d.get("public_key", "")
+        dname = d.get("device_name", "?")
+        proto = d.get("protocol", "wg")
+        if not pubkey:
+            results.append(f"⚪ {dname} — нет публичного ключа")
+            continue
+        iface = "wg0" if proto == "awg" else "wg1"
+        try:
+            result = subprocess.run(
+                ["awg" if proto == "awg" else "wg", "set", iface, "peer", pubkey, "endpoint", ""],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                results.append(f"✅ {dname} — endpoint сброшен")
+            else:
+                results.append(f"⚠️ {dname} — {result.stderr.strip() or 'ошибка'}")
+        except Exception as e:
+            results.append(f"❌ {dname} — {e}")
+    text = (
+        f"🔄 <b>Реконнект клиента {chat_id}</b>\n\n"
+        + "\n".join(results)
+        + "\n\nКлиент должен переподключиться при следующем handshake."
+    )
+    await cb.message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------
@@ -2551,12 +2896,17 @@ async def cb_adm_nft_stats(cb: CallbackQuery, **kw):
         dpi_direct      = stats.get("dpi_direct", -1)
         text = (
             f"<b>📊 Статистика nft sets</b>\n\n"
-            f"<b>blocked_static</b> (базы РКН): <b>{blocked_static}</b> IP\n"
+            f"<b>blocked_static</b> (базы РКН + геоблок): <b>{blocked_static}</b> IP\n"
             f"<b>blocked_dynamic</b> (DNS кэш): <b>{blocked_dynamic}</b> IP\n"
             f"<b>dpi_direct</b> (zapret): <b>{dpi_direct}</b> IP\n\n"
-            f"<i>blocked_static</i> — обновляется раз в сутки из antifilter/opencck\n"
-            f"<i>blocked_dynamic</i> — наполняется dnsmasq при резолве заблокированных доменов\n"
-            f"<i>dpi_direct</i> — домены из DPI bypass (zapret)"
+            f"<i>blocked_static</i> — обновляется раз в сутки:\n"
+            f"  • antifilter.download — IP из реестра РКН\n"
+            f"  • community.antifilter.download — сообщество\n"
+            f"  • iplist.opencck.org — расширенный реестр\n"
+            f"  • zapret-info/z-i — выгрузка Роскомнадзора\n"
+            f"  • RockBlack-VPN — геоблок (230+ сервисов)\n\n"
+            f"<i>blocked_dynamic</i> — наполняется dnsmasq при резолве заблокированных доменов (timeout 24ч)\n"
+            f"<i>dpi_direct</i> — IP из DPI bypass (zapret/nfqws)"
         )
     except WatchdogError as e:
         text = f"❌ {e}"

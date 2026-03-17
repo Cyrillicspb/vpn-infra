@@ -415,11 +415,20 @@ iifname { "wg0", "wg1" } ip daddr @blocked_dynamic oifname != "tun*" drop
 ### Обновление баз маршрутов (cron 03:00)
 
 Источники (per-source кэш, при недоступности → предыдущая версия):
-- antifilter.download, community.antifilter.download
-- iplist.opencck.org, github.com/zapret-info/z-i
-- github.com/RockBlack-VPN (геоблок)
-- Статический список AS-подсетей CDN (в репозитории)
-- `/etc/vpn-routes/manual-vpn.txt`, `manual-direct.txt`
+
+**Реестры блокировок (→ blocked_static):**
+- `antifilter.download` — IP из реестра РКН
+- `community.antifilter.download` — расширенный сообщественный реестр
+- `iplist.opencck.org` — альтернативный реестр
+- `github.com/zapret-info/z-i` — прямая выгрузка Роскомнадзора
+- `github.com/RockBlack-VPN` — **геоблок**: 230+ западных сервисов, недоступных в РФ по географическому признаку (ChatGPT, Claude, Notion и др.)
+
+**Статические (→ AllowedIPs на клиенте):**
+- Агрегированные AS-подсети CDN (Google, Meta, Cloudflare и др.) — в репозитории
+
+**Ручные списки:**
+- `/etc/vpn-routes/manual-vpn.txt` — домены/подсети принудительно через VPN
+- `/etc/vpn-routes/manual-direct.txt` — домены/подсети принудительно напрямую
 
 Валидация: формат IP/CIDR, размер >100 записей, дельта <50% от предыдущей версии.
 Конкурентный доступ: `flock /var/run/vpn-routes.lock`.
