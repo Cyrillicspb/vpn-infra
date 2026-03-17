@@ -100,20 +100,6 @@ DPI_SERVICE_PRESETS: dict[str, dict] = {
             "yt3.ggpht.com", "youtu.be",
         ],
     },
-    "twitch": {
-        "display": "Twitch",
-        "domains": [
-            "twitch.tv", "twitchsvc.net", "jtvnw.net",
-            "static.twitchsvc.net",
-        ],
-    },
-    "discord": {
-        "display": "Discord",
-        "domains": [
-            "discord.com", "discordapp.com", "discordapp.net",
-            "discord.gg", "discord.media",
-        ],
-    },
     "instagram": {
         "display": "Instagram",
         "domains": [
@@ -1861,7 +1847,7 @@ class DpiServiceRequest(BaseModel):
     name: str = ""
     display: Optional[str] = None
     domains: Optional[list[str]] = None
-    preset: Optional[str] = None   # "youtube" | "twitch" | "discord"
+    preset: Optional[str] = None   # "youtube"
 
 class DpiToggleRequest(BaseModel):
     name: str
