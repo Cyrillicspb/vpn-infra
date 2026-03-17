@@ -2153,9 +2153,24 @@ async def _deploy_task(req: DeployRequest) -> None:
         cmd.append("--force")
     if req.version:
         cmd += ["--version", req.version]
-    rc, _, err = await run_cmd(cmd, timeout=600)
+    rc, out, err = await run_cmd(cmd, timeout=600)
     if rc != 0:
-        alert(f"❌ Deploy завершился с ошибкой:\n`{err[:300]}`")
+        alert(f"❌ Deploy завершился с ошибкой:\n`{(err or out or '')[:300]}`")
+    else:
+        ver = ""
+        try:
+            with open("/opt/vpn/version") as f:
+                ver = f.read().strip()
+        except Exception:
+            pass
+        # Определить что произошло по выводу
+        output = (out or "").strip()
+        if "не требуется" in output or "актуальна" in output:
+            alert(f"ℹ️ Deploy: обновлений нет, версия `{ver}` актуальна")
+        elif "Откат" in output:
+            alert(f"⚠️ Deploy завершён откатом к предыдущей версии")
+        else:
+            alert(f"✅ Deploy завершён успешно, версия `{ver}`")
 
 
 @app.post("/rollback")
