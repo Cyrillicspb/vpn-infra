@@ -127,16 +127,17 @@ echo  [OK] Uploaded from local repo.
 goto verify_scripts
 
 :download_scripts
-echo  Downloading scripts on server...
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "cd /tmp && curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/setup.sh -o setup.sh && curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install-home.sh -o install-home.sh && curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install-vps.sh -o install-vps.sh"
+echo  Downloading scripts on server (GitHub then jsdelivr CDN fallback)...
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "cd /tmp && dl(){ local f=$1; for b in https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master https://cdn.jsdelivr.net/gh/Cyrillicspb/vpn-infra@master; do curl -fsSL --max-time 30 $b/$f -o $f 2>/dev/null && echo OK:$f && return 0; done; echo ERR:$f; return 1; }; dl setup.sh && dl install-home.sh && dl install-vps.sh && chmod +x setup.sh install-home.sh install-vps.sh"
 if %errorlevel% neq 0 (
     echo.
-    echo  ERROR: Could not download scripts from GitHub.
+    echo  ERROR: Could not download scripts from GitHub or jsdelivr CDN.
+    echo  Try manually copying setup.sh to the server: scp setup.sh user@ip:/tmp/
     echo.
     pause
     exit /b 1
 )
-echo  [OK] Downloaded from GitHub.
+echo  [OK] Downloaded (GitHub or jsdelivr CDN).
 
 :verify_scripts
 echo  Verifying files on server...

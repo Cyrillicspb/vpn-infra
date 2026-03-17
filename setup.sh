@@ -257,8 +257,26 @@ phase0() {
 
         echo ""
         echo -e "${BOLD}  Введите данные Telegram-бота:${NC}"
+        echo "  Получить токен: @BotFather → /newbot"
+        echo "  Получить Chat ID: @userinfobot или @getmyid_bot"
         ask TELEGRAM_BOT_TOKEN "Telegram Bot Token (от @BotFather)" yes
-        ask TELEGRAM_ADMIN_CHAT_ID "Telegram Admin Chat ID"
+        ask TELEGRAM_ADMIN_CHAT_ID "Telegram Admin Chat ID (числовой ID)"
+
+        # Валидация Telegram токена (не блокирует установку — предупреждение)
+        if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]]; then
+            log_info "Проверка Telegram Bot Token..."
+            _tg_check=$(curl -sf --max-time 8 \
+                "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" 2>/dev/null) || true
+            if [[ -n "$_tg_check" ]] && echo "$_tg_check" \
+                | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
+                _bot_name=$(echo "$_tg_check" \
+                    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['result']['username'])" 2>/dev/null) || true
+                log_ok "Telegram Bot подтверждён: @${_bot_name:-unknown}"
+            else
+                log_warn "Не удалось проверить Telegram токен (нет интернета или токен неверный)."
+                log_warn "Проверьте вручную: https://api.telegram.org/bot<TOKEN>/getMe"
+            fi
+        fi
 
         echo ""
         echo -e "${BOLD}  Опциональные компоненты:${NC}"
@@ -528,6 +546,22 @@ phase0() {
             env_set "HYSTERIA2_OBFS_PASSWORD" "$HYSTERIA2_OBFS_PASSWORD"
         }
 
+        # XHTTP пароли (Xray 26.x splithttp — обязательны, иначе "empty password" error)
+        [[ -z "${XHTTP_MS_PASSWORD:-}" ]] && {
+            XHTTP_MS_PASSWORD=$(openssl rand -hex 16)
+            env_set "XHTTP_MS_PASSWORD" "$XHTTP_MS_PASSWORD"
+        }
+        [[ -z "${XHTTP_CDN_PASSWORD:-}" ]] && {
+            XHTTP_CDN_PASSWORD=$(openssl rand -hex 16)
+            env_set "XHTTP_CDN_PASSWORD" "$XHTTP_CDN_PASSWORD"
+        }
+
+        # UUID для CDN-стека (VLESS+WS через Cloudflare Worker)
+        [[ -z "${CF_CDN_UUID:-}" ]] && {
+            CF_CDN_UUID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+            env_set "CF_CDN_UUID" "$CF_CDN_UUID"
+        }
+
         # Прочие секреты
         [[ -z "${WATCHDOG_API_TOKEN:-}" ]] && {
             WATCHDOG_API_TOKEN=$(openssl rand -hex 32)
@@ -540,6 +574,10 @@ phase0() {
         [[ -z "${GRAFANA_PASSWORD:-}" ]] && {
             GRAFANA_PASSWORD=$(openssl rand -hex 16)
             env_set "GRAFANA_PASSWORD" "$GRAFANA_PASSWORD"
+        }
+        [[ -z "${XRAY_PANEL_PASSWORD:-}" ]] && {
+            XRAY_PANEL_PASSWORD=$(openssl rand -hex 16)
+            env_set "XRAY_PANEL_PASSWORD" "$XRAY_PANEL_PASSWORD"
         }
 
         # Параметры с умолчаниями
@@ -561,7 +599,7 @@ phase0() {
         chmod 600 "$ENV_FILE"
         log_ok "Все секреты сгенерированы и сохранены в ${ENV_FILE}"
         # Примечание: XRAY_PUBLIC_KEY и XRAY_GRPC_PUBLIC_KEY генерируются
-        # в шаге 18 (install-home.sh) с помощью Docker/xray x25519
+        # в шаге 19 (install-home.sh) с помощью Docker/xray x25519
         step_done "step07_generate_secrets"
     fi
 
@@ -1146,39 +1184,64 @@ phase5() {
     echo "║             НЕОБХОДИМЫЕ РУЧНЫЕ ДЕЙСТВИЯ                         ║"
     echo "╚══════════════════════════════════════════════════════════════════╝"
     echo ""
-    echo -e "${BOLD}1. Проброс портов на роутере:${NC}"
-    echo "   Добавьте два правила Port Forwarding (UDP):"
+    echo -e "${RED}${BOLD}  ⚠  Без этих шагов VPN не будет работать для клиентов!${NC}"
     echo ""
-    echo "   ┌──────────────────────────────────────────────────────┐"
-    echo "   │  Внешний порт  →  Сервер                            │"
-    echo "   │  UDP 51820     →  ${HOME_SERVER_IP:-<IP_сервера>}  (AmneziaWG)  │"
-    echo "   │  UDP 51821     →  ${HOME_SERVER_IP:-<IP_сервера>}  (WireGuard)  │"
-    echo "   └──────────────────────────────────────────────────────┘"
+
+    echo -e "${BOLD}━━━ ШАГ A: Проброс портов на роутере ━━━${NC}"
+    echo "   Войдите в веб-панель роутера (обычно http://192.168.1.1)"
+    echo "   Найдите раздел: Port Forwarding / Virtual Server / NAT"
+    echo "   Добавьте два правила (протокол UDP):"
     echo ""
-    echo "   Обычно панель управления роутером: http://192.168.1.1"
+    echo "   ┌────────────────────────────────────────────────────────────┐"
+    echo "   │  Внешний порт  →  Внутренний адрес : Порт                 │"
+    echo "   │  UDP 51820     →  ${HOME_SERVER_IP:-<LAN-IP-сервера>} : 51820  (AmneziaWG)   │"
+    echo "   │  UDP 51821     →  ${HOME_SERVER_IP:-<LAN-IP-сервера>} : 51821  (WireGuard)   │"
+    echo "   └────────────────────────────────────────────────────────────┘"
     echo ""
-    echo -e "${BOLD}2. mTLS сертификат (для доступа к Grafana/панели):${NC}"
-    echo "   CA уже создан на VPS в /opt/vpn/nginx/mtls/ca.crt"
-    echo "   Запросите клиентский сертификат командой боту: /renew-cert"
+    echo "   Проверка (с телефона через мобильный интернет):"
+    echo "   nc -vzu ${WG_HOST:-<внешний-IP>} 51820   # должен ответить"
     echo ""
-    echo -e "${BOLD}3. Первое подключение через Telegram-бота:${NC}"
-    echo "   a) Откройте бота в Telegram"
-    echo "   b) Введите /start — первый пользователь станет администратором"
-    echo "   c) Следуйте инструкциям для добавления первого устройства"
+
+    echo -e "${BOLD}━━━ ШАГ B: Первый запуск Telegram-бота ━━━${NC}"
+    echo "   a) Откройте Telegram, найдите бота по имени (от @BotFather)"
+    echo "   b) Нажмите /start — первый пользователь автоматически станет"
+    echo "      администратором (без invite-кода)"
+    echo "   c) Следуйте инструкциям: выберите протокол → назовите устройство"
+    echo "   d) Получите конфиг и импортируйте в WireGuard / AmneziaWG"
     echo ""
-    echo -e "${BOLD}4. Документация:${NC}"
-    echo "   https://github.com/Cyrillicspb/vpn-infra/blob/master/docs/INSTALL.md"
+
+    echo -e "${BOLD}━━━ ШАГ C: mTLS сертификат для Grafana/панели (опционально) ━━━${NC}"
+    echo "   mTLS CA уже создан на VPS: /opt/vpn/nginx/mtls/ca.crt"
+    echo "   Для доступа к Grafana (https://VPS:8443/grafana/) нужен клиентский cert."
+    echo "   Через бот: /renew-cert — получить .p12 файл для браузера"
+    echo "   Grafana: https://${VPS_IP:-<VPS_IP>}:8443/grafana/"
+    echo "   Логин: admin / Пароль: ${GRAFANA_PASSWORD:-<см. /opt/vpn/.env>}"
     echo ""
-    echo -e "${BOLD}5. Команды диагностики:${NC}"
-    echo "   wg show                                    — статус WireGuard"
-    echo "   systemctl status watchdog                  — статус агента"
-    echo "   journalctl -u watchdog -f                  — логи агента"
-    echo "   bash /opt/vpn/scripts/vpn-policy-routing.sh status"
-    echo "                                              — таблицы маршрутизации"
+
+    if [[ "${USE_CLOUDFLARE:-n}" == "y" && -n "${CF_WORKER_HOSTNAME:-}" ]]; then
+        echo -e "${BOLD}━━━ ШАГ D: CDN-стек (Cloudflare Worker настроен) ━━━${NC}"
+        echo "   Worker: https://${CF_WORKER_HOSTNAME}"
+        echo "   Стек автоматически активируется watchdog при блокировке XHTTP."
+        echo "   Для ручного переключения: /switch cdn (через Telegram-бот)"
+        echo ""
+    fi
+
+    echo -e "${BOLD}━━━ КОМАНДЫ ДИАГНОСТИКИ ━━━${NC}"
+    echo "   wg show                                  — пиры WireGuard"
+    echo "   systemctl status watchdog                — агент"
+    echo "   journalctl -u watchdog -f                — логи агента"
     echo "   nft list set inet vpn blocked_static | wc -l"
-    echo "                                              — кол-во заблокированных IP"
+    echo "                                            — заблокированных IP"
     echo "   docker compose -f /opt/vpn/docker-compose.yml ps"
-    echo "                                              — статус контейнеров"
+    echo "                                            — контейнеры"
+    echo "   curl -sf http://localhost:8080/status -H 'Authorization: Bearer \$(grep WATCHDOG_API_TOKEN /opt/vpn/.env | cut -d= -f2)'"
+    echo "                                            — статус watchdog"
+    echo ""
+    echo -e "${BOLD}━━━ SSH ДОСТУП ━━━${NC}"
+    echo "   Домашний сервер: ssh sysadmin@${HOME_SERVER_IP:-<IP>}"
+    echo "   VPS (через туннель): ssh -i /root/.ssh/vpn_id_ed25519 sysadmin@10.177.2.2"
+    echo ""
+    echo "   Документация: https://github.com/Cyrillicspb/vpn-infra/blob/master/docs/"
     echo ""
     echo "╚══════════════════════════════════════════════════════════════════╝"
 }

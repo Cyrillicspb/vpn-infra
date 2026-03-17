@@ -116,6 +116,8 @@ echo -e "${BLUE}═════════════════════�
 echo ""
 
 # Запуск setup.sh на сервере через SSH
+# Скрипт скачивает setup.sh, install-home.sh, install-vps.sh на сервер
+# Fallback: jsdelivr CDN (доступен даже если GitHub заблокирован)
 ssh -i "$SSH_KEY" \
     -o "StrictHostKeyChecking=accept-new" \
     -o "ServerAliveInterval=30" \
@@ -124,18 +126,33 @@ ssh -i "$SSH_KEY" \
     -t "${SERVER_USER}@${SERVER_IP}" \
     'bash -lc "
         set -e
-        echo \"=== Скачивание setup.sh ===\"
-        if curl -sf --max-time 30 \
-            https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/setup.sh \
-            -o /tmp/vpn-setup.sh 2>/dev/null; then
-            echo \"OK: скачано с GitHub\"
-        else
-            echo \"GitHub недоступен. Попробуйте скачать setup.sh вручную.\"
-            exit 1
-        fi
-        chmod +x /tmp/vpn-setup.sh
+        GITHUB_BASE=\"https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master\"
+        CDN_BASE=\"https://cdn.jsdelivr.net/gh/Cyrillicspb/vpn-infra@master\"
+
+        download_file() {
+            local name=\"\$1\"
+            local dest=\"\$2\"
+            for base in \"\$GITHUB_BASE\" \"\$CDN_BASE\"; do
+                echo \"Trying: \${base}/\${name}\"
+                if curl -sf --max-time 30 \"\${base}/\${name}\" -o \"\${dest}\" 2>/dev/null; then
+                    echo \"[OK] \${name} скачан\"
+                    return 0
+                fi
+            done
+            echo \"[ERROR] Не удалось скачать \${name} ни с GitHub, ни с jsdelivr CDN.\"
+            echo \"  Попробуйте скопировать файл вручную: scp setup.sh sysadmin@SERVER:/tmp/\"
+            return 1
+        }
+
+        echo \"=== Скачивание скриптов установки ===\"
+        download_file setup.sh /tmp/setup.sh
+        download_file install-home.sh /tmp/install-home.sh
+        download_file install-vps.sh /tmp/install-vps.sh
+        chmod +x /tmp/setup.sh /tmp/install-home.sh /tmp/install-vps.sh
+
         echo \"=== Запуск setup.sh ===\"
-        sudo bash /tmp/vpn-setup.sh
+        sudo bash /tmp/setup.sh 2>&1 | tee /tmp/vpn-setup.log
+        exit \${PIPESTATUS[0]}
     "'
 
 RESULT=$?
