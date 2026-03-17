@@ -18,7 +18,7 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 STEP=0
-TOTAL_STEPS=52
+TOTAL_STEPS=53
 STATE_FILE="/opt/vpn/.setup-state"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="/opt/vpn/.env"
@@ -420,15 +420,23 @@ phase0() {
             "echo 'sysadmin ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/sysadmin && \
              chmod 440 /etc/sudoers.d/sysadmin"
 
-        # Отключение root SSH
-        log_info "Отключение root SSH-доступа на VPS..."
+        # Отключение root SSH и парольной аутентификации
+        log_info "Защита SSH на VPS..."
         _vps_root_exec \
-            "sed -i 's/^PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config; \
+            "sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config; \
              grep -q '^PermitRootLogin' /etc/ssh/sshd_config \
                  || echo 'PermitRootLogin no' >> /etc/ssh/sshd_config; \
+             sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config; \
+             grep -q '^PasswordAuthentication' /etc/ssh/sshd_config \
+                 || echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config; \
              systemctl reload sshd" 2>/dev/null || true
 
-        log_ok "Пользователь sysadmin настроен на VPS"
+        # Пароль root больше не нужен — очищаем из .env
+        env_set "VPS_ROOT_PASSWORD" ""
+        unset VPS_ROOT_PASSWORD
+        log_info "VPS_ROOT_PASSWORD очищен из .env"
+
+        log_ok "VPS защищён: sysadmin настроен, root SSH и парольный вход отключены"
         step_done "step06_vps_ssh_bootstrap"
     fi
 

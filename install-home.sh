@@ -18,7 +18,7 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 STEP="${STEP:-8}"
-TOTAL_STEPS=51
+TOTAL_STEPS=52
 STATE_FILE="/opt/vpn/.setup-state"
 ENV_FILE="/opt/vpn/.env"
 
@@ -97,6 +97,63 @@ else
     pip3 install --quiet --break-system-packages aggregate6
     log_ok "Системные пакеты установлены"
     step_done "step10_install_packages"
+fi
+
+# ── Шаг 10b: Создание sysadmin и защита SSH ──────────────────────────────────
+
+if is_done "step10b_home_sysadmin"; then
+    step_skip "step10b_home_sysadmin"
+else
+    step "Создание sysadmin и защита SSH (домашний сервер)"
+
+    # Создание sysadmin если не существует
+    if ! id sysadmin &>/dev/null; then
+        useradd -m -s /bin/bash sysadmin
+        usermod -aG sudo sysadmin
+        log_ok "Пользователь sysadmin создан"
+    else
+        log_info "Пользователь sysadmin уже существует"
+    fi
+
+    # sudo NOPASSWD
+    echo 'sysadmin ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/sysadmin
+    chmod 440 /etc/sudoers.d/sysadmin
+
+    # Добавить в docker group (понадобится после установки Docker)
+    usermod -aG docker sysadmin 2>/dev/null || true
+
+    # Копирование SSH-ключей из root → sysadmin
+    mkdir -p /home/sysadmin/.ssh
+    if [[ -f /root/.ssh/authorized_keys && -s /root/.ssh/authorized_keys ]]; then
+        cp /root/.ssh/authorized_keys /home/sysadmin/.ssh/authorized_keys
+        log_ok "SSH-ключи скопированы из root в sysadmin"
+    else
+        log_warn "У root нет authorized_keys — добавьте ключ:"
+        log_warn "  echo 'ВАШ_ПУБЛИЧНЫЙ_КЛЮЧ' >> /home/sysadmin/.ssh/authorized_keys"
+        touch /home/sysadmin/.ssh/authorized_keys
+    fi
+    chown -R sysadmin:sysadmin /home/sysadmin/.ssh
+    chmod 700 /home/sysadmin/.ssh
+    chmod 600 /home/sysadmin/.ssh/authorized_keys
+
+    # Защита SSH (только если у sysadmin есть ключ — иначе потеряем доступ)
+    if [[ -s /home/sysadmin/.ssh/authorized_keys ]]; then
+        sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+        grep -q '^PermitRootLogin' /etc/ssh/sshd_config \
+            || echo 'PermitRootLogin no' >> /etc/ssh/sshd_config
+
+        sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+        grep -q '^PasswordAuthentication' /etc/ssh/sshd_config \
+            || echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config
+
+        systemctl reload sshd
+        log_ok "SSH защищён: PermitRootLogin no, PasswordAuthentication no"
+        log_warn "Для входа: ssh sysadmin@${HOME_SERVER_IP:-$(hostname -I | awk '{print $1}')}"
+    else
+        log_warn "SSH не защищён — у sysadmin нет ключей. Добавьте ключ и повторите шаг."
+    fi
+
+    step_done "step10b_home_sysadmin"
 fi
 
 # ── Шаг 11: Отключение IPv6 ──────────────────────────────────────────────────
