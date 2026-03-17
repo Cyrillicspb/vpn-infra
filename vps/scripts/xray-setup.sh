@@ -5,7 +5,7 @@
 # Создаёт все inbound-записи в 3x-ui через API (Xray 26.x, XHTTP/splithttp):
 #   1. VLESS+XHTTP+REALITY  (tcp/2087, fingerprint: chrome, dest: microsoft.com)
 #   2. VLESS+XHTTP+REALITY  (tcp/2083, dest: cdn.jsdelivr.net, без vision flow)
-#   3. VLESS+WebSocket      (ws/127.0.0.1:8080, path /vpn — для CDN-стека)
+#   3. VLESS+splithttp      (splithttp/127.0.0.1:8080, path /vpn-cdn — для CDN-стека)
 #   4. Hysteria2            (udp/443, Salamander obfs — standalone, не через 3x-ui)
 #
 # Запуск: bash /opt/vpn/scripts/xray-setup.sh
@@ -200,13 +200,13 @@ cfg = {
 print(json.dumps(cfg))
 ")"
 
-# ── 3. VLESS + WebSocket (для Cloudflare CDN-стека) ──────────────────────────
-log "Настройка VLESS+WS на localhost:8080 (CDN-стек)..."
+# ── 3. VLESS + splithttp (для Cloudflare CDN-стека) ──────────────────────────
+log "Настройка VLESS+splithttp на localhost:8080 (CDN-стек)..."
 
-add_inbound "CDN-WS" "$(python3 -c "
+add_inbound "VLESS-WS-CDN" "$(python3 -c "
 import json
 cfg = {
-    'remark': 'CDN-WS',
+    'remark': 'VLESS-WS-CDN',
     'enable': True,
     'listen': '127.0.0.1',
     'port': 8080,
@@ -215,19 +215,20 @@ cfg = {
         'clients': [{
             'id': '${CF_CDN_UUID}',
             'flow': '',
-            'email': 'cdn@vpn',
+            'email': 'cdn-ws',
             'enable': True
         }],
         'decryption': 'none',
         'fallbacks': []
     }),
     'streamSettings': json.dumps({
-        'network': 'ws',
+        'network': 'splithttp',
         'security': 'none',
-        'wsSettings': {
-            'acceptProxyProtocol': False,
-            'path': '/vpn',
-            'headers': {}
+        'splithttpSettings': {
+            'path': '/vpn-cdn',
+            'host': '',
+            'maxUploadSize': 1000000,
+            'maxConcurrentUploads': 10
         }
     }),
     'sniffing': json.dumps({'enabled': False, 'destOverride': []})

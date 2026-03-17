@@ -356,6 +356,7 @@ phase0() {
 
         # Сохранение всех параметров в .env
         env_set "VPS_IP"                 "${VPS_IP}"
+        env_set "XRAY_SERVER"            "${VPS_IP}"
         env_set "VPS_SSH_PORT"           "${VPS_SSH_PORT}"
         env_set "TELEGRAM_BOT_TOKEN"     "${TELEGRAM_BOT_TOKEN}"
         env_set "TELEGRAM_ADMIN_CHAT_ID" "${TELEGRAM_ADMIN_CHAT_ID}"
