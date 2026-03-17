@@ -15,7 +15,7 @@
 #   3. apply_migrations (идемпотентно)
 #   4. docker compose pull + up -d
 #   5. Если watchdog.py изменился — setsid restart (переживает собственный рестарт)
-#   6. deploy_vps через SSH
+#   6. rsync vps/ конфигов на VPS (при изменениях) + docker compose up
 #   7. smoke_tests с таймаутом → FAIL → auto-rollback + Telegram алерт
 #   8. Очистка старых снапшотов (хранить последние 5)
 # =============================================================================
@@ -313,14 +313,75 @@ run_smoke_tests() {
 # =============================================================================
 deploy_vps() {
     [[ -n "${VPS_IP:-}" ]] || { log_warn "VPS_IP не задан, пропуск"; return 0; }
+    local force="${1:-}"
     log_step "Деплой на VPS ${VPS_IP}"
 
+    local ssh_port="${VPS_SSH_PORT:-22}"
+    local rsync_ssh="ssh -p $ssh_port -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes"
+    local vps_target="sysadmin@${VPS_IP}"
+
+    # ── Синхронизация конфигов VPS при изменениях ───────────────────────────────
+    if vps_any_changed || [[ "$force" == "--force" ]]; then
+        log_info "Синхронизация конфигов VPS..."
+
+        # docker-compose.yml
+        if [[ -f "$REPO_DIR/vps/docker-compose.yml" ]]; then
+            rsync -e "$rsync_ssh" -a \
+                "$REPO_DIR/vps/docker-compose.yml" \
+                "${vps_target}:/opt/vpn/docker-compose.yml" 2>/dev/null \
+                && log_ok "docker-compose.yml синхронизирован" || true
+        fi
+
+        # nginx конфиги (без ssl/ и mtls/ — генерируются на VPS)
+        if [[ -d "$REPO_DIR/vps/nginx" ]]; then
+            rsync -e "$rsync_ssh" -a \
+                --exclude="ssl/" --exclude="mtls/" \
+                "$REPO_DIR/vps/nginx/" \
+                "${vps_target}:/opt/vpn/nginx/" 2>/dev/null \
+                && log_ok "nginx конфиги синхронизированы" || true
+        fi
+
+        # prometheus / alertmanager / grafana provisioning
+        for subdir in prometheus alertmanager grafana/provisioning; do
+            if [[ -d "$REPO_DIR/vps/$subdir" ]]; then
+                vps_exec "mkdir -p /opt/vpn/$subdir" 2>/dev/null || true
+                rsync -e "$rsync_ssh" -a \
+                    "$REPO_DIR/vps/$subdir/" \
+                    "${vps_target}:/opt/vpn/$subdir/" 2>/dev/null || true
+            fi
+        done
+        vps_monitoring_changed && log_ok "Мониторинг конфиги синхронизированы"
+
+        # scripts
+        if [[ -d "$REPO_DIR/vps/scripts" ]]; then
+            rsync -e "$rsync_ssh" -a \
+                "$REPO_DIR/vps/scripts/" \
+                "${vps_target}:/opt/vpn/scripts/" 2>/dev/null \
+                && vps_exec "chmod +x /opt/vpn/scripts/*.sh 2>/dev/null || true" \
+                && log_ok "VPS scripts синхронизированы" || true
+        fi
+    fi
+
+    # ── Обновление контейнеров на VPS ───────────────────────────────────────────
     local retry=0 max_retry=2
     while (( retry <= max_retry )); do
-        if vps_exec "cd /opt/vpn && \
-            git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || true && \
-            docker compose pull --quiet 2>/dev/null || true && \
-            docker compose up -d --remove-orphans"; then
+        # Всегда pull новых образов (теги могут измениться в compose)
+        local cmd="cd /opt/vpn && docker compose pull --quiet 2>/dev/null || true"
+
+        # Принудительный рестарт nginx если его конфиги изменились
+        if vps_nginx_changed || [[ "$force" == "--force" ]]; then
+            cmd+=" && docker compose up -d --force-recreate nginx 2>/dev/null || true"
+        fi
+
+        # Принудительный рестарт мониторинга если его конфиги изменились
+        if vps_monitoring_changed || [[ "$force" == "--force" ]]; then
+            cmd+=" && docker compose up -d --force-recreate prometheus alertmanager grafana 2>/dev/null || true"
+        fi
+
+        # Общий up -d: подхватит новые образы и изменения в compose
+        cmd+=" && docker compose up -d --remove-orphans"
+
+        if vps_exec "$cmd"; then
             log_ok "VPS ${VPS_IP} обновлён"
             return 0
         fi
@@ -352,6 +413,24 @@ xray_changed() {
     git -C "$REPO_DIR" diff HEAD@{1} HEAD -- \
         home/xray/ \
         2>/dev/null | grep -q "."
+}
+
+vps_any_changed() {
+    git -C "$REPO_DIR" diff HEAD@{1} HEAD -- vps/ 2>/dev/null | grep -q "."
+}
+
+vps_nginx_changed() {
+    git -C "$REPO_DIR" diff HEAD@{1} HEAD -- vps/nginx/ 2>/dev/null | grep -q "."
+}
+
+vps_monitoring_changed() {
+    git -C "$REPO_DIR" diff HEAD@{1} HEAD -- \
+        vps/prometheus/ vps/alertmanager/ vps/grafana/ \
+        2>/dev/null | grep -q "."
+}
+
+vps_scripts_changed() {
+    git -C "$REPO_DIR" diff HEAD@{1} HEAD -- vps/scripts/ 2>/dev/null | grep -q "."
 }
 
 # =============================================================================
@@ -454,7 +533,7 @@ json.dump(cfg, open('$REPO_DIR/xray/config-cdn.json', 'w'), indent=4)
     fi
 
     # Деплой на VPS
-    deploy_vps
+    deploy_vps "$force"
 
     # Ждём стабилизации
     log_info "Ожидание стабилизации (15с)..."
