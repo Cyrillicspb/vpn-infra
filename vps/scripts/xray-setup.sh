@@ -2,11 +2,11 @@
 # =============================================================================
 # xray-setup.sh — Начальная настройка 3x-ui / Xray на VPS
 #
-# Создаёт все inbound-записи в 3x-ui через API:
-#   1. VLESS+REALITY+TCP  (tcp/443, fingerprint: chrome, dest: microsoft.com)
-#   2. VLESS+REALITY+gRPC (tcp/8444, dest: cdn.jsdelivr.net, без vision flow)
-#   3. VLESS+WebSocket    (ws/127.0.0.1:8080, path /vpn — для CDN-стека)
-#   4. Hysteria2          (udp/443, Salamander obfs — опционально, если 3x-ui поддерживает)
+# Создаёт все inbound-записи в 3x-ui через API (Xray 26.x, XHTTP/splithttp):
+#   1. VLESS+XHTTP+REALITY  (tcp/2087, fingerprint: chrome, dest: microsoft.com)
+#   2. VLESS+XHTTP+REALITY  (tcp/2083, dest: cdn.jsdelivr.net, без vision flow)
+#   3. VLESS+WebSocket      (ws/127.0.0.1:8080, path /vpn — для CDN-стека)
+#   4. Hysteria2            (udp/443, Salamander obfs — standalone, не через 3x-ui)
 #
 # Запуск: bash /opt/vpn/scripts/xray-setup.sh
 # Требует: /opt/vpn/.env с переменными
@@ -25,10 +25,11 @@ fi
 # ── Проверка переменных ───────────────────────────────────────────────────────
 : "${XRAY_UUID:?Нужен XRAY_UUID в .env}"
 : "${XRAY_PRIVATE_KEY:?Нужен XRAY_PRIVATE_KEY в .env}"
+: "${XHTTP_MS_PASSWORD:?Нужен XHTTP_MS_PASSWORD в .env}"
 : "${XRAY_GRPC_UUID:?Нужен XRAY_GRPC_UUID в .env}"
 : "${XRAY_GRPC_PRIVATE_KEY:?Нужен XRAY_GRPC_PRIVATE_KEY в .env}"
-: "${HYSTERIA2_AUTH:?Нужен HYSTERIA2_AUTH в .env}"
-: "${HYSTERIA2_OBFS:?Нужен HYSTERIA2_OBFS в .env}"
+: "${XHTTP_CDN_PASSWORD:?Нужен XHTTP_CDN_PASSWORD в .env}"
+: "${CF_CDN_UUID:?Нужен CF_CDN_UUID в .env}"
 
 # 3x-ui панель (host network, порт по умолчанию 2053)
 XUI_HOST="http://localhost:2053"
@@ -99,33 +100,33 @@ add_inbound() {
     fi
 }
 
-# Генерация shortId для REALITY (16 hex символов)
-REALITY_SHORT_ID=$(openssl rand -hex 8)
-GRPC_SHORT_ID=$(openssl rand -hex 8)
+# Генерация shortId для REALITY (8 hex символов)
+REALITY_SHORT_ID=$(openssl rand -hex 4)
+GRPC_SHORT_ID=$(openssl rand -hex 4)
 
-# ── 1. VLESS + REALITY + TCP (основной стек) ─────────────────────────────────
-log "Настройка VLESS+REALITY+TCP (порт 443)..."
+# ── 1. VLESS + XHTTP + REALITY (порт 2087, microsoft.com) ────────────────────
+log "Настройка VLESS+XHTTP+REALITY (порт 2087, microsoft.com)..."
 
-add_inbound "REALITY" "$(python3 -c "
+add_inbound "VLESS-XHTTP-microsoft" "$(python3 -c "
 import json
 cfg = {
-    'remark': 'REALITY',
+    'remark': 'VLESS-XHTTP-microsoft',
     'enable': True,
     'listen': '',
-    'port': 443,
+    'port': 2087,
     'protocol': 'vless',
     'settings': json.dumps({
         'clients': [{
             'id': '${XRAY_UUID}',
-            'flow': 'xtls-rprx-vision',
-            'email': 'client@vpn',
+            'flow': '',
+            'email': 'ms-client@vpn',
             'enable': True
         }],
         'decryption': 'none',
         'fallbacks': []
     }),
     'streamSettings': json.dumps({
-        'network': 'tcp',
+        'network': 'splithttp',
         'security': 'reality',
         'realitySettings': {
             'show': False,
@@ -136,9 +137,10 @@ cfg = {
             'shortIds': ['${REALITY_SHORT_ID}'],
             'fingerprint': 'chrome'
         },
-        'tcpSettings': {
-            'acceptProxyProtocol': False,
-            'header': {'type': 'none'}
+        'splithttpSettings': {
+            'path': '/',
+            'password': '${XHTTP_MS_PASSWORD}',
+            'maxConcurrentUploads': 2
         }
     }),
     'sniffing': json.dumps({
@@ -150,29 +152,29 @@ cfg = {
 print(json.dumps(cfg))
 ")"
 
-# ── 2. VLESS + REALITY + gRPC (резервный стек) ───────────────────────────────
-log "Настройка VLESS+REALITY+gRPC (порт 8444)..."
+# ── 2. VLESS + XHTTP + REALITY (порт 2083, cdn.jsdelivr.net) ─────────────────
+log "Настройка VLESS+XHTTP+REALITY (порт 2083, cdn.jsdelivr.net)..."
 
-add_inbound "REALITY-gRPC" "$(python3 -c "
+add_inbound "VLESS-XHTTP-jsdelivr" "$(python3 -c "
 import json
 cfg = {
-    'remark': 'REALITY-gRPC',
+    'remark': 'VLESS-XHTTP-jsdelivr',
     'enable': True,
     'listen': '',
-    'port': 8444,
+    'port': 2083,
     'protocol': 'vless',
     'settings': json.dumps({
         'clients': [{
             'id': '${XRAY_GRPC_UUID}',
             'flow': '',
-            'email': 'grpc@vpn',
+            'email': 'cdn-client@vpn',
             'enable': True
         }],
         'decryption': 'none',
         'fallbacks': []
     }),
     'streamSettings': json.dumps({
-        'network': 'grpc',
+        'network': 'splithttp',
         'security': 'reality',
         'realitySettings': {
             'show': False,
@@ -183,12 +185,17 @@ cfg = {
             'shortIds': ['${GRPC_SHORT_ID}'],
             'fingerprint': 'chrome'
         },
-        'grpcSettings': {
-            'serviceName': 'grpc',
-            'multiMode': False
+        'splithttpSettings': {
+            'path': '/',
+            'password': '${XHTTP_CDN_PASSWORD}',
+            'maxConcurrentUploads': 2
         }
     }),
-    'sniffing': json.dumps({'enabled': True, 'destOverride': ['http', 'tls']})
+    'sniffing': json.dumps({
+        'enabled': True,
+        'destOverride': ['http', 'tls', 'quic'],
+        'routeOnly': False
+    })
 }
 print(json.dumps(cfg))
 ")"
@@ -196,7 +203,7 @@ print(json.dumps(cfg))
 # ── 3. VLESS + WebSocket (для Cloudflare CDN-стека) ──────────────────────────
 log "Настройка VLESS+WS на localhost:8080 (CDN-стек)..."
 
-add_inbound "CDN-WebSocket" "$(python3 -c "
+add_inbound "CDN-WS" "$(python3 -c "
 import json
 cfg = {
     'remark': 'CDN-WS',
@@ -206,7 +213,7 @@ cfg = {
     'protocol': 'vless',
     'settings': json.dumps({
         'clients': [{
-            'id': '${XRAY_UUID}',
+            'id': '${CF_CDN_UUID}',
             'flow': '',
             'email': 'cdn@vpn',
             'enable': True
@@ -228,43 +235,9 @@ cfg = {
 print(json.dumps(cfg))
 ")"
 
-# ── 4. Hysteria2 (быстрый стек, QUIC+Salamander) ─────────────────────────────
-log "Настройка Hysteria2 UDP 443..."
-
-add_inbound "Hysteria2" "$(python3 -c "
-import json
-cfg = {
-    'remark': 'Hysteria2',
-    'enable': True,
-    'listen': '',
-    'port': 443,
-    'protocol': 'hysteria2',
-    'settings': json.dumps({
-        'clients': [{
-            'password': '${HYSTERIA2_AUTH}',
-            'email': 'h2@vpn',
-            'enable': True
-        }],
-        'masquerade': 'https://microsoft.com',
-        'ignoreClientBandwidth': False,
-        'obfs': {
-            'type': 'salamander',
-            'salamander': {'password': '${HYSTERIA2_OBFS}'}
-        }
-    }),
-    'streamSettings': json.dumps({
-        'network': 'tcp',
-        'security': 'tls',
-        'tlsSettings': {
-            'serverName': '',
-            'alpn': ['h3'],
-            'certificates': []
-        }
-    }),
-    'sniffing': json.dumps({'enabled': False, 'destOverride': []})
-}
-print(json.dumps(cfg))
-")" || log "Hysteria2 inbound — ошибка (возможно не поддерживается этой версией 3x-ui, настройте вручную)"
+# ── 4. Hysteria2: работает как standalone systemd (не через 3x-ui) ────────────
+log "Hysteria2 настраивается как standalone systemd-сервис, не как inbound 3x-ui."
+log "Конфиг: /opt/vpn/hysteria2/server.yaml"
 
 # ── Получить список созданных inbound ─────────────────────────────────────────
 log "Проверка созданных inbound..."
@@ -289,9 +262,9 @@ echo "$INBOUNDS"
 # ── Итог ──────────────────────────────────────────────────────────────────────
 ok "=== xray-setup завершён ==="
 log ""
-log "Следующие шаги (вручную в 3x-ui панели https://VPS_IP:8443/xui/):"
-log "  1. Убедитесь что все 4 inbound созданы и активны"
-log "  2. Для Hysteria2: загрузите TLS-сертификат (Let's Encrypt или self-signed)"
-log "  3. Проверьте REALITY Public Key совпадает с .env (XRAY_PUBLIC_KEY)"
+log "Следующие шаги:"
+log "  1. Убедитесь что все 3 inbound созданы и активны (https://VPS_IP:8443/xui/)"
+log "  2. Проверьте XRAY_PUBLIC_KEY в .env совпадает с публичным ключом в панели"
+log "  3. Для CDN-стека: настройте cloudflared tunnel → localhost:8080"
 log "  4. Добавьте клиентов через Telegram-бота (/adddevice)"
-log "  5. Порты в firewall (VPS): 443/tcp, 8444/tcp, 443/udp, 20241/tcp (метрики)"
+log "  5. Порты в firewall (VPS): 2087/tcp, 2083/tcp, 443/udp"

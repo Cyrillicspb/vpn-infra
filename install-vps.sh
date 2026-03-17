@@ -485,6 +485,26 @@ else
     step_done "step38_vps_docker_compose"
 fi
 
+# ── Шаг 38b: Настройка инбаундов 3x-ui через API ─────────────────────────────
+
+if is_done "step38b_vps_3xui_inbounds"; then
+    step_skip "step38b_vps_3xui_inbounds"
+else
+    step "Настройка VLESS-XHTTP инбаундов в 3x-ui"
+
+    SETUP_SCRIPT="${REPO_DIR}/vps/scripts/xray-setup.sh"
+    if [[ ! -f "$SETUP_SCRIPT" ]]; then
+        log_warn "Файл vps/scripts/xray-setup.sh не найден — пропуск"
+        log_warn "Настройте инбаунды вручную: http://${VPS_IP}:2053"
+    else
+        vps_copy "$SETUP_SCRIPT" "sysadmin@${VPS_IP}:/tmp/xray-setup.sh"
+        vps_exec "chmod +x /tmp/xray-setup.sh && bash /tmp/xray-setup.sh && rm -f /tmp/xray-setup.sh"
+        log_ok "Инбаунды 3x-ui настроены"
+    fi
+
+    step_done "step38b_vps_3xui_inbounds"
+fi
+
 # ── Шаг 39: Git-зеркало и healthcheck cron на VPS ────────────────────────────
 
 if is_done "step39_vps_git_mirror_cron"; then
