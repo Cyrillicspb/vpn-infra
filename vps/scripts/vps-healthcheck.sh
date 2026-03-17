@@ -6,8 +6,8 @@
 #
 # Проверяет:
 #   - Docker-контейнеры (running + healthy)
-#   - Xray: порт 443 TCP (REALITY)
-#   - Hysteria2: порт 443 UDP
+#   - Xray XHTTP: порт 2087/tcp (microsoft.com) и 2083/tcp (cdn.jsdelivr.net)
+#   - Hysteria2: контейнер running
 #   - Cloudflared: HTTP 200 на metrics endpoint
 #   - Nginx: HTTP 200 на /health
 #   - Prometheus: HTTP 200 на /-/healthy
@@ -17,6 +17,7 @@
 #   - RAM < 90%
 #
 # Дедупликация: повтор алерта не чаще 1 раза в 30 мин для одной проблемы
+# Recovery: уведомление в Telegram при восстановлении
 # flock: не запускать параллельно
 # =============================================================================
 set -euo pipefail
@@ -79,9 +80,21 @@ notify_dedup() {
     echo "$(date +%s)" > "$dedup_file"
 }
 
-# ── Сброс dedup при восстановлении ────────────────────────────────────────────
+# ── Сброс dedup при восстановлении + recovery уведомление ────────────────────
 clear_dedup() {
     local key="$1"
+    local name="${2:-}"
+    # Если файл существует — проблема была, теперь восстановилась → уведомить
+    if [[ -f "${DEDUP_DIR}/${key}" && -n "$name" ]]; then
+        if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_ADMIN_CHAT_ID:-}" ]]; then
+            curl -sf --max-time 10 \
+                "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                -d "chat_id=${TELEGRAM_ADMIN_CHAT_ID}" \
+                --data-urlencode "text=✅ *VPS: восстановлено* — ${name}" \
+                -d "parse_mode=Markdown" \
+                > /dev/null 2>&1 || true
+        fi
+    fi
     rm -f "${DEDUP_DIR}/${key}"
 }
 
@@ -94,12 +107,12 @@ check() {
     if eval "$cmd" > /dev/null 2>&1; then
         ((PASS++))
         ok "$name"
-        clear_dedup "$key"
+        clear_dedup "$key" "$name"
     else
         ((FAIL++))
         fail "$name"
         ALERTS+=("$name")
-        notify_dedup "$key" "⚠️ *VPS healthcheck: $name* FAIL\nHost: $(hostname)\nTime: $(date '+%Y-%m-%d %H:%M:%S')"
+        notify_dedup "$key" "⚠️ *VPS: $name* FAIL\nHost: \`$(hostname)\`\nTime: $(date '+%Y-%m-%d %H:%M:%S')"
     fi
 }
 
@@ -127,15 +140,18 @@ check_container "prometheus"
 check_container "alertmanager"
 check_container "grafana"
 check_container "node-exporter"
+check_container "hysteria2"
 
 check_container_health "3x-ui"
 check_container_health "nginx"
 check_container_health "prometheus"
 check_container_health "grafana"
 
-# ── Xray: TCP 443 (REALITY inbound) ──────────────────────────────────────────
-check "Xray TCP 443" "xray_tcp_443" \
-    "nc -z -w5 localhost 443"
+# ── Xray XHTTP: порты 2087 (microsoft.com) и 2083 (cdn.jsdelivr.net) ─────────
+check "Xray XHTTP 2087" "xray_xhttp_2087" \
+    "nc -z -w5 localhost 2087"
+check "Xray XHTTP 2083" "xray_xhttp_2083" \
+    "nc -z -w5 localhost 2083"
 
 # ── Nginx: health endpoint ────────────────────────────────────────────────────
 check "Nginx health" "nginx_health" \
@@ -159,7 +175,7 @@ check "Alertmanager healthy" "alertmanager_health" \
 
 # ── Grafana: API ──────────────────────────────────────────────────────────────
 check "Grafana healthy" "grafana_health" \
-    "curl -sf --max-time 5 http://172.21.0.13:3000/api/health | grep -qi ok"
+    "curl -sf --max-time 5 http://localhost:3000/api/health | grep -qi ok"
 
 # ── 3x-ui panel: доступна (localhost) ─────────────────────────────────────────
 check "3x-ui panel" "xui_panel" \
@@ -174,7 +190,7 @@ DISK_PCT=$(df / | awk 'NR==2{gsub("%","",$5); print $5}')
 if (( DISK_PCT < 90 )); then
     ((PASS++))
     ok "Disk ${DISK_PCT}% < 90%"
-    clear_dedup "disk_space"
+    clear_dedup "disk_space" "Диск в норме (${DISK_PCT}%)"
 else
     ((FAIL++))
     fail "Disk ${DISK_PCT}% >= 90%"
@@ -187,7 +203,7 @@ RAM_AVAIL=$(free | awk '/^Mem:/{printf "%.0f", $7/$2*100}')
 if (( RAM_AVAIL > 10 )); then
     ((PASS++))
     ok "RAM available ${RAM_AVAIL}%"
-    clear_dedup "ram_pressure"
+    clear_dedup "ram_pressure" "RAM в норме (${RAM_AVAIL}% свободно)"
 else
     ((FAIL++))
     RAM_USED=$(( 100 - RAM_AVAIL ))
