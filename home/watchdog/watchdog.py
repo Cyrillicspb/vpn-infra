@@ -2756,9 +2756,10 @@ async def post_renew_ca(request: Request, _: bool = Depends(_auth)):
 # ---------------------------------------------------------------------------
 # Fail2ban
 # ---------------------------------------------------------------------------
-async def _f2b_jails(ssh_prefix: list[str]) -> list[dict]:
+async def _f2b_jails(ssh_prefix: list[str], use_sudo: bool = False) -> list[dict]:
     """Получить список jails и забаненных IP. ssh_prefix=[] для localhost."""
-    rc, out, _ = await run_cmd(ssh_prefix + ["fail2ban-client", "status"], timeout=10)
+    sudo = ["sudo"] if use_sudo else []
+    rc, out, _ = await run_cmd(ssh_prefix + sudo + ["fail2ban-client", "status"], timeout=15)
     if rc != 0:
         return []
     jails = []
@@ -2771,7 +2772,7 @@ async def _f2b_jails(ssh_prefix: list[str]) -> list[dict]:
     result = []
     for jail in jails:
         rc2, out2, _ = await run_cmd(
-            ssh_prefix + ["fail2ban-client", "status", jail], timeout=10
+            ssh_prefix + sudo + ["fail2ban-client", "status", jail], timeout=15
         )
         banned: list[str] = []
         total_banned = 0
@@ -2791,15 +2792,23 @@ async def _f2b_jails(ssh_prefix: list[str]) -> list[dict]:
 
 
 def _vps_ssh_prefix(vps: dict) -> list[str]:
-    ssh_key = os.getenv("VPS_SSH_KEY", "/root/.ssh/id_rsa")
-    return [
+    ssh_key = os.getenv("VPS_SSH_KEY", "/root/.ssh/vpn_id_ed25519")
+    ssh_user = os.getenv("BACKUP_VPS_USER", "sysadmin")
+    ssh_port = str(vps.get("ssh_port", 22))
+    cmd = [
         "ssh", "-i", ssh_key,
-        "-p", str(vps.get("ssh_port", 443)),
+        "-p", ssh_port,
         "-o", "StrictHostKeyChecking=no",
         "-o", "ConnectTimeout=8",
         "-o", "BatchMode=yes",
-        f"sysadmin@{vps['ip']}",
     ]
+    # SOCKS5-прокси через xray-client-2 (обязателен для доступа к VPS снаружи)
+    proxy = os.getenv("VPS_SSH_PROXY", "")  # socks5://127.0.0.1:1081
+    if proxy:
+        proxy_addr = proxy.replace("socks5://", "").replace("socks4://", "")
+        cmd += ["-o", f"ProxyCommand=nc -X 5 -x {proxy_addr} %h %p"]
+    cmd.append(f"{ssh_user}@{vps['ip']}")
+    return cmd
 
 
 @app.get("/fail2ban/status")
@@ -2809,13 +2818,13 @@ async def get_fail2ban_status(_: bool = Depends(_auth)):
     vps_results = []
     for i, vps in enumerate(state.vps_list):
         prefix = _vps_ssh_prefix(vps)
-        jails = await _f2b_jails(prefix)
+        jails = await _f2b_jails(prefix, use_sudo=True)
         vps_results.append({"ip": vps["ip"], "idx": i, "jails": jails})
     # Добавить первичный VPS если его нет в списке
     if VPS_IP and not any(v["ip"] == VPS_IP for v in state.vps_list):
         ssh_port = int(os.getenv("VPS_SSH_PORT", "443"))
         prefix = _vps_ssh_prefix({"ip": VPS_IP, "ssh_port": ssh_port})
-        jails = await _f2b_jails(prefix)
+        jails = await _f2b_jails(prefix, use_sudo=True)
         vps_results.insert(0, {"ip": VPS_IP, "idx": -1, "jails": jails})
     return {"home": home_jails, "vps": vps_results}
 
@@ -2840,8 +2849,9 @@ async def post_fail2ban_unban(request: Request, req: F2bUnbanRequest, _: bool = 
         if not vps:
             raise HTTPException(status_code=404, detail="VPS не найден")
         ssh_prefix = _vps_ssh_prefix(vps)
+    sudo = [] if req.server == "home" else ["sudo"]
     rc, out, err = await run_cmd(
-        ssh_prefix + ["fail2ban-client", "set", req.jail, "unbanip", req.ip],
+        ssh_prefix + sudo + ["fail2ban-client", "set", req.jail, "unbanip", req.ip],
         timeout=15,
     )
     return {"ok": rc == 0, "output": (out or err)[:200]}
