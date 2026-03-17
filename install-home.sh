@@ -122,36 +122,35 @@ else
     # Добавить в docker group (понадобится после установки Docker)
     usermod -aG docker sysadmin 2>/dev/null || true
 
-    # Копирование SSH-ключей из root → sysadmin
+    # Перенос пароля root → sysadmin (копируем хэш из /etc/shadow)
+    ROOT_HASH=$(getent shadow root | cut -d: -f2)
+    if [[ -n "$ROOT_HASH" && "$ROOT_HASH" != "!" && "$ROOT_HASH" != "*" ]]; then
+        usermod -p "$ROOT_HASH" sysadmin
+        log_ok "Пароль sysadmin = пароль root"
+    else
+        log_warn "У root нет пароля — задайте пароль sysadmin вручную: passwd sysadmin"
+    fi
+
+    # Копирование SSH-ключей из root → sysadmin (если есть)
     mkdir -p /home/sysadmin/.ssh
     if [[ -f /root/.ssh/authorized_keys && -s /root/.ssh/authorized_keys ]]; then
         cp /root/.ssh/authorized_keys /home/sysadmin/.ssh/authorized_keys
         log_ok "SSH-ключи скопированы из root в sysadmin"
     else
-        log_warn "У root нет authorized_keys — добавьте ключ:"
-        log_warn "  echo 'ВАШ_ПУБЛИЧНЫЙ_КЛЮЧ' >> /home/sysadmin/.ssh/authorized_keys"
         touch /home/sysadmin/.ssh/authorized_keys
     fi
     chown -R sysadmin:sysadmin /home/sysadmin/.ssh
     chmod 700 /home/sysadmin/.ssh
     chmod 600 /home/sysadmin/.ssh/authorized_keys
 
-    # Защита SSH (только если у sysadmin есть ключ — иначе потеряем доступ)
-    if [[ -s /home/sysadmin/.ssh/authorized_keys ]]; then
-        sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-        grep -q '^PermitRootLogin' /etc/ssh/sshd_config \
-            || echo 'PermitRootLogin no' >> /etc/ssh/sshd_config
+    # Защита SSH: запретить вход под root, вход по паролю для sysadmin оставить
+    sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+    grep -q '^PermitRootLogin' /etc/ssh/sshd_config \
+        || echo 'PermitRootLogin no' >> /etc/ssh/sshd_config
 
-        sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-        grep -q '^PasswordAuthentication' /etc/ssh/sshd_config \
-            || echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config
-
-        systemctl reload sshd
-        log_ok "SSH защищён: PermitRootLogin no, PasswordAuthentication no"
-        log_warn "Для входа: ssh sysadmin@${HOME_SERVER_IP:-$(hostname -I | awk '{print $1}')}"
-    else
-        log_warn "SSH не защищён — у sysadmin нет ключей. Добавьте ключ и повторите шаг."
-    fi
+    systemctl reload sshd
+    log_ok "SSH: PermitRootLogin no (вход по паролю для sysadmin сохранён)"
+    log_warn "Для входа: ssh sysadmin@${HOME_SERVER_IP:-$(hostname -I | awk '{print $1}')}"
 
     step_done "step10b_home_sysadmin"
 fi
