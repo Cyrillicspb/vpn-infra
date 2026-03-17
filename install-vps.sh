@@ -1,9 +1,9 @@
 #!/bin/bash
 # =============================================================================
 # install-vps.sh — Установка компонентов на VPS
-# Вызывается из setup.sh (STEP=28 bash install-vps.sh)
+# Вызывается из setup.sh (STEP=31 bash install-vps.sh)
 # Использует: sysadmin пользователь (не root)
-# Шаги 29-39
+# Шаги 32-44
 # =============================================================================
 
 set -euo pipefail
@@ -32,8 +32,8 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-STEP="${STEP:-28}"
-TOTAL_STEPS=51
+STEP="${STEP:-31}"
+TOTAL_STEPS=57
 STATE_FILE="/opt/vpn/.setup-state"
 ENV_FILE="/opt/vpn/.env"
 
@@ -116,10 +116,10 @@ vps_root_exec() {
         "root@${VPS_IP}" "$@"
 }
 
-# ── Шаг 29: Проверка SSH-доступа к VPS ───────────────────────────────────────
+# ── Шаг 32: Проверка SSH-доступа к VPS ───────────────────────────────────────
 
-if is_done "step29_vps_ssh_check"; then
-    step_skip "step29_vps_ssh_check"
+if is_done "step32_vps_ssh_check"; then
+    step_skip "step32_vps_ssh_check"
 else
     step "Проверка SSH-доступа к VPS (sysadmin)"
 
@@ -142,13 +142,13 @@ else
         || die "SSH к VPS (sysadmin@${VPS_IP}) не работает даже после копирования ключа."
 
     log_ok "SSH-доступ к VPS подтверждён"
-    step_done "step29_vps_ssh_check"
+    step_done "step32_vps_ssh_check"
 fi
 
-# ── Шаг 30: Обновление пакетов на VPS ────────────────────────────────────────
+# ── Шаг 33: Обновление пакетов на VPS ────────────────────────────────────────
 
-if is_done "step30_vps_update_packages"; then
-    step_skip "step30_vps_update_packages"
+if is_done "step33_vps_update_packages"; then
+    step_skip "step33_vps_update_packages"
 else
     step "Обновление системных пакетов на VPS"
 
@@ -160,13 +160,13 @@ else
         python3 python3-pip net-tools"
 
     log_ok "Пакеты на VPS обновлены"
-    step_done "step30_vps_update_packages"
+    step_done "step33_vps_update_packages"
 fi
 
-# ── Шаг 31: Отключение IPv6 на VPS ───────────────────────────────────────────
+# ── Шаг 34: Отключение IPv6 на VPS ───────────────────────────────────────────
 
-if is_done "step31_vps_disable_ipv6"; then
-    step_skip "step31_vps_disable_ipv6"
+if is_done "step34_vps_disable_ipv6"; then
+    step_skip "step34_vps_disable_ipv6"
 else
     step "Отключение IPv6 на VPS"
 
@@ -175,13 +175,13 @@ else
         sudo sysctl -p /etc/sysctl.d/99-disable-ipv6.conf 2>/dev/null || true"
 
     log_ok "IPv6 отключён на VPS"
-    step_done "step31_vps_disable_ipv6"
+    step_done "step34_vps_disable_ipv6"
 fi
 
-# ── Шаг 32: Установка Docker CE на VPS ───────────────────────────────────────
+# ── Шаг 35: Установка Docker CE на VPS ───────────────────────────────────────
 
-if is_done "step32_vps_install_docker"; then
-    step_skip "step32_vps_install_docker"
+if is_done "step35_vps_install_docker"; then
+    step_skip "step35_vps_install_docker"
 else
     step "Установка Docker CE на VPS"
 
@@ -207,13 +207,13 @@ else
 
     VPS_DOCKER_VER=$(vps_exec "sudo docker --version 2>/dev/null")
     log_ok "Docker на VPS: ${VPS_DOCKER_VER}"
-    step_done "step32_vps_install_docker"
+    step_done "step35_vps_install_docker"
 fi
 
-# ── Шаг 33: Настройка nftables на VPS (rate limiting TCP/UDP 443) ─────────────
+# ── Шаг 36: Настройка nftables на VPS (rate limiting TCP/UDP 443) ─────────────
 
-if is_done "step33_vps_nftables"; then
-    step_skip "step33_vps_nftables"
+if is_done "step36_vps_nftables"; then
+    step_skip "step36_vps_nftables"
 else
     step "Настройка nftables на VPS (rate limiting + защита портов)"
 
@@ -262,13 +262,13 @@ NFTEOF"
         sudo nft -f /etc/nftables-vps.conf || true"
 
     log_ok "nftables настроен на VPS"
-    step_done "step33_vps_nftables"
+    step_done "step36_vps_nftables"
 fi
 
-# ── Шаг 34: Настройка fail2ban на VPS ────────────────────────────────────────
+# ── Шаг 37: Настройка fail2ban на VPS ────────────────────────────────────────
 
-if is_done "step34_vps_fail2ban"; then
-    step_skip "step34_vps_fail2ban"
+if is_done "step37_vps_fail2ban"; then
+    step_skip "step37_vps_fail2ban"
 else
     step "Настройка fail2ban на VPS"
 
@@ -278,13 +278,13 @@ else
     vps_exec "sudo systemctl enable fail2ban && sudo systemctl restart fail2ban"
 
     log_ok "fail2ban настроен на VPS"
-    step_done "step34_vps_fail2ban"
+    step_done "step37_vps_fail2ban"
 fi
 
-# ── Шаг 35: Копирование файлов VPS ───────────────────────────────────────────
+# ── Шаг 38: Копирование файлов VPS ───────────────────────────────────────────
 
-if is_done "step35_vps_copy_files"; then
-    step_skip "step35_vps_copy_files"
+if is_done "step38_vps_copy_files"; then
+    step_skip "step38_vps_copy_files"
 else
     step "Копирование файлов на VPS"
 
@@ -303,13 +303,13 @@ else
         log_warn "Директория vps/ не найдена в ${REPO_DIR}. Пропускаем копирование файлов VPS."
     fi
 
-    step_done "step35_vps_copy_files"
+    step_done "step38_vps_copy_files"
 fi
 
-# ── Шаг 36: Генерация .env для VPS ───────────────────────────────────────────
+# ── Шаг 39: Генерация .env для VPS ───────────────────────────────────────────
 
-if is_done "step36_vps_env"; then
-    step_skip "step36_vps_env"
+if is_done "step39_vps_env"; then
+    step_skip "step39_vps_env"
 else
     step "Генерация .env файла для VPS"
 
@@ -357,13 +357,13 @@ EOF
     rm -f "$VPS_ENV_TMP"
 
     log_ok ".env скопирован на VPS"
-    step_done "step36_vps_env"
+    step_done "step39_vps_env"
 fi
 
-# ── Шаг 37: Генерация mTLS CA на VPS ─────────────────────────────────────────
+# ── Шаг 40: Генерация mTLS CA на VPS ─────────────────────────────────────────
 
-if is_done "step37_vps_mtls_ca"; then
-    step_skip "step37_vps_mtls_ca"
+if is_done "step40_vps_mtls_ca"; then
+    step_skip "step40_vps_mtls_ca"
 else
     step "Генерация mTLS CA (корневой сертификат)"
 
@@ -399,13 +399,13 @@ else
     )" | grep -v '^$' | while IFS= read -r line; do log_info "$line"; done || true
 
     log_ok "mTLS CA и server cert готовы на VPS"
-    step_done "step37_vps_mtls_ca"
+    step_done "step40_vps_mtls_ca"
 fi
 
-# ── Шаг 38: Запуск Docker Compose на VPS ─────────────────────────────────────
+# ── Шаг 41: Генерация конфига Hysteria2-сервера ─────────────────────────────
 
-if is_done "step37b_vps_hysteria2_config"; then
-    step_skip "step37b_vps_hysteria2_config"
+if is_done "step41_vps_hysteria2_config"; then
+    step_skip "step41_vps_hysteria2_config"
 else
     step "Генерация конфига Hysteria2-сервера и TLS-сертификата"
 
@@ -457,11 +457,13 @@ log:
 HYEOF"
 
     log_ok "Hysteria2 server.yaml и TLS cert сгенерированы"
-    step_done "step37b_vps_hysteria2_config"
+    step_done "step41_vps_hysteria2_config"
 fi
 
-if is_done "step38_vps_docker_compose"; then
-    step_skip "step38_vps_docker_compose"
+# ── Шаг 42: Запуск Docker Compose на VPS ────────────────────────────────────
+
+if is_done "step42_vps_docker_compose"; then
+    step_skip "step42_vps_docker_compose"
 else
     step "Запуск Docker Compose на VPS"
 
@@ -495,13 +497,13 @@ else
     fi
 
     log_ok "Docker Compose на VPS запущен"
-    step_done "step38_vps_docker_compose"
+    step_done "step42_vps_docker_compose"
 fi
 
-# ── Шаг 38b: Настройка инбаундов 3x-ui через API ─────────────────────────────
+# ── Шаг 43: Настройка инбаундов 3x-ui через API ─────────────────────────────
 
-if is_done "step38b_vps_3xui_inbounds"; then
-    step_skip "step38b_vps_3xui_inbounds"
+if is_done "step43_vps_3xui_inbounds"; then
+    step_skip "step43_vps_3xui_inbounds"
 else
     step "Настройка VLESS-XHTTP инбаундов в 3x-ui"
 
@@ -515,13 +517,13 @@ else
         log_ok "Инбаунды 3x-ui настроены"
     fi
 
-    step_done "step38b_vps_3xui_inbounds"
+    step_done "step43_vps_3xui_inbounds"
 fi
 
-# ── Шаг 39: Git-зеркало и healthcheck cron на VPS ────────────────────────────
+# ── Шаг 44: Git-зеркало и healthcheck cron на VPS ────────────────────────────
 
-if is_done "step39_vps_git_mirror_cron"; then
-    step_skip "step39_vps_git_mirror_cron"
+if is_done "step44_vps_git_mirror_cron"; then
+    step_skip "step44_vps_git_mirror_cron"
 else
     step "Настройка git-зеркала и healthcheck cron на VPS"
 
@@ -590,7 +592,7 @@ chmod +x /opt/vpn/scripts/vps-healthcheck.sh"
         2>/dev/null || true"
 
     log_ok "Git-зеркало и healthcheck cron настроены на VPS"
-    step_done "step39_vps_git_mirror_cron"
+    step_done "step44_vps_git_mirror_cron"
 fi
 
 log_info "═══ Фаза 2 (VPS) завершена ═══"

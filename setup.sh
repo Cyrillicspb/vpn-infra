@@ -18,7 +18,7 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 STEP=0
-TOTAL_STEPS=53
+TOTAL_STEPS=57
 STATE_FILE="/opt/vpn/.setup-state"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="/opt/vpn/.env"
@@ -685,7 +685,7 @@ phase2() {
         die "Файл install-vps.sh не найден в ${REPO_DIR}"
     fi
 
-    STEP=28 bash "${REPO_DIR}/install-vps.sh"
+    STEP=31 bash "${REPO_DIR}/install-vps.sh"
 }
 
 # ── Фаза 3: Связка ──────────────────────────────────────────────────────────
@@ -705,9 +705,9 @@ phase3() {
             -o StrictHostKeyChecking=no "$@"
     }
 
-    # Шаг 40 — Обмен WireGuard-ключами
-    if is_done "step40_exchange_keys"; then
-        step_skip "step40_exchange_keys"
+    # Шаг 45 — Обмен WireGuard-ключами
+    if is_done "step45_exchange_keys"; then
+        step_skip "step45_exchange_keys"
     else
         step "Обмен WireGuard-ключами (Tier-2 туннель)"
 
@@ -724,14 +724,14 @@ phase3() {
 
         log_ok "Ключи Tier-2 VPS сгенерированы"
         source "$ENV_FILE"
-        step_done "step40_exchange_keys"
+        step_done "step45_exchange_keys"
     fi
 
     [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
 
-    # Шаг 41 — Настройка Tier-2 туннеля
-    if is_done "step41_tier2_tunnel"; then
-        step_skip "step41_tier2_tunnel"
+    # Шаг 46 — Настройка Tier-2 туннеля
+    if is_done "step46_tier2_tunnel"; then
+        step_skip "step46_tier2_tunnel"
     else
         step "Настройка Tier-2 WireGuard туннеля (10.177.2.0/30)"
 
@@ -795,14 +795,14 @@ TIER2EOF
             log_warn "Ping 10.177.2.2 не прошёл. Проверьте после завершения установки."
         fi
 
-        step_done "step41_tier2_tunnel"
+        step_done "step46_tier2_tunnel"
     fi
 
     [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
 
-    # Шаг 42 — Генерация конфигов Xray-клиента
-    if is_done "step42_xray_client_configs"; then
-        step_skip "step42_xray_client_configs"
+    # Шаг 47 — Генерация конфигов Xray-клиента
+    if is_done "step47_xray_client_configs"; then
+        step_skip "step47_xray_client_configs"
     else
         step "Генерация конфигов Xray-клиента (VLESS+XHTTP+REALITY)"
 
@@ -952,14 +952,14 @@ CDNEOF
             fi
         fi
 
-        step_done "step42_xray_client_configs"
+        step_done "step47_xray_client_configs"
     fi
 
     [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
 
-    # Шаг 43 — Конфиг Hysteria2
-    if is_done "step43_hysteria2_config"; then
-        step_skip "step43_hysteria2_config"
+    # Шаг 48 — Конфиг Hysteria2
+    if is_done "step48_hysteria2_config"; then
+        step_skip "step48_hysteria2_config"
     else
         step "Генерация конфига Hysteria2-клиента"
 
@@ -993,14 +993,14 @@ log:
 EOF
         chmod 600 /etc/hysteria/config.yaml
         log_ok "Конфиг Hysteria2 создан: /etc/hysteria/config.yaml"
-        step_done "step43_hysteria2_config"
+        step_done "step48_hysteria2_config"
     fi
 
     [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
 
-    # Шаг 44 — Запуск всех VPN-сервисов
-    if is_done "step44_start_services"; then
-        step_skip "step44_start_services"
+    # Шаг 49 — Запуск всех VPN-сервисов
+    if is_done "step49_start_services"; then
+        step_skip "step49_start_services"
     else
         step "Запуск VPN-сервисов"
 
@@ -1034,7 +1034,7 @@ EOF
             fi
         done
 
-        step_done "step44_start_services"
+        step_done "step49_start_services"
     fi
 }
 
@@ -1061,19 +1061,19 @@ phase4() {
         fi
     }
 
-    # Шаг 45 — DNS
+    # Шаг 50 — DNS
     step "Тест DNS (dnsmasq)"
     run_test "DNS резолвинг через 127.0.0.1" \
         "dig @127.0.0.1 youtube.com +short +time=5 2>/dev/null | grep -qE '^[0-9]'" \
         "systemctl status dnsmasq; journalctl -u dnsmasq -n 30"
 
-    # Шаг 46 — VPN туннель
+    # Шаг 51 — VPN туннель
     step "Тест VPN-туннеля Tier-2"
     run_test "Ping Tier-2 (10.177.2.2)" \
         "ping -c 3 -W 2 10.177.2.2" \
         "systemctl status awg-quick@wg0; awg show wg0"
 
-    # Шаг 47 — Watchdog API
+    # Шаг 52 — Watchdog API
     step "Тест Watchdog HTTP API"
     run_test "GET /status на :8080" \
         "curl -sf --max-time 5 \
@@ -1081,7 +1081,7 @@ phase4() {
             http://localhost:8080/status" \
         "systemctl status watchdog; journalctl -u watchdog -n 30"
 
-    # Шаг 48 — Telegram Bot
+    # Шаг 53 — Telegram Bot
     step "Тест Telegram-бота"
     run_test "Telegram getMe API" \
         "curl -sf --max-time 10 \
@@ -1089,13 +1089,13 @@ phase4() {
             | python3 -c \"import sys,json; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)\"" \
         "Проверьте TELEGRAM_BOT_TOKEN в ${ENV_FILE}"
 
-    # Шаг 49 — Policy routing
+    # Шаг 54 — Policy routing
     step "Тест split tunneling (policy routing)"
     run_test "Таблица маршрутизации 200 (blocked → tun)" \
         "ip route show table 200 2>/dev/null | grep -q default" \
         "systemctl status vpn-routes; bash /opt/vpn/scripts/vpn-policy-routing.sh status"
 
-    # Шаг 50 — Мониторинг (домашний сервер)
+    # Шаг 55 — Мониторинг (домашний сервер)
     step "Тест мониторинга (домашний сервер)"
     run_test "Prometheus healthy" \
         "curl -sf --max-time 5 http://localhost:9090/-/healthy" \
@@ -1107,7 +1107,7 @@ phase4() {
         "curl -sf --max-time 5 http://localhost:9093/-/healthy" \
         "docker compose -f /opt/vpn/docker-compose.yml logs --tail=20 alertmanager"
 
-    # Шаг 51 — DKMS AmneziaWG
+    # Шаг 56 — DKMS AmneziaWG
     step "Тест DKMS модуля AmneziaWG"
     run_test "Модуль AmneziaWG загружен" \
         "lsmod 2>/dev/null | grep -qi amneziawg \
@@ -1195,6 +1195,7 @@ main() {
     phase0
     phase1
     phase2
+    STEP=44
     phase3
     phase4
     phase5

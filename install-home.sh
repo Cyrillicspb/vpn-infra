@@ -2,7 +2,7 @@
 # =============================================================================
 # install-home.sh — Установка компонентов на домашнем сервере
 # Вызывается из setup.sh (STEP=8 bash install-home.sh)
-# Шаги 9-28
+# Шаги 9-31
 # =============================================================================
 
 set -euo pipefail
@@ -18,7 +18,7 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 STEP="${STEP:-8}"
-TOTAL_STEPS=52
+TOTAL_STEPS=57
 STATE_FILE="/opt/vpn/.setup-state"
 ENV_FILE="/opt/vpn/.env"
 
@@ -112,10 +112,10 @@ else
     step_done "step10_install_packages"
 fi
 
-# ── Шаг 10b: Создание sysadmin и защита SSH ──────────────────────────────────
+# ── Шаг 11: Создание sysadmin и защита SSH ──────────────────────────────────
 
-if is_done "step10b_home_sysadmin"; then
-    step_skip "step10b_home_sysadmin"
+if is_done "step11_home_sysadmin"; then
+    step_skip "step11_home_sysadmin"
 else
     step "Создание sysadmin и защита SSH (домашний сервер)"
 
@@ -165,13 +165,13 @@ else
     log_ok "SSH: PermitRootLogin no (вход по паролю для sysadmin сохранён)"
     log_warn "Для входа: ssh sysadmin@${HOME_SERVER_IP:-$(hostname -I | awk '{print $1}')}"
 
-    step_done "step10b_home_sysadmin"
+    step_done "step11_home_sysadmin"
 fi
 
-# ── Шаг 11: Отключение IPv6 ──────────────────────────────────────────────────
+# ── Шаг 12: Отключение IPv6 ──────────────────────────────────────────────────
 
-if is_done "step11_disable_ipv6"; then
-    step_skip "step11_disable_ipv6"
+if is_done "step12_disable_ipv6"; then
+    step_skip "step12_disable_ipv6"
 else
     step "Отключение IPv6"
 
@@ -192,13 +192,13 @@ EOF
     fi
 
     log_ok "IPv6 отключён"
-    step_done "step11_disable_ipv6"
+    step_done "step12_disable_ipv6"
 fi
 
-# ── Шаг 12: Настройка ядра (BBR + IP forwarding + rp_filter) ─────────────────
+# ── Шаг 13: Настройка ядра (BBR + IP forwarding + rp_filter) ─────────────────
 
-if is_done "step12_kernel_tuning"; then
-    step_skip "step12_kernel_tuning"
+if is_done "step13_kernel_tuning"; then
+    step_skip "step13_kernel_tuning"
 else
     step "Настройка параметров ядра (BBR, IP forwarding, rp_filter)"
 
@@ -222,13 +222,13 @@ net.ipv4.conf.default.accept_redirects = 0
 EOF
     sysctl --system 2>/dev/null || sysctl -p /etc/sysctl.d/99-vpn.conf 2>/dev/null || true
     log_ok "Параметры ядра настроены"
-    step_done "step12_kernel_tuning"
+    step_done "step13_kernel_tuning"
 fi
 
-# ── Шаг 13: Фиксация версии ядра (предотвращение автообновления) ─────────────
+# ── Шаг 14: Фиксация версии ядра (предотвращение автообновления) ─────────────
 
-if is_done "step13_pin_kernel"; then
-    step_skip "step13_pin_kernel"
+if is_done "step14_pin_kernel"; then
+    step_skip "step14_pin_kernel"
 else
     step "Фиксация версии ядра (pin kernel)"
 
@@ -266,13 +266,13 @@ EOF
     apt-mark hold "linux-headers-${KERNEL_VERSION}" 2>/dev/null || true
 
     log_ok "Версия ядра ${KERNEL_VERSION} зафиксирована"
-    step_done "step13_pin_kernel"
+    step_done "step14_pin_kernel"
 fi
 
-# ── Шаг 14: Установка Docker CE ──────────────────────────────────────────────
+# ── Шаг 15: Установка Docker CE ──────────────────────────────────────────────
 
-if is_done "step14_install_docker"; then
-    step_skip "step14_install_docker"
+if is_done "step15_install_docker"; then
+    step_skip "step15_install_docker"
 else
     step "Установка Docker CE"
 
@@ -314,13 +314,13 @@ EOF
     systemctl enable docker
     systemctl restart docker
     log_ok "Docker настроен и запущен"
-    step_done "step14_install_docker"
+    step_done "step15_install_docker"
 fi
 
-# ── Шаг 15: Установка AmneziaWG ──────────────────────────────────────────────
+# ── Шаг 16: Установка AmneziaWG ──────────────────────────────────────────────
 
-if is_done "step15_install_amneziawg"; then
-    step_skip "step15_install_amneziawg"
+if is_done "step16_install_amneziawg"; then
+    step_skip "step16_install_amneziawg"
 else
     step "Установка AmneziaWG (DKMS модуль)"
 
@@ -361,13 +361,13 @@ EOF
         log_warn "Продолжаем установку — AmneziaWG можно добавить позже."
     fi
 
-    step_done "step15_install_amneziawg"
+    step_done "step16_install_amneziawg"
 fi
 
-# ── Шаг 16: Установка Hysteria2 ──────────────────────────────────────────────
+# ── Шаг 17: Установка Hysteria2 ──────────────────────────────────────────────
 
-if is_done "step16_install_hysteria2"; then
-    step_skip "step16_install_hysteria2"
+if is_done "step17_install_hysteria2"; then
+    step_skip "step17_install_hysteria2"
 else
     step "Установка Hysteria2 (бинарник)"
 
@@ -385,13 +385,13 @@ else
 
     mkdir -p /etc/hysteria
     log_ok "Hysteria2 ${HYSTERIA_VERSION} установлен"
-    step_done "step16_install_hysteria2"
+    step_done "step17_install_hysteria2"
 fi
 
-# ── Шаг 17: Установка tun2socks ──────────────────────────────────────────────
+# ── Шаг 18: Установка tun2socks ──────────────────────────────────────────────
 
-if is_done "step17_install_tun2socks"; then
-    step_skip "step17_install_tun2socks"
+if is_done "step18_install_tun2socks"; then
+    step_skip "step18_install_tun2socks"
 else
     step "Установка tun2socks"
 
@@ -419,13 +419,13 @@ else
     rm -f /tmp/tun2socks.zip
 
     log_ok "tun2socks ${TUN2SOCKS_VER} установлен"
-    step_done "step17_install_tun2socks"
+    step_done "step18_install_tun2socks"
 fi
 
-# ── Шаг 18: Генерация ключей REALITY x25519 через Docker ─────────────────────
+# ── Шаг 19: Генерация ключей REALITY x25519 через Docker ─────────────────────
 
-if is_done "step18_generate_reality_keys"; then
-    step_skip "step18_generate_reality_keys"
+if is_done "step19_generate_reality_keys"; then
+    step_skip "step19_generate_reality_keys"
 else
     step "Генерация REALITY x25519 ключей (через Docker/xray)"
 
@@ -437,7 +437,7 @@ else
     # Убедимся что Docker доступен
     if ! command -v docker &>/dev/null; then
         log_warn "Docker недоступен — пропускаем генерацию REALITY ключей."
-        log_warn "Запустите шаг 18 вручную после установки Docker."
+        log_warn "Запустите шаг 19 вручную после установки Docker."
     else
         log_info "Загрузка образа ${XRAY_IMAGE}..."
         docker pull "${XRAY_IMAGE}" --quiet 2>/dev/null || true
@@ -472,13 +472,13 @@ else
         set -o allexport; source "$ENV_FILE"; set +o allexport
     fi
 
-    step_done "step18_generate_reality_keys"
+    step_done "step19_generate_reality_keys"
 fi
 
-# ── Шаг 19: Настройка nftables ───────────────────────────────────────────────
+# ── Шаг 20: Настройка nftables ───────────────────────────────────────────────
 
-if is_done "step19_configure_nftables"; then
-    step_skip "step19_configure_nftables"
+if is_done "step20_configure_nftables"; then
+    step_skip "step20_configure_nftables"
 else
     step "Настройка nftables (правила + nft sets)"
 
@@ -578,15 +578,15 @@ EOF
         || log_warn "nftables restart завершился с ошибкой — проверьте конфиг: nft -c -f /etc/nftables.conf"
 
     log_ok "nftables настроен"
-    step_done "step19_configure_nftables"
+    step_done "step20_configure_nftables"
 fi
 
-# ── Шаг 19b: Проверка firewall — nmap + ss ────────────────────────────────────
+# ── Шаг 21: Проверка firewall — nmap + ss ────────────────────────────────────
 # Firewall — единственная защита. Все порты кроме явно разрешённых DROP.
 # Этот шаг убеждается что нет неожиданно открытых сервисов.
 
-if is_done "step19b_verify_firewall"; then
-    step_skip "step19b_verify_firewall"
+if is_done "step21_verify_firewall"; then
+    step_skip "step21_verify_firewall"
 else
     step "Проверка firewall (nmap + ss)"
 
@@ -646,13 +646,13 @@ else
     nft list chain inet vpn input 2>/dev/null || log_warn "nft list chain inet vpn input завершился с ошибкой"
     log_info "-------------------------------------"
 
-    step_done "step19b_verify_firewall"
+    step_done "step21_verify_firewall"
 fi
 
-# ── Шаг 20: Создание конфигов WireGuard-интерфейсов ──────────────────────────
+# ── Шаг 22: Создание конфигов WireGuard-интерфейсов ──────────────────────────
 
-if is_done "step20_wireguard_configs"; then
-    step_skip "step20_wireguard_configs"
+if is_done "step22_wireguard_configs"; then
+    step_skip "step22_wireguard_configs"
 else
     step "Создание конфигов WireGuard-интерфейсов (wg0 AWG + wg1 WG)"
 
@@ -697,14 +697,14 @@ EOF
 
     chmod 600 /etc/wireguard/wg0.conf /etc/wireguard/wg1.conf
     log_ok "Конфиги wg0 (AWG) и wg1 (WG) созданы"
-    # Примечание: wg-quick@wg0 и wg1 запускаются после Tier-2 в phase3 (шаг 41)
-    step_done "step20_wireguard_configs"
+    # Примечание: wg-quick@wg0 и wg1 запускаются после Tier-2 в phase3 (шаг 46)
+    step_done "step22_wireguard_configs"
 fi
 
-# ── Шаг 21: Настройка dnsmasq ────────────────────────────────────────────────
+# ── Шаг 23: Настройка dnsmasq ────────────────────────────────────────────────
 
-if is_done "step21_configure_dnsmasq"; then
-    step_skip "step21_configure_dnsmasq"
+if is_done "step23_configure_dnsmasq"; then
+    step_skip "step23_configure_dnsmasq"
 else
     step "Настройка dnsmasq (DNS + nftset для blocked_dynamic)"
 
@@ -772,13 +772,13 @@ EOF
     fi
 
     log_ok "dnsmasq настроен"
-    step_done "step21_configure_dnsmasq"
+    step_done "step23_configure_dnsmasq"
 fi
 
-# ── Шаг 22: Настройка policy routing и systemd-юнитов ────────────────────────
+# ── Шаг 24: Настройка policy routing и systemd-юнитов ────────────────────────
 
-if is_done "step22_policy_routing_units"; then
-    step_skip "step22_policy_routing_units"
+if is_done "step24_policy_routing_units"; then
+    step_skip "step24_policy_routing_units"
 else
     step "Настройка policy routing и systemd-юнитов"
 
@@ -932,13 +932,13 @@ EOF
     systemctl enable vpn-routes vpn-sets-restore 2>/dev/null || true
 
     log_ok "Policy routing и systemd-юниты настроены"
-    step_done "step22_policy_routing_units"
+    step_done "step24_policy_routing_units"
 fi
 
-# ── Шаг 23: Установка Watchdog Python venv ───────────────────────────────────
+# ── Шаг 25: Установка Watchdog Python venv ───────────────────────────────────
 
-if is_done "step23_watchdog_venv"; then
-    step_skip "step23_watchdog_venv"
+if is_done "step25_watchdog_venv"; then
+    step_skip "step25_watchdog_venv"
 else
     step "Создание Python venv для Watchdog"
 
@@ -968,13 +968,13 @@ else
     systemctl enable watchdog 2>/dev/null || true
 
     log_ok "Watchdog Python venv готов"
-    step_done "step23_watchdog_venv"
+    step_done "step25_watchdog_venv"
 fi
 
-# ── Шаг 24: Настройка fail2ban ───────────────────────────────────────────────
+# ── Шаг 26: Настройка fail2ban ───────────────────────────────────────────────
 
-if is_done "step24_configure_fail2ban"; then
-    step_skip "step24_configure_fail2ban"
+if is_done "step26_configure_fail2ban"; then
+    step_skip "step26_configure_fail2ban"
 else
     step "Настройка fail2ban (защита SSH)"
 
@@ -997,13 +997,13 @@ EOF
         || log_warn "fail2ban не запустился — проверьте: journalctl -u fail2ban"
 
     log_ok "fail2ban настроен"
-    step_done "step24_configure_fail2ban"
+    step_done "step26_configure_fail2ban"
 fi
 
-# ── Шаг 25: Настройка logrotate + journald ───────────────────────────────────
+# ── Шаг 27: Настройка logrotate + journald ───────────────────────────────────
 
-if is_done "step25_logrotate_journald"; then
-    step_skip "step25_logrotate_journald"
+if is_done "step27_logrotate_journald"; then
+    step_skip "step27_logrotate_journald"
 else
     step "Настройка logrotate и journald"
 
@@ -1034,13 +1034,13 @@ EOF
     systemctl restart systemd-journald 2>/dev/null || true
 
     log_ok "logrotate и journald настроены"
-    step_done "step25_logrotate_journald"
+    step_done "step27_logrotate_journald"
 fi
 
-# ── Шаг 26: Настройка unattended-upgrades ────────────────────────────────────
+# ── Шаг 28: Настройка unattended-upgrades ────────────────────────────────────
 
-if is_done "step26_unattended_upgrades"; then
-    step_skip "step26_unattended_upgrades"
+if is_done "step28_unattended_upgrades"; then
+    step_skip "step28_unattended_upgrades"
 else
     step "Настройка автоматических security-обновлений (unattended-upgrades)"
 
@@ -1065,13 +1065,13 @@ Unattended-Upgrade::Mail "";
 EOF
 
     log_ok "unattended-upgrades настроен (только security, ядро исключено)"
-    step_done "step26_unattended_upgrades"
+    step_done "step28_unattended_upgrades"
 fi
 
-# ── Шаг 27: Настройка cron-заданий ───────────────────────────────────────────
+# ── Шаг 29: Настройка cron-заданий ───────────────────────────────────────────
 
-if is_done "step27_configure_cron"; then
-    step_skip "step27_configure_cron"
+if is_done "step29_configure_cron"; then
+    step_skip "step29_configure_cron"
 else
     step "Настройка cron-заданий (маршруты, бэкап, DNS-прогрев)"
 
@@ -1108,13 +1108,13 @@ EOF
     done
 
     log_ok "Cron-задания настроены"
-    step_done "step27_configure_cron"
+    step_done "step29_configure_cron"
 fi
 
-# ── Шаг 27b: Подготовка конфигов мониторинга ─────────────────────────────────
+# ── Шаг 30: Подготовка конфигов мониторинга ─────────────────────────────────
 
-if is_done "step27b_monitoring_configs"; then
-    step_skip "step27b_monitoring_configs"
+if is_done "step30_monitoring_configs"; then
+    step_skip "step30_monitoring_configs"
 else
     step "Подготовка конфигов мониторинга (Prometheus, Alertmanager, Grafana)"
 
@@ -1156,13 +1156,13 @@ else
         log_warn "WATCHDOG_API_TOKEN не задан — watchdog-token пустой"
     fi
 
-    step_done "step27b_monitoring_configs"
+    step_done "step30_monitoring_configs"
 fi
 
-# ── Шаг 28: Запуск Docker Compose на домашнем сервере ────────────────────────
+# ── Шаг 31: Запуск Docker Compose на домашнем сервере ────────────────────────
 
-if is_done "step28_docker_compose_home"; then
-    step_skip "step28_docker_compose_home"
+if is_done "step31_docker_compose_home"; then
+    step_skip "step31_docker_compose_home"
 else
     step "Запуск Docker Compose (домашний сервер)"
 
@@ -1189,5 +1189,5 @@ else
     fi
 
     log_ok "Фаза 1 (домашний сервер) завершена"
-    step_done "step28_docker_compose_home"
+    step_done "step31_docker_compose_home"
 fi
