@@ -44,10 +44,23 @@ log_ok()    { echo -e "${GREEN}[✓]${NC}   $*"; }
 log_warn()  { echo -e "${YELLOW}[!]${NC}   $*"; }
 log_error() { echo -e "${RED}[✗]${NC}   $*" >&2; }
 
+_progress_bar() {
+    local current="$1" total="$2" width=40
+    local pct=$(( current * 100 / total ))
+    local filled=$(( current * width / total ))
+    local empty=$(( width - filled ))
+    local bar=""
+    local i
+    for (( i=0; i<filled; i++ )); do bar+="█"; done
+    for (( i=0; i<empty;  i++ )); do bar+="░"; done
+    echo -e "    ${CYAN}[${bar}]${NC} ${BOLD}${pct}%${NC} (${current}/${total})"
+}
+
 step() {
     ((STEP++)) || true
     echo ""
     echo -e "${CYAN}${BOLD}━━━ Шаг ${STEP}/${TOTAL_STEPS}: $* ━━━${NC}"
+    _progress_bar "$STEP" "$TOTAL_STEPS"
 }
 
 is_done()   { grep -qxF "$1" "$STATE_FILE" 2>/dev/null; }
