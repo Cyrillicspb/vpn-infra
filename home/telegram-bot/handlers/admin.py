@@ -67,6 +67,31 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 router = Router()
 
+
+async def _docker_logs(service: str, n: int = 50) -> str:
+    """Получить логи Docker-контейнера через socket-proxy API."""
+    import aiohttp as _aiohttp
+    import struct
+    docker_host = os.getenv("DOCKER_HOST", "tcp://socket-proxy:2375").replace("tcp://", "http://")
+    url = f"{docker_host}/containers/{service}/logs?stdout=1&stderr=1&tail={n}&timestamps=0"
+    try:
+        async with _aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=_aiohttp.ClientTimeout(total=15)) as r:
+                if r.status == 404:
+                    return f"(контейнер {service} не найден)"
+                raw = await r.read()
+        # Docker multiplexed stream: 8-byte header per chunk
+        lines = []
+        offset = 0
+        while offset + 8 <= len(raw):
+            size = struct.unpack(">I", raw[offset + 4:offset + 8])[0]
+            chunk = raw[offset + 8:offset + 8 + size]
+            lines.append(chunk.decode("utf-8", errors="replace"))
+            offset += 8 + size
+        return "".join(lines) or "(нет логов)"
+    except Exception as e:
+        return f"(ошибка получения логов: {e})"
+
 MANUAL_VPN    = Path("/etc/vpn-routes/manual-vpn.txt")
 MANUAL_DIRECT = Path("/etc/vpn-routes/manual-direct.txt")
 ALLOWED_SERVICES = {
@@ -315,14 +340,16 @@ async def cmd_logs(message: Message, state: FSMContext, **kw):
     service = args[1]
     n = min(int(args[2]), 300) if len(args) > 2 and args[2].isdigit() else 50
 
-    if service in ("telegram-bot", "xray-client", "xray-client-2", "cloudflared", "node-exporter"):
-        cmd = ["docker", "logs", "--tail", str(n), service]
-    else:
-        cmd = ["journalctl", "-u", service, "-n", str(n), "--no-pager", "--output=short"]
-
+    docker_services = {"telegram-bot", "xray-client", "xray-client-2", "cloudflared", "node-exporter"}
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        text = result.stdout or result.stderr or "(нет логов)"
+        if service in docker_services:
+            text = await _docker_logs(service, n)
+        else:
+            result = subprocess.run(
+                ["journalctl", "-u", service, "-n", str(n), "--no-pager", "--output=short"],
+                capture_output=True, text=True, timeout=15,
+            )
+            text = result.stdout or result.stderr or "(нет логов)"
         if len(text) > 4000:
             await message.answer_document(
                 BufferedInputFile(text.encode(), filename=f"{service}.log"),
@@ -1801,13 +1828,15 @@ async def cb_adm_log(cb: CallbackQuery, **kw):
     service = cb.data[len("adm:log:"):]
     await cb.answer(f"Загружаю логи {service}...")
     allowed_docker = {"telegram-bot", "xray-client", "xray-client-2", "cloudflared", "node-exporter"}
-    if service in allowed_docker:
-        cmd = ["docker", "logs", "--tail", "50", service]
-    else:
-        cmd = ["journalctl", "-u", service, "-n", "50", "--no-pager", "--output=short"]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        text = result.stdout or result.stderr or "(нет логов)"
+        if service in allowed_docker:
+            text = await _docker_logs(service, 50)
+        else:
+            result = subprocess.run(
+                ["journalctl", "-u", service, "-n", "50", "--no-pager", "--output=short"],
+                capture_output=True, text=True, timeout=15,
+            )
+            text = result.stdout or result.stderr or "(нет логов)"
         if len(text) > 4000:
             from aiogram.types import BufferedInputFile
             await cb.message.answer_document(
