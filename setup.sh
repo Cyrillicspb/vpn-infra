@@ -502,9 +502,9 @@ phase0() {
             HYSTERIA2_AUTH=$(openssl rand -hex 32)
             env_set "HYSTERIA2_AUTH" "$HYSTERIA2_AUTH"
         }
-        [[ -z "${HYSTERIA2_OBFS:-}" ]] && {
-            HYSTERIA2_OBFS=$(openssl rand -hex 16)
-            env_set "HYSTERIA2_OBFS" "$HYSTERIA2_OBFS"
+        [[ -z "${HYSTERIA2_OBFS_PASSWORD:-}" ]] && {
+            HYSTERIA2_OBFS_PASSWORD=$(openssl rand -hex 16)
+            env_set "HYSTERIA2_OBFS_PASSWORD" "$HYSTERIA2_OBFS_PASSWORD"
         }
 
         # Прочие секреты
@@ -558,6 +558,22 @@ phase0() {
         mkdir -p /opt/vpn/scripts
         mkdir -p /opt/vpn/watchdog/plugins
         mkdir -p /opt/vpn/.deploy-snapshot
+
+        # Если setup.sh запущен из /tmp или нет директории home/ — клонируем полный репозиторий.
+        # Это происходит при запуске через установщики Windows/macOS (они копируют только 3 скрипта).
+        if [[ ! -d "${REPO_DIR}/home" ]]; then
+            log_info "Директория home/ не найдена в ${REPO_DIR}."
+            log_info "Клонируем полный репозиторий с GitHub..."
+            GITHUB_REPO_URL="${GITHUB_REPO_URL:-https://github.com/Cyrillicspb/vpn-infra.git}"
+            if git clone "$GITHUB_REPO_URL" /opt/vpn 2>/dev/null; then
+                REPO_DIR="/opt/vpn"
+                log_ok "Репозиторий клонирован в /opt/vpn"
+            else
+                log_warn "Клонирование из GitHub не удалось. Установка продолжится,"
+                log_warn "но некоторые файлы конфигурации могут отсутствовать."
+                log_warn "Если GitHub заблокирован — задайте GITHUB_REPO_URL=<альтернативный_URL>"
+            fi
+        fi
 
         # Копирование файлов из репозитория
         if command -v rsync &>/dev/null; then
@@ -767,7 +783,7 @@ TIER2EOF
     if is_done "step42_xray_client_configs"; then
         step_skip "step42_xray_client_configs"
     else
-        step "Генерация конфигов Xray-клиента (REALITY + gRPC)"
+        step "Генерация конфигов Xray-клиента (VLESS+XHTTP+REALITY)"
 
         XRAY_PUB="${XRAY_PUBLIC_KEY:-}"
         XRAY_GRPC_PUB="${XRAY_GRPC_PUBLIC_KEY:-}"
@@ -778,7 +794,9 @@ TIER2EOF
         else
             mkdir -p /opt/vpn/xray
 
-            # Конфиг VLESS+REALITY (stack 3: microsoft.com, xtls-rprx-vision)
+            # Конфиг VLESS+XHTTP+REALITY (stack 3: microsoft.com, порт 2087)
+            # XHTTP (splithttp) — Xray 26.x, без flow vision (несовместим с splithttp)
+            # password в splithttpSettings — обязателен для Xray 26.x (иначе "empty password" error)
             cat > /opt/vpn/xray/config-reality.json << EOF
 {
     "log": {"loglevel": "warning"},
@@ -793,29 +811,35 @@ TIER2EOF
         "settings": {
             "vnext": [{
                 "address": "${VPS_IP}",
-                "port": 443,
+                "port": 2087,
                 "users": [{
                     "id": "${XRAY_UUID}",
                     "encryption": "none",
-                    "flow": "xtls-rprx-vision"
+                    "flow": ""
                 }]
             }]
         },
         "streamSettings": {
-            "network": "tcp",
+            "network": "splithttp",
             "security": "reality",
             "realitySettings": {
                 "fingerprint": "chrome",
                 "serverName": "microsoft.com",
                 "publicKey": "${XRAY_PUB}",
                 "shortId": ""
+            },
+            "splithttpSettings": {
+                "path": "/",
+                "host": "microsoft.com",
+                "password": "${XHTTP_MS_PASSWORD:-}"
             }
         }
     }]
 }
 EOF
 
-            # Конфиг VLESS+REALITY+gRPC (stack 2: cdn.jsdelivr.net, без vision)
+            # Конфиг VLESS+XHTTP+REALITY (stack 2: cdn.jsdelivr.net, порт 2083)
+            # SNI cdn.jsdelivr.net — более устойчив к блокировкам чем microsoft.com
             cat > /opt/vpn/xray/config-grpc.json << EOF
 {
     "log": {"loglevel": "warning"},
@@ -830,7 +854,7 @@ EOF
         "settings": {
             "vnext": [{
                 "address": "${VPS_IP}",
-                "port": 443,
+                "port": 2083,
                 "users": [{
                     "id": "${XRAY_GRPC_UUID}",
                     "encryption": "none",
@@ -839,7 +863,7 @@ EOF
             }]
         },
         "streamSettings": {
-            "network": "grpc",
+            "network": "splithttp",
             "security": "reality",
             "realitySettings": {
                 "fingerprint": "chrome",
@@ -847,14 +871,16 @@ EOF
                 "publicKey": "${XRAY_GRPC_PUB}",
                 "shortId": ""
             },
-            "grpcSettings": {
-                "serviceName": "grpc"
+            "splithttpSettings": {
+                "path": "/",
+                "host": "cdn.jsdelivr.net",
+                "password": "${XHTTP_CDN_PASSWORD:-}"
             }
         }
     }]
 }
 EOF
-            log_ok "Конфиги Xray-клиента созданы"
+            log_ok "Конфиги Xray-клиента созданы (XHTTP/splithttp)"
 
             # CDN-стек: config-cdn.json (если настроен CF Worker)
             if [[ -n "${CF_WORKER_HOSTNAME:-}" ]]; then
@@ -929,7 +955,7 @@ auth: ${HYSTERIA2_AUTH}
 obfs:
   type: salamander
   salamander:
-    password: ${HYSTERIA2_OBFS}
+    password: ${HYSTERIA2_OBFS_PASSWORD}
 
 bandwidth:
   up: 50 mbps
@@ -1120,7 +1146,7 @@ phase5() {
     echo "   c) Следуйте инструкциям для добавления первого устройства"
     echo ""
     echo -e "${BOLD}4. Документация:${NC}"
-    echo "   https://github.com/Cyrillicspb/vpn-infra/blob/main/docs/INSTALL.md"
+    echo "   https://github.com/Cyrillicspb/vpn-infra/blob/master/docs/INSTALL.md"
     echo ""
     echo -e "${BOLD}5. Команды диагностики:${NC}"
     echo "   wg show                                    — статус WireGuard"

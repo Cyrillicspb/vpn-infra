@@ -306,19 +306,29 @@ else
     VPS_ENV_TMP=$(mktemp /tmp/vps-env.XXXXXX)
     chmod 600 "$VPS_ENV_TMP"
 
+    # Генерируем пароли для 3x-ui панели и Grafana если ещё нет
+    [[ -z "${XRAY_PANEL_PASSWORD:-}" ]] && XRAY_PANEL_PASSWORD=$(openssl rand -hex 16) && env_set "XRAY_PANEL_PASSWORD" "$XRAY_PANEL_PASSWORD"
+    [[ -z "${GRAFANA_PASSWORD:-}" ]]    && GRAFANA_PASSWORD=$(openssl rand -hex 16)    && env_set "GRAFANA_PASSWORD" "$GRAFANA_PASSWORD"
+
     cat > "$VPS_ENV_TMP" << EOF
 # VPS .env — сгенерировано setup.sh
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
 TELEGRAM_ADMIN_CHAT_ID=${TELEGRAM_ADMIN_CHAT_ID:-}
 CF_TUNNEL_TOKEN=${CF_TUNNEL_TOKEN:-}
+CF_WORKER_HOSTNAME=${CF_WORKER_HOSTNAME:-}
+CF_CDN_UUID=${CF_CDN_UUID:-}
 XRAY_UUID=${XRAY_UUID:-}
 XRAY_GRPC_UUID=${XRAY_GRPC_UUID:-}
 XRAY_PRIVATE_KEY=${XRAY_PRIVATE_KEY:-}
 XRAY_GRPC_PRIVATE_KEY=${XRAY_GRPC_PRIVATE_KEY:-}
 XRAY_PUBLIC_KEY=${XRAY_PUBLIC_KEY:-}
 XRAY_GRPC_PUBLIC_KEY=${XRAY_GRPC_PUBLIC_KEY:-}
+XHTTP_MS_PASSWORD=${XHTTP_MS_PASSWORD:-}
+XHTTP_CDN_PASSWORD=${XHTTP_CDN_PASSWORD:-}
 HYSTERIA2_AUTH=${HYSTERIA2_AUTH:-}
-HYSTERIA2_OBFS=${HYSTERIA2_OBFS:-}
+HYSTERIA2_OBFS_PASSWORD=${HYSTERIA2_OBFS_PASSWORD:-}
+XRAY_PANEL_PASSWORD=${XRAY_PANEL_PASSWORD:-}
+GRAFANA_PASSWORD=${GRAFANA_PASSWORD:-}
 VPS_IP=${VPS_IP:-}
 VPS_TUNNEL_IP=${VPS_TUNNEL_IP:-10.177.2.2}
 HOME_TUNNEL_IP=${HOME_TUNNEL_IP:-10.177.2.1}
@@ -400,14 +410,15 @@ else
     vps_exec "sudo tee /opt/vpn/hysteria2/server.yaml > /dev/null << 'HYEOF'
 listen: :443
 
+# Сертификат генерируется setup.sh в /opt/vpn/hysteria2/ (self-signed, EC P-256)
 tls:
-  cert: /etc/hysteria2/server.crt
-  key: /etc/hysteria2/server.key
+  cert: /opt/vpn/hysteria2/server.crt
+  key: /opt/vpn/hysteria2/server.key
 
 obfs:
   type: salamander
   salamander:
-    password: ${HYSTERIA2_OBFS}
+    password: ${HYSTERIA2_OBFS_PASSWORD}
 
 auth:
   type: password
