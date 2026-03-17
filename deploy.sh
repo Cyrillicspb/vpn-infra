@@ -311,8 +311,14 @@ run_smoke_tests() {
 # =============================================================================
 # Деплой на VPS
 # =============================================================================
+VPS_DEPLOY_STATUS=""   # глобальный результат: заполняется deploy_vps, читается do_deploy
+
 deploy_vps() {
-    [[ -n "${VPS_IP:-}" ]] || { log_warn "VPS_IP не задан, пропуск"; return 0; }
+    if [[ -z "${VPS_IP:-}" ]]; then
+        VPS_DEPLOY_STATUS="—"
+        log_warn "VPS_IP не задан, пропуск"
+        return 0
+    fi
     local force="${1:-}"
     log_step "Деплой на VPS ${VPS_IP}"
 
@@ -383,6 +389,7 @@ deploy_vps() {
 
         if vps_exec "$cmd"; then
             log_ok "VPS ${VPS_IP} обновлён"
+            VPS_DEPLOY_STATUS="✅ ${VPS_IP}"
             return 0
         fi
         ((retry++))
@@ -390,7 +397,7 @@ deploy_vps() {
     done
 
     log_warn "Деплой на VPS не удался — обновите вручную: /vps deploy"
-    notify "⚠️ Деплой на VPS ${VPS_IP} не удался — требуется ручное обновление"
+    VPS_DEPLOY_STATUS="❌ ${VPS_IP} (требует ручного обновления)"
     return 0   # Не прерываем деплой из-за VPS
 }
 
@@ -546,8 +553,15 @@ json.dump(cfg, open('$REPO_DIR/xray/config-cdn.json', 'w'), indent=4)
         exit 1
     fi
 
+    # Итоговый отчёт
+    local home_line="Домашний сервер: ✅"
+    local vps_line=""
+    if [[ -n "${VPS_DEPLOY_STATUS:-}" && "${VPS_DEPLOY_STATUS}" != "—" ]]; then
+        vps_line="\nVPS: ${VPS_DEPLOY_STATUS}"
+    fi
+
     log_ok "Deploy v${new_ver} завершён успешно"
-    notify "✅ *Обновлено* до \`${new_ver}\`"
+    notify "✅ *Обновлено* до \`${new_ver}\`\n${home_line}${vps_line}"
 }
 
 # =============================================================================
