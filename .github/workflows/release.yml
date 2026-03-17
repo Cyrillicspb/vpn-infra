@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Читать версию и changelog
+        id: meta
+        run: |
+          VERSION=$(cat version)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # Извлечь секцию текущего релиза из CHANGELOG.md
+          awk "/^## \[v$VERSION\]/{found=1; next} found && /^## \[v/{exit} found{print}" CHANGELOG.md > release_notes.md
+          echo "Файл release_notes.md:"
+          cat release_notes.md
+
+      - name: Создать GitHub Release с установщиками
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "v${{ steps.meta.outputs.version }}"
+          body_path: release_notes.md
+          files: |
+            installers/windows/install-windows.bat
+            installers/macos/install-macos.command
+            installers/linux/install-linux.sh
