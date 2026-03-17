@@ -155,7 +155,7 @@ services:
 
   # ── Xray-client-cdn (Cloudflare Workers CDN-стек) — standby, SOCKS5 :1082 ───
   # Подключается к Cloudflare Worker → VPS Xray VLESS+WS :8080
-  # Worker URL задаётся через CF_WORKER_HOSTNAME в .env → config-cdn.json
+  # Worker URL задаётся через CF_CDN_HOSTNAME в .env → config-cdn.json
   xray-client-cdn:
     image: teddysun/xray:latest
     container_name: xray-client-cdn

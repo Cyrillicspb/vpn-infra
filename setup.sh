@@ -343,14 +343,14 @@ phase0() {
             echo "  4. «Save & Deploy»"
             echo "  5. Скопируйте URL вида: https://xxx-xxx.ACCOUNT.workers.dev"
             echo ""
-            read -rp "  Вставьте URL Worker (например xxx.workers.dev): " CF_WORKER_HOSTNAME
-            CF_WORKER_HOSTNAME="${CF_WORKER_HOSTNAME#https://}"
-            CF_WORKER_HOSTNAME="${CF_WORKER_HOSTNAME%/}"
-            if [[ -z "$CF_WORKER_HOSTNAME" ]]; then
+            read -rp "  Вставьте URL Worker (например xxx.workers.dev): " CF_CDN_HOSTNAME
+            CF_CDN_HOSTNAME="${CF_CDN_HOSTNAME#https://}"
+            CF_CDN_HOSTNAME="${CF_CDN_HOSTNAME%/}"
+            if [[ -z "$CF_CDN_HOSTNAME" ]]; then
                 log_warn "URL не введён — CDN-стек пропущен."
                 USE_CLOUDFLARE="n"
             else
-                log_ok "Worker: ${CF_WORKER_HOSTNAME}"
+                log_ok "Worker: ${CF_CDN_HOSTNAME}"
             fi
         fi
 
@@ -366,7 +366,7 @@ phase0() {
         env_set "DDNS_TOKEN"             "${DDNS_TOKEN:-}"
         env_set "USE_CLOUDFLARE"         "${USE_CLOUDFLARE:-n}"
         env_set "CF_TUNNEL_TOKEN"        "${CF_TUNNEL_TOKEN:-}"
-        env_set "CF_WORKER_HOSTNAME"    "${CF_WORKER_HOSTNAME:-}"
+        env_set "CF_CDN_HOSTNAME"    "${CF_CDN_HOSTNAME:-}"
         env_set "NET_INTERFACE"          "${NET_INTERFACE:-${ETH_IFACE:-eth0}}"
         env_set "GATEWAY_IP"             "${GATEWAY_IP:-}"
         env_set "HOME_SERVER_IP"         "${HOME_SERVER_IP:-}"
@@ -948,7 +948,7 @@ EOF
             log_ok "Конфиги Xray-клиента созданы (XHTTP/splithttp)"
 
             # CDN-стек: config-cdn.json (если настроен CF Worker)
-            if [[ -n "${CF_WORKER_HOSTNAME:-}" ]]; then
+            if [[ -n "${CF_CDN_HOSTNAME:-}" ]]; then
                 CF_CDN_UUID="${CF_CDN_UUID:-$(python3 -c "import uuid; print(uuid.uuid4())")}"
                 env_set "CF_CDN_UUID" "${CF_CDN_UUID}"
                 cat > /opt/vpn/xray/config-cdn.json << CDNEOF
@@ -964,20 +964,26 @@ EOF
         "protocol": "vless",
         "settings": {
             "vnext": [{
-                "address": "${CF_WORKER_HOSTNAME}",
+                "address": "${CF_CDN_HOSTNAME}",
                 "port": 443,
                 "users": [{"id": "${CF_CDN_UUID}", "encryption": "none", "flow": ""}]
             }]
         },
         "streamSettings": {
-            "network": "ws",
+            "network": "splithttp",
             "security": "tls",
-            "tlsSettings": {"serverName": "${CF_WORKER_HOSTNAME}", "allowInsecure": false},
-            "wsSettings": {
+            "tlsSettings": {
+                "serverName": "${CF_CDN_HOSTNAME}",
+                "alpn": ["h2", "http/1.1"],
+                "allowInsecure": false
+            },
+            "splithttpSettings": {
                 "path": "/vpn-cdn",
-                "headers": {"Host": "${CF_WORKER_HOSTNAME}"}
+                "host": "${CF_CDN_HOSTNAME}",
+                "xPaddingBytes": "100-1000"
             }
-        }
+        },
+        "tag": "vless-xhttp-cdn-out"
     }]
 }
 CDNEOF
@@ -1226,9 +1232,9 @@ phase5() {
     echo "   Логин: admin / Пароль: ${GRAFANA_PASSWORD:-<см. /opt/vpn/.env>}"
     echo ""
 
-    if [[ "${USE_CLOUDFLARE:-n}" == "y" && -n "${CF_WORKER_HOSTNAME:-}" ]]; then
+    if [[ "${USE_CLOUDFLARE:-n}" == "y" && -n "${CF_CDN_HOSTNAME:-}" ]]; then
         echo -e "${BOLD}━━━ ШАГ D: CDN-стек (Cloudflare Worker настроен) ━━━${NC}"
-        echo "   Worker: https://${CF_WORKER_HOSTNAME}"
+        echo "   Worker: https://${CF_CDN_HOSTNAME}"
         echo "   Стек автоматически активируется watchdog при блокировке XHTTP."
         echo "   Для ручного переключения: /switch cdn (через Telegram-бот)"
         echo ""

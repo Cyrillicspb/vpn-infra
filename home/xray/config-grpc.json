@@ -46,7 +46,9 @@
           "host": "cdn.jsdelivr.net",
           "maxUploadSize": 1000000,
           "maxConcurrentUploads": 10,
-          "password": "${XHTTP_CDN_PASSWORD}"
+          "password": "${XHTTP_CDN_PASSWORD}",
+          "mode": "auto",
+          "xPaddingBytes": "100-1000"
         }
       },
       "tag": "vless-xhttp-cdn-out"

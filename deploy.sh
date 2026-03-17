@@ -498,20 +498,21 @@ do_deploy() {
     rsync -a "$REPO_DIR/home/watchdog/plugins/" "$REPO_DIR/watchdog/plugins/" 2>/dev/null || true
     rsync -a "$REPO_DIR/home/scripts/" "$REPO_DIR/scripts/" 2>/dev/null && chmod +x "$REPO_DIR/scripts/"*.sh 2>/dev/null || true
 
-    # CDN конфиг: регенерировать из .env если CF_WORKER_HOSTNAME задан
-    # (пользователь мог сменить Worker — обновляем config-cdn.json)
+    # CDN конфиг: регенерировать из .env если CF_CDN_HOSTNAME задан
+    # Транспорт: splithttp (xHTTP H2) — WS устарел в Xray 26.x
     source "$REPO_DIR/.env" 2>/dev/null || true
-    if [[ -n "${CF_WORKER_HOSTNAME:-}" ]]; then
+    if [[ -n "${CF_CDN_HOSTNAME:-}" ]]; then
         CF_CDN_UUID="${CF_CDN_UUID:-$(python3 -c "import uuid; print(uuid.uuid4())")}"
         python3 -c "
 import json, os
 cfg = {
     'log': {'loglevel': 'warning'},
     'inbounds': [{'listen': '127.0.0.1', 'port': 1082, 'protocol': 'socks', 'settings': {'udp': True}}],
-    'outbounds': [{'protocol': 'vless', 'settings': {'vnext': [{'address': os.environ['CF_WORKER_HOSTNAME'], 'port': 443, 'users': [{'id': os.environ['CF_CDN_UUID'], 'encryption': 'none', 'flow': ''}]}]}, 'streamSettings': {'network': 'ws', 'security': 'tls', 'tlsSettings': {'serverName': os.environ['CF_WORKER_HOSTNAME'], 'allowInsecure': False}, 'wsSettings': {'path': '/vpn-cdn', 'headers': {'Host': os.environ['CF_WORKER_HOSTNAME']}}}}]
+    'outbounds': [{'protocol': 'vless', 'tag': 'vless-xhttp-cdn-out', 'settings': {'vnext': [{'address': os.environ['CF_CDN_HOSTNAME'], 'port': 443, 'users': [{'id': os.environ['CF_CDN_UUID'], 'encryption': 'none', 'flow': ''}]}]}, 'streamSettings': {'network': 'splithttp', 'security': 'tls', 'tlsSettings': {'serverName': os.environ['CF_CDN_HOSTNAME'], 'alpn': ['h2', 'http/1.1'], 'allowInsecure': False}, 'splithttpSettings': {'path': '/vpn-cdn', 'host': os.environ['CF_CDN_HOSTNAME'], 'xPaddingBytes': '100-1000'}}}, {'protocol': 'freedom', 'tag': 'direct'}],
+    'routing': {'domainStrategy': 'IPIfNonMatch', 'rules': [{'type': 'field', 'ip': ['geoip:private'], 'outboundTag': 'direct'}]}
 }
 json.dump(cfg, open('$REPO_DIR/xray/config-cdn.json', 'w'), indent=4)
-" && log_ok "config-cdn.json обновлён (Worker: ${CF_WORKER_HOSTNAME})"
+" && log_ok "config-cdn.json обновлён (xHTTP CDN: ${CF_CDN_HOSTNAME})"
     fi
 
     # Docker Compose обновление

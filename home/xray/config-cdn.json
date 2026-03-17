@@ -10,19 +10,37 @@
         "protocol": "vless",
         "settings": {
             "vnext": [{
-                "address": "YOUR_WORKER.workers.dev",
+                "address": "${CF_CDN_HOSTNAME}",
                 "port": 443,
-                "users": [{"id": "YOUR_CF_CDN_UUID", "encryption": "none", "flow": ""}]
+                "users": [{"id": "${CF_CDN_UUID}", "encryption": "none", "flow": ""}]
             }]
         },
         "streamSettings": {
-            "network": "ws",
+            "network": "splithttp",
             "security": "tls",
-            "tlsSettings": {"serverName": "YOUR_WORKER.workers.dev", "allowInsecure": false},
-            "wsSettings": {
+            "tlsSettings": {
+                "serverName": "${CF_CDN_HOSTNAME}",
+                "alpn": ["h2", "http/1.1"],
+                "allowInsecure": false
+            },
+            "splithttpSettings": {
                 "path": "/vpn-cdn",
-                "headers": {"Host": "YOUR_WORKER.workers.dev"}
+                "host": "${CF_CDN_HOSTNAME}",
+                "xPaddingBytes": "100-1000"
             }
-        }
-    }]
+        },
+        "tag": "vless-xhttp-cdn-out"
+    },
+    {
+        "protocol": "freedom",
+        "tag": "direct"
+    }],
+    "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [{
+            "type": "field",
+            "ip": ["geoip:private"],
+            "outboundTag": "direct"
+        }]
+    }
 }

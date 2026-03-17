@@ -46,7 +46,9 @@
           "host": "microsoft.com",
           "maxUploadSize": 1000000,
           "maxConcurrentUploads": 10,
-          "password": "${XHTTP_MS_PASSWORD}"
+          "password": "${XHTTP_MS_PASSWORD}",
+          "mode": "auto",
+          "xPaddingBytes": "100-1000"
         }
       },
       "tag": "vless-xhttp-out"

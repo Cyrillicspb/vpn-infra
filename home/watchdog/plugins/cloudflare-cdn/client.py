@@ -3,7 +3,7 @@
 Cloudflare CDN плагин для watchdog (Workers вариант).
 Поток: tun2socks → xray-client-cdn (VLESS+WS+TLS) → Cloudflare Worker → VPS Xray WS :8080
 
-Настройка: CF_WORKER_HOSTNAME в .env → config-cdn.json генерируется setup.sh / deploy.sh
+Настройка: CF_CDN_HOSTNAME в .env → config-cdn.json генерируется setup.sh / deploy.sh
 """
 import asyncio
 import json
