@@ -226,19 +226,34 @@ class TelegramQueue:
             await self._deliver(text, chat_id)
             self._queue.task_done()
 
+    @staticmethod
+    def _md_to_html(text: str) -> str:
+        """Конвертировать Markdown-разметку алертов в HTML для Telegram.
+        Поддерживает: *bold*, `code`, ```preformatted```.
+        """
+        import re
+        # ```...``` → <pre>
+        text = re.sub(r"```(.*?)```", lambda m: f"<pre>{m.group(1)}</pre>", text, flags=re.DOTALL)
+        # `code` → <code>
+        text = re.sub(r"`([^`]+)`", lambda m: f"<code>{m.group(1)}</code>", text)
+        # *bold* → <b> (не затрагивать уже обработанные теги)
+        text = re.sub(r"\*([^*\n]+)\*", lambda m: f"<b>{m.group(1)}</b>", text)
+        return text
+
     async def _deliver(self, text: str, chat_id: str) -> None:
+        html_text = self._md_to_html(text)
         for attempt in range(5):
             try:
                 async with aiohttp.ClientSession() as session:
                     resp = await session.post(
                         f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-                        json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+                        json={"chat_id": chat_id, "text": html_text, "parse_mode": "HTML"},
                         timeout=aiohttp.ClientTimeout(total=10),
                     )
                     if resp.status == 200:
                         return
                     if resp.status == 400:
-                        # Markdown parse error (напр. _ в reason string) — plain text
+                        # HTML parse error — отправить plain text
                         resp2 = await session.post(
                             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
                             json={"chat_id": chat_id, "text": text},
@@ -246,7 +261,7 @@ class TelegramQueue:
                         )
                         if resp2.status == 200:
                             return
-                        return  # не ретраить
+                        return
             except Exception as exc:
                 logger.debug(f"Telegram недоступен (попытка {attempt + 1}): {exc}")
             await asyncio.sleep(min(30, 5 * (attempt + 1)))
