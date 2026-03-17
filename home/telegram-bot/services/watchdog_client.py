@@ -111,6 +111,9 @@ class WatchdogClient:
     async def rollback(self) -> dict:
         return await self._post("/rollback")
 
+    async def skip_version(self, version: str) -> dict:
+        return await self._post("/deploy/skip", {"version": version})
+
     async def reload_plugins(self) -> dict:
         return await self._post("/reload-plugins")
 

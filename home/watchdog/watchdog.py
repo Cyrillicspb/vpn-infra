@@ -2165,6 +2165,22 @@ async def post_rollback(request: Request, bg: BackgroundTasks, _: bool = Depends
     return {"status": "rolling_back"}
 
 
+class SkipVersionRequest(BaseModel):
+    version: str
+
+
+@app.post("/deploy/skip")
+@limiter.limit("10/second")
+async def post_deploy_skip(request: Request, req: SkipVersionRequest, _: bool = Depends(_auth)):
+    skip_file = "/opt/vpn/.skip-version"
+    try:
+        with open(skip_file, "w") as f:
+            f.write(req.version.strip())
+        return {"status": "skipped", "version": req.version}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/reload-plugins")
 @limiter.limit("10/second")
 async def post_reload_plugins(request: Request, _: bool = Depends(_auth)):

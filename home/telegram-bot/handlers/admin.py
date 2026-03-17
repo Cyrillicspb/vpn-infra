@@ -563,6 +563,36 @@ async def cb_reboot_no(cb: CallbackQuery, state: FSMContext, **kw):
 
 
 # ---------------------------------------------------------------------------
+# Уведомление об обновлении: [Обновить] / [Пропустить]
+# callback_data: "update:confirm:<version>" / "update:skip:<version>"
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data.startswith("update:confirm:"))
+async def cb_update_confirm(cb: CallbackQuery, **kw):
+    version = cb.data[len("update:confirm:"):]
+    await cb.answer(f"Запускаю обновление до {version}...")
+    await cb.message.edit_reply_markup(reply_markup=None)
+    await cb.message.answer(f"🚀 Запускаю деплой {version}...")
+    try:
+        await _wc().deploy()
+    except Exception as e:
+        await cb.message.answer(f"❌ Ошибка деплоя: {e}")
+
+
+@router.callback_query(F.data.startswith("update:skip:"))
+async def cb_update_skip(cb: CallbackQuery, **kw):
+    version = cb.data[len("update:skip:"):]
+    await cb.answer(f"Версия {version} пропущена")
+    await cb.message.edit_reply_markup(reply_markup=None)
+    # Записать пропущенную версию на сервер через watchdog
+    try:
+        await _wc().skip_version(version)
+        await cb.message.answer(f"⏭ Версия `{version}` пропущена. Следующее обновление не будет напоминать о ней.",
+                                 parse_mode="Markdown")
+    except Exception as e:
+        await cb.message.answer(f"⏭ Версия {version} пропущена (локально).\n_{e}_", parse_mode="Markdown")
+
+
+# ---------------------------------------------------------------------------
 # /invite
 # ---------------------------------------------------------------------------
 @router.message(Command("invite"), StateFilter("*"))

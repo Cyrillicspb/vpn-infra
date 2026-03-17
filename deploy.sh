@@ -55,6 +55,22 @@ notify() {
         > /dev/null 2>&1 || true
 }
 
+notify_update_available() {
+    local current_ver="$1" new_ver="$2" changelog="$3"
+    [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]] && return 0
+    local text="🆕 *Доступно обновление* \`${current_ver}\` → \`${new_ver}\`
+
+${changelog}"
+    local keyboard="{\"inline_keyboard\":[[{\"text\":\"✅ Обновить ${new_ver}\",\"callback_data\":\"update:confirm:${new_ver}\"},{\"text\":\"❌ Пропустить\",\"callback_data\":\"update:skip:${new_ver}\"}]]}"
+    curl -sf --max-time 10 \
+        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        -d "chat_id=${TELEGRAM_ADMIN_CHAT_ID}" \
+        --data-urlencode "text=${text}" \
+        -d "parse_mode=Markdown" \
+        --data-urlencode "reply_markup=${keyboard}" \
+        > /dev/null 2>&1 || true
+}
+
 # ── Загрузка .env ─────────────────────────────────────────────────────────────
 load_env() {
     [[ -f "$ENV_FILE" ]] || { log_warn ".env не найден ($ENV_FILE)"; return; }
@@ -456,6 +472,56 @@ json.dump(cfg, open('$REPO_DIR/xray/config-cdn.json', 'w'), indent=4)
 }
 
 # =============================================================================
+# Проверка обновлений (--check): уведомить если есть новая версия
+# =============================================================================
+check_updates() {
+    local current_ver; current_ver="$(cat "$REPO_DIR/version" 2>/dev/null | tr -d '[:space:]' || echo 'unknown')"
+    log_info "Текущая версия: ${current_ver}"
+
+    # Синхронизировать VPS-зеркало
+    if [[ -n "${VPS_IP:-}" ]]; then
+        vps_exec "cd /opt/vpn/vpn-repo.git && git fetch --all --quiet" 2>/dev/null || true
+    fi
+
+    # Получить версию из удалённого репозитория (не применять локально)
+    local remote_ver
+    if [[ -n "${VPS_IP:-}" ]]; then
+        remote_ver="$(GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes" \
+            git -C "$REPO_DIR" fetch vps-mirror 2>/dev/null && \
+            git -C "$REPO_DIR" show vps-mirror/master:version 2>/dev/null | tr -d '[:space:]')" || true
+    fi
+    if [[ -z "${remote_ver:-}" ]]; then
+        git -C "$REPO_DIR" fetch origin --quiet 2>/dev/null || true
+        remote_ver="$(git -C "$REPO_DIR" show origin/master:version 2>/dev/null | tr -d '[:space:]')" || true
+    fi
+
+    if [[ -z "${remote_ver:-}" || "${remote_ver}" == "${current_ver}" ]]; then
+        log_info "Версия актуальна: ${current_ver}"
+        return 0
+    fi
+
+    log_info "Доступна новая версия: ${remote_ver}"
+
+    # Проверить не пропущена ли эта версия
+    local skip_ver; skip_ver="$(cat "$REPO_DIR/.skip-version" 2>/dev/null | tr -d '[:space:]')"
+    if [[ "${skip_ver}" == "${remote_ver}" ]]; then
+        log_info "Версия ${remote_ver} помечена как пропущенная"
+        return 0
+    fi
+
+    # Извлечь секцию CHANGELOG для новой версии
+    local changelog
+    changelog="$(git -C "$REPO_DIR" show origin/master:CHANGELOG.md 2>/dev/null \
+        | awk "/^## \[${remote_ver}\]/{found=1; next} found && /^## \[/{exit} found{print}" \
+        | head -20 | sed '/^[[:space:]]*$/d')" || true
+    [[ -z "$changelog" ]] && changelog="_(подробности: CHANGELOG.md)_"
+
+    # Отправить уведомление с кнопками
+    notify_update_available "${current_ver}" "${remote_ver}" "${changelog}"
+    log_ok "Уведомление об обновлении ${remote_ver} отправлено"
+}
+
+# =============================================================================
 # Статус
 # =============================================================================
 show_status() {
@@ -490,11 +556,7 @@ main() {
 
     case "${1:-}" in
         --rollback) rollback "ручной откат" ;;
-        --check)
-            git_pull 2>/dev/null
-            new_ver="$(cat "$REPO_DIR/version" 2>/dev/null || echo 'unknown')"
-            echo "Текущая версия: $new_ver"
-            ;;
+        --check)    check_updates ;;
         --status)   show_status ;;
         --force)    do_deploy "--force" ;;
         "")         do_deploy ;;

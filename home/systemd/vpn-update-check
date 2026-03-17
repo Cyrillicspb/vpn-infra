@@ -1,0 +1,9 @@
+# /etc/cron.d/vpn-update-check
+# Проверка обновлений VPN Infrastructure раз в час
+# Установка: cp vpn-update-check /etc/cron.d/ && chmod 644 /etc/cron.d/vpn-update-check
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# Каждый час в :30 (не в :00 чтобы не конфликтовать с другими cron задачами)
+30 * * * * root /bin/bash /opt/vpn/deploy.sh --check >> /var/log/vpn-deploy.log 2>&1
