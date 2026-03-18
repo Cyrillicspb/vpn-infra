@@ -64,6 +64,9 @@ echo  [OK] Key exists: !SSH_KEY!
 :key_done
 echo.
 
+:: --- clear stale known_hosts entry (handles server reinstall) ---
+ssh-keygen -R !SERVER_IP! >nul 2>&1
+
 :: --- add public key to server (one SSH command, one password prompt) ---
 echo  Adding SSH key to server...
 echo  Enter server password when prompted:
