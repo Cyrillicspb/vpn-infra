@@ -66,11 +66,7 @@ services:
       vpn-net:
         ipv4_address: 172.20.0.10
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "2375"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
+      disable: true
     logging:
       driver: json-file
       options:
@@ -100,7 +96,7 @@ services:
         ipv4_address: 172.20.0.11
     depends_on:
       socket-proxy:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import sqlite3; sqlite3.connect('/app/data/vpn_bot.db').close()"]
       interval: 60s
