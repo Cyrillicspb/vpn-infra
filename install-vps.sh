@@ -261,12 +261,21 @@ table inet filter {
     chain forward {
         type filter hook forward priority filter; policy drop;
         ct state established,related accept
+        # Docker bridge-сети (br-*, vps-net и др.)
+        iifname "docker*" accept
+        oifname "docker*" accept
+        iifname "br-*"    accept
+        oifname "br-*"    accept
     }
 }
 NFTEOF"
 
     vps_exec "sudo systemctl enable nftables && \
         sudo nft -f /etc/nftables-vps.conf || true"
+
+    # После flush ruleset Docker теряет свои iptables/nftables цепочки.
+    # Перезапускаем Docker чтобы он пересоздал DOCKER-FORWARD и прочие цепочки.
+    vps_exec "sudo systemctl restart docker" || true
 
     log_ok "nftables настроен на VPS"
     step_done "step36_vps_nftables"
