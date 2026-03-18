@@ -66,7 +66,7 @@ services:
       vpn-net:
         ipv4_address: 172.20.0.10
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:2375/version"]
+      test: ["CMD", "nc", "-z", "localhost", "2375"]
       interval: 30s
       timeout: 5s
       retries: 3
