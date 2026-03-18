@@ -1192,6 +1192,14 @@ else
     set -o allexport; source "$ENV_FILE"; set +o allexport
 
     COMPOSE_FILE="/opt/vpn/docker-compose.yml"
+    # Копируем docker-compose.yml из home/ если его нет в корне /opt/vpn/
+    if [[ ! -f "$COMPOSE_FILE" ]]; then
+        REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        if [[ -f "${REPO_DIR}/home/docker-compose.yml" ]]; then
+            cp "${REPO_DIR}/home/docker-compose.yml" "$COMPOSE_FILE"
+            log_ok "docker-compose.yml скопирован из home/"
+        fi
+    fi
     if [[ ! -f "$COMPOSE_FILE" ]]; then
         log_warn "docker-compose.yml не найден в /opt/vpn/"
         log_warn "Docker-контейнеры будут запущены позже."
