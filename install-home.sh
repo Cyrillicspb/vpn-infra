@@ -1219,10 +1219,23 @@ else
 
     # Копируем поддиректории из home/ которые нужны docker-compose.yml:
     # telegram-bot/ (Dockerfile + исходники), prometheus/, grafana/,
-    # alertmanager/, nginx/ — если их ещё нет в /opt/vpn/
+    # alertmanager/, nginx/
+    # Проверяем по наличию ключевого файла, а не директории —
+    # директория могла быть создана раньше (пустой или частичной).
+    declare -A subdir_key=(
+        [telegram-bot]="Dockerfile"
+        [prometheus]="prometheus.yml"
+        [grafana]="provisioning"
+        [alertmanager]="alertmanager.yml"
+        [nginx]="grafana.conf"
+    )
     for subdir in telegram-bot prometheus grafana alertmanager nginx; do
-        if [[ ! -d "/opt/vpn/${subdir}" && -d "${REPO_DIR}/home/${subdir}" ]]; then
-            cp -r "${REPO_DIR}/home/${subdir}" "/opt/vpn/${subdir}"
+        key="${subdir_key[$subdir]}"
+        src="${REPO_DIR}/home/${subdir}"
+        dst="/opt/vpn/${subdir}"
+        if [[ -d "$src" && ! -e "${dst}/${key}" ]]; then
+            mkdir -p "$dst"
+            cp -r "${src}/." "$dst/"
             log_ok "${subdir}/ скопирован из home/"
         fi
     done
