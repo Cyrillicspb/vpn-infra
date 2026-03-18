@@ -2101,6 +2101,7 @@ async def cb_f2b_unban(cb: CallbackQuery, **kw):
     if ok:
         await cb.message.answer(
             f"✅ IP <code>{ip}</code> разбанен в jail <code>{jail}</code> ({label})",
+            parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🛡️ Обновить список", callback_data="adm:fail2ban")],
                 [InlineKeyboardButton(text="◀️ Система", callback_data="adm:system")],
@@ -2109,6 +2110,7 @@ async def cb_f2b_unban(cb: CallbackQuery, **kw):
     else:
         await cb.message.answer(
             f"❌ Не удалось разбанить <code>{ip}</code>:\n<code>{out[:200]}</code>",
+            parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🛡️ К списку", callback_data="adm:fail2ban")],
             ]),

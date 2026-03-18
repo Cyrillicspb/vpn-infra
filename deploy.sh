@@ -45,7 +45,8 @@ log_step()  { _log "${CYAN}${BOLD}━━━ $* ━━━${NC}"; }
 
 # ── Telegram уведомления ──────────────────────────────────────────────────────
 notify() {
-    local msg="$1"
+    local msg
+    msg="$(printf '%b' "$1")"
     [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]] && return 0
     curl -sf --max-time 10 \
         "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
