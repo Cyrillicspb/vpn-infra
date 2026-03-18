@@ -32,72 +32,77 @@ set /p SERVER_IP=  IP:
 if "!SERVER_IP!"=="" goto input_ip
 
 echo.
-echo  SSH username - press Enter for default root:
-set /p SERVER_USER=  User:
-if "!SERVER_USER!"=="" set SERVER_USER=root
-
-echo.
 echo  SSH port - press Enter for default 22:
 set /p SSH_PORT=  Port:
 if "!SSH_PORT!"=="" set SSH_PORT=22
 
 echo.
-echo  Target: !SERVER_USER!@!SERVER_IP!:!SSH_PORT!
-echo.
 
-:: --- generate ssh key ---
+:: --- generate ssh key if missing ---
 set SSH_KEY=%USERPROFILE%\.ssh\vpn_deploy_key
 
-if exist "!SSH_KEY!" goto key_exists
-echo  Generating SSH key...
-if not exist "%USERPROFILE%\.ssh" mkdir "%USERPROFILE%\.ssh"
-ssh-keygen -t ed25519 -f "!SSH_KEY!" -N "" -C vpn-deploy
-if %errorlevel% neq 0 (
-    echo  ERROR: Could not generate SSH key.
-    pause
-    exit /b 1
+if exist "!SSH_KEY!" (
+    echo  [OK] SSH key exists: !SSH_KEY!
+) else (
+    echo  Generating SSH key...
+    if not exist "%USERPROFILE%\.ssh" mkdir "%USERPROFILE%\.ssh"
+    ssh-keygen -t ed25519 -f "!SSH_KEY!" -N "" -C vpn-deploy
+    if %errorlevel% neq 0 (
+        echo  ERROR: Could not generate SSH key.
+        pause
+        exit /b 1
+    )
+    echo  [OK] Key created: !SSH_KEY!
 )
-echo  [OK] Key created: !SSH_KEY!
-goto key_done
-:key_exists
-echo  [OK] Key exists: !SSH_KEY!
-:key_done
 echo.
 
 :: --- clear stale known_hosts entry (handles server reinstall) ---
 ssh-keygen -R !SERVER_IP! >nul 2>&1
 
-:: --- add public key to server (one SSH command, one password prompt) ---
-echo  Adding SSH key to server...
-echo  Enter server password when prompted:
+:: -----------------------------------------------------------------------
+:: Auto-detect user: try key auth for root, then sysadmin (after step 11
+:: PermitRootLogin is disabled and the key is copied to sysadmin).
+:: If both fail -- key not yet installed, ask for root password.
+:: -----------------------------------------------------------------------
+set SERVER_USER=
+
+echo  Detecting SSH user...
+
+:: Try root with key (no password, BatchMode)
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes -p !SSH_PORT! root@!SERVER_IP! "exit 0" >nul 2>&1
+if !errorlevel! equ 0 (
+    set SERVER_USER=root
+    echo  [OK] Connected as root (key auth).
+    goto connected
+)
+
+:: Try sysadmin with key (step 11 already ran -- PermitRootLogin=no)
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes -p !SSH_PORT! sysadmin@!SERVER_IP! "exit 0" >nul 2>&1
+if !errorlevel! equ 0 (
+    set SERVER_USER=sysadmin
+    echo  [OK] Connected as sysadmin (root SSH disabled after step 11).
+    goto connected
+)
+
+:: Key not installed yet -- first run, ask for root password
+echo  Key not yet on server. Enter root password to install it:
 echo.
 set /p PUBKEY=<"!SSH_KEY!.pub"
-ssh -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "mkdir -p ~/.ssh && echo !PUBKEY! >> ~/.ssh/authorized_keys && sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
+ssh -o StrictHostKeyChecking=accept-new -p !SSH_PORT! root@!SERVER_IP! "mkdir -p ~/.ssh && echo !PUBKEY! >> ~/.ssh/authorized_keys && sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
 if %errorlevel% neq 0 (
     echo.
     echo  ERROR: Could not add SSH key to server.
-    echo  Check: IP address, username, password, SSH port.
+    echo  Check: IP address, root password, SSH port.
     echo.
     pause
     exit /b 1
 )
-echo  [OK] SSH key added.
-echo.
+set SERVER_USER=root
+echo  [OK] SSH key installed.
 
-:: --- test connection with key ---
-:test_connection
-echo  Testing SSH connection...
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "echo OK_CONNECTED"
-if %errorlevel% neq 0 (
-    echo.
-    echo  ERROR: Cannot connect to server.
-    echo  Check: IP, username, port, sshd running on server.
-    echo  Try:   ssh !SERVER_USER!@!SERVER_IP! -p !SSH_PORT!
-    echo.
-    pause
-    exit /b 1
-)
-echo  [OK] Connected.
+:connected
+echo.
+echo  Target: !SERVER_USER!@!SERVER_IP!:!SSH_PORT!
 echo.
 
 :: --- confirm ---
@@ -124,7 +129,7 @@ if not exist "!REPO_ROOT!\install-home.sh" goto download_scripts
 if not exist "!REPO_ROOT!\home" goto download_scripts
 
 echo  Uploading full repository to server /opt/vpn ...
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "mkdir -p /opt/vpn"
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "sudo mkdir -p /opt/vpn && sudo chown !SERVER_USER!:!SERVER_USER! /opt/vpn"
 scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new -r "!REPO_ROOT!\." !SERVER_USER!@!SERVER_IP!:/opt/vpn/
 if %errorlevel% neq 0 goto download_scripts
 set SETUP_PATH=/opt/vpn/setup.sh
