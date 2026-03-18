@@ -17,4 +17,4 @@ psutil==5.9.8
 PyYAML==6.0.1
 
 # Async file I/O (опционально, для записи конфигов)
-aiofiles==23.2.1
+aiofiles==25.1.0
