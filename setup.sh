@@ -1301,6 +1301,16 @@ main() {
     phase4
     phase5
 
+    # ── Финальная комплексная проверка + отчёт в Telegram ────────────────────
+    echo ""
+    log_info "═══ ФИНАЛЬНАЯ ПРОВЕРКА ═══"
+    POST_CHECK="/opt/vpn/scripts/post-install-check.sh"
+    if [[ -f "$POST_CHECK" ]]; then
+        bash "$POST_CHECK" || true
+    else
+        log_warn "post-install-check.sh не найден — скопируйте из репозитория"
+    fi
+
     echo ""
     log_ok "Установка завершена!"
     echo ""
@@ -1308,6 +1318,7 @@ main() {
     echo "  Конфигурация: ${ENV_FILE}"
     echo "  Логи агента:  journalctl -u watchdog -f"
     echo "  Управление:   Telegram-бот (команда /help)"
+    echo "  Повтор проверки: sudo bash /opt/vpn/scripts/post-install-check.sh"
     echo ""
 }
 

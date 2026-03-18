@@ -1149,6 +1149,16 @@ EOF
         chmod 640 "/var/log/${logf}.log"
     done
 
+    # Копируем все скрипты из home/scripts/ в /opt/vpn/scripts/
+    REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    mkdir -p /opt/vpn/scripts
+    if [[ -d "${REPO_DIR}/home/scripts" ]]; then
+        cp "${REPO_DIR}/home/scripts/"*.sh /opt/vpn/scripts/ 2>/dev/null || true
+        cp "${REPO_DIR}/home/scripts/"*.py /opt/vpn/scripts/ 2>/dev/null || true
+        chmod +x /opt/vpn/scripts/*.sh 2>/dev/null || true
+        log_ok "Скрипты скопированы в /opt/vpn/scripts/"
+    fi
+
     log_ok "Cron-задания настроены"
     step_done "step29_configure_cron"
 fi
