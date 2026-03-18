@@ -46,7 +46,7 @@ services:
   # ── Docker socket proxy (безопасный доступ к Docker API) ────────────────────
   # Telegram-бот и Portainer не получают полный доступ к /var/run/docker.sock
   socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.1.2
+    image: tecnativa/docker-socket-proxy:0.3
     container_name: socket-proxy
     restart: always
     environment:
