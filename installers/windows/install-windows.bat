@@ -57,7 +57,7 @@ if exist "!SSH_KEY!" (
 echo.
 
 :: --- clear stale known_hosts entry (handles server reinstall) ---
-ssh-keygen -R !SERVER_IP! >nul 2>&1
+ssh-keygen -R !SERVER_IP! >nul 2>nul
 
 :: -----------------------------------------------------------------------
 :: Auto-detect user: try key auth for root, then sysadmin (after step 11
@@ -71,7 +71,7 @@ echo  Detecting SSH user...
 :: Try root with key (no password, BatchMode).
 :: stdin explicitly from nul to prevent SSH consuming console stdin.
 echo  Trying root...
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes -p !SSH_PORT! root@!SERVER_IP! "exit 0" < nul > nul 2>&1
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes -p !SSH_PORT! root@!SERVER_IP! "exit 0" <nul >nul 2>nul
 if !errorlevel! equ 0 (
     set SERVER_USER=root
     echo  [OK] Connected as root (key auth).
@@ -80,7 +80,7 @@ if !errorlevel! equ 0 (
 
 :: Try sysadmin with key (step 11 already ran -- PermitRootLogin=no)
 echo  Trying sysadmin...
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes -p !SSH_PORT! sysadmin@!SERVER_IP! "exit 0" < nul > nul 2>&1
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes -p !SSH_PORT! sysadmin@!SERVER_IP! "exit 0" <nul >nul 2>nul
 if !errorlevel! equ 0 (
     set SERVER_USER=sysadmin
     echo  [OK] Connected as sysadmin (root SSH disabled after step 11).
