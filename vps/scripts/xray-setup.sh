@@ -58,20 +58,54 @@ done
 
 # ── Авторизация ───────────────────────────────────────────────────────────────
 log "Авторизация в 3x-ui..."
-LOGIN_RESULT=$(curl -sf --max-time 10 \
-    -c "$COOKIE_FILE" \
-    -X POST "${XUI_HOST}/login" \
-    -H "Content-Type: application/x-www-form-urlencoded" \
-    --data-urlencode "username=${XUI_USER}" \
-    --data-urlencode "password=${XUI_PASS}" \
-    2>/dev/null)
 
+do_login() {
+    local user="$1" pass="$2"
+    curl -sf --max-time 10 \
+        -c "$COOKIE_FILE" \
+        -X POST "${XUI_HOST}/login" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        --data-urlencode "username=${user}" \
+        --data-urlencode "password=${pass}" \
+        2>/dev/null
+}
+
+LOGIN_RESULT=$(do_login "$XUI_USER" "$XUI_PASS")
 if echo "$LOGIN_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('success') else 1)" 2>/dev/null; then
-    ok "Авторизован в 3x-ui"
+    ok "Авторизован в 3x-ui (с паролем из .env)"
 else
-    err "Ошибка авторизации: $LOGIN_RESULT"
-    err "Проверьте XRAY_PANEL_PASSWORD в .env"
-    exit 1
+    # 3x-ui свежеустановлен — пробуем дефолтные admin/admin
+    log "Пробуем дефолтные учётные данные admin/admin..."
+    LOGIN_RESULT=$(do_login "admin" "admin")
+    if echo "$LOGIN_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('success') else 1)" 2>/dev/null; then
+        ok "Авторизован с admin/admin — меняем пароль на из .env..."
+        # Меняем пароль через API настроек
+        CHANGE_RESULT=$(curl -sf --max-time 10 \
+            -b "$COOKIE_FILE" \
+            -X POST "${XUI_HOST}/panel/setting/updateUser" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "oldUsername=admin" \
+            --data-urlencode "oldPassword=admin" \
+            --data-urlencode "newUsername=${XUI_USER}" \
+            --data-urlencode "newPassword=${XUI_PASS}" \
+            2>/dev/null || echo '{"success":false}')
+        if echo "$CHANGE_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('success') else 1)" 2>/dev/null; then
+            ok "Пароль 3x-ui изменён"
+            # Повторная авторизация с новым паролем
+            LOGIN_RESULT=$(do_login "$XUI_USER" "$XUI_PASS")
+            echo "$LOGIN_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('success') else 1)" 2>/dev/null \
+                || { err "Не удалось авторизоваться после смены пароля"; exit 1; }
+            ok "Повторная авторизация успешна"
+        else
+            log "Смена пароля не удалась (API не поддерживается?) — продолжаем со старым паролем"
+            XUI_PASS="admin"
+            XUI_USER="admin"
+        fi
+    else
+        err "Ошибка авторизации: $LOGIN_RESULT"
+        err "Проверьте XRAY_PANEL_PASSWORD в .env или сбросьте пароль 3x-ui"
+        exit 1
+    fi
 fi
 
 # ── Функция: добавить inbound ─────────────────────────────────────────────────
