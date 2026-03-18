@@ -115,20 +115,21 @@ if /i "!CONFIRM!" neq "y" (
 )
 echo.
 
-:: --- upload scripts from local repo if available, else download on server ---
+:: --- upload full repo if available locally, else download on server ---
 set REPO_ROOT=%~dp0..\..
+set SETUP_PATH=/tmp/setup.sh
 
 if not exist "!REPO_ROOT!\setup.sh" goto download_scripts
 if not exist "!REPO_ROOT!\install-home.sh" goto download_scripts
+if not exist "!REPO_ROOT!\home" goto download_scripts
 
-echo  Uploading scripts to server /tmp/ ...
-scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "!REPO_ROOT!\setup.sh" "!REPO_ROOT!\install-home.sh" !SERVER_USER!@!SERVER_IP!:/tmp/
+echo  Uploading full repository to server /opt/vpn ...
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "mkdir -p /opt/vpn"
+scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new -r "!REPO_ROOT!\." !SERVER_USER!@!SERVER_IP!:/opt/vpn/
 if %errorlevel% neq 0 goto download_scripts
-if exist "!REPO_ROOT!\install-vps.sh" (
-    scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "!REPO_ROOT!\install-vps.sh" !SERVER_USER!@!SERVER_IP!:/tmp/
-)
-echo  [OK] Uploaded from local repo.
-goto verify_scripts
+set SETUP_PATH=/opt/vpn/setup.sh
+echo  [OK] Uploaded full repo from local copy.
+goto run_setup
 
 :download_scripts
 echo  Downloading scripts on server (GitHub then jsdelivr CDN fallback)...
@@ -142,13 +143,11 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 echo  [OK] Downloaded (GitHub or jsdelivr CDN).
-
-:verify_scripts
 echo  Verifying files on server...
 ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "ls -lh /tmp/setup.sh /tmp/install-home.sh"
 if %errorlevel% neq 0 (
     echo.
-    echo  ERROR: Files missing on server.
+    echo  ERROR: Files missing on server after download.
     echo.
     pause
     exit /b 1
@@ -160,7 +159,7 @@ echo.
 echo  Running setup.sh on server...
 echo  ==========================================
 echo.
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! "bash -c 'sudo bash /tmp/setup.sh 2>&1 | tee /tmp/vpn-setup.log; exit ${PIPESTATUS[0]}'"
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! "bash -c 'sudo bash !SETUP_PATH! 2>&1 | tee /tmp/vpn-setup.log; exit ${PIPESTATUS[0]}'"
 set RESULT=!errorlevel!
 
 echo.
