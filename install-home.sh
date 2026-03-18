@@ -161,7 +161,7 @@ else
     grep -q '^PermitRootLogin' /etc/ssh/sshd_config \
         || echo 'PermitRootLogin no' >> /etc/ssh/sshd_config
 
-    systemctl reload sshd
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
     log_ok "SSH: PermitRootLogin no (вход по паролю для sysadmin сохранён)"
     log_warn "Для входа: ssh sysadmin@${HOME_SERVER_IP:-$(hostname -I | awk '{print $1}')}"
 

@@ -461,7 +461,7 @@ phase0() {
              sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config; \
              grep -q '^PasswordAuthentication' /etc/ssh/sshd_config \
                  || echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config; \
-             systemctl reload sshd" 2>/dev/null || true
+             systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true" 2>/dev/null || true
 
         # Пароль root больше не нужен — очищаем из .env
         env_set "VPS_ROOT_PASSWORD" ""
