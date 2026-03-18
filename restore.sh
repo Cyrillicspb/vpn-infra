@@ -143,7 +143,8 @@ EOF
     vps_exec "cd /opt/vpn && docker compose up -d --remove-orphans"
 
     # Обновляем VPS_IP в .env домашнего сервера
-    sed -i "s|^VPS_IP=.*|VPS_IP=${new_vps_ip}|" "$ENV_FILE"
+    grep -v "^VPS_IP=" "$ENV_FILE" > "${ENV_FILE}.tmp" && mv "${ENV_FILE}.tmp" "$ENV_FILE"
+    echo "VPS_IP=${new_vps_ip}" >> "$ENV_FILE"
     log_ok "VPS_IP обновлён → $new_vps_ip"
 
     log_ok "Миграция на $new_vps_ip завершена"

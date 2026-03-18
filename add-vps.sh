@@ -129,7 +129,7 @@ vps2_exec "sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/ss
     sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config; \
     grep -q '^PasswordAuthentication' /etc/ssh/sshd_config \
         || echo 'PasswordAuthentication no' | sudo tee -a /etc/ssh/sshd_config; \
-    sudo systemctl reload sshd"
+    sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true"
 log_ok "root SSH закрыт, password auth отключён"
 
 # ── Шаг 2: Системные пакеты ───────────────────────────────────────────────────
@@ -474,11 +474,9 @@ log_step "Шаг 16: Сохранение VPS2 переменных в /opt/vpn/
 
 env_set() {
     local key="$1" val="$2"
-    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
-        sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
-    else
-        echo "${key}=${val}" >> "$ENV_FILE"
-    fi
+    # Используем grep+delete+append вместо sed — безопасно для значений с |, /, &, \
+    grep -v "^${key}=" "$ENV_FILE" > "${ENV_FILE}.tmp" && mv "${ENV_FILE}.tmp" "$ENV_FILE"
+    echo "${key}=${val}" >> "$ENV_FILE"
 }
 
 env_set "VPS2_IP"                   "$VPS2_IP"

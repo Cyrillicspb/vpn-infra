@@ -8,6 +8,11 @@
 
 set -euo pipefail
 
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    echo "Ошибка: install-vps.sh должен запускаться от root (sudo bash install-vps.sh)" >&2
+    exit 1
+fi
+
 # ── Swap: создать 1GB если RAM < 2048 MB и swap ещё нет ──────────────────────
 TOTAL_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
 if (( TOTAL_RAM_MB < 2048 )); then
@@ -81,11 +86,9 @@ env_set() {
     local key="$1" val="$2"
     mkdir -p "$(dirname "$ENV_FILE")"
     touch "$ENV_FILE"
-    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
-        sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
-    else
-        echo "${key}=${val}" >> "$ENV_FILE"
-    fi
+    # Используем grep+delete+append вместо sed — безопасно для значений с |, /, &, \
+    grep -v "^${key}=" "$ENV_FILE" > "${ENV_FILE}.tmp" && mv "${ENV_FILE}.tmp" "$ENV_FILE"
+    echo "${key}=${val}" >> "$ENV_FILE"
 }
 
 # ── Загрузка переменных и SSH-функции ────────────────────────────────────────
@@ -186,8 +189,8 @@ else
     step "Установка Docker CE на VPS"
 
     # Проверяем, установлен ли уже Docker
-    if vps_exec "command -v docker &>/dev/null && echo already" 2>/dev/null \
-            | grep -q "already"; then
+    # Используем код возврата, а не grep по stdout — устойчиво к SSH сбоям
+    if vps_exec "command -v docker &>/dev/null" 2>/dev/null; then
         log_info "Docker уже установлен на VPS"
     else
         log_info "Установка Docker на VPS через get.docker.com..."

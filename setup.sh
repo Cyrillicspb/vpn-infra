@@ -83,11 +83,9 @@ env_set() {
     local key="$1" val="$2"
     mkdir -p "$(dirname "$ENV_FILE")"
     touch "$ENV_FILE"
-    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
-        sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
-    else
-        echo "${key}=${val}" >> "$ENV_FILE"
-    fi
+    # Используем grep+delete+append вместо sed — безопасно для значений с |, /, &, \
+    grep -v "^${key}=" "$ENV_FILE" > "${ENV_FILE}.tmp" && mv "${ENV_FILE}.tmp" "$ENV_FILE"
+    echo "${key}=${val}" >> "$ENV_FILE"
 }
 
 # ── Баннер ───────────────────────────────────────────────────────────────────
@@ -410,7 +408,7 @@ phase0() {
                 echo "  Ни порт ${SSH_PORT}, ни порт 22 на ${VPS_IP} не отвечают."
                 echo "  Действия:"
                 echo "    - Войдите в веб-консоль VPS-провайдера"
-                echo "    - Убедитесь что SSH запущен: systemctl status sshd"
+                echo "    - Убедитесь что SSH запущен: systemctl status ssh (или sshd)"
                 echo "    - Проверьте firewall: ufw status или iptables -L"
                 die "VPS недоступен через SSH"
             fi
@@ -635,6 +633,11 @@ phase0() {
             fi
         fi
 
+        # Проверяем что home/ теперь есть — без него установка бессмысленна
+        if [[ ! -d "${REPO_DIR}/home" ]]; then
+            die "Директория ${REPO_DIR}/home не найдена. Клонирование репозитория не удалось. Проверьте интернет-соединение или укажите GITHUB_REPO_URL."
+        fi
+
         # Копирование файлов из репозитория
         if command -v rsync &>/dev/null; then
             rsync -a --exclude='.git' --exclude='.deploy-snapshot' \
@@ -751,7 +754,8 @@ phase3() {
         step "Обмен WireGuard-ключами (Tier-2 туннель)"
 
         # Генерация ключей Tier-2 на VPS
-        VPS_WG_PRIVATE=$(vps_exec "wg genkey")
+        VPS_WG_PRIVATE=$(vps_exec "wg genkey") || die "Не удалось сгенерировать WG ключ на VPS"
+        [[ -z "$VPS_WG_PRIVATE" ]] && die "VPS вернул пустой WG ключ (SSH сессия упала?)"
         VPS_WG_PUBLIC=$(echo "$VPS_WG_PRIVATE" | wg pubkey)
 
         env_set "VPS_WG_PRIVATE_KEY" "$VPS_WG_PRIVATE"

@@ -77,7 +77,7 @@ if %errorlevel% neq 0 (
     pause
     goto test_connection
 )
-ssh -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "mkdir -p ~/.ssh && cat /tmp/vpn_id.pub >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && rm /tmp/vpn_id.pub"
+ssh -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "mkdir -p ~/.ssh && grep -qF \"$(cat /tmp/vpn_id.pub)\" ~/.ssh/authorized_keys 2>/dev/null || cat /tmp/vpn_id.pub >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && rm /tmp/vpn_id.pub"
 echo.
 
 :: --- test connection with key ---
@@ -156,7 +156,7 @@ echo.
 echo  Running setup.sh on server...
 echo  ==========================================
 echo.
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! "sudo bash /tmp/setup.sh 2>&1 | tee /tmp/vpn-setup.log; exit ${PIPESTATUS[0]}"
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! "bash -c 'sudo bash /tmp/setup.sh 2>&1 | tee /tmp/vpn-setup.log; exit ${PIPESTATUS[0]}'"
 set RESULT=!errorlevel!
 
 echo.

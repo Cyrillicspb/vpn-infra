@@ -7,6 +7,11 @@
 
 set -euo pipefail
 
+if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    echo "Ошибка: install-home.sh должен запускаться от root (sudo bash install-home.sh)" >&2
+    exit 1
+fi
+
 # ── Цвета и константы ────────────────────────────────────────────────────────
 
 RED='\033[0;31m'
@@ -66,11 +71,9 @@ env_set() {
     local key="$1" val="$2"
     mkdir -p "$(dirname "$ENV_FILE")"
     touch "$ENV_FILE"
-    if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
-        sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
-    else
-        echo "${key}=${val}" >> "$ENV_FILE"
-    fi
+    # Используем grep+delete+append вместо sed — безопасно для значений с |, /, &, \
+    grep -v "^${key}=" "$ENV_FILE" > "${ENV_FILE}.tmp" && mv "${ENV_FILE}.tmp" "$ENV_FILE"
+    echo "${key}=${val}" >> "$ENV_FILE"
 }
 
 # ── Загрузка переменных окружения ────────────────────────────────────────────
@@ -132,8 +135,7 @@ else
     echo 'sysadmin ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/sysadmin
     chmod 440 /etc/sudoers.d/sysadmin
 
-    # Добавить в docker group (понадобится после установки Docker)
-    usermod -aG docker sysadmin 2>/dev/null || true
+    # docker group добавляется в шаге 15, после установки Docker
 
     # Перенос пароля root → sysadmin (копируем хэш из /etc/shadow)
     ROOT_HASH=$(getent shadow root | cut -d: -f2)
@@ -313,6 +315,8 @@ EOF
 
     systemctl enable docker
     systemctl restart docker
+    # Добавляем sysadmin в docker group здесь — группа уже существует
+    usermod -aG docker sysadmin 2>/dev/null || true
     log_ok "Docker настроен и запущен"
     step_done "step15_install_docker"
 fi
