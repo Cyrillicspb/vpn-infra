@@ -50,6 +50,7 @@ services:
     container_name: socket-proxy
     restart: always
     environment:
+      DISABLE_IPV6: 1
       CONTAINERS: 1
       SERVICES: 1
       NETWORKS: 1
