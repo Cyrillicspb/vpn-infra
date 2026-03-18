@@ -966,6 +966,21 @@ else
     WATCHDOG_DIR="/opt/vpn/watchdog"
     mkdir -p "$WATCHDOG_DIR"
 
+    # Копируем файлы watchdog из репозитория
+    for src in /opt/vpn/home/watchdog /opt/vpn/watchdog-src; do
+        if [[ -f "${src}/watchdog.py" ]]; then
+            cp "${src}/watchdog.py" "${WATCHDOG_DIR}/watchdog.py"
+            [[ -f "${src}/requirements.txt" ]] && \
+                cp "${src}/requirements.txt" "${WATCHDOG_DIR}/requirements.txt"
+            [[ -d "${src}/plugins" ]] && \
+                cp -r "${src}/plugins/." "${WATCHDOG_DIR}/plugins/"
+            log_ok "watchdog.py скопирован из ${src}"
+            break
+        fi
+    done
+    [[ -f "${WATCHDOG_DIR}/watchdog.py" ]] || \
+        log_warn "watchdog.py не найден в репозитории — сервис не запустится"
+
     if [[ ! -d "${WATCHDOG_DIR}/venv" ]]; then
         python3 -m venv "${WATCHDOG_DIR}/venv"
         log_ok "Python venv создан в ${WATCHDOG_DIR}/venv"
