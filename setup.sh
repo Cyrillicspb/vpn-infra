@@ -428,14 +428,26 @@ phase0() {
         }
 
         # Копирование ключа на VPS через sshpass
+        # Сначала проверяем: может ключ уже установлен (повторный запуск)
         log_info "Копирование SSH-ключа на VPS..."
-        sshpass -p "${VPS_ROOT_PASSWORD}" ssh-copy-id \
-            -i /root/.ssh/vpn_id_ed25519.pub \
-            -p "${SSH_PORT}" \
-            -o StrictHostKeyChecking=no \
-            "root@${VPS_IP}" 2>/dev/null \
-            || die "Не удалось скопировать SSH-ключ на VPS. Проверьте пароль root."
-        log_ok "SSH-ключ скопирован на VPS"
+        if ssh -i /root/.ssh/vpn_id_ed25519 \
+                -p "${SSH_PORT}" \
+                -o StrictHostKeyChecking=no \
+                -o ConnectTimeout=10 \
+                -o BatchMode=yes \
+                "root@${VPS_IP}" "echo ok" 2>/dev/null; then
+            log_ok "SSH-ключ уже установлен на VPS, пропускаем ssh-copy-id"
+        else
+            [[ -z "${VPS_ROOT_PASSWORD:-}" ]] && \
+                die "VPS_ROOT_PASSWORD не задан. Добавьте в /opt/vpn/.env и повторите."
+            sshpass -p "${VPS_ROOT_PASSWORD}" ssh-copy-id \
+                -i /root/.ssh/vpn_id_ed25519.pub \
+                -p "${SSH_PORT}" \
+                -o StrictHostKeyChecking=no \
+                "root@${VPS_IP}" 2>/dev/null \
+                || die "Не удалось скопировать SSH-ключ на VPS. Проверьте пароль root."
+            log_ok "SSH-ключ скопирован на VPS"
+        fi
 
         # Создание пользователя sysadmin
         log_info "Создание пользователя sysadmin на VPS..."
