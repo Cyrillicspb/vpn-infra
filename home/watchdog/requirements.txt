@@ -11,10 +11,10 @@ pydantic==2.7.1
 slowapi==0.1.9
 
 # Системный мониторинг
-psutil==5.9.8
+psutil==7.2.2
 
 # YAML (плагины)
 PyYAML==6.0.1
 
 # Async file I/O (опционально, для записи конфигов)
-aiofiles==23.2.1
+aiofiles==25.1.0
