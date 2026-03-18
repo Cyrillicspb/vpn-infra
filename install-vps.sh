@@ -201,6 +201,13 @@ else
         vps_exec "sudo systemctl enable docker && sudo systemctl start docker"
     fi
 
+    # На Ubuntu 24.04 iptables = iptables-nft (использует nf_tables backend).
+    # Docker создаёт цепочки DOCKER-FORWARD через iptables-nft.
+    # nft flush ruleset уничтожает их (один backend!).
+    # Решение: переключить на iptables-legacy — тогда Docker и nftables не пересекаются.
+    vps_exec "sudo update-alternatives --set iptables /usr/sbin/iptables-legacy 2>/dev/null || true && \
+        sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true"
+
     # Настройка daemon.json
     vps_exec "sudo mkdir -p /etc/docker && \
         printf '{\"log-driver\":\"json-file\",\"log-opts\":{\"max-size\":\"10m\",\"max-file\":\"3\"},\"dns\":[\"8.8.8.8\",\"1.1.1.1\"],\"ipv6\":false}\n' | \
@@ -272,10 +279,6 @@ NFTEOF"
 
     vps_exec "sudo systemctl enable nftables && \
         sudo nft -f /etc/nftables-vps.conf || true"
-
-    # После flush ruleset Docker теряет свои iptables/nftables цепочки.
-    # Перезапускаем Docker чтобы он пересоздал DOCKER-FORWARD и прочие цепочки.
-    vps_exec "sudo systemctl restart docker" || true
 
     log_ok "nftables настроен на VPS"
     step_done "step36_vps_nftables"
