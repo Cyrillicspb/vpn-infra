@@ -153,17 +153,7 @@ if %errorlevel% neq 0 (
     pause
     exit /b 1
 )
-echo  [OK] Downloaded (GitHub or jsdelivr CDN).
-echo  Verifying files on server...
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "ls -lh /tmp/setup.sh /tmp/install-home.sh"
-if %errorlevel% neq 0 (
-    echo.
-    echo  ERROR: Files missing on server after download.
-    echo.
-    pause
-    exit /b 1
-)
-echo  [OK] Files verified.
+echo  [OK] Downloaded ^(GitHub or jsdelivr CDN^).
 
 :run_setup
 echo.
