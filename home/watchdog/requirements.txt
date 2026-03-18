@@ -4,7 +4,7 @@
 # HTTP / API
 aiohttp==3.9.5
 fastapi==0.111.0
-uvicorn[standard]==0.29.0
+uvicorn[standard]==0.41.0
 pydantic==2.7.1
 
 # Rate limiting для FastAPI
