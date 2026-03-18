@@ -64,20 +64,21 @@ echo  [OK] Key exists: !SSH_KEY!
 :key_done
 echo.
 
-:: --- copy public key to server (scp .pub file, then append) ---
-echo  Copying public key to server...
+:: --- add public key to server (one SSH command, one password prompt) ---
+echo  Adding SSH key to server...
 echo  Enter server password when prompted:
 echo.
-scp -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "!SSH_KEY!.pub" !SERVER_USER!@!SERVER_IP!:/tmp/vpn_id.pub
+set /p PUBKEY=<"!SSH_KEY!.pub"
+ssh -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "mkdir -p ~/.ssh && echo !PUBKEY! >> ~/.ssh/authorized_keys && sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
 if %errorlevel% neq 0 (
     echo.
-    echo  WARNING: Could not copy key via scp.
-    echo  Try manually: copy content of !SSH_KEY!.pub to ~/.ssh/authorized_keys
+    echo  ERROR: Could not add SSH key to server.
+    echo  Check: IP address, username, password, SSH port.
     echo.
     pause
-    goto test_connection
+    exit /b 1
 )
-ssh -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "mkdir -p ~/.ssh && cat /tmp/vpn_id.pub >> ~/.ssh/authorized_keys && sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && rm /tmp/vpn_id.pub"
+echo  [OK] SSH key added.
 echo.
 
 :: --- test connection with key ---
