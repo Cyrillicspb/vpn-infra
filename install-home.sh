@@ -1207,14 +1207,25 @@ else
     set -o allexport; source "$ENV_FILE"; set +o allexport
 
     COMPOSE_FILE="/opt/vpn/docker-compose.yml"
+    REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
     # Копируем docker-compose.yml из home/ если его нет в корне /opt/vpn/
     if [[ ! -f "$COMPOSE_FILE" ]]; then
-        REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         if [[ -f "${REPO_DIR}/home/docker-compose.yml" ]]; then
             cp "${REPO_DIR}/home/docker-compose.yml" "$COMPOSE_FILE"
             log_ok "docker-compose.yml скопирован из home/"
         fi
     fi
+
+    # Копируем поддиректории из home/ которые нужны docker-compose.yml:
+    # telegram-bot/ (Dockerfile + исходники), prometheus/, grafana/,
+    # alertmanager/, nginx/ — если их ещё нет в /opt/vpn/
+    for subdir in telegram-bot prometheus grafana alertmanager nginx; do
+        if [[ ! -d "/opt/vpn/${subdir}" && -d "${REPO_DIR}/home/${subdir}" ]]; then
+            cp -r "${REPO_DIR}/home/${subdir}" "/opt/vpn/${subdir}"
+            log_ok "${subdir}/ скопирован из home/"
+        fi
+    done
     if [[ ! -f "$COMPOSE_FILE" ]]; then
         log_warn "docker-compose.yml не найден в /opt/vpn/"
         log_warn "Docker-контейнеры будут запущены позже."
