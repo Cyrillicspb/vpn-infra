@@ -1261,6 +1261,14 @@ else
     else
         cd /opt/vpn
 
+        # Создаём placeholder-файлы для xray конфигов ДО docker compose up.
+        # Без этого Docker монтирует несуществующие пути как директории,
+        # что ломает шаг 47 (cat > config-reality.json: Is a directory).
+        mkdir -p /opt/vpn/xray
+        for _xray_cfg in config-reality.json config-grpc.json config-cdn.json; do
+            [[ ! -e "/opt/vpn/xray/${_xray_cfg}" ]] && echo '{}' > "/opt/vpn/xray/${_xray_cfg}"
+        done
+
         log_info "Загрузка Docker-образов..."
         docker compose pull --quiet 2>/dev/null || true
 
