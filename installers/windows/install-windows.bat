@@ -67,28 +67,26 @@ ssh-keygen -R !SERVER_IP! >nul 2>nul
 set SERVER_USER=
 
 echo  Detecting SSH user...
-echo  DEBUG SSH_KEY=!SSH_KEY!
-echo  DEBUG SERVER_IP=!SERVER_IP!
-echo  DEBUG SSH_PORT=!SSH_PORT!
 
 :: Try root with key (no password, BatchMode).
 :: -n prevents SSH from reading stdin (equivalent to < /dev/null).
+:: Save errorlevel immediately -- any subsequent command (even echo) resets it.
 echo  Trying root...
-ssh -n -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes -p !SSH_PORT! root@!SERVER_IP! "exit 0"
-echo  DEBUG errorlevel after root=!errorlevel!
-if !errorlevel! equ 0 (
+ssh -n -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes -p !SSH_PORT! root@!SERVER_IP! "exit 0" >nul 2>nul
+set SSH_RC=!errorlevel!
+if "!SSH_RC!"=="0" (
     set SERVER_USER=root
-    echo  [OK] Connected as root (key auth).
+    echo  [OK] Connected as root ^(key auth^).
     goto connected
 )
 
 :: Try sysadmin with key (step 11 already ran -- PermitRootLogin=no)
 echo  Trying sysadmin...
-ssh -n -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes -p !SSH_PORT! sysadmin@!SERVER_IP! "exit 0"
-echo  DEBUG errorlevel after sysadmin=!errorlevel!
-if !errorlevel! equ 0 (
+ssh -n -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes -p !SSH_PORT! sysadmin@!SERVER_IP! "exit 0" >nul 2>nul
+set SSH_RC=!errorlevel!
+if "!SSH_RC!"=="0" (
     set SERVER_USER=sysadmin
-    echo  [OK] Connected as sysadmin (root SSH disabled after step 11).
+    echo  [OK] Connected as sysadmin ^(root SSH disabled after step 11^).
     goto connected
 )
 
