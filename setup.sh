@@ -637,10 +637,15 @@ phase0() {
             log_info "Директория home/ не найдена в ${REPO_DIR}."
             log_info "Клонируем полный репозиторий с GitHub..."
             GITHUB_REPO_URL="${GITHUB_REPO_URL:-https://github.com/Cyrillicspb/vpn-infra.git}"
-            if git clone "$GITHUB_REPO_URL" /opt/vpn 2>/dev/null; then
+            # Клонируем во временную директорию — /opt/vpn уже существует (создан в шаге 5)
+            local _clone_tmp="/tmp/vpn-repo-clone-$$"
+            if git clone "$GITHUB_REPO_URL" "$_clone_tmp" 2>/dev/null; then
+                cp -r "${_clone_tmp}/." /opt/vpn/
+                rm -rf "$_clone_tmp"
                 REPO_DIR="/opt/vpn"
                 log_ok "Репозиторий клонирован в /opt/vpn"
             else
+                rm -rf "$_clone_tmp" 2>/dev/null || true
                 log_warn "Клонирование из GitHub не удалось. Установка продолжится,"
                 log_warn "но некоторые файлы конфигурации могут отсутствовать."
                 log_warn "Если GitHub заблокирован — задайте GITHUB_REPO_URL=<альтернативный_URL>"
