@@ -1,20 +1,20 @@
 # Telegram-бот requirements — пинированные версии
 
 # aiogram 3.x — Telegram bot framework
-aiogram==3.7.0
+aiogram==3.26.0
 
 # HTTP клиент (watchdog API + notify server)
-aiohttp==3.9.5
+aiohttp==3.13.3
 
 # Pydantic (aiogram dependency)
 pydantic==2.7.1
 
 # QR-код для конфигов (только если AllowedIPs <= 50)
 qrcode[pil]==7.4.2
-Pillow==10.3.0
+Pillow==11.1.0
 
 # Jinja2 — шаблоны .conf файлов
-Jinja2==3.1.4
+Jinja2==3.1.6
 
 # Системный мониторинг (опционально)
-psutil==5.9.8
+psutil==7.2.2

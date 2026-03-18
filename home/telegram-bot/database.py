@@ -104,6 +104,8 @@ class Database:
                         ON clients(chat_id);
                     CREATE INDEX IF NOT EXISTS idx_devices_client_id
                         ON devices(client_id);
+                    CREATE INDEX IF NOT EXISTS idx_devices_public_key
+                        ON devices(public_key);
                     CREATE INDEX IF NOT EXISTS idx_domain_requests_chat_id
                         ON domain_requests(chat_id);
                     CREATE INDEX IF NOT EXISTS idx_domain_requests_status
@@ -170,6 +172,11 @@ class Database:
                 dev_cols = {r[1] for r in conn.execute("PRAGMA table_info(devices)")}
                 if "is_router" not in dev_cols:
                     conn.execute("ALTER TABLE devices ADD COLUMN is_router INTEGER NOT NULL DEFAULT 0")
+                    conn.commit()
+                # Миграция: добавить индекс на public_key если отсутствует
+                existing_indexes = {r[1] for r in conn.execute("PRAGMA index_list(devices)")}
+                if "idx_devices_public_key" not in existing_indexes:
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_devices_public_key ON devices(public_key)")
                     conn.commit()
                 logger.info("БД инициализирована")
             finally:
