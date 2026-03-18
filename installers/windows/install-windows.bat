@@ -32,9 +32,9 @@ set /p SERVER_IP=  IP:
 if "!SERVER_IP!"=="" goto input_ip
 
 echo.
-echo  SSH username - press Enter for default sysadmin:
+echo  SSH username - press Enter for default root:
 set /p SERVER_USER=  User:
-if "!SERVER_USER!"=="" set SERVER_USER=sysadmin
+if "!SERVER_USER!"=="" set SERVER_USER=root
 
 echo.
 echo  SSH port - press Enter for default 22:
@@ -77,7 +77,7 @@ if %errorlevel% neq 0 (
     pause
     goto test_connection
 )
-ssh -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "mkdir -p ~/.ssh && grep -qF \"$(cat /tmp/vpn_id.pub)\" ~/.ssh/authorized_keys 2>/dev/null || cat /tmp/vpn_id.pub >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && rm /tmp/vpn_id.pub"
+ssh -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "mkdir -p ~/.ssh && cat /tmp/vpn_id.pub >> ~/.ssh/authorized_keys && sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && rm /tmp/vpn_id.pub"
 echo.
 
 :: --- test connection with key ---
