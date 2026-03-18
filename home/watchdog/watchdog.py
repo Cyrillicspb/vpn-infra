@@ -571,14 +571,14 @@ async def _measure_throughput(url: str, proxy: str = "", interface: str = "") ->
     return 0.0
 
 
-def _get_active_tun() -> str:
+async def _get_active_tun() -> str:
     """Вернуть имя активного tun-интерфейса, или '' для direct_mode (zapret) и при ошибке."""
     try:
         plugin = plugins.get(state.active_stack)
         if not plugin or plugin.meta.get("direct_mode"):
             return ""   # zapret: нет tun, трафик идёт напрямую
         tun = plugin.meta.get("tun_name", f"tun-{state.active_stack}")
-        rc = subprocess.run(["ip", "link", "show", tun], capture_output=True).returncode
+        rc, _, _ = await run_cmd(["ip", "link", "show", tun], timeout=5)
         return tun if rc == 0 else ""
     except Exception:
         return ""
@@ -586,7 +586,7 @@ def _get_active_tun() -> str:
 
 async def speedtest_small() -> float:
     """100KB тест через активный стек. Возвращает Mbps."""
-    tun = _get_active_tun()
+    tun = await _get_active_tun()
     mbps = await _measure_throughput(SPEED_URL_SMALL, interface=tun)
     if mbps > 0:
         state.small_speedtest.append(mbps)
@@ -596,7 +596,7 @@ async def speedtest_small() -> float:
 
 async def speedtest_large() -> float:
     """10MB тест через активный стек. Возвращает Mbps."""
-    tun = _get_active_tun()
+    tun = await _get_active_tun()
     mbps = await _measure_throughput(SPEED_URL_LARGE, interface=tun)
     if mbps > 0:
         state.large_speedtest.append(mbps)
@@ -605,7 +605,7 @@ async def speedtest_large() -> float:
 
 async def speedtest_upload() -> float:
     """100KB upload-тест через активный стек. Возвращает Mbps."""
-    tun = _get_active_tun()
+    tun = await _get_active_tun()
     tmp = "/tmp/wdg_upload_100k.bin"
     # Генерируем 100KB случайных данных
     rc, _, _ = await run_cmd(
