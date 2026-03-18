@@ -72,7 +72,9 @@ env_set() {
     mkdir -p "$(dirname "$ENV_FILE")"
     touch "$ENV_FILE"
     # Используем grep+delete+append вместо sed — безопасно для значений с |, /, &, \
-    grep -v "^${key}=" "$ENV_FILE" > "${ENV_FILE}.tmp" && mv "${ENV_FILE}.tmp" "$ENV_FILE"
+    # || true: grep возвращает 1 на пустом файле или если строка не найдена — это нормально
+    { grep -v "^${key}=" "$ENV_FILE" || true; } > "${ENV_FILE}.tmp"
+    mv "${ENV_FILE}.tmp" "$ENV_FILE"
     echo "${key}=${val}" >> "$ENV_FILE"
 }
 
@@ -456,6 +458,8 @@ else
                 || die "Не удалось запустить xray x25519 в Docker"
             XRAY_PRIVATE_KEY=$(echo "$XRAY_KEYS" | grep "Private key:" | awk '{print $NF}')
             XRAY_PUBLIC_KEY=$(echo "$XRAY_KEYS" | grep "Public key:" | awk '{print $NF}')
+            [[ -n "$XRAY_PRIVATE_KEY" ]] || die "Не удалось извлечь Private key из xray x25519 (неожиданный формат вывода)"
+            [[ -n "$XRAY_PUBLIC_KEY" ]]  || die "Не удалось извлечь Public key из xray x25519 (неожиданный формат вывода)"
             env_set "XRAY_PRIVATE_KEY" "$XRAY_PRIVATE_KEY"
             env_set "XRAY_PUBLIC_KEY"  "$XRAY_PUBLIC_KEY"
             log_ok "Ключи REALITY (microsoft.com) сгенерированы"
@@ -469,6 +473,8 @@ else
                 || die "Не удалось запустить xray x25519 (gRPC) в Docker"
             XRAY_GRPC_PRIVATE_KEY=$(echo "$XRAY_GRPC_KEYS" | grep "Private key:" | awk '{print $NF}')
             XRAY_GRPC_PUBLIC_KEY=$(echo "$XRAY_GRPC_KEYS" | grep "Public key:" | awk '{print $NF}')
+            [[ -n "$XRAY_GRPC_PRIVATE_KEY" ]] || die "Не удалось извлечь Private key из xray x25519 gRPC (неожиданный формат вывода)"
+            [[ -n "$XRAY_GRPC_PUBLIC_KEY" ]]  || die "Не удалось извлечь Public key из xray x25519 gRPC (неожиданный формат вывода)"
             env_set "XRAY_GRPC_PRIVATE_KEY" "$XRAY_GRPC_PRIVATE_KEY"
             env_set "XRAY_GRPC_PUBLIC_KEY"  "$XRAY_GRPC_PUBLIC_KEY"
             log_ok "Ключи REALITY gRPC (cdn.jsdelivr.net) сгенерированы"

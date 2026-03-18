@@ -475,7 +475,9 @@ log_step "Шаг 16: Сохранение VPS2 переменных в /opt/vpn/
 env_set() {
     local key="$1" val="$2"
     # Используем grep+delete+append вместо sed — безопасно для значений с |, /, &, \
-    grep -v "^${key}=" "$ENV_FILE" > "${ENV_FILE}.tmp" && mv "${ENV_FILE}.tmp" "$ENV_FILE"
+    # || true: grep возвращает 1 на пустом файле или если строка не найдена — это нормально
+    { grep -v "^${key}=" "$ENV_FILE" || true; } > "${ENV_FILE}.tmp"
+    mv "${ENV_FILE}.tmp" "$ENV_FILE"
     echo "${key}=${val}" >> "$ENV_FILE"
 }
 
