@@ -277,7 +277,7 @@ apply_migrations() {
         if [[ $ok -eq 1 ]]; then
             echo "$name" >> "$MIGRATIONS_LOG"
             log_ok "Миграция $name применена"
-            ((count++))
+            count=$((count + 1))
         else
             log_warn "Миграция $name не выполнилась — продолжаем"
         fi
