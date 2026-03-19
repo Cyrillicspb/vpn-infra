@@ -53,6 +53,7 @@ VPS_IP               = os.getenv("VPS_IP", "")
 VPS_TUNNEL_IP        = os.getenv("VPS_TUNNEL_IP", "10.177.2.2")
 GRAFANA_URL          = os.getenv("GRAFANA_URL", "http://172.20.0.32:3000")
 GRAFANA_TOKEN        = os.getenv("GRAFANA_TOKEN", "")
+GRAFANA_PASSWORD     = os.getenv("GRAFANA_PASSWORD", "")
 DDNS_PROVIDER        = os.getenv("DDNS_PROVIDER", "")
 DDNS_DOMAIN          = os.getenv("DDNS_DOMAIN", "")
 DDNS_TOKEN           = os.getenv("DDNS_TOKEN", "")
@@ -2414,6 +2415,10 @@ async def post_graph(request: Request, req: GraphRequest, _: bool = Depends(_aut
     headers = {}
     if GRAFANA_TOKEN:
         headers["Authorization"] = f"Bearer {GRAFANA_TOKEN}"
+    elif GRAFANA_PASSWORD:
+        import base64
+        _creds = base64.b64encode(f"admin:{GRAFANA_PASSWORD}".encode()).decode()
+        headers["Authorization"] = f"Basic {_creds}"
 
     try:
         async with aiohttp.ClientSession() as s:
