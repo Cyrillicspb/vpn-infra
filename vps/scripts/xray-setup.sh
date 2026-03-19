@@ -113,7 +113,7 @@ add_inbound() {
     local name="$1"
     local json="$2"
 
-    log "Добавление inbound: $name..."
+    log "Добавление/обновление inbound: $name..."
     RESULT=$(curl -sf --max-time 30 \
         -b "$COOKIE_FILE" \
         -X POST "${XUI_HOST}/panel/api/inbounds/add" \
@@ -126,7 +126,33 @@ add_inbound() {
     else
         MSG=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('msg','unknown'))" 2>/dev/null || echo "parse error")
         if echo "$MSG" | grep -qi "exist\|already\|duplicate"; then
-            log "Inbound уже существует (пропускаем): $name"
+            # Inbound exists — update it via PUT /update/{id}
+            PORT=$(echo "$json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('port',''))" 2>/dev/null)
+            INBOUND_ID=$(curl -sf --max-time 30 -b "$COOKIE_FILE" \
+                "${XUI_HOST}/panel/api/inbounds/list" 2>/dev/null \
+                | python3 -c "
+import sys,json
+data=json.load(sys.stdin)
+for inb in data.get('obj',[]):
+    if str(inb.get('port',''))==sys.argv[1]:
+        print(inb['id'])
+        break
+" "$PORT" 2>/dev/null)
+            if [[ -n "$INBOUND_ID" ]]; then
+                UPD=$(curl -sf --max-time 30 \
+                    -b "$COOKIE_FILE" \
+                    -X POST "${XUI_HOST}/panel/api/inbounds/update/$INBOUND_ID" \
+                    -H "Content-Type: application/json" \
+                    -d "$json" \
+                    2>/dev/null || echo '{"success":false}')
+                if echo "$UPD" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('success') else 1)" 2>/dev/null; then
+                    ok "Inbound обновлён: $name"
+                else
+                    log "Inbound уже актуален: $name"
+                fi
+            else
+                log "Inbound уже существует, ID не найден: $name"
+            fi
         else
             err "Ошибка создания $name: $MSG"
             return 1
