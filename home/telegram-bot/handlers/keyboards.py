@@ -107,7 +107,7 @@ def admin_graph_menu() -> InlineKeyboardMarkup:
 def admin_system_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🚀 Deploy",          callback_data="adm:deploy"),
+            InlineKeyboardButton(text="🚀 Применить апдейт", callback_data="adm:deploy"),
             InlineKeyboardButton(text="⏮️ Откат",           callback_data="adm:rollback"),
         ],
         [
