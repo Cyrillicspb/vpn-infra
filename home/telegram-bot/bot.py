@@ -36,7 +36,7 @@ from services.autodist import AutoDist
 from services.config_builder import ConfigBuilder
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
@@ -129,12 +129,15 @@ class DependencyMiddleware:
         data["bot"]      = self.bot
         data["autodist"] = self.autodist
         # Обновляем имя пользователя из актуальных данных Telegram
-        if hasattr(event, "from_user") and event.from_user and event.from_user.first_name:
-            await self.db.update_client_info(
-                str(event.from_user.id),
-                event.from_user.username or "",
-                event.from_user.first_name,
-            )
+        if hasattr(event, "from_user") and event.from_user:
+            fu = event.from_user
+            logger.debug("from_user id=%s first_name=%r username=%r", fu.id, fu.first_name, fu.username)
+            if fu.first_name or fu.username:
+                await self.db.update_client_info(
+                    str(fu.id),
+                    fu.username or "",
+                    fu.first_name or fu.username or "",
+                )
         return await handler(event, data)
 
 
