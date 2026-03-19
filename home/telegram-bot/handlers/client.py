@@ -38,6 +38,7 @@ from handlers.keyboards import (
     client_main_menu,
     client_request_type_kb,
     client_sites_menu,
+    confirm_kb,
     device_detail_kb,
     devices_inline_kb,
     excludes_inline_kb,
@@ -1232,6 +1233,22 @@ async def cb_cl_del_device(cb: CallbackQuery, **kw):
     device = await db.get_device_by_id(device_id)
     if not device:
         await cb.message.answer("Устройство не найдено.")
+        return
+    await cb.message.edit_text(
+        f"🗑 <b>Удалить устройство «{device['device_name']}»?</b>",
+        reply_markup=confirm_kb(f"cl:del_ok:{device_id}", f"cl:dev:{device_id}"),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("cl:del_ok:"))
+async def cb_cl_del_device_ok(cb: CallbackQuery, **kw):
+    await cb.answer()
+    device_id = int(cb.data[len("cl:del_ok:"):])
+    db: Database = kw.get("db")
+    device = await db.get_device_by_id(device_id)
+    if not device:
+        await cb.message.edit_text("Устройство не найдено.")
         return
     await _do_remove_device(cb.message, db, device)
 

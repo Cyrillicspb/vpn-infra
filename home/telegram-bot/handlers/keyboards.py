@@ -23,6 +23,22 @@ def _visible(s: str) -> str:
     return v if _RE_VISIBLE.search(v) else ""
 
 
+def _nav_row(back_cb: str, home_cb: str = "adm:menu") -> list[InlineKeyboardButton]:
+    """Строка навигации для экранов уровня 3+: ◀️ Назад + 🏠 Меню."""
+    return [
+        InlineKeyboardButton(text="◀️ Назад", callback_data=back_cb),
+        InlineKeyboardButton(text="🏠 Меню",  callback_data=home_cb),
+    ]
+
+
+def confirm_kb(yes_cb: str, no_cb: str) -> InlineKeyboardMarkup:
+    """Универсальная клавиатура подтверждения деструктивного действия."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Да",     callback_data=yes_cb),
+        InlineKeyboardButton(text="❌ Отмена", callback_data=no_cb),
+    ]])
+
+
 # ── Постоянная кнопка «Меню» ─────────────────────────────────────────────────
 
 def menu_reply_kb() -> ReplyKeyboardMarkup:
@@ -108,7 +124,7 @@ def admin_graph_menu() -> InlineKeyboardMarkup:
     ]
     rows = [[InlineKeyboardButton(text=name, callback_data=f"adm:gr:{key}")]
             for name, key in panels]
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:monitor")])
+    rows.append(_nav_row("adm:monitor"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -163,7 +179,7 @@ def admin_switch_menu(active_stack: str = "") -> InlineKeyboardMarkup:
     for name, key in stacks:
         prefix = "✅ " if active_stack and key == active_stack else ""
         rows.append([InlineKeyboardButton(text=f"{prefix}{name}", callback_data=f"adm:sw:{key}")])
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:tunnel_menu")])
+    rows.append(_nav_row("adm:tunnel_menu"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -186,7 +202,7 @@ def admin_restart_menu() -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:system")])
+    rows.append(_nav_row("adm:system"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -210,7 +226,7 @@ def admin_logs_menu() -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:system")])
+    rows.append(_nav_row("adm:system"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -284,7 +300,7 @@ def admin_dpi_menu(enabled: bool, services: list[dict]) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🔄 Пересобрать пресет", callback_data="adm:dpi_recheck"),
         InlineKeyboardButton(text="📋 История",            callback_data="adm:dpi_history"),
     ])
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:routes")])
+    rows.append(_nav_row("adm:routes"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -294,7 +310,7 @@ def domains_inline_kb(domains: list[str], prefix: str, back: str) -> InlineKeybo
         [InlineKeyboardButton(text=f"❌ {d}", callback_data=f"{prefix}{d[:40]}")]
         for d in domains[:30]
     ]
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data=back)])
+    rows.append(_nav_row(back))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -329,7 +345,7 @@ def admin_clients_list_kb(clients: list[dict]) -> InlineKeyboardMarkup:
             text=f"{icon} {name}",
             callback_data=f"adm:cl:{c['chat_id']}",
         )])
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:clients")])
+    rows.append(_nav_row("adm:clients"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -343,7 +359,7 @@ def admin_client_actions_kb(chat_id: str, is_disabled: bool) -> InlineKeyboardMa
             InlineKeyboardButton(text="🦵 Кик",             callback_data=f"adm:cl_kick:{chat_id}"),
         ],
         [InlineKeyboardButton(text="🔄 Реконнект", callback_data=f"adm:cl_reconnect:{chat_id}")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="adm:clients_list")],
+        _nav_row("adm:clients_list"),
     ])
 
 
@@ -355,9 +371,7 @@ def admin_vps_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📄 Список VPS",  callback_data="adm:vps_list"),
             InlineKeyboardButton(text="➕ Добавить VPS", callback_data="adm:vps_add"),
         ],
-        [
-            InlineKeyboardButton(text="◀️ Назад", callback_data="adm:tunnel_menu"),
-        ],
+        _nav_row("adm:tunnel_menu"),
     ])
 
 
@@ -369,7 +383,7 @@ def admin_vps_list_kb(vps_list: list[dict], active_idx: int) -> InlineKeyboardMa
             text=f"{icon} {v['ip']}:{v.get('ssh_port', 22)}",
             callback_data=f"adm:vps_detail:{v['ip']}",
         )])
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:vps")])
+    rows.append(_nav_row("adm:vps"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -379,7 +393,7 @@ def admin_vps_actions_kb(ip: str, ssh_port: int = 22) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔍 Тест соединения",     callback_data=f"adm:vps_test:{ip}")],
         [InlineKeyboardButton(text="🔄 Мигрировать на этот", callback_data=f"adm:vps_migrate:{ip}")],
         [InlineKeyboardButton(text="❌ Удалить VPS",          callback_data=f"adm:vps_rm:{ip}")],
-        [InlineKeyboardButton(text="◀️ Назад",               callback_data="adm:vps_list")],
+        _nav_row("adm:vps_list"),
     ])
 
 
@@ -398,7 +412,7 @@ def admin_diagnose_kb(devices: list[dict]) -> InlineKeyboardMarkup:
         )]
         for d in devices[:20]
     ]
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="adm:clients")])
+    rows.append(_nav_row("adm:clients"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -447,7 +461,7 @@ def client_request_type_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔒 Через VPN",    callback_data="cl:req:vpn"),
             InlineKeyboardButton(text="🌐 Напрямую",     callback_data="cl:req:direct"),
         ],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="cl:sites")],
+        _nav_row("cl:sites", home_cb="cl:menu"),
     ])
 
 
@@ -513,7 +527,7 @@ def device_detail_kb(device_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📥 Получить конфиг",    callback_data=f"cl:getconf:{device_id}")],
         [InlineKeyboardButton(text="🔄 Обновить конфиг",    callback_data=f"cl:upd1:{device_id}")],
         [InlineKeyboardButton(text="🗑 Удалить устройство", callback_data=f"cl:del:{device_id}")],
-        [InlineKeyboardButton(text="◀️ Назад",              callback_data="cl:mydevices")],
+        _nav_row("cl:mydevices", home_cb="cl:menu"),
     ])
 
 
@@ -530,7 +544,7 @@ def platform_inline_kb(device_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=label, callback_data=f"cfgp:{device_id}:{platform}")]
         for label, platform in platforms
     ]
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data=f"cl:dev:{device_id}")])
+    rows.append(_nav_row(f"cl:dev:{device_id}", home_cb="cl:menu"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -543,5 +557,5 @@ def excludes_inline_kb(excludes: list[dict], device_id: int) -> InlineKeyboardMa
         )]
         for e in excludes[:20]
     ]
-    rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="cl:excludes")])
+    rows.append(_nav_row("cl:excludes", home_cb="cl:menu"))
     return InlineKeyboardMarkup(inline_keyboard=rows)

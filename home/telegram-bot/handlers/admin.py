@@ -58,6 +58,7 @@ from handlers.keyboards import (
     admin_vps_menu,
     back_to_admin_menu,
     client_main_menu,
+    confirm_kb,
     domains_inline_kb,
     menu_reply_kb,
 )
@@ -1739,14 +1740,25 @@ async def cb_adm_switch(cb: CallbackQuery, **kw):
 @router.callback_query(F.data.startswith("adm:rs:"))
 async def cb_adm_restart(cb: CallbackQuery, **kw):
     svc = cb.data[len("adm:rs:"):]
+    await cb.answer()
+    await _edit_or_answer(
+        cb,
+        f"⚠️ Перезапустить <b>{svc}</b>?",
+        confirm_kb(f"adm:rs_ok:{svc}", "adm:restart_menu"),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:rs_ok:"))
+async def cb_adm_restart_ok(cb: CallbackQuery, **kw):
+    svc = cb.data[len("adm:rs_ok:"):]
     await cb.answer(f"Перезапускаю {svc}...")
     try:
         r = await _wc().restart_service(svc)
         st = r.get("status", "?")
-        text = f"✅ `{svc}` перезапущен" if st == "ok" else f"⚠️ {r.get('error', 'ошибка')}"
+        text = f"✅ <code>{svc}</code> перезапущен" if st == "ok" else f"⚠️ {r.get('error', 'ошибка')}"
     except WatchdogError as e:
         text = f"❌ {e}"
-    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+    await _edit_or_answer(cb, text, back_to_admin_menu())
 
 
 @router.callback_query(F.data == "adm:update")
@@ -1766,24 +1778,44 @@ async def cb_adm_update(cb: CallbackQuery, state: FSMContext, **kw):
 
 @router.callback_query(F.data == "adm:deploy")
 async def cb_adm_deploy(cb: CallbackQuery, **kw):
+    await cb.answer()
+    await _edit_or_answer(
+        cb,
+        "🚀 <b>Применить апдейт?</b>\nСервисы кратковременно перезапустятся.",
+        confirm_kb("adm:deploy_ok", "adm:system"),
+    )
+
+
+@router.callback_query(F.data == "adm:deploy_ok")
+async def cb_adm_deploy_ok(cb: CallbackQuery, **kw):
     await cb.answer("Запускаю deploy...")
     try:
         await _wc().deploy()
         text = "🚀 Deploy запущен. Отчёт придёт по завершении."
     except WatchdogError as e:
         text = f"❌ {e}"
-    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+    await _edit_or_answer(cb, text, back_to_admin_menu())
 
 
 @router.callback_query(F.data == "adm:rollback")
 async def cb_adm_rollback(cb: CallbackQuery, **kw):
+    await cb.answer()
+    await _edit_or_answer(
+        cb,
+        "⏮️ <b>Откатить до предыдущей версии?</b>",
+        confirm_kb("adm:rollback_ok", "adm:system"),
+    )
+
+
+@router.callback_query(F.data == "adm:rollback_ok")
+async def cb_adm_rollback_ok(cb: CallbackQuery, **kw):
     await cb.answer("Запускаю откат...")
     try:
         await _wc().rollback()
         text = "⏮️ Откат запущен..."
     except WatchdogError as e:
         text = f"❌ {e}"
-    await cb.message.answer(text, reply_markup=back_to_admin_menu())
+    await _edit_or_answer(cb, text, back_to_admin_menu())
 
 
 @router.callback_query(F.data == "adm:reboot")
@@ -2494,6 +2526,17 @@ async def cb_adm_client_enable(cb: CallbackQuery, **kw):
 @router.callback_query(F.data.startswith("adm:cl_kick:"))
 async def cb_adm_client_kick(cb: CallbackQuery, **kw):
     chat_id = cb.data[len("adm:cl_kick:"):]
+    await cb.answer()
+    await _edit_or_answer(
+        cb,
+        f"🦵 <b>Кикнуть клиента {chat_id}?</b>\nВсе устройства будут удалены, доступ отозван.",
+        confirm_kb(f"adm:cl_kick_ok:{chat_id}", f"adm:cl:{chat_id}"),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:cl_kick_ok:"))
+async def cb_adm_client_kick_ok(cb: CallbackQuery, **kw):
+    chat_id = cb.data[len("adm:cl_kick_ok:"):]
     db: Database = kw.get("db")
     bot = kw.get("bot")
     devices = await db.get_devices(chat_id)
@@ -2511,7 +2554,7 @@ async def cb_adm_client_kick(cb: CallbackQuery, **kw):
     except Exception:
         pass
     await cb.answer("Кикнут")
-    await cb.message.edit_text(f"🦵 Клиент `{chat_id}` кикнут, устройства удалены.")
+    await _edit_or_answer(cb, f"🦵 Клиент <code>{chat_id}</code> кикнут, устройства удалены.", back_to_admin_menu())
 
 
 @router.callback_query(F.data.startswith("adm:cl_lim:"))
@@ -2660,10 +2703,21 @@ async def fsm_vps_add_ip(message: Message, state: FSMContext, **kw):
 @router.callback_query(F.data.startswith("adm:vps_rm:"))
 async def cb_adm_vps_remove(cb: CallbackQuery, **kw):
     ip = cb.data[len("adm:vps_rm:"):]
+    await cb.answer()
+    await _edit_or_answer(
+        cb,
+        f"❌ <b>Удалить VPS {ip}?</b>",
+        confirm_kb(f"adm:vps_rm_ok:{ip}", f"adm:vps_detail:{ip}"),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:vps_rm_ok:"))
+async def cb_adm_vps_remove_ok(cb: CallbackQuery, **kw):
+    ip = cb.data[len("adm:vps_rm_ok:"):]
     try:
         await _wc().remove_vps(ip)
         await cb.answer(f"Удалён: {ip}")
-        await cb.message.edit_text(f"✅ VPS `{ip}` удалён.")
+        await _edit_or_answer(cb, f"✅ VPS <code>{ip}</code> удалён.", back_to_admin_menu())
     except WatchdogError as e:
         await cb.answer(f"❌ {e}", show_alert=True)
 
