@@ -39,7 +39,7 @@
           "serverName": "microsoft.com",
           "fingerprint": "chrome",
           "publicKey": "${XRAY_PUBLIC_KEY}",
-          "shortId": ""
+          "shortId": "${XRAY_SHORT_ID}"
         },
         "splithttpSettings": {
           "path": "/",
