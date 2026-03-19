@@ -477,10 +477,10 @@ else
     vps_exec "sudo tee /opt/vpn/hysteria2/server.yaml > /dev/null << 'HYEOF'
 listen: :443
 
-# Сертификат генерируется setup.sh в /opt/vpn/hysteria2/ (self-signed, EC P-256)
+# Сертификат монтируется в контейнер: ./hysteria2 → /etc/hysteria2
 tls:
-  cert: /opt/vpn/hysteria2/server.crt
-  key: /opt/vpn/hysteria2/server.key
+  cert: /etc/hysteria2/server.crt
+  key: /etc/hysteria2/server.key
 
 obfs:
   type: salamander
