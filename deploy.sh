@@ -225,14 +225,17 @@ git_pull() {
         if GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes" \
            git -C "$REPO_DIR" fetch vps-mirror 2>/dev/null; then
             log_info "Получено из VPS-зеркала"
+            local _before; _before=$(git -C "$REPO_DIR" rev-parse HEAD)
             git -C "$REPO_DIR" merge --ff-only vps-mirror/main 2>/dev/null || \
-                git -C "$REPO_DIR" merge --ff-only vps-mirror/master 2>/dev/null || {
-                    log_warn "ff-only merge не получился — нет изменений или конфликт"
-                    return 0
-                }
-            return 0
+                git -C "$REPO_DIR" merge --ff-only vps-mirror/master 2>/dev/null || true
+            local _after; _after=$(git -C "$REPO_DIR" rev-parse HEAD)
+            if [[ "$_before" != "$_after" ]]; then
+                return 0  # зеркало принесло новые коммиты
+            fi
+            log_info "VPS-зеркало не принесло новых коммитов, пробуем GitHub..."
+        else
+            log_warn "VPS-зеркало недоступно, пробуем GitHub напрямую..."
         fi
-        log_warn "VPS-зеркало недоступно, пробуем GitHub напрямую..."
     fi
 
     # Fallback: GitHub напрямую
