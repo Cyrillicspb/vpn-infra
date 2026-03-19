@@ -911,11 +911,10 @@ import sqlite3, json
 db = "/opt/vpn/3x-ui/db/x-ui.db"
 try:
     conn = sqlite3.connect(db)
-    rows = conn.execute("SELECT port,settings FROM inbounds WHERE protocol='vless'").fetchall()
-    for port, settings in rows:
+    rows = conn.execute("SELECT port,stream_settings FROM inbounds WHERE protocol='vless'").fetchall()
+    for port, stream_settings in rows:
         try:
-            s = json.loads(settings)
-            r = json.loads(s.get("streamSettings","{}")).get("realitySettings",{})
+            r = json.loads(stream_settings).get("realitySettings",{})
             ids = r.get("shortIds",[""])
             print("{}:{}".format(port, ids[0] if ids else ""))
         except:
