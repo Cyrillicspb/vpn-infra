@@ -235,14 +235,14 @@ print(json.dumps(cfg))
 ")"
 
 # ── 3. VLESS + splithttp (для Cloudflare CDN-стека) ──────────────────────────
-log "Настройка VLESS+splithttp на localhost:8080 (CDN-стек)..."
+log "Настройка VLESS+splithttp на 0.0.0.0:8080 (CDN-стек, Cloudflare Worker → VPS:8080)..."
 
 add_inbound "VLESS-WS-CDN" "$(python3 -c "
 import json
 cfg = {
     'remark': 'VLESS-WS-CDN',
     'enable': True,
-    'listen': '127.0.0.1',
+    'listen': '',
     'port': 8080,
     'protocol': 'vless',
     'settings': json.dumps({

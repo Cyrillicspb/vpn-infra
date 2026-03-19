@@ -250,6 +250,9 @@ table inet filter {
         # SSH (стандартный порт + опциональный 443)
         tcp dport { 22, 443 } ct state new accept
 
+        # CDN-стек: Cloudflare Worker → VPS:8080 (VLESS+splithttp, защищён UUID)
+        tcp dport 8080 ct state new accept
+
         # Rate limiting TCP 443 (защита Xray/Nginx от flood)
         tcp dport 443 limit rate 200/second burst 500 packets accept
         tcp dport 443 drop
