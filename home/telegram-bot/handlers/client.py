@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+from datetime import date
 from typing import TYPE_CHECKING
 
 from aiogram import F, Router
@@ -1498,9 +1499,11 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
                 BufferedInputFile(qr_bytes, filename="qr.png"),
                 caption=f"QR-код `{device['device_name']}`",
             )
+        _dated = f"{device['device_name']}_{date.today()}"
         await cb.message.answer_document(
-            BufferedInputFile(conf_text.encode(), filename=f"vpn-{device['device_name']}.conf"),
-            caption=f"Конфигурация `{device['device_name']}`",
+            BufferedInputFile(conf_text.encode(), filename=f"{_dated}.conf"),
+            caption=f"Конфигурация `{device['device_name']}` · {date.today()}\n"
+                    f"Если тоннель с таким именем уже есть в приложении — удалите старый и добавьте этот.",
         )
     elif platform == "conf":
         await cb.message.answer(
@@ -1512,9 +1515,11 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
                 BufferedInputFile(qr_bytes, filename="qr.png"),
                 caption=f"QR-код `{device['device_name']}`",
             )
+        _dated = f"{device['device_name']}_{date.today()}"
         await cb.message.answer_document(
-            BufferedInputFile(conf_text.encode(), filename=f"vpn-{device['device_name']}.conf"),
-            caption=f"Конфигурация `{device['device_name']}`",
+            BufferedInputFile(conf_text.encode(), filename=f"{_dated}.conf"),
+            caption=f"Конфигурация `{device['device_name']}` · {date.today()}\n"
+                    f"Если тоннель с таким именем уже есть в приложении — удалите старый и добавьте этот.",
         )
     else:
         # windows / macos / linux — отправить .conf + installer script
@@ -1524,9 +1529,10 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
             "⚠️ <b>Конфигурация содержит приватный ключ!</b> Не передавайте никому.",
             parse_mode="HTML",
         )
+        _dated = f"{device['device_name']}_{date.today()}"
         await cb.message.answer_document(
-            BufferedInputFile(conf_text.encode(), filename=f"vpn-{device['device_name']}.conf"),
-            caption=f"Конфигурация `{device['device_name']}`",
+            BufferedInputFile(conf_text.encode(), filename=f"{_dated}.conf"),
+            caption=f"Конфигурация `{device['device_name']}` · {date.today()}",
         )
         if installer_bytes:
             from services.config_builder import PLATFORM_SCRIPTS
@@ -1612,9 +1618,18 @@ async def _send_config(message: Message, db: Database, device: dict, kw: dict) -
         )
 
     # .conf файл
+    if device.get("is_router"):
+        _filename = f"vpn-{device['device_name']}.conf"
+        _caption = f"Конфигурация `{device['device_name']}`"
+    else:
+        _filename = f"{device['device_name']}_{date.today()}.conf"
+        _caption = (
+            f"Конфигурация `{device['device_name']}` · {date.today()}\n"
+            f"Если тоннель с таким именем уже есть в приложении — удалите старый и добавьте этот."
+        )
     await message.answer_document(
-        BufferedInputFile(conf_text.encode(), filename=f"vpn-{device['device_name']}.conf"),
-        caption=f"Конфигурация `{device['device_name']}`",
+        BufferedInputFile(conf_text.encode(), filename=_filename),
+        caption=_caption,
     )
 
     await db.update_config_version(device["id"], version)
