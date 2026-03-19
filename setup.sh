@@ -807,11 +807,12 @@ phase3() {
         # Останавливаем старый wg-tier2 если работает (предыдущая установка)
         systemctl stop wg-quick@wg-tier2 2>/dev/null || true
         systemctl disable wg-quick@wg-tier2 2>/dev/null || true
-        ip link del wg-tier2 2>/dev/null || true
+        wg-quick down wg-tier2 2>/dev/null || true    # wg-quick down убирает интерфейс и маршруты
+        ip link del wg-tier2 2>/dev/null || true      # fallback если wg-quick down не сработал
         log_ok "Старый wg-tier2 остановлен (если был)"
 
         # Останавливаем wg-tier2 на VPS тоже
-        vps_exec "sudo systemctl stop wg-quick@wg-tier2 2>/dev/null; sudo ip link del wg-tier2 2>/dev/null; true" || true
+        vps_exec "sudo systemctl stop wg-quick@wg-tier2 2>/dev/null; sudo wg-quick down wg-tier2 2>/dev/null; sudo ip link del wg-tier2 2>/dev/null; true" || true
 
         # Скрипт подключения.
         # Встроенный фоновый монитор назначает IP на tun0 после каждого переподключения.
