@@ -883,6 +883,10 @@ UNITEOF
         sleep 12
         if ping -c 3 -W 3 10.177.2.2 &>/dev/null; then
             log_ok "Tier-2 SSH туннель работает: ping 10.177.2.2 успешен"
+            # tun0 поднят — перезапускаем dnsmasq на VPS чтобы он забиндился на 10.177.2.2
+            vps_exec "sudo systemctl restart dnsmasq" \
+                && log_ok "dnsmasq на VPS перезапущен (теперь слушает на 10.177.2.2)" \
+                || log_warn "Не удалось перезапустить dnsmasq на VPS — DNS может не работать"
         else
             log_warn "Ping 10.177.2.2 не прошёл. Туннель может ещё подниматься — проверьте: systemctl status autossh-tier2"
         fi

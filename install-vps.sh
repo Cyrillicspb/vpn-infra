@@ -261,7 +261,9 @@ table inet filter {
         # ICMP
         icmp type echo-request limit rate 10/second accept
 
-        # SSH tun туннель (Tier-2) использует стандартный TCP 22 — отдельного порта не нужно
+        # DNS от Tier-2 туннеля (dnsmasq на VPS слушает на tun0 10.177.2.2)
+        iifname "tun0" udp dport 53 accept
+        iifname "tun0" tcp dport 53 accept
     }
 
     chain forward {
@@ -281,6 +283,35 @@ NFTEOF"
 
     log_ok "nftables настроен на VPS"
     step_done "step36_vps_nftables"
+fi
+
+# ── Шаг 36b: DNS-форвардер на VPS (dnsmasq на tun0) ─────────────────────────
+# Домашний dnsmasq форвардит заблокированные домены на 10.177.2.2:53.
+# VPS должен слушать на tun0 и форвардить в 1.1.1.1/8.8.8.8.
+
+if is_done "step36b_vps_dns"; then
+    step_skip "step36b_vps_dns"
+else
+    step "Установка DNS-форвардера на VPS (dnsmasq на tun0 10.177.2.2)"
+    log_info "Домашний сервер форвардит DNS заблокированных доменов на 10.177.2.2:53."
+    log_info "Устанавливаем dnsmasq на VPS — слушает на tun0, форвардит в 1.1.1.1/8.8.8.8."
+
+    vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dnsmasq"
+
+    vps_exec "cat << 'DNSEOF' | sudo tee /etc/dnsmasq.d/vpn-tier2.conf > /dev/null
+# DNS-форвардер для Tier-2 туннеля
+# Слушает на tun0 (10.177.2.2), форвардит в 1.1.1.1/8.8.8.8
+listen-address=127.0.0.1,10.177.2.2
+bind-dynamic
+no-resolv
+server=1.1.1.1
+server=8.8.8.8
+cache-size=1000
+DNSEOF"
+
+    vps_exec "sudo systemctl enable dnsmasq && sudo systemctl restart dnsmasq"
+    log_ok "dnsmasq запущен на VPS (слушает 127.0.0.1 + 10.177.2.2 при поднятии tun0)"
+    step_done "step36b_vps_dns"
 fi
 
 # ── Шаг 37: Настройка fail2ban на VPS ────────────────────────────────────────
