@@ -951,27 +951,28 @@ PYEOF
         # Деривируем publicKey из privateKey через xray x25519 в Docker-контейнере
         [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
 
+        # docker run --rm — не требует запущенных контейнеров (конфиги ещё не созданы)
         if [[ -n "${XRAY_PRIVATE_KEY:-}" ]]; then
-            NEW_PUB=$(docker exec xray-client /usr/bin/xray x25519 -i "${XRAY_PRIVATE_KEY}" 2>/dev/null \
+            NEW_PUB=$(docker run --rm teddysun/xray:latest xray x25519 -i "${XRAY_PRIVATE_KEY}" 2>/dev/null \
                 | grep "^Public key:" | awk '{print $3}' || true)
             if [[ -n "$NEW_PUB" ]]; then
                 env_set "XRAY_PUBLIC_KEY" "$NEW_PUB"
                 log_ok "XRAY_PUBLIC_KEY обновлён из XRAY_PRIVATE_KEY"
             else
-                log_warn "Не удалось дериватизировать XRAY_PUBLIC_KEY — xray-client не запущен?"
+                log_warn "Не удалось дериватизировать XRAY_PUBLIC_KEY — проверьте XRAY_PRIVATE_KEY в .env"
             fi
         else
             log_warn "XRAY_PRIVATE_KEY не задан — пропускаем деривацию XRAY_PUBLIC_KEY"
         fi
 
         if [[ -n "${XRAY_GRPC_PRIVATE_KEY:-}" ]]; then
-            NEW_GRPC_PUB=$(docker exec xray-client-2 /usr/bin/xray x25519 -i "${XRAY_GRPC_PRIVATE_KEY}" 2>/dev/null \
+            NEW_GRPC_PUB=$(docker run --rm teddysun/xray:latest xray x25519 -i "${XRAY_GRPC_PRIVATE_KEY}" 2>/dev/null \
                 | grep "^Public key:" | awk '{print $3}' || true)
             if [[ -n "$NEW_GRPC_PUB" ]]; then
                 env_set "XRAY_GRPC_PUBLIC_KEY" "$NEW_GRPC_PUB"
                 log_ok "XRAY_GRPC_PUBLIC_KEY обновлён из XRAY_GRPC_PRIVATE_KEY"
             else
-                log_warn "Не удалось дериватизировать XRAY_GRPC_PUBLIC_KEY — xray-client-2 не запущен?"
+                log_warn "Не удалось дериватизировать XRAY_GRPC_PUBLIC_KEY — проверьте XRAY_GRPC_PRIVATE_KEY в .env"
             fi
         else
             log_warn "XRAY_GRPC_PRIVATE_KEY не задан — пропускаем деривацию XRAY_GRPC_PUBLIC_KEY"
