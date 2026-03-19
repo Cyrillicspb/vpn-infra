@@ -67,7 +67,7 @@ fi
 PREROUTING=$(nft list chain inet vpn prerouting 2>/dev/null || true)
 if [[ -n "$PREROUTING" ]]; then
     pass "Цепочка inet vpn prerouting существует"
-    if echo "$PREROUTING" | grep -qE "(meta )?mark set 0x1"; then
+    if echo "$PREROUTING" | grep -qE "(meta )?mark set 0x0*1"; then
         pass "fwmark 0x1 устанавливается в prerouting"
     else
         fail "mark set 0x1 не найден в prerouting"

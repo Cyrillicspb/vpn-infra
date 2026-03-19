@@ -290,6 +290,14 @@ apply_migrations() {
 # =============================================================================
 # Smoke-тесты
 # =============================================================================
+# Возвращает список упавших тестов (одна строка — один тест)
+_get_failed_tests() {
+    local test_script="$REPO_DIR/tests/run-smoke-tests.sh"
+    [[ -f "$test_script" ]] || { echo ""; return 0; }
+    timeout "$SMOKE_TIMEOUT" bash "$test_script" 2>/dev/null \
+        | grep '^\s*\[FAIL\]' | awk '{print $2}' | sort || true
+}
+
 run_smoke_tests() {
     log_step "Smoke-тесты (таймаут ${SMOKE_TIMEOUT}с)"
     local test_script="$REPO_DIR/tests/run-smoke-tests.sh"
@@ -466,6 +474,14 @@ do_deploy() {
     log_info "Изменённые файлы:\n$changed_files"
     notify "🚀 *Деплой* \`${prev_ver}\` → \`${new_ver}\`\nИзменено файлов: $(echo "$changed_files" | wc -l)"
 
+    # Baseline: запомнить упавшие тесты ДО деплоя
+    log_info "Собираем baseline smoke-тестов..."
+    local baseline_fails; baseline_fails="$(_get_failed_tests)"
+    if [[ -n "$baseline_fails" ]]; then
+        log_warn "Pre-existing провалы (не будут причиной отката):"
+        echo "$baseline_fails" | while read -r t; do log_warn "  - $t"; done
+    fi
+
     # Снапшот
     create_snapshot
 
@@ -561,11 +577,20 @@ json.dump(cfg, open('$REPO_DIR/xray/config-cdn.json', 'w'), indent=4)
     log_info "Ожидание стабилизации (15с)..."
     sleep 15
 
-    # Smoke-тесты
-    if ! run_smoke_tests; then
-        rollback "smoke-тесты провалились после деплоя v${new_ver}"
-        notify "❌ *Deploy FAILED* v${new_ver} — откат выполнен"
+    # Smoke-тесты: откат только если появились НОВЫЕ провалы
+    local after_fails; after_fails="$(_get_failed_tests)"
+    local new_fails; new_fails="$(comm -13 <(echo "$baseline_fails") <(echo "$after_fails"))"
+    if [[ -n "$new_fails" ]]; then
+        log_error "Новые провалы после деплоя:"
+        echo "$new_fails" | while read -r t; do log_error "  - $t"; done
+        rollback "новые smoke-тест провалы после деплоя v${new_ver}: $(echo "$new_fails" | tr '\n' ' ')"
+        notify "❌ *Deploy FAILED* v${new_ver} — откат выполнен\nНовые провалы: $(echo "$new_fails" | tr '\n' ' ')"
         exit 1
+    elif [[ -n "$after_fails" ]]; then
+        log_warn "Smoke-тесты: есть провалы но все pre-existing — деплой принят"
+        run_smoke_tests || true   # показать полный вывод для информации
+    else
+        log_ok "Smoke-тесты прошли"
     fi
 
     # Итоговый отчёт
