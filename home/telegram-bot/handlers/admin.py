@@ -613,9 +613,9 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
     )
     await message.answer(
         f"Для подключения к VPN:\n"
-        f"1. Скопируйте код из следующего сообщения\n"
+        f"1. Скопируйте код из следующего сообщения 👇\n"
         f"2. Перейдите: {bot_link}\n"
-        f"3. Нажмите «Старт» и введите код",
+        f"3. Нажмите кнопку «Старт» или введите /start, затем введите код",
     )
     await message.answer(f"<code>{code}</code>", parse_mode="HTML")
 
@@ -1844,9 +1844,9 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
     )
     await cb.message.answer(
         f"Для подключения к VPN:\n"
-        f"1. Скопируйте код из следующего сообщения\n"
+        f"1. Скопируйте код из следующего сообщения 👇\n"
         f"2. Перейдите: {bot_link}\n"
-        f"3. Нажмите «Старт» и введите код",
+        f"3. Нажмите кнопку «Старт» или введите /start, затем введите код",
     )
     await cb.message.answer(f"<code>{code}</code>", parse_mode="HTML")
 
