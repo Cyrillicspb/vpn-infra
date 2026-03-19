@@ -1560,11 +1560,29 @@ async def cb_adm_stats(cb: CallbackQuery, **kw):
             return f"{n/1_000_000:.1f} MB"
         return f"{n/1_000:.0f} KB"
 
+    bot: Bot = kw.get("bot")
+
     try:
         peers_data = await _wc().get_peers()
         peers = peers_data.get("peers", [])
 
         clients = await db.get_all_clients()
+
+        # Подтягиваем имена из Telegram API для клиентов с пустым именем
+        if bot:
+            for c in clients:
+                if not (c.get("first_name") or "").strip() and not (c.get("username") or "").strip():
+                    try:
+                        chat = await bot.get_chat(int(c["chat_id"]))
+                        fn = (chat.first_name or "").strip()
+                        un = (chat.username or "").strip()
+                        if fn or un:
+                            await db.update_client_info(c["chat_id"], un, fn)
+                            c["first_name"] = fn
+                            c["username"] = un
+                    except Exception:
+                        pass
+
         # Строим map: public_key -> device info
         pk_to_dev: dict[str, dict] = {}
         for client in clients:
