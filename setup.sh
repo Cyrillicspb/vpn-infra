@@ -953,7 +953,7 @@ PYEOF
 
         if [[ -n "${XRAY_PRIVATE_KEY:-}" ]]; then
             NEW_PUB=$(docker exec xray-client /usr/bin/xray x25519 -i "${XRAY_PRIVATE_KEY}" 2>/dev/null \
-                | grep "^Public key:" | awk '{print $3}')
+                | grep "^Public key:" | awk '{print $3}' || true)
             if [[ -n "$NEW_PUB" ]]; then
                 env_set "XRAY_PUBLIC_KEY" "$NEW_PUB"
                 log_ok "XRAY_PUBLIC_KEY обновлён из XRAY_PRIVATE_KEY"
@@ -966,7 +966,7 @@ PYEOF
 
         if [[ -n "${XRAY_GRPC_PRIVATE_KEY:-}" ]]; then
             NEW_GRPC_PUB=$(docker exec xray-client-2 /usr/bin/xray x25519 -i "${XRAY_GRPC_PRIVATE_KEY}" 2>/dev/null \
-                | grep "^Public key:" | awk '{print $3}')
+                | grep "^Public key:" | awk '{print $3}' || true)
             if [[ -n "$NEW_GRPC_PUB" ]]; then
                 env_set "XRAY_GRPC_PUBLIC_KEY" "$NEW_GRPC_PUB"
                 log_ok "XRAY_GRPC_PUBLIC_KEY обновлён из XRAY_GRPC_PRIVATE_KEY"
