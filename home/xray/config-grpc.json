@@ -39,7 +39,7 @@
           "serverName": "cdn.jsdelivr.net",
           "fingerprint": "chrome",
           "publicKey": "${XRAY_GRPC_PUBLIC_KEY}",
-          "shortId": ""
+          "shortId": "${XRAY_GRPC_SHORT_ID}"
         },
         "splithttpSettings": {
           "path": "/",
