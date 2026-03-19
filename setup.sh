@@ -1205,13 +1205,13 @@ phase4() {
     # Шаг 55 — Мониторинг (домашний сервер)
     step "Тест мониторинга (домашний сервер)"
     run_test "Prometheus healthy" \
-        "curl -sf --max-time 5 http://localhost:9090/-/healthy" \
+        "PROM_IP=\$(docker inspect prometheus --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null); curl -sf --max-time 5 http://\${PROM_IP}:9090/-/healthy" \
         "docker compose -f /opt/vpn/docker-compose.yml logs --tail=20 prometheus"
     run_test "Grafana healthy" \
         "GRAFANA_IP=\$(docker inspect grafana --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null); curl -sf --max-time 5 http://\${GRAFANA_IP}:3000/api/health | grep -q ok" \
         "docker compose -f /opt/vpn/docker-compose.yml logs --tail=20 grafana"
     run_test "Alertmanager healthy" \
-        "curl -sf --max-time 5 http://localhost:9093/-/healthy" \
+        "AM_IP=\$(docker inspect alertmanager --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null); curl -sf --max-time 5 http://\${AM_IP}:9093/-/healthy" \
         "docker compose -f /opt/vpn/docker-compose.yml logs --tail=20 alertmanager"
 
     # Шаг 56 — DKMS AmneziaWG
