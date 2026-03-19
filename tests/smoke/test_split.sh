@@ -56,32 +56,32 @@ fi
 
 # === УРОВЕНЬ 2: Policy routing ===
 
-# 4. ip rule fwmark 0x1 → table 200
-if ip rule show 2>/dev/null | grep -q "fwmark 0x1.*lookup 200"; then
-    pass "ip rule: fwmark 0x1 → table 200 (заблокированное → VPN)"
+# 4. ip rule fwmark 0x1 → table 200 (может называться "marked")
+if ip rule show 2>/dev/null | grep -qE "fwmark 0x1.*(lookup 200|lookup marked)"; then
+    pass "ip rule: fwmark 0x1 → table 200/marked (заблокированное → VPN)"
 else
     fail "ip rule: fwmark 0x1 → table 200 не найден"
 fi
 
 # 5. ip rule: DNS через VPN (1.1.1.1)
-if ip rule show 2>/dev/null | grep -q "1.1.1.1.*lookup 200"; then
+if ip rule show 2>/dev/null | grep -qE "1.1.1.1.*(lookup 200|lookup marked)"; then
     pass "ip rule: DNS 1.1.1.1 → table 200"
-elif ip rule show 2>/dev/null | grep -q "8.8.8.8.*lookup 200"; then
+elif ip rule show 2>/dev/null | grep -qE "8.8.8.8.*(lookup 200|lookup marked)"; then
     pass "ip rule: DNS 8.8.8.8 → table 200"
 else
     warn "ip rule для DNS через VPN не найден"
 fi
 
-# 6. AWG subnet → table 100 (прямой интернет для незаблокированных)
-if ip rule show 2>/dev/null | grep -q "10.177.1.0/24.*lookup 100"; then
-    pass "ip rule: AWG 10.177.1.0/24 → table 100 (прямой интернет)"
+# 6. AWG subnet → table 100 (может называться "vpn")
+if ip rule show 2>/dev/null | grep -qE "10.177.1.0/24.*(lookup 100|lookup vpn)"; then
+    pass "ip rule: AWG 10.177.1.0/24 → table 100/vpn (прямой интернет)"
 else
     fail "ip rule: AWG 10.177.1.0/24 → table 100 не найден"
 fi
 
-# 7. WG subnet → table 100
-if ip rule show 2>/dev/null | grep -q "10.177.3.0/24.*lookup 100"; then
-    pass "ip rule: WG 10.177.3.0/24 → table 100 (прямой интернет)"
+# 7. WG subnet → table 100 (может называться "vpn")
+if ip rule show 2>/dev/null | grep -qE "10.177.3.0/24.*(lookup 100|lookup vpn)"; then
+    pass "ip rule: WG 10.177.3.0/24 → table 100/vpn (прямой интернет)"
 else
     fail "ip rule: WG 10.177.3.0/24 → table 100 не найден"
 fi

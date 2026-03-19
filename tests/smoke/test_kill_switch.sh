@@ -67,7 +67,7 @@ fi
 PREROUTING=$(nft list chain inet vpn prerouting 2>/dev/null || true)
 if [[ -n "$PREROUTING" ]]; then
     pass "Цепочка inet vpn prerouting существует"
-    if echo "$PREROUTING" | grep -q "mark set 0x1"; then
+    if echo "$PREROUTING" | grep -qE "(meta )?mark set 0x1"; then
         pass "fwmark 0x1 устанавливается в prerouting"
     else
         fail "mark set 0x1 не найден в prerouting"
@@ -77,8 +77,8 @@ else
 fi
 
 # 8. ip rule: fwmark → table 200 с UNREACHABLE при падении tun
-if ip rule show 2>/dev/null | grep -q "fwmark 0x1.*lookup 200"; then
-    pass "ip rule: fwmark 0x1 → table 200"
+if ip rule show 2>/dev/null | grep -qE "fwmark 0x1.*(lookup 200|lookup marked)"; then
+    pass "ip rule: fwmark 0x1 → table 200/marked"
 else
     fail "ip rule: fwmark 0x1 → table 200 не найден (kill switch через policy routing не работает)"
 fi
