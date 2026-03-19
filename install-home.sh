@@ -957,6 +957,7 @@ EOF
 
     systemctl daemon-reload
     systemctl enable vpn-routes vpn-sets-restore 2>/dev/null || true
+    systemctl start vpn-routes 2>/dev/null || true
 
     log_ok "Policy routing и systemd-юниты настроены"
     step_done "step24_policy_routing_units"
