@@ -192,13 +192,25 @@ class Database:
     async def get_client_by_chat_id(self, chat_id: str) -> Optional[dict]:
         return await self.get_client(chat_id)
 
-    async def register_admin(self, chat_id: str, username: str = "") -> None:
+    async def register_admin(self, chat_id: str, username: str = "", first_name: str = "") -> None:
         async with self._lock:
             conn = self._conn()
             try:
                 conn.execute(
-                    "INSERT OR IGNORE INTO clients (chat_id, username, is_admin) VALUES (?, ?, 1)",
-                    (str(chat_id), username),
+                    "INSERT OR IGNORE INTO clients (chat_id, username, first_name, is_admin) VALUES (?, ?, ?, 1)",
+                    (str(chat_id), username, first_name),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def update_client_info(self, chat_id: str, username: str, first_name: str) -> None:
+        async with self._lock:
+            conn = self._conn()
+            try:
+                conn.execute(
+                    "UPDATE clients SET username=?, first_name=? WHERE chat_id=?",
+                    (username, first_name, str(chat_id)),
                 )
                 conn.commit()
             finally:

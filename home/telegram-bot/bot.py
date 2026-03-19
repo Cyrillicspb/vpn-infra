@@ -152,11 +152,22 @@ async def on_startup(bot: Bot, dp: Dispatcher, db: Database, autodist: AutoDist)
 
     await db.init()
 
-    # Авторегистрация администратора (при первом запуске)
+    # Авторегистрация администратора и обновление имени из Telegram
+    try:
+        admin_user = await bot.get_chat(config.admin_chat_id)
+        admin_username = admin_user.username or ""
+        admin_first_name = admin_user.first_name or ""
+    except Exception:
+        admin_username = ""
+        admin_first_name = ""
+
     admin = await db.get_client(config.admin_chat_id)
     if not admin:
-        await db.register_admin(config.admin_chat_id)
+        await db.register_admin(config.admin_chat_id, admin_username, admin_first_name)
         logger.info(f"Администратор зарегистрирован: {config.admin_chat_id}")
+    elif not admin.get("first_name") and admin_first_name:
+        await db.update_client_info(config.admin_chat_id, admin_username, admin_first_name)
+        logger.info(f"Имя администратора обновлено: {admin_first_name}")
 
     # Notify-сервер для алертов от watchdog
     asyncio.create_task(start_notify_server(bot, db), name="notify-server")
