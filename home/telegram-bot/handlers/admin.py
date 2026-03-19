@@ -2198,6 +2198,9 @@ async def cb_adm_graph(cb: CallbackQuery, **kw):
             await cb.message.answer("Grafana не вернула изображение", reply_markup=back_to_admin_menu())
     except WatchdogError as e:
         await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+    except Exception as e:
+        logger.exception("cb_adm_graph error: %s", e)
+        await cb.message.answer(f"❌ Ошибка рендеринга: {e}", reply_markup=back_to_admin_menu())
 
 
 # ---------------------------------------------------------------------------
