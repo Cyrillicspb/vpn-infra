@@ -2088,7 +2088,7 @@ async def post_routes_update(request: Request, bg: BackgroundTasks, _: bool = De
 async def _routes_update_task() -> None:
     logger.info("Обновление маршрутов...")
     rc, _, err = await run_cmd(
-        [sys.executable, "/opt/vpn/scripts/update-routes.py"], timeout=300
+        [sys.executable, "/opt/vpn/scripts/update-routes.py"], timeout=600
     )
     if rc == 0:
         alert("✅ Маршруты обновлены")
