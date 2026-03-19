@@ -575,6 +575,8 @@ else
         vps_copy "$SETUP_SCRIPT" "sysadmin@${VPS_IP}:/tmp/xray-setup.sh"
         vps_exec "chmod +x /tmp/xray-setup.sh && bash /tmp/xray-setup.sh && rm -f /tmp/xray-setup.sh"
         log_ok "Инбаунды 3x-ui настроены"
+        # После обновления инбаундов — синхронизировать ключи и пересоздать конфиги
+        sed -i '/^step46b_sync_xray_keys$/d; /^step47_xray_client_configs$/d' "$STATE_FILE" 2>/dev/null || true
     fi
 
     step_done "step43_vps_3xui_inbounds"
