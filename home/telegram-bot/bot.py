@@ -130,12 +130,10 @@ class DependencyMiddleware:
         data["autodist"] = self.autodist
         # Обновляем имя пользователя из актуальных данных Telegram
         if hasattr(event, "from_user") and event.from_user and event.from_user.first_name:
-            asyncio.create_task(
-                self.db.update_client_info(
-                    str(event.from_user.id),
-                    event.from_user.username or "",
-                    event.from_user.first_name,
-                )
+            await self.db.update_client_info(
+                str(event.from_user.id),
+                event.from_user.username or "",
+                event.from_user.first_name,
             )
         return await handler(event, data)
 
