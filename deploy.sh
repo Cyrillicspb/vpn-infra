@@ -417,15 +417,35 @@ deploy_vps() {
 # Проверить изменились ли подсистемы
 # =============================================================================
 watchdog_changed() {
-    git -C "$REPO_DIR" diff HEAD@{1} HEAD -- \
-        home/watchdog/watchdog.py home/watchdog/requirements.txt \
-        2>/dev/null | grep -q "."
+    # Сравниваем время последнего коммита watchdog с временем старта сервиса.
+    local last_commit service_epoch commit_epoch
+    last_commit=$(git -C "$REPO_DIR" log -1 --format="%ct" -- \
+        home/watchdog/watchdog.py home/watchdog/requirements.txt 2>/dev/null || echo "0")
+    service_epoch=$(systemctl show watchdog --property=ActiveEnterTimestampMonotonic --value 2>/dev/null \
+        | awk '{printf "%d", $1/1000000}' || echo "0")
+    # Если сервис не запущен — перезапустить
+    [[ "$service_epoch" -eq 0 ]] && return 0
+    # Сравниваем через реальное время старта сервиса
+    local service_real_epoch
+    service_real_epoch=$(systemctl show watchdog --property=ActiveEnterTimestamp --value 2>/dev/null \
+        | xargs -I{} date -d "{}" +%s 2>/dev/null || echo "0")
+    commit_epoch="${last_commit:-0}"
+    [[ "$commit_epoch" -gt "${service_real_epoch:-0}" ]]
 }
 
 bot_changed() {
-    git -C "$REPO_DIR" diff HEAD@{1} HEAD -- \
-        home/telegram-bot/ \
-        2>/dev/null | grep -q "."
+    # Сравниваем время последнего коммита в home/telegram-bot/ с временем сборки образа.
+    # Надёжнее чем git diff HEAD@{1}: не зависит от количества пропущенных версий.
+    local last_commit image_time image_epoch commit_epoch
+    last_commit=$(git -C "$REPO_DIR" log -1 --format="%ct" -- home/telegram-bot/ 2>/dev/null || echo "0")
+    image_time=$(docker inspect --format='{{.Created}}' \
+        "$(docker compose -f "$REPO_DIR/docker-compose.yml" images -q telegram-bot 2>/dev/null)" \
+        2>/dev/null | head -1 || echo "")
+    # Если образа нет — пересобирать
+    [[ -z "$image_time" ]] && return 0
+    image_epoch=$(date -d "$image_time" +%s 2>/dev/null || echo "0")
+    commit_epoch="${last_commit:-0}"
+    [[ "$commit_epoch" -gt "$image_epoch" ]]
 }
 
 xray_changed() {
