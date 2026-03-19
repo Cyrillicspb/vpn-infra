@@ -160,35 +160,27 @@ for inb in data.get('obj',[]):
     fi
 }
 
-# shortId для REALITY — читаем из DB если инбаунд уже существует, иначе генерируем
+# shortId для REALITY — читаем из 3x-ui API если инбаунд уже существует, иначе генерируем
 # Это предотвращает смену shortId при повторном запуске установщика
-REALITY_SHORT_ID=$(python3 -c "
-import sqlite3, json
-try:
-    conn = sqlite3.connect('/opt/vpn/3x-ui/db/x-ui.db')
-    row = conn.execute(\"SELECT stream_settings FROM inbounds WHERE port=2087\").fetchone()
-    if row:
-        r = json.loads(row[0]).get('realitySettings', {})
-        ids = r.get('shortIds', [])
-        if ids: print(ids[0]); exit(0)
-except: pass
-import subprocess
-print(subprocess.check_output(['openssl','rand','-hex','4']).decode().strip())
-" 2>/dev/null || openssl rand -hex 4)
+_INBOUND_LIST=$(curl -sf --max-time 30 -b "$COOKIE_FILE" "${XUI_HOST}/panel/api/inbounds/list" 2>/dev/null || echo '{"obj":[]}')
 
-GRPC_SHORT_ID=$(python3 -c "
-import sqlite3, json
-try:
-    conn = sqlite3.connect('/opt/vpn/3x-ui/db/x-ui.db')
-    row = conn.execute(\"SELECT stream_settings FROM inbounds WHERE port=2083\").fetchone()
-    if row:
-        r = json.loads(row[0]).get('realitySettings', {})
-        ids = r.get('shortIds', [])
-        if ids: print(ids[0]); exit(0)
-except: pass
-import subprocess
-print(subprocess.check_output(['openssl','rand','-hex','4']).decode().strip())
-" 2>/dev/null || openssl rand -hex 4)
+_get_short_id() {
+    local port="$1"
+    echo "$_INBOUND_LIST" | python3 -c "import sys,json
+data=json.load(sys.stdin)
+for inb in data.get('obj',[]):
+    if inb.get('port')==$port:
+        ss=json.loads(inb.get('streamSettings','{}'))
+        ids=ss.get('realitySettings',{}).get('shortIds',[''])
+        v=ids[0].strip() if ids else ''
+        if v: print(v); break" 2>/dev/null
+}
+
+REALITY_SHORT_ID=$(_get_short_id 2087)
+[ -z "$REALITY_SHORT_ID" ] && REALITY_SHORT_ID=$(openssl rand -hex 4)
+
+GRPC_SHORT_ID=$(_get_short_id 2083)
+[ -z "$GRPC_SHORT_ID" ] && GRPC_SHORT_ID=$(openssl rand -hex 4)
 
 # ── 1. VLESS + XHTTP + REALITY (порт 2087, microsoft.com) ────────────────────
 log "Настройка VLESS+XHTTP+REALITY (порт 2087, microsoft.com)..."
