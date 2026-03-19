@@ -1023,16 +1023,17 @@ else
 
     cat > /etc/fail2ban/jail.local << 'EOF'
 [DEFAULT]
-bantime  = 3600
-findtime = 600
-maxretry = 5
+bantime  = 86400
+findtime = 300
+maxretry = 3
 backend  = systemd
 
 [sshd]
 enabled  = true
 port     = 22
 filter   = sshd
-maxretry = 5
+mode     = aggressive
+maxretry = 3
 EOF
 
     systemctl enable fail2ban
