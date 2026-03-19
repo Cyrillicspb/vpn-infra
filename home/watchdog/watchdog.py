@@ -2897,6 +2897,16 @@ async def on_startup() -> None:
     # Загружаем состояние
     state.load()
 
+    # Инициализируем vps_list из .env если список пустой
+    if VPS_IP and not any(v["ip"] == VPS_IP for v in state.vps_list):
+        state.vps_list.insert(0, {
+            "ip": VPS_IP,
+            "ssh_port": int(os.getenv("VPS_SSH_PORT", "443")),
+            "tunnel_ip": os.getenv("VPS_TUNNEL_IP", "10.177.2.2"),
+            "active": True,
+        })
+        logger.info(f"VPS {VPS_IP} добавлен в vps_list из конфига")
+
     # Поднимаем активный стек при старте
     active_plugin = plugins.get(state.active_stack)
     if active_plugin and active_plugin.meta.get("direct_mode"):
