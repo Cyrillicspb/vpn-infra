@@ -951,10 +951,25 @@ PYEOF
         # Деривируем publicKey из privateKey через xray x25519 в Docker-контейнере
         [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
 
-        # docker run --rm — не требует запущенных контейнеров (конфиги ещё не созданы)
+        # Деривируем publicKey через Python cryptography (не зависит от версии xray бинаря)
+        python3 -c "from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey" \
+            2>/dev/null || pip3 install -q cryptography 2>/dev/null || true
+
+        derive_x25519_pub() {
+            local priv_key="$1"
+            python3 - "$priv_key" << 'PYEOF' 2>/dev/null || true
+import sys, base64
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+pk = sys.argv[1]
+padded = pk + "=" * (4 - len(pk) % 4)
+priv = X25519PrivateKey.from_private_bytes(base64.urlsafe_b64decode(padded))
+pub = priv.public_key().public_bytes_raw()
+print(base64.urlsafe_b64encode(pub).decode().rstrip("="))
+PYEOF
+        }
+
         if [[ -n "${XRAY_PRIVATE_KEY:-}" ]]; then
-            NEW_PUB=$(docker run --rm teddysun/xray:latest xray x25519 -i "${XRAY_PRIVATE_KEY}" 2>/dev/null \
-                | grep "^Public key:" | awk '{print $3}' || true)
+            NEW_PUB=$(derive_x25519_pub "${XRAY_PRIVATE_KEY}")
             if [[ -n "$NEW_PUB" ]]; then
                 env_set "XRAY_PUBLIC_KEY" "$NEW_PUB"
                 log_ok "XRAY_PUBLIC_KEY обновлён из XRAY_PRIVATE_KEY"
@@ -966,8 +981,7 @@ PYEOF
         fi
 
         if [[ -n "${XRAY_GRPC_PRIVATE_KEY:-}" ]]; then
-            NEW_GRPC_PUB=$(docker run --rm teddysun/xray:latest xray x25519 -i "${XRAY_GRPC_PRIVATE_KEY}" 2>/dev/null \
-                | grep "^Public key:" | awk '{print $3}' || true)
+            NEW_GRPC_PUB=$(derive_x25519_pub "${XRAY_GRPC_PRIVATE_KEY}")
             if [[ -n "$NEW_GRPC_PUB" ]]; then
                 env_set "XRAY_GRPC_PUBLIC_KEY" "$NEW_GRPC_PUB"
                 log_ok "XRAY_GRPC_PUBLIC_KEY обновлён из XRAY_GRPC_PRIVATE_KEY"
