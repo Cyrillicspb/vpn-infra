@@ -896,6 +896,93 @@ UNITEOF
 
     [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
 
+    # Шаг 46b — Синхронизация ключей Xray REALITY (shortId + publicKey) из VPS
+    if is_done "step46b_sync_xray_keys"; then
+        step_skip "step46b_sync_xray_keys"
+    else
+        step "Синхронизация ключей Xray REALITY из VPS в .env"
+        log_info "xray-setup.sh генерирует shortIds случайно — читаем из VPS 3x-ui DB"
+        log_info "Деривируем publicKey из privateKey через xray x25519"
+
+        # Пишем Python-скрипт в temp файл (без проблем с экранированием)
+        TMPSCRIPT=$(mktemp /tmp/xray_keys_XXXXXX.py)
+        cat > "$TMPSCRIPT" << 'PYEOF'
+import sqlite3, json
+db = "/opt/vpn/3x-ui/db/x-ui.db"
+try:
+    conn = sqlite3.connect(db)
+    rows = conn.execute("SELECT port,settings FROM inbounds WHERE protocol='vless'").fetchall()
+    for port, settings in rows:
+        try:
+            s = json.loads(settings)
+            r = json.loads(s.get("streamSettings","{}")).get("realitySettings",{})
+            ids = r.get("shortIds",[""])
+            print("{}:{}".format(port, ids[0] if ids else ""))
+        except:
+            pass
+except Exception as e:
+    print("ERROR:{}".format(e))
+PYEOF
+
+        vps_copy "$TMPSCRIPT" "sysadmin@${VPS_IP}:/tmp/xray_keys.py"
+        KEY_DATA=$(vps_exec "sudo python3 /tmp/xray_keys.py; rm -f /tmp/xray_keys.py" 2>/dev/null || echo "")
+        rm -f "$TMPSCRIPT"
+
+        if echo "$KEY_DATA" | grep -q "^ERROR:"; then
+            log_warn "Ошибка чтения VPS DB: $(echo "$KEY_DATA" | grep "^ERROR:")"
+        fi
+
+        REALITY_SHORT_ID=$(echo "$KEY_DATA" | grep "^2087:" | cut -d: -f2)
+        GRPC_SHORT_ID=$(echo "$KEY_DATA" | grep "^2083:" | cut -d: -f2)
+
+        if [[ -n "$REALITY_SHORT_ID" ]]; then
+            env_set "XRAY_SHORT_ID" "$REALITY_SHORT_ID"
+            log_ok "XRAY_SHORT_ID=$REALITY_SHORT_ID (из VPS DB порт 2087)"
+        else
+            log_warn "shortId для порта 2087 не найден — используем пустой"
+        fi
+
+        if [[ -n "$GRPC_SHORT_ID" ]]; then
+            env_set "XRAY_GRPC_SHORT_ID" "$GRPC_SHORT_ID"
+            log_ok "XRAY_GRPC_SHORT_ID=$GRPC_SHORT_ID (из VPS DB порт 2083)"
+        else
+            log_warn "shortId для порта 2083 не найден — используем пустой"
+        fi
+
+        # Деривируем publicKey из privateKey через xray x25519 в Docker-контейнере
+        [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
+
+        if [[ -n "${XRAY_PRIVATE_KEY:-}" ]]; then
+            NEW_PUB=$(docker exec xray-client /usr/bin/xray x25519 -i "${XRAY_PRIVATE_KEY}" 2>/dev/null \
+                | grep "^Public key:" | awk '{print $3}')
+            if [[ -n "$NEW_PUB" ]]; then
+                env_set "XRAY_PUBLIC_KEY" "$NEW_PUB"
+                log_ok "XRAY_PUBLIC_KEY обновлён из XRAY_PRIVATE_KEY"
+            else
+                log_warn "Не удалось дериватизировать XRAY_PUBLIC_KEY — xray-client не запущен?"
+            fi
+        else
+            log_warn "XRAY_PRIVATE_KEY не задан — пропускаем деривацию XRAY_PUBLIC_KEY"
+        fi
+
+        if [[ -n "${XRAY_GRPC_PRIVATE_KEY:-}" ]]; then
+            NEW_GRPC_PUB=$(docker exec xray-client-2 /usr/bin/xray x25519 -i "${XRAY_GRPC_PRIVATE_KEY}" 2>/dev/null \
+                | grep "^Public key:" | awk '{print $3}')
+            if [[ -n "$NEW_GRPC_PUB" ]]; then
+                env_set "XRAY_GRPC_PUBLIC_KEY" "$NEW_GRPC_PUB"
+                log_ok "XRAY_GRPC_PUBLIC_KEY обновлён из XRAY_GRPC_PRIVATE_KEY"
+            else
+                log_warn "Не удалось дериватизировать XRAY_GRPC_PUBLIC_KEY — xray-client-2 не запущен?"
+            fi
+        else
+            log_warn "XRAY_GRPC_PRIVATE_KEY не задан — пропускаем деривацию XRAY_GRPC_PUBLIC_KEY"
+        fi
+
+        step_done "step46b_sync_xray_keys"
+    fi
+
+    [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
+
     # Шаг 47 — Генерация конфигов Xray-клиента
     if is_done "step47_xray_client_configs"; then
         step_skip "step47_xray_client_configs"
@@ -907,6 +994,8 @@ UNITEOF
 
         XRAY_PUB="${XRAY_PUBLIC_KEY:-}"
         XRAY_GRPC_PUB="${XRAY_GRPC_PUBLIC_KEY:-}"
+        XRAY_SID="${XRAY_SHORT_ID:-}"
+        XRAY_GRPC_SID="${XRAY_GRPC_SHORT_ID:-}"
 
         if [[ -z "$XRAY_PUB" ]]; then
             log_warn "XRAY_PUBLIC_KEY не найден — пропускаем генерацию Xray-конфигов."
@@ -946,7 +1035,7 @@ UNITEOF
                 "fingerprint": "chrome",
                 "serverName": "microsoft.com",
                 "publicKey": "${XRAY_PUB}",
-                "shortId": ""
+                "shortId": "${XRAY_SID}"
             },
             "splithttpSettings": {
                 "path": "/",
@@ -989,7 +1078,7 @@ EOF
                 "fingerprint": "chrome",
                 "serverName": "cdn.jsdelivr.net",
                 "publicKey": "${XRAY_GRPC_PUB}",
-                "shortId": ""
+                "shortId": "${XRAY_GRPC_SID}"
             },
             "splithttpSettings": {
                 "path": "/",
