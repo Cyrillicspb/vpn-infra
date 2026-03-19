@@ -314,7 +314,7 @@ def admin_clients_list_kb(clients: list[dict]) -> InlineKeyboardMarkup:
     rows = []
     for c in clients:
         icon = "🚫" if c.get("is_disabled") else ("👑" if c.get("is_admin") else "✅")
-        name = c.get("first_name") or c.get("username") or c["chat_id"]
+        name = (c.get("first_name") or "").strip() or (c.get("username") or "").strip() or c["chat_id"]
         rows.append([InlineKeyboardButton(
             text=f"{icon} {name}",
             callback_data=f"adm:cl:{c['chat_id']}",
