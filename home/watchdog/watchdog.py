@@ -776,27 +776,9 @@ async def check_wg_peers() -> None:
             try:
                 ts = int(ts_str)
                 age = now - ts
-                if ts > 0 and age > PEER_STALE_SECONDS:
-                    last_alerted = state.stale_peer_alerted.get(peer_key, 0)
-                    if now - last_alerted >= PEER_STALE_REPEAT_INTERVAL:
-                        device_info = _lookup_peer_device(pubkey)
-                        hours = age // 3600
-                        mins  = (age % 3600) // 60
-                        age_str = f"{hours}ч {mins}мин" if hours else f"{mins}мин"
-                        if device_info:
-                            who = f"*{device_info}*"
-                        else:
-                            who = f"неизвестное устройство (`{pubkey[:20]}…`)"
-                        logger.warning(f"Stale peer {pubkey[:16]}… на {iface} ({age}s)")
-                        alert(
-                            f"⚠️ WireGuard peer не на связи\n"
-                            f"Устройство: {who}\n"
-                            f"Интерфейс: `{iface}`\n"
-                            f"Без handshake: {age_str}"
-                        )
-                        state.stale_peer_alerted[peer_key] = now
-                else:
-                    # Пир восстановился — сбросить дедупликацию
+                # Алерт о stale peer убран — мобильные устройства нормально
+                # уходят в сон, это не признак проблемы. Данные видны в Grafana.
+                if age <= PEER_STALE_SECONDS:
                     state.stale_peer_alerted.pop(peer_key, None)
             except Exception as exc:
                 logger.debug(f"check_wg_peers: не удалось распарсить строку '{line}': {exc}")
