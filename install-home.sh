@@ -1291,3 +1291,25 @@ else
     log_ok "Фаза 1 (домашний сервер) завершена"
     step_done "step31_docker_compose_home"
 fi
+
+# ── Шаг 32: Установка zapret (nfqws) ─────────────────────────────────────────
+if is_done "step32_install_zapret"; then
+    step_skip "step32_install_zapret"
+else
+    step "Установка zapret/nfqws (DPI bypass без туннеля)"
+
+    ZAPRET_INSTALL_SCRIPT="/opt/vpn/watchdog/plugins/zapret/install.sh"
+    if [[ -f "$ZAPRET_INSTALL_SCRIPT" ]]; then
+        if bash "$ZAPRET_INSTALL_SCRIPT"; then
+            log_ok "zapret/nfqws установлен успешно"
+        else
+            log_warn "zapret/nfqws установить не удалось — DPI bypass без туннеля будет недоступен"
+            log_warn "Запустите вручную позже: bash $ZAPRET_INSTALL_SCRIPT"
+        fi
+    else
+        log_warn "install.sh для zapret не найден: $ZAPRET_INSTALL_SCRIPT"
+        log_warn "Убедитесь что шаг 25 (watchdog venv) завершён"
+    fi
+
+    step_done "step32_install_zapret"
+fi
