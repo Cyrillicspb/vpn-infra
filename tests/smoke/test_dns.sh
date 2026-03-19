@@ -43,7 +43,9 @@ else
 fi
 
 # 5. dnsmasq.conf существует и содержит nftset директивы
-DNSMASQ_CONF="/opt/vpn/dnsmasq/dnsmasq.conf"
+# Конфиг копируется установщиком в /etc/dnsmasq.conf
+DNSMASQ_CONF="/etc/dnsmasq.conf"
+[[ ! -f "$DNSMASQ_CONF" ]] && DNSMASQ_CONF="/opt/vpn/dnsmasq/dnsmasq.conf"
 if [[ -f "$DNSMASQ_CONF" ]]; then
     pass "Конфиг dnsmasq существует"
     if grep -q "nftset=" "$DNSMASQ_CONF" 2>/dev/null; then

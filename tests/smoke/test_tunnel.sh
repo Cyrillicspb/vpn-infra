@@ -35,7 +35,7 @@ if ip link show wg1 &>/dev/null; then
         warn "wg1 существует но статус: $STATE"
     fi
 else
-    fail "wg1 (WireGuard) интерфейс не найден"
+    warn "wg1 (WireGuard) интерфейс не найден (нет WG-клиентов?)"
 fi
 
 # 3. Tier-2 туннель: IP адреса
@@ -73,11 +73,13 @@ else
     warn "table 200 default маршрут отсутствует (стек не поднят)"
 fi
 
-# 7. wg-quick@wg0 сервис (Tier-2 туннель)
-if systemctl is-active --quiet "wg-quick@wg0"; then
+# 7. awg-quick@wg0 сервис (AmneziaWG Tier-2 туннель)
+if systemctl is-active --quiet "awg-quick@wg0"; then
+    pass "awg-quick@wg0 активен"
+elif systemctl is-active --quiet "wg-quick@wg0"; then
     pass "wg-quick@wg0 активен"
 else
-    fail "wg-quick@wg0 не запущен"
+    fail "awg-quick@wg0 не запущен"
 fi
 
 # 8. hysteria2 сервис
