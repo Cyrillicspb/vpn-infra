@@ -1288,7 +1288,7 @@ phase4() {
     # Шаг 54 — Policy routing
     step "Тест split tunneling (policy routing)"
     run_test "Таблица маршрутизации 200 (blocked → tun)" \
-        "ip route show table 200 2>/dev/null | grep -q default" \
+        "for i in \$(seq 1 15); do ip route show table 200 2>/dev/null | grep -q default && break || sleep 2; done; ip route show table 200 2>/dev/null | grep -q default" \
         "systemctl status vpn-routes; bash /opt/vpn/scripts/vpn-policy-routing.sh status"
 
     # Шаг 55 — Мониторинг (домашний сервер)
