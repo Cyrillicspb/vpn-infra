@@ -250,7 +250,7 @@ def admin_dpi_menu(enabled: bool, services: list[dict]) -> InlineKeyboardMarkup:
 
     # Пресеты (добавить если нет)
     preset_names = {s["name"] for s in services}
-    presets = [("🎬 YouTube", "youtube"), ("🎮 Twitch", "twitch"), ("💬 Discord", "discord")]
+    presets = [("🎬 YouTube", "youtube")]
     add_row = []
     for label, name in presets:
         if name not in preset_names:
