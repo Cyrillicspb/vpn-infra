@@ -72,9 +72,11 @@ router = Router()
 
 def _display_name(client: dict, fallback: str = "") -> str:
     """Вернуть читаемое имя клиента, отфильтровав пустые/невидимые символы."""
+    import re
+    _re_visible = re.compile(r'\w', re.UNICODE)
     for field in ("first_name", "username"):
         val = (client.get(field) or "").strip()
-        if val:
+        if val and _re_visible.search(val):
             return val
     return fallback or client.get("chat_id", "?")
 
