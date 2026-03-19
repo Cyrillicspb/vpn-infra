@@ -70,6 +70,15 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+def _display_name(client: dict, fallback: str = "") -> str:
+    """Вернуть читаемое имя клиента, отфильтровав пустые/невидимые символы."""
+    for field in ("first_name", "username"):
+        val = (client.get(field) or "").strip()
+        if val:
+            return val
+    return fallback or client.get("chat_id", "?")
+
+
 async def _docker_logs(service: str, n: int = 50) -> str:
     """Получить логи Docker-контейнера через socket-proxy API."""
     import aiohttp as _aiohttp
@@ -640,7 +649,7 @@ async def cmd_clients(message: Message, state: FSMContext, **kw):
     lines = ["*Клиенты:*\n"]
     for c in clients:
         icon = "🚫" if c.get("is_disabled") else "✅"
-        name = c.get("first_name") or c.get("username") or c["chat_id"]
+        name = _display_name(c, c["chat_id"])
         lines.append(f"{icon} `{name}` (id: `{c['chat_id']}`)")
     await message.answer("\n".join(lines))
 
@@ -1567,7 +1576,7 @@ async def cb_adm_stats(cb: CallbackQuery, **kw):
                     pk_to_dev[pk] = {
                         "chat_id": chat_id,
                         "device_name": d.get("device_name", "?"),
-                        "first_name": client.get("first_name") or client.get("username") or chat_id,
+                        "first_name": _display_name(client, chat_id),
                     }
 
         # Агрегируем трафик по клиентам
@@ -2141,7 +2150,7 @@ async def cb_adm_diagnose_menu(cb: CallbackQuery, **kw):
     clients = await db.get_all_clients()
     devices = []
     for c in clients:
-        owner_name = c.get("first_name") or c.get("username") or c["chat_id"]
+        owner_name = _display_name(c, c["chat_id"])
         devs = await db.get_devices(c["chat_id"])
         for d in devs:
             d_copy = dict(d)
@@ -2394,7 +2403,7 @@ async def cb_adm_client(cb: CallbackQuery, **kw):
     if not client:
         await cb.answer("Клиент не найден")
         return
-    name = client.get("first_name") or client.get("username") or chat_id
+    name = _display_name(client, chat_id)
     devices = await db.get_devices(chat_id)
 
     # Загружаем трафик из WG
