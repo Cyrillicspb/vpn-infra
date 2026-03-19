@@ -2139,7 +2139,13 @@ async def _deploy_task(req: DeployRequest) -> None:
         cmd += ["--version", req.version]
     rc, out, err = await run_cmd(cmd, timeout=600)
     if rc != 0:
-        alert(f"❌ Deploy завершился с ошибкой:\n`{(err or out or '')[:300]}`")
+        # Ищем строки с ошибкой в stdout (deploy.sh пишет туда диагностику)
+        combined = (out or "") + "\n" + (err or "")
+        error_lines = [l for l in combined.splitlines() if any(
+            kw in l for kw in ("❌", "FAIL", "Error", "error", "failed", "Cannot", "cannot")
+        )]
+        snippet = "\n".join(error_lines[-10:]) if error_lines else combined.strip()[-600:]
+        alert(f"❌ Deploy завершился с ошибкой:\n`{snippet[:600]}`")
     else:
         ver = ""
         try:
