@@ -28,6 +28,7 @@ from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
+    InlineKeyboardMarkup,
     Message,
     ReplyKeyboardRemove,
 )
@@ -475,21 +476,26 @@ async def adddev_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
     await cb.answer()
 
     try:
-        await db.add_device(chat_id, data["device_name"], protocol, pending=True, is_router=is_router)
+        device = await db.add_device(chat_id, data["device_name"], protocol, pending=True, is_router=is_router)
         await cb.message.answer(
             f"✅ Запрос на устройство `{data['device_name']}` отправлен администратору.\n"
             f"Конфиг придёт после одобрения.",
             reply_markup=client_main_menu(),
         )
         bot: "Bot" = kw.get("bot")
-        if bot:
+        if bot and device.get("id"):
+            dev_id = device["id"]
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"dev_approve_{dev_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"dev_reject_{dev_id}"),
+            ]])
             asyncio.create_task(
                 bot.send_message(
                     config.admin_chat_id,
                     f"📱 Новый запрос на устройство!\n"
                     f"Клиент: `{cb.from_user.username or cb.from_user.first_name or chat_id}`  Устройство: `{data['device_name']}`\n"
-                    f"Протокол: `{protocol.upper()}`\n"
-                    f"/requests — для одобрения",
+                    f"Протокол: `{protocol.upper()}`",
+                    reply_markup=kb,
                 )
             )
     except Exception as e:
@@ -505,7 +511,7 @@ async def adddev_protocol(message: Message, state: FSMContext, **kw):
     await state.clear()
 
     try:
-        await db.add_device(chat_id, data["device_name"], protocol, pending=True)
+        device = await db.add_device(chat_id, data["device_name"], protocol, pending=True)
         await message.answer(
             f"✅ Запрос на устройство `{data['device_name']}` отправлен администратору.\n"
             f"Конфиг придёт после одобрения.",
@@ -513,14 +519,19 @@ async def adddev_protocol(message: Message, state: FSMContext, **kw):
         )
         await message.answer("Выберите действие:", reply_markup=client_main_menu())
         bot: "Bot" = kw.get("bot")
-        if bot:
+        if bot and device.get("id"):
+            dev_id = device["id"]
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"dev_approve_{dev_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"dev_reject_{dev_id}"),
+            ]])
             asyncio.create_task(
                 bot.send_message(
                     config.admin_chat_id,
                     f"📱 Новый запрос на устройство!\n"
                     f"Клиент: `{message.from_user.username or message.from_user.first_name or chat_id}`  Устройство: `{data['device_name']}`\n"
-                    f"Протокол: `{protocol.upper()}`\n"
-                    f"/requests — для одобрения",
+                    f"Протокол: `{protocol.upper()}`",
+                    reply_markup=kb,
                 )
             )
     except Exception as e:
