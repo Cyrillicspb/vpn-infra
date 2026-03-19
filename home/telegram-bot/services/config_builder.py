@@ -76,7 +76,7 @@ def _render(device: dict, allowed_ips: list[str]) -> str:
         keep_trailing_newline=True,
     )
     tmpl = env.get_template(template_name)
-    pubkey_env = "WG_SERVER_PUBKEY_AWG" if protocol == "awg" else "WG_SERVER_PUBKEY_WG"
+    pubkey_env = "AWG_SERVER_PUBLIC_KEY" if protocol == "awg" else "WG_SERVER_PUBLIC_KEY"
     host = os.getenv("WG_HOST", "")
     port = os.getenv("WG_AWG_PORT", "51820") if protocol == "awg" else os.getenv("WG_WG_PORT", "51821")
 
