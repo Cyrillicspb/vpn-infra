@@ -605,17 +605,21 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
     db: Database = kw.get("db")
     code = await db.create_invite_code(str(message.from_user.id))
     me = await bot.get_me()
-    bot_link = f"https://t.me/{me.username}" if me.username else "ссылку на бота"
+    bot_link = f"https://t.me/{me.username}" if me.username else None
     await message.answer(
         f"🎫 <b>Код приглашения создан.</b>\n\n"
         f"Перешлите клиенту два сообщения ниже 👇",
         parse_mode="HTML",
     )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="👉 Открыть бота", url=bot_link)
+    ]]) if bot_link else None
     await message.answer(
         f"Для подключения к VPN:\n"
         f"1. Скопируйте код из следующего сообщения 👇\n"
-        f"2. Перейдите: {bot_link}\n"
-        f"3. Нажмите кнопку «Старт» или введите /start, затем введите код",
+        f"2. Нажмите кнопку ниже чтобы открыть бота\n"
+        f"3. Нажмите «Старт» и введите код",
+        reply_markup=kb,
     )
     await message.answer(f"<code>{code}</code>", parse_mode="HTML")
 
@@ -1836,17 +1840,21 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
     db: Database = kw.get("db")
     code = await db.create_invite_code(str(cb.from_user.id))
     me = await bot.get_me()
-    bot_link = f"https://t.me/{me.username}" if me.username else "ссылку на бота"
+    bot_link = f"https://t.me/{me.username}" if me.username else None
     await cb.message.answer(
         f"🎫 <b>Код приглашения создан.</b>\n\n"
         f"Перешлите клиенту два сообщения ниже 👇",
         parse_mode="HTML",
     )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="👉 Открыть бота", url=bot_link)
+    ]]) if bot_link else None
     await cb.message.answer(
         f"Для подключения к VPN:\n"
         f"1. Скопируйте код из следующего сообщения 👇\n"
-        f"2. Перейдите: {bot_link}\n"
-        f"3. Нажмите кнопку «Старт» или введите /start, затем введите код",
+        f"2. Нажмите кнопку ниже чтобы открыть бота\n"
+        f"3. Нажмите «Старт» и введите код",
+        reply_markup=kb,
     )
     await cb.message.answer(f"<code>{code}</code>", parse_mode="HTML")
 
