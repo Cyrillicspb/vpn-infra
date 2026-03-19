@@ -820,8 +820,11 @@ phase3() {
                 '${VPS_PRIV}' '${TIER2_HOME_PUB}' | sudo tee /etc/wireguard/wg-tier2.conf > /dev/null && \
             sudo chmod 600 /etc/wireguard/wg-tier2.conf"
 
-        vps_exec "sudo systemctl enable wg-quick@wg-tier2 && \
-            sudo systemctl restart wg-quick@wg-tier2 || true"
+        if ! vps_exec "sudo systemctl enable wg-quick@wg-tier2 && sudo systemctl restart wg-quick@wg-tier2"; then
+            log_warn "wg-quick@wg-tier2 не запустился на VPS. Диагностика:"
+            vps_exec "sudo systemctl status wg-quick@wg-tier2 --no-pager -l 2>&1 | tail -20" || true
+            vps_exec "sudo journalctl -u wg-quick@wg-tier2 --no-pager -n 20 2>&1" || true
+        fi
 
         # Создаём отдельный wg-tier2.conf на домашнем сервере (стандартный WireGuard, не AWG)
         # ВАЖНО: Tier-2 peer НЕ добавляется в wg0.conf (AWG) — AWG пакеты несовместимы
