@@ -879,6 +879,10 @@ UNITEOF
         systemctl restart awg-quick@wg0 2>/dev/null \
             || log_warn "awg-quick@wg0 не запустился — продолжаем"
 
+        # WireGuard wg1 (клиенты WG, порт 51821)
+        systemctl enable --now wg-quick@wg1 2>/dev/null \
+            || log_warn "wg-quick@wg1 не запустился — продолжаем"
+
         # Ждём поднятия туннеля (autossh + tun0 конфигурация)
         sleep 12
         if ping -c 3 -W 3 10.177.2.2 &>/dev/null; then

@@ -121,8 +121,17 @@ check_warn "autossh-vpn"  "systemctl is-active autossh-vpn"          "нужен
 section "2. WireGuard интерфейсы"
 # ═══════════════════════════════════════════════════════════════════════════════
 
-check "wg0 (AmneziaWG)"   "ip link show wg0 2>/dev/null | grep -q UP"  "awg-quick up wg0"
-check "wg1 (WireGuard)"   "ip link show wg1 2>/dev/null | grep -q UP"  "wg-quick up wg1"
+# Systemd-юниты
+check "awg-quick@wg0 (systemd)" "systemctl is-active awg-quick@wg0"    "systemctl restart awg-quick@wg0"
+check "wg-quick@wg1 (systemd)"  "systemctl is-active wg-quick@wg1"     "systemctl restart wg-quick@wg1"
+
+# Интерфейсы подняты
+check "wg0 интерфейс UP"  "ip link show wg0 2>/dev/null | grep -q UP"  "awg show wg0"
+check "wg1 интерфейс UP"  "ip link show wg1 2>/dev/null | grep -q UP"  "wg show wg1"
+
+# UDP порты слушают
+check "UDP 51820 (AWG)"   "ss -ulnp | grep -q ':51820 '"               "awg show wg0"
+check "UDP 51821 (WG)"    "ss -ulnp | grep -q ':51821 '"               "wg show wg1"
 
 # IP адреса интерфейсов
 WG0_IP=$(ip addr show wg0 2>/dev/null | awk '/inet /{print $2}' | head -1 || echo "нет")
