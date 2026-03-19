@@ -777,8 +777,14 @@ phase3() {
         # Включаем PermitTunnel на VPS (нужен для ssh -w)
         vps_exec "sudo sed -i '/^#*PermitTunnel/d' /etc/ssh/sshd_config && \
             echo 'PermitTunnel yes' | sudo tee -a /etc/ssh/sshd_config > /dev/null && \
-            sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null"
-        log_ok "PermitTunnel yes добавлен в sshd_config на VPS"
+            sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd 2>/dev/null"
+        log_ok "PermitTunnel yes добавлен в sshd_config на VPS, sshd перезапущен"
+
+        # Pre-создаём persistent tun0 на VPS.
+        # На некоторых ядрах sshd не может создать tun0 через ioctl с нуля,
+        # но успешно подключается к уже существующему persistent-устройству.
+        vps_exec "sudo ip tuntap add dev tun0 mode tun 2>/dev/null || true"
+        log_ok "Persistent tun0 создан на VPS (sshd подключится к существующему)"
 
         # Устанавливаем autossh на домашнем сервере
         apt-get install -y -qq autossh 2>/dev/null || true
@@ -794,16 +800,37 @@ phase3() {
         step_skip "step46_tier2_tunnel"
     else
         step "Настройка SSH Tier-2 туннеля autossh-tier2 (10.177.2.0/30)"
-        log_info "autossh -w 0:0 создаёт tun0 на домашнем сервере и VPS."
+        log_info "autossh -w 0:0 подключается к persistent tun0 на VPS."
         log_info "IP: домашний сервер 10.177.2.1, VPS 10.177.2.2 — те же, что и раньше."
         log_info "Транспорт: TCP ${VPS_SSH_PORT:-22} (не UDP) — не блокируется ISP."
 
-        # Скрипт подключения (autossh запускает SSH, remote-side настраивает tun0)
+        # Останавливаем старый wg-tier2 если работает (предыдущая установка)
+        systemctl stop wg-quick@wg-tier2 2>/dev/null || true
+        systemctl disable wg-quick@wg-tier2 2>/dev/null || true
+        ip link del wg-tier2 2>/dev/null || true
+        log_ok "Старый wg-tier2 остановлен (если был)"
+
+        # Останавливаем wg-tier2 на VPS тоже
+        vps_exec "sudo systemctl stop wg-quick@wg-tier2 2>/dev/null; sudo ip link del wg-tier2 2>/dev/null; true" || true
+
+        # Скрипт подключения.
+        # Встроенный фоновый монитор назначает IP на tun0 после каждого переподключения.
+        # Remote-команда создаёт persistent tun0 на VPS если не существует, назначает IP.
         mkdir -p /opt/vpn/scripts
         cat > /opt/vpn/scripts/tier2-connect.sh << 'CONNEOF'
 #!/bin/bash
-# SSH Tier-2 tunnel: создаёт tun0 на обоих концах, назначает IP 10.177.2.1↔10.177.2.2
-# Запускается autossh-tier2.service; VPS_IP и VPS_SSH_PORT берутся из окружения
+# SSH Tier-2 tunnel: tun0, 10.177.2.1 (home) <-> 10.177.2.2 (VPS)
+# VPS_IP и VPS_SSH_PORT берутся из EnvironmentFile=/opt/vpn/.env
+
+# Фоновый монитор: назначает IP на локальный tun0 при каждом появлении
+(while true; do
+    if ip link show tun0 &>/dev/null; then
+        ip addr replace 10.177.2.1/30 dev tun0 2>/dev/null || true
+        ip link set tun0 up 2>/dev/null || true
+    fi
+    sleep 3
+done) &
+
 exec autossh -M 0 \
     -o StrictHostKeyChecking=no \
     -o ServerAliveInterval=10 \
@@ -813,24 +840,11 @@ exec autossh -M 0 \
     -i /root/.ssh/vpn_id_ed25519 \
     -p "${VPS_SSH_PORT:-22}" \
     "sysadmin@${VPS_IP}" \
-    'sudo ip addr replace 10.177.2.2/30 dev tun0 2>/dev/null; sudo ip link set tun0 up; sleep infinity'
+    'sudo ip tuntap add dev tun0 mode tun 2>/dev/null; sudo ip addr replace 10.177.2.2/30 dev tun0; sudo ip link set tun0 up; sleep infinity'
 CONNEOF
         chmod +x /opt/vpn/scripts/tier2-connect.sh
 
-        # Скрипт настройки локального tun0 (запускается после установки соединения)
-        cat > /opt/vpn/scripts/tier2-up-local.sh << 'UPEOF'
-#!/bin/bash
-# Ждём появления tun0 (до 15 сек), назначаем IP домашнего конца туннеля
-for i in $(seq 15); do
-    sleep 1
-    ip link show tun0 &>/dev/null && break
-done
-ip addr replace 10.177.2.1/30 dev tun0 2>/dev/null || true
-ip link set tun0 up 2>/dev/null || true
-UPEOF
-        chmod +x /opt/vpn/scripts/tier2-up-local.sh
-
-        # Systemd unit для autossh-tier2
+        # Systemd unit для autossh-tier2 (без ExecStartPost — IP назначает монитор внутри скрипта)
         cat > /etc/systemd/system/autossh-tier2.service << UNITEOF
 [Unit]
 Description=SSH Tier-2 Tunnel to VPS (10.177.2.0/30)
@@ -843,7 +857,6 @@ User=root
 Environment=AUTOSSH_GATETIME=0
 EnvironmentFile=/opt/vpn/.env
 ExecStart=/opt/vpn/scripts/tier2-connect.sh
-ExecStartPost=/opt/vpn/scripts/tier2-up-local.sh
 ExecStop=/bin/bash -c 'ip link set tun0 down 2>/dev/null; true'
 Restart=always
 RestartSec=10
