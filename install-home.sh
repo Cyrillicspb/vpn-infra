@@ -1269,6 +1269,11 @@ else
             [[ ! -e "/opt/vpn/xray/${_xray_cfg}" ]] && echo '{}' > "/opt/vpn/xray/${_xray_cfg}"
         done
 
+        # telegram-bot/data монтируется в контейнер как /app/data.
+        # Контейнер запускается от botuser (не root) — директория должна быть writable.
+        mkdir -p /opt/vpn/telegram-bot/data
+        chmod 777 /opt/vpn/telegram-bot/data
+
         log_info "Загрузка Docker-образов..."
         docker compose pull --quiet 2>/dev/null || true
 
