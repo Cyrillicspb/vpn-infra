@@ -766,89 +766,98 @@ phase3() {
             -o StrictHostKeyChecking=no "$@"
     }
 
-    # Шаг 45 — Обмен WireGuard-ключами
+    # Шаг 45 — Подготовка SSH Tier-2 туннеля
     if is_done "step45_exchange_keys"; then
         step_skip "step45_exchange_keys"
     else
-        step "Обмен WireGuard-ключами (Tier-2 туннель)"
+        step "Подготовка SSH Tier-2 туннеля (PermitTunnel на VPS)"
+        log_info "Tier-2 туннель работает через SSH tun (autossh -w), не WireGuard."
+        log_info "Не требует отдельного UDP-порта — использует TCP 22/443."
 
-        # Генерация ключей Tier-2 на VPS
-        VPS_WG_PRIVATE=$(vps_exec "wg genkey") || die "Не удалось сгенерировать WG ключ на VPS"
-        [[ -z "$VPS_WG_PRIVATE" ]] && die "VPS вернул пустой WG ключ (SSH сессия упала?)"
-        VPS_WG_PUBLIC=$(echo "$VPS_WG_PRIVATE" | wg pubkey)
+        # Включаем PermitTunnel на VPS (нужен для ssh -w)
+        vps_exec "sudo sed -i '/^#*PermitTunnel/d' /etc/ssh/sshd_config && \
+            echo 'PermitTunnel yes' | sudo tee -a /etc/ssh/sshd_config > /dev/null && \
+            sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null"
+        log_ok "PermitTunnel yes добавлен в sshd_config на VPS"
 
-        env_set "VPS_WG_PRIVATE_KEY" "$VPS_WG_PRIVATE"
-        env_set "VPS_WG_PUBLIC_KEY"  "$VPS_WG_PUBLIC"
+        # Устанавливаем autossh на домашнем сервере
+        apt-get install -y -qq autossh 2>/dev/null || true
+        log_ok "autossh установлен на домашнем сервере"
 
-        # Сохраняем приватный ключ на VPS
-        vps_exec "printf '%s' '${VPS_WG_PRIVATE}' | sudo tee /etc/vpn-tier2-private.key > /dev/null && \
-            sudo chmod 600 /etc/vpn-tier2-private.key"
-
-        log_ok "Ключи Tier-2 VPS сгенерированы"
-        source "$ENV_FILE"
         step_done "step45_exchange_keys"
     fi
 
     [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
 
-    # Шаг 46 — Настройка Tier-2 туннеля
+    # Шаг 46 — Запуск autossh-tier2 (SSH tun туннель 10.177.2.0/30)
     if is_done "step46_tier2_tunnel"; then
         step_skip "step46_tier2_tunnel"
     else
-        step "Настройка Tier-2 WireGuard туннеля (10.177.2.0/30)"
-        log_info "Tier-2 — стандартный WireGuard между домашним сервером и VPS."
-        log_info "Используется для: мониторинга watchdog↔Prometheus, git-зеркала, SSH к VPS."
-        log_info "НЕ для клиентского трафика — только для служебных соединений."
+        step "Настройка SSH Tier-2 туннеля autossh-tier2 (10.177.2.0/30)"
+        log_info "autossh -w 0:0 создаёт tun0 на домашнем сервере и VPS."
+        log_info "IP: домашний сервер 10.177.2.1, VPS 10.177.2.2 — те же, что и раньше."
+        log_info "Транспорт: TCP ${VPS_SSH_PORT:-22} (не UDP) — не блокируется ISP."
 
-        AWG_PUB="${AWG_SERVER_PUBLIC_KEY:-}"
-        VPS_PRIV="${VPS_WG_PRIVATE_KEY:-}"
+        # Скрипт подключения (autossh запускает SSH, remote-side настраивает tun0)
+        mkdir -p /opt/vpn/scripts
+        cat > /opt/vpn/scripts/tier2-connect.sh << 'CONNEOF'
+#!/bin/bash
+# SSH Tier-2 tunnel: создаёт tun0 на обоих концах, назначает IP 10.177.2.1↔10.177.2.2
+# Запускается autossh-tier2.service; VPS_IP и VPS_SSH_PORT берутся из окружения
+exec autossh -M 0 \
+    -o StrictHostKeyChecking=no \
+    -o ServerAliveInterval=10 \
+    -o ServerAliveCountMax=3 \
+    -o ExitOnForwardFailure=yes \
+    -w 0:0 \
+    -i /root/.ssh/vpn_id_ed25519 \
+    -p "${VPS_SSH_PORT:-22}" \
+    "sysadmin@${VPS_IP}" \
+    'sudo ip addr replace 10.177.2.2/30 dev tun0 2>/dev/null; sudo ip link set tun0 up; sleep infinity'
+CONNEOF
+        chmod +x /opt/vpn/scripts/tier2-connect.sh
 
-        [[ -z "$AWG_PUB" ]]  && die "AWG_SERVER_PUBLIC_KEY не найден в .env"
-        [[ -z "$VPS_PRIV" ]] && die "VPS_WG_PRIVATE_KEY не найден в .env"
+        # Скрипт настройки локального tun0 (запускается после установки соединения)
+        cat > /opt/vpn/scripts/tier2-up-local.sh << 'UPEOF'
+#!/bin/bash
+# Ждём появления tun0 (до 15 сек), назначаем IP домашнего конца туннеля
+for i in $(seq 15); do
+    sleep 1
+    ip link show tun0 &>/dev/null && break
+done
+ip addr replace 10.177.2.1/30 dev tun0 2>/dev/null || true
+ip link set tun0 up 2>/dev/null || true
+UPEOF
+        chmod +x /opt/vpn/scripts/tier2-up-local.sh
 
-        # Генерируем отдельный keypair для Tier-2 на ДОМАШНЕМ сервере
-        # (нельзя использовать AWG ключи — VPS ожидает стандартный WireGuard)
-        TIER2_HOME_PRIV=$(wg genkey)
-        TIER2_HOME_PUB=$(echo "$TIER2_HOME_PRIV" | wg pubkey)
-        env_set "TIER2_HOME_PRIVATE_KEY" "$TIER2_HOME_PRIV"
-        env_set "TIER2_HOME_PUBLIC_KEY"  "$TIER2_HOME_PUB"
+        # Systemd unit для autossh-tier2
+        cat > /etc/systemd/system/autossh-tier2.service << UNITEOF
+[Unit]
+Description=SSH Tier-2 Tunnel to VPS (10.177.2.0/30)
+After=network-online.target
+Wants=network-online.target
 
-        # Конфиг Tier-2 на VPS (peer = домашний TIER2, не AWG ключ)
-        VPS_WG_PUB="${VPS_WG_PUBLIC_KEY:-}"
-        vps_exec "sudo mkdir -p /etc/wireguard && \
-            printf '[Interface]\nAddress = 10.177.2.2/30\nPrivateKey = %s\nListenPort = 51822\n\n[Peer]\nPublicKey = %s\nAllowedIPs = 10.177.1.0/24,10.177.3.0/24,10.177.2.1/32\nPersistentKeepalive = 25\n' \
-                '${VPS_PRIV}' '${TIER2_HOME_PUB}' | sudo tee /etc/wireguard/wg-tier2.conf > /dev/null && \
-            sudo chmod 600 /etc/wireguard/wg-tier2.conf"
+[Service]
+Type=simple
+User=root
+Environment=AUTOSSH_GATETIME=0
+EnvironmentFile=/opt/vpn/.env
+ExecStart=/opt/vpn/scripts/tier2-connect.sh
+ExecStartPost=/opt/vpn/scripts/tier2-up-local.sh
+ExecStop=/bin/bash -c 'ip link set tun0 down 2>/dev/null; true'
+Restart=always
+RestartSec=10
+RestartPreventExitStatus=255
 
-        if ! vps_exec "sudo systemctl enable wg-quick@wg-tier2 && sudo systemctl restart wg-quick@wg-tier2"; then
-            log_warn "wg-quick@wg-tier2 не запустился на VPS. Диагностика:"
-            vps_exec "sudo systemctl status wg-quick@wg-tier2 --no-pager -l 2>&1 | tail -20" || true
-            vps_exec "sudo journalctl -u wg-quick@wg-tier2 --no-pager -n 20 2>&1" || true
-        fi
+[Install]
+WantedBy=multi-user.target
+UNITEOF
 
-        # Создаём отдельный wg-tier2.conf на домашнем сервере (стандартный WireGuard, не AWG)
-        # ВАЖНО: Tier-2 peer НЕ добавляется в wg0.conf (AWG) — AWG пакеты несовместимы
-        # со стандартным WireGuard на VPS
-        if [[ -n "$VPS_WG_PUB" ]]; then
-            cat > /etc/wireguard/wg-tier2.conf << TIER2EOF
-[Interface]
-Address = 10.177.2.1/30
-PrivateKey = ${TIER2_HOME_PRIV}
-MTU = 1320
+        systemctl daemon-reload
+        systemctl enable autossh-tier2
+        systemctl restart autossh-tier2
 
-[Peer]
-PublicKey = ${VPS_WG_PUB}
-AllowedIPs = 10.177.2.0/30
-Endpoint = ${VPS_IP}:51822
-PersistentKeepalive = 25
-TIER2EOF
-            chmod 600 /etc/wireguard/wg-tier2.conf
-            systemctl enable wg-quick@wg-tier2 2>/dev/null || true
-            systemctl restart wg-quick@wg-tier2 2>/dev/null \
-                || log_warn "wg-quick@wg-tier2 не запустился — продолжаем"
-        fi
-
-        # AmneziaWG: создаём директорию и симлинк конфига
+        # AmneziaWG: создаём директорию и симлинк конфига (wg0 — клиентский, не tier2)
         mkdir -p /etc/amnezia/amneziawg
         ln -sf /etc/wireguard/wg0.conf /etc/amnezia/amneziawg/wg0.conf
         systemctl mask wg-quick@wg0 2>/dev/null || true
@@ -856,11 +865,12 @@ TIER2EOF
         systemctl restart awg-quick@wg0 2>/dev/null \
             || log_warn "awg-quick@wg0 не запустился — продолжаем"
 
-        sleep 3
+        # Ждём поднятия туннеля (autossh + tun0 конфигурация)
+        sleep 12
         if ping -c 3 -W 3 10.177.2.2 &>/dev/null; then
-            log_ok "Tier-2 туннель работает: ping 10.177.2.2 успешен"
+            log_ok "Tier-2 SSH туннель работает: ping 10.177.2.2 успешен"
         else
-            log_warn "Ping 10.177.2.2 не прошёл. Проверьте после завершения установки."
+            log_warn "Ping 10.177.2.2 не прошёл. Туннель может ещё подниматься — проверьте: systemctl status autossh-tier2"
         fi
 
         step_done "step46_tier2_tunnel"

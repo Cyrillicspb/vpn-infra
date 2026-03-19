@@ -5,6 +5,19 @@
 
 ---
 
+## [v0.2.1] — 2026-03-19 — SSH Tier-2 туннель вместо WireGuard
+
+### Исправления
+
+- **Tier-2 туннель**: заменён `wg-quick@wg-tier2` (UDP 51822) на `autossh-tier2` (SSH tun, `autossh -w 0:0`, TCP 22/443).
+  Причина: ISP блокировал UDP 51822 на инфраструктурном уровне — пакеты от домашнего сервера до VPS не доходили.
+  Транспорт TCP 22/443 не блокируется. IP адреса туннеля (10.177.2.1↔10.177.2.2) не изменились — watchdog, dnsmasq, Prometheus не затронуты.
+- **add-vps.sh**: аналогичная замена для второго VPS (`autossh-tier2-vps2`, tun1, 10.177.2.5↔10.177.2.6).
+- **install-vps.sh / add-vps.sh**: убраны правила `udp dport 51822 accept` из nftables VPS.
+- **VPS sshd_config**: шаг 45 добавляет `PermitTunnel yes` (нужен для `ssh -w`).
+
+---
+
 ## [v0.2.0] — 2026-03-18 — UX бота, Xray xHTTP, zapret probe
 
 ### Новое

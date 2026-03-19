@@ -95,7 +95,7 @@
 | 2087 | TCP | VLESS-XHTTP-microsoft (REALITY, стек 3) |
 | 2083 | TCP | VLESS-XHTTP-jsdelivr (REALITY, стек 2) |
 | 8443 | TCP | Nginx admin panels (mTLS) |
-| 51822 | UDP | Tier-2 WireGuard туннель |
+| 22 (или 443) | TCP | Tier-2 SSH tun туннель (autossh, уже открыт для SSH) |
 
 ---
 

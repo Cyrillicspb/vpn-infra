@@ -229,7 +229,7 @@ if is_done "step36_vps_nftables"; then
 else
     step "Настройка nftables на VPS (rate limiting + защита портов)"
     log_info "Rate limiting: TCP/UDP 443 — 200/сек, burst 500 (защита Xray + Hysteria2)"
-    log_info "Открытые порты: 22 (SSH), 443 (Xray/Hysteria2), 51822 UDP (Tier-2 WG)"
+    log_info "Открытые порты: 22 (SSH), 443 (Xray/Hysteria2)"
 
     vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables"
 
@@ -261,8 +261,7 @@ table inet filter {
         # ICMP
         icmp type echo-request limit rate 10/second accept
 
-        # WireGuard Tier-2
-        udp dport 51822 accept
+        # SSH tun туннель (Tier-2) использует стандартный TCP 22 — отдельного порта не нужно
     }
 
     chain forward {

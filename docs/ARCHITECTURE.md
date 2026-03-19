@@ -167,7 +167,7 @@ graph TD
 | 2 | `vpn-sets-restore.service` | oneshot | `nft -f /etc/nftables-blocked-static.conf` — заполняет `blocked_static` из файла |
 | 3 | `awg-quick@wg0` | simple | AmneziaWG интерфейс, клиентская подсеть 10.177.1.0/24, порт 51820 |
 | 4 | `wg-quick@wg1` | simple | WireGuard интерфейс, клиентская подсеть 10.177.3.0/24, порт 51821 |
-| 5 | `wg-quick@wg-tier2` | simple | Tier-2 WireGuard к VPS, 10.177.2.0/30, входящий порт на VPS :51822 |
+| 5 | `autossh-tier2` | simple | Tier-2 SSH tun туннель к VPS, tun0, 10.177.2.1↔10.177.2.2, TCP 22/443 |
 | 6 | `vpn-routes.service` | oneshot | Создаёт ip rule и ip route для таблиц `vpn` (100) и `marked` (200) |
 | 7 | `dnsmasq.service` | simple | Split DNS: резолв заблокированных доменов через VPS, nftset= для blocked_dynamic |
 | 8 | `hysteria2.service` | simple | QUIC+Salamander клиент, управляется watchdog (стек hysteria2) |
@@ -214,7 +214,7 @@ graph TD
 
 ## 6. Tier-2 туннель
 
-**Что это:** WireGuard-туннель между домашним сервером (10.177.2.1) и VPS (10.177.2.2). Работает всегда, независимо от активного стека обхода блокировок. Слушает порт 51822 на стороне VPS.
+**Что это:** SSH tun туннель (autossh -w) между домашним сервером (10.177.2.1, tun0) и VPS (10.177.2.2, tun0). Работает всегда, независимо от активного стека обхода блокировок. Использует TCP порт 22 или 443 — не требует открытия отдельного UDP-порта на VPS.
 
 **Зачем нужен:**
 - Prometheus на VPS scrape-ит метрики домашнего сервера (node-exporter :9100, watchdog /metrics) через этот туннель
@@ -490,8 +490,7 @@ table inet vpn {
         # Watchdog API: только из Docker-сети
         tcp dport 8080 ip saddr 172.20.0.0/24 accept
         tcp dport 8080 drop
-        # Tier-2 WireGuard (входящий, если VPS инициирует)
-        udp dport 51822 accept
+        # Tier-2 SSH tun туннель использует TCP 22/443 — отдельного правила не нужно
         # Loopback, established
         iifname "lo" accept
         ct state established,related accept

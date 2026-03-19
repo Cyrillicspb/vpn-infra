@@ -189,7 +189,7 @@ table inet filter {
         udp dport 443 limit rate 200/second burst 500 packets accept
         udp dport 443 drop
         icmp type echo-request limit rate 10/second accept
-        udp dport 51822 accept
+        # SSH tun туннель (Tier-2) использует стандартный TCP 22 — отдельного порта не нужно
     }
     chain forward {
         type filter hook forward priority filter; policy drop;
@@ -387,71 +387,85 @@ else
     VPS2_XRAY_GRPC_PUBLIC_KEY="PENDING"
 fi
 
-# ── Шаг 14: wg-tier2-vps2 на HOME сервере ────────────────────────────────────
-log_step "Шаг 14: WireGuard tier2 туннель к VPS2"
+# ── Шаг 14: autossh-tier2-vps2 (SSH tun туннель к VPS2) ─────────────────────
+log_step "Шаг 14: SSH Tier-2 туннель к VPS2 (autossh -w, 10.177.2.4/30)"
 
-# Генерируем новую пару ключей для home-side wg-tier2-vps2
-HOME_WG2_PRIVATE=$(wg genkey)
-HOME_WG2_PUBLIC=$(echo "$HOME_WG2_PRIVATE" | wg pubkey)
+# Включаем PermitTunnel на VPS2
+vps2_exec "sudo sed -i '/^#*PermitTunnel/d' /etc/ssh/sshd_config && \
+    echo 'PermitTunnel yes' | sudo tee -a /etc/ssh/sshd_config > /dev/null && \
+    sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null"
+log_ok "PermitTunnel yes добавлен на VPS2"
 
-# Генерируем пару ключей для VPS2-side
-VPS2_WG_PRIVATE=$(wg genkey)
-VPS2_WG_PUBLIC=$(echo "$VPS2_WG_PRIVATE" | wg pubkey)
+# Скрипт подключения для VPS2 (использует tun1, чтобы не конфликтовать с tun0 для VPS1)
+cat > /opt/vpn/scripts/tier2-vps2-connect.sh << 'CONNEOF'
+#!/bin/bash
+# SSH Tier-2 tunnel к VPS2: tun1 (home 10.177.2.5 ↔ VPS2 10.177.2.6)
+exec autossh -M 0 \
+    -o StrictHostKeyChecking=no \
+    -o ServerAliveInterval=10 \
+    -o ServerAliveCountMax=3 \
+    -o ExitOnForwardFailure=yes \
+    -w 1:0 \
+    -i /root/.ssh/vpn_id_ed25519 \
+    -p "${VPS2_SSH_PORT:-22}" \
+    "sysadmin@${VPS2_IP}" \
+    'sudo ip addr replace 10.177.2.6/30 dev tun0 2>/dev/null; sudo ip link set tun0 up; sleep infinity'
+CONNEOF
+chmod +x /opt/vpn/scripts/tier2-vps2-connect.sh
 
-log_info "Home wg-tier2-vps2 public key: ${HOME_WG2_PUBLIC}"
-log_info "VPS2 wg-tier2      public key: ${VPS2_WG_PUBLIC}"
+# Скрипт настройки локального tun1
+cat > /opt/vpn/scripts/tier2-vps2-up-local.sh << 'UPEOF'
+#!/bin/bash
+for i in $(seq 15); do
+    sleep 1
+    ip link show tun1 &>/dev/null && break
+done
+ip addr replace 10.177.2.5/30 dev tun1 2>/dev/null || true
+ip link set tun1 up 2>/dev/null || true
+UPEOF
+chmod +x /opt/vpn/scripts/tier2-vps2-up-local.sh
 
-# Конфиг home server (10.177.2.5/30)
-cat > /etc/wireguard/wg-tier2-vps2.conf << EOF
-[Interface]
-PrivateKey = ${HOME_WG2_PRIVATE}
-Address = 10.177.2.5/30
-MTU = 1320
+# Сохраняем VPS2 параметры для EnvironmentFile
+echo "VPS2_IP=${VPS2_IP}" >> /opt/vpn/.env
+echo "VPS2_SSH_PORT=${VPS2_SSH_PORT}" >> /opt/vpn/.env
 
-[Peer]
-PublicKey = ${VPS2_WG_PUBLIC}
-AllowedIPs = 10.177.2.4/30
-Endpoint = ${VPS2_IP}:51822
-PersistentKeepalive = 25
-EOF
-chmod 600 /etc/wireguard/wg-tier2-vps2.conf
-log_ok "wg-tier2-vps2.conf создан на home сервере"
+# Systemd unit для VPS2
+cat > /etc/systemd/system/autossh-tier2-vps2.service << UNITEOF
+[Unit]
+Description=SSH Tier-2 Tunnel to VPS2 (10.177.2.4/30)
+After=network-online.target
+Wants=network-online.target
 
-# Конфиг VPS2 (10.177.2.6/30)
-vps2_exec "sudo bash -c 'cat > /etc/wireguard/wg-tier2.conf << EOF
-[Interface]
-PrivateKey = ${VPS2_WG_PRIVATE}
-Address = 10.177.2.6/30
-ListenPort = 51822
-MTU = 1320
+[Service]
+Type=simple
+User=root
+Environment=AUTOSSH_GATETIME=0
+EnvironmentFile=/opt/vpn/.env
+ExecStart=/opt/vpn/scripts/tier2-vps2-connect.sh
+ExecStartPost=/opt/vpn/scripts/tier2-vps2-up-local.sh
+ExecStop=/bin/bash -c 'ip link set tun1 down 2>/dev/null; true'
+Restart=always
+RestartSec=10
+RestartPreventExitStatus=255
 
-[Peer]
-PublicKey = ${HOME_WG2_PUBLIC}
-AllowedIPs = 10.177.2.4/30
-PersistentKeepalive = 25
-EOF
-chmod 600 /etc/wireguard/wg-tier2.conf'"
+[Install]
+WantedBy=multi-user.target
+UNITEOF
 
-vps2_exec "sudo systemctl enable wg-quick@wg-tier2 && \
-    sudo systemctl restart wg-quick@wg-tier2 2>/dev/null || \
-    sudo wg-quick up wg-tier2 2>/dev/null || true"
-
-log_ok "wg-tier2 запущен на VPS2 (10.177.2.6)"
-
-# Поднимаем туннель на home сервере
-systemctl enable wg-quick@wg-tier2-vps2 2>/dev/null || true
-wg-quick up wg-tier2-vps2 2>/dev/null || true
+systemctl daemon-reload
+systemctl enable autossh-tier2-vps2
+systemctl restart autossh-tier2-vps2
 
 # Тест туннеля
-sleep 3
+sleep 12
 if ping -c 2 -W 3 10.177.2.6 &>/dev/null; then
-    log_ok "Туннель wg-tier2-vps2 работает! ping 10.177.2.6 ОК"
+    log_ok "Туннель autossh-tier2-vps2 работает! ping 10.177.2.6 ОК"
 else
-    log_warn "Ping 10.177.2.6 не прошёл. Проверьте firewall VPS2 (UDP 51822)"
+    log_warn "Ping 10.177.2.6 не прошёл. Проверьте: systemctl status autossh-tier2-vps2"
 fi
 
-# Добавляем маршрут через tier2-vps2 для DNS VPS2
-ip route replace 10.177.2.6/32 dev wg-tier2-vps2 2>/dev/null || true
+# Добавляем маршрут через tun1 для DNS VPS2
+ip route replace 10.177.2.6/32 dev tun1 2>/dev/null || true
 
 # ── Шаг 15: dnsmasq VPS2 DNS ─────────────────────────────────────────────────
 log_step "Шаг 15: dnsmasq DNS для VPS2 (10.177.2.6)"
