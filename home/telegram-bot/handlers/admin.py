@@ -605,13 +605,17 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
     db: Database = kw.get("db")
     code = await db.create_invite_code(str(message.from_user.id))
     me = await bot.get_me()
-    bot_link = f"https://t.me/{me.username}" if me.username else ""
+    bot_link = f"https://t.me/{me.username}" if me.username else "ссылку на бота"
     await message.answer(
-        f"🎫 <b>Код приглашения готов</b>\n\n"
-        f"Действителен 24 часа.\n"
-        f"Перешлите клиенту ссылку на бота и код ниже.\n\n"
-        f"{bot_link}",
+        f"🎫 <b>Код приглашения создан.</b>\n\n"
+        f"Перешлите клиенту два сообщения ниже 👇",
         parse_mode="HTML",
+    )
+    await message.answer(
+        f"Для подключения к VPN:\n"
+        f"1. Скопируйте код из следующего сообщения\n"
+        f"2. Перейдите: {bot_link}\n"
+        f"3. Нажмите «Старт» и введите код",
     )
     await message.answer(f"<code>{code}</code>", parse_mode="HTML")
 
@@ -1832,13 +1836,17 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
     db: Database = kw.get("db")
     code = await db.create_invite_code(str(cb.from_user.id))
     me = await bot.get_me()
-    bot_link = f"https://t.me/{me.username}" if me.username else ""
+    bot_link = f"https://t.me/{me.username}" if me.username else "ссылку на бота"
     await cb.message.answer(
-        f"🎫 <b>Код приглашения готов</b>\n\n"
-        f"Действителен 24 часа.\n"
-        f"Перешлите клиенту ссылку на бота и код ниже.\n\n"
-        f"{bot_link}",
+        f"🎫 <b>Код приглашения создан.</b>\n\n"
+        f"Перешлите клиенту два сообщения ниже 👇",
         parse_mode="HTML",
+    )
+    await cb.message.answer(
+        f"Для подключения к VPN:\n"
+        f"1. Скопируйте код из следующего сообщения\n"
+        f"2. Перейдите: {bot_link}\n"
+        f"3. Нажмите «Старт» и введите код",
     )
     await cb.message.answer(f"<code>{code}</code>", parse_mode="HTML")
 
