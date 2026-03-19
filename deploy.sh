@@ -529,15 +529,20 @@ json.dump(cfg, open('$REPO_DIR/xray/config-cdn.json', 'w'), indent=4)
     (cd "$REPO_DIR" && docker compose pull --quiet 2>/dev/null || true)
 
     # Пересборка локальных образов при изменении исходников
+    # --no-cache только если изменился requirements.txt (pip-зависимости),
+    # иначе быстрая сборка с Docker layer cache
     if $rebuild_bot; then
         log_info "telegram-bot изменился — пересборка образа..."
-        (cd "$REPO_DIR" && docker compose build --no-cache telegram-bot)
-        log_ok "telegram-bot пересобран"
+        local bot_no_cache=""
+        git -C "$REPO_DIR" diff HEAD@{1} HEAD -- home/telegram-bot/requirements.txt 2>/dev/null | grep -q "." && bot_no_cache="--no-cache"
+        [[ "$force" == "--force" && -z "$bot_no_cache" ]] && true  # force не форсирует --no-cache без изменений requirements
+        (cd "$REPO_DIR" && docker compose build $bot_no_cache telegram-bot)
+        log_ok "telegram-bot пересобран${bot_no_cache:+ (no-cache)}"
     fi
     if $rebuild_xray; then
-        log_info "xray конфиги изменились — пересборка xray контейнеров..."
-        (cd "$REPO_DIR" && docker compose build --no-cache xray-client xray-client-2 xray-client-cdn)
-        log_ok "xray контейнеры пересобраны"
+        log_info "xray конфиги обновлены — перезапуск xray контейнеров..."
+        (cd "$REPO_DIR" && docker compose up -d --force-recreate xray-client xray-client-2 xray-client-cdn 2>/dev/null || true)
+        log_ok "xray контейнеры перезапущены"
     fi
 
     (cd "$REPO_DIR" && docker compose up -d --remove-orphans)
