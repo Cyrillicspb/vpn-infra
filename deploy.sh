@@ -250,6 +250,43 @@ git_pull() {
 # =============================================================================
 # Применение миграций (идемпотентно)
 # =============================================================================
+apply_system_configs() {
+    # Синхронизирует системные конфиги из репо в /etc/ и /etc/systemd/system/.
+    # Сравнивает sha256 — применяет только изменившиеся файлы.
+    local changed=false
+
+    # nftables.conf
+    local src="$REPO_DIR/home/nftables/nftables.conf"
+    local dst="/etc/nftables.conf"
+    if [[ -f "$src" ]] && ! sha256sum -c <(sha256sum "$dst" 2>/dev/null | awk '{print $1 "  '"$src"'"}') &>/dev/null; then
+        log_info "nftables.conf изменился — применяем..."
+        if nft -c -f "$src" 2>/dev/null; then
+            cp "$src" "$dst"
+            nft -f "$dst" && log_ok "nftables обновлён" || log_warn "nft -f завершился с ошибкой"
+            changed=true
+        else
+            log_warn "nftables.conf не прошёл валидацию (nft -c) — пропускаем"
+        fi
+    fi
+
+    # systemd units
+    local units_changed=false
+    for src in "$REPO_DIR/home/systemd/"*.service "$REPO_DIR/home/systemd/"*; do
+        [[ -f "$src" ]] || continue
+        local name; name=$(basename "$src")
+        local dst_unit="/etc/systemd/system/$name"
+        if [[ ! -f "$dst_unit" ]] || ! diff -q "$src" "$dst_unit" &>/dev/null; then
+            cp "$src" "$dst_unit"
+            log_ok "systemd unit обновлён: $name"
+            units_changed=true
+            changed=true
+        fi
+    done
+    $units_changed && systemctl daemon-reload
+
+    $changed || log_info "Системные конфиги без изменений"
+}
+
 apply_migrations() {
     local dir="$REPO_DIR/migrations"
     [[ -d "$dir" ]] || return 0
@@ -507,6 +544,9 @@ do_deploy() {
 
     # Миграции
     apply_migrations
+
+    # Системные конфиги (/etc/nftables.conf, systemd units)
+    apply_system_configs
 
     # ── Обновление домашнего сервера ───────────────────────────────────────────
 
