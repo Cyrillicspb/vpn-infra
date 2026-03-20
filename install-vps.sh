@@ -523,6 +523,17 @@ else
     log_info "Запускаем: 3x-ui (Xray inbounds), nginx (mTLS :8443),"
     log_info "           cloudflared, prometheus, alertmanager, grafana, node-exporter, hysteria2"
 
+    # Если SSH при socat bootstrap был добавлен на порт 443 — убираем его СЕЙЧАС,
+    # до запуска 3x-ui/Xray которые занимают TCP 443.
+    if vps_exec "grep -q '^Port 443' /etc/ssh/sshd_config" 2>/dev/null; then
+        log_info "Освобождаем порт 443 от SSH (Xray займёт его)..."
+        vps_exec "sudo sed -i '/^Port 443$/d' /etc/ssh/sshd_config && \
+            sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null"
+        env_set "VPS_SSH_PORT" "22"; VPS_SSH_PORT="22"
+        log_ok "SSH освобождён с порта 443, остался на порту 22"
+        log_info "Примечание: дальнейший доступ к VPS — через адаптивный SOCKS5 прокси (Block 2)"
+    fi
+
     # Проверяем наличие docker-compose.yml на VPS
     if ! vps_exec "[ -f /opt/vpn/docker-compose.yml ] && echo exists" 2>/dev/null \
             | grep -q "exists"; then
