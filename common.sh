@@ -76,6 +76,7 @@ env_set() {
     touch "$ENV_FILE"
     # || true: grep возвращает 1 если строка не найдена — это нормально
     { grep -v "^${key}=" "$ENV_FILE" || true; } > "${ENV_FILE}.tmp"
+    chmod 600 "${ENV_FILE}.tmp"
     mv "${ENV_FILE}.tmp" "$ENV_FILE"
     echo "${key}=${val}" >> "$ENV_FILE"
 }
