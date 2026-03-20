@@ -259,6 +259,7 @@ apply_migrations() {
     local db_file="/opt/vpn/telegram-bot/data/vpn_bot.db"
     while IFS= read -r -d '' migration; do
         local name; name="$(basename "$migration")"
+        [[ "$name" == "apply.sh" ]] && continue  # точка входа, не сама миграция
         if grep -qxF "$name" "$MIGRATIONS_LOG" 2>/dev/null; then
             continue  # уже применена
         fi

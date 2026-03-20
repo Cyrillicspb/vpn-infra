@@ -15,18 +15,5 @@ CREATE TABLE IF NOT EXISTS excludes (
 -- Индекс для быстрого поиска по device_id
 CREATE INDEX IF NOT EXISTS idx_excludes_device_id ON excludes(device_id);
 
--- Таблица devices если не существует (normalisation)
-CREATE TABLE IF NOT EXISTS devices (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id     INTEGER NOT NULL,
-    device_name TEXT NOT NULL,
-    vpn_ip      TEXT,                       -- IP в VPN подсети (10.177.1.x или 10.177.3.x)
-    pubkey      TEXT,                       -- WireGuard публичный ключ
-    protocol    TEXT NOT NULL DEFAULT 'AWG',
-    config_version TEXT,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(chat_id, device_name)
-);
-
-CREATE INDEX IF NOT EXISTS idx_devices_chat_id ON devices(chat_id);
-CREATE INDEX IF NOT EXISTS idx_devices_vpn_ip ON devices(vpn_ip);
+-- Индекс для поиска устройств по client_id (реальная схема использует client_id, не chat_id)
+CREATE INDEX IF NOT EXISTS idx_devices_client_id ON devices(client_id);
