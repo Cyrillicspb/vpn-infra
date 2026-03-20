@@ -744,7 +744,7 @@ async def cmd_broadcast(message: Message, state: FSMContext, **kw):
     for c in clients:
         if not c.get("is_disabled"):
             try:
-                await bot.send_message(c["chat_id"], f"📢 *Объявление:*\n\n{args[1]}")
+                await bot.send_message(c["chat_id"], f"📢 *Объявление:*\n\n{args[1]}", reply_markup=menu_reply_kb())
                 sent += 1
             except Exception:
                 pass
@@ -2435,7 +2435,7 @@ async def fsm_broadcast_input(message: Message, state: FSMContext, **kw):
     for c in clients:
         if not c.get("is_disabled") and c["chat_id"] != str(message.from_user.id):
             try:
-                await bot.send_message(c["chat_id"], f"📢 *Объявление:*\n\n{text}")
+                await bot.send_message(c["chat_id"], f"📢 *Объявление:*\n\n{text}", reply_markup=menu_reply_kb())
                 sent += 1
             except Exception:
                 pass
