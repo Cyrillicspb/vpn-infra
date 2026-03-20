@@ -1,5 +1,9 @@
 FROM python:3.12-slim
 
+# Хэш последнего коммита home/telegram-bot/ — для надёжной детекции изменений в deploy.sh
+ARG GIT_HASH=unknown
+LABEL git-hash=$GIT_HASH
+
 WORKDIR /app
 
 # Системные зависимости: wireguard-tools для wg genkey/pubkey

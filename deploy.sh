@@ -435,18 +435,14 @@ watchdog_changed() {
 }
 
 bot_changed() {
-    # Сравниваем время последнего коммита в home/telegram-bot/ с временем сборки образа.
-    # Надёжнее чем git diff HEAD@{1}: не зависит от количества пропущенных версий.
-    local last_commit image_time image_epoch commit_epoch
-    last_commit=$(git -C "$REPO_DIR" log -1 --format="%ct" -- home/telegram-bot/ 2>/dev/null || echo "0")
-    image_time=$(docker inspect --format='{{.Created}}' \
-        "$(docker compose -f "$REPO_DIR/docker-compose.yml" images -q telegram-bot 2>/dev/null)" \
-        2>/dev/null | head -1 || echo "")
-    # Если образа нет — пересобирать
-    [[ -z "$image_time" ]] && return 0
-    image_epoch=$(date -d "$image_time" +%s 2>/dev/null || echo "0")
-    commit_epoch="${last_commit:-0}"
-    [[ "$commit_epoch" -gt "$image_epoch" ]]
+    # Сравниваем git-хэш последнего коммита home/telegram-bot/ с хэшем, зашитым в образ.
+    # Надёжнее сравнения по времени: не ломается при ручных пересборках.
+    local current_hash image_hash
+    current_hash=$(git -C "$REPO_DIR" log -1 --format="%H" -- home/telegram-bot/ 2>/dev/null || echo "")
+    [[ -z "$current_hash" ]] && return 1  # нет коммитов — не пересобирать
+    image_hash=$(docker inspect --format='{{index .Config.Labels "git-hash"}}' \
+        vpn-telegram-bot:latest 2>/dev/null || echo "")
+    [[ "$current_hash" != "$image_hash" ]]
 }
 
 xray_changed() {
@@ -576,8 +572,10 @@ json.dump(cfg, open('$REPO_DIR/xray/config-cdn.json', 'w'), indent=4)
         local bot_no_cache=""
         git -C "$REPO_DIR" diff HEAD@{1} HEAD -- home/telegram-bot/requirements.txt 2>/dev/null | grep -q "." && bot_no_cache="--no-cache"
         [[ "$force" == "--force" && -z "$bot_no_cache" ]] && true  # force не форсирует --no-cache без изменений requirements
-        (cd "$REPO_DIR" && docker compose build $bot_no_cache telegram-bot)
-        log_ok "telegram-bot пересобран${bot_no_cache:+ (no-cache)}"
+        local bot_git_hash; bot_git_hash=$(git -C "$REPO_DIR" log -1 --format="%H" -- home/telegram-bot/ 2>/dev/null || echo "unknown")
+        (cd "$REPO_DIR" && docker compose build $bot_no_cache \
+            --build-arg GIT_HASH="$bot_git_hash" telegram-bot)
+        log_ok "telegram-bot пересобран${bot_no_cache:+ (no-cache)} (hash=${bot_git_hash:0:8})"
     fi
     if $rebuild_xray; then
         log_info "xray конфиги обновлены — перезапуск xray контейнеров..."
