@@ -61,52 +61,101 @@
   ```
 - [ ] Два режима развёртывания домашнего сервера:
 
-  **Режим A (текущий)**: сервер на российском VPS, клиенты подключаются напрямую.
+  **Режим A (текущий)** — сервер на хостинге с публичным IP напрямую на eth0. Клиенты подключаются напрямую. Никаких дополнительных изменений не требует.
 
-  **Режим B — Gateway Mode**: сервер реально дома за роутером.
+  **Режим B — Gateway Mode** — сервер физически дома за роутером. Роутер имеет белый IP + port forward. Сервер становится шлюзом для всей домашней сети.
 
   ```
   ИНТЕРНЕТ
       │
-  РОУТЕР (белый IP, port forward UDP 51820/51821 → сервер)
+  РОУТЕР (80.93.52.223, port forward UDP 51820/51821 → 192.168.1.100)
       │ LAN 192.168.1.0/24
-      │
-  ДОМАШНИЙ СЕРВЕР (192.168.1.100)
-  ├── WireGuard/AWG сервер (wg0, wg1)
-  ├── dnsmasq (DNS + nftset для blocked_dynamic)
-  ├── nftables:
-  │   ├── HAIRPIN: daddr=router_external_ip, dport 51820/51821 → redirect :51820/:51821
-  │   ├── MASQUERADE: трафик LAN-устройств → eth0 (SNAT)
-  │   ├── fwmark 0x1 (заблокированное) → table 200 → VPS tun
-  │   └── остальное → table 100 → eth0 → роутер → интернет
-  └── watchdog, telegram-bot, xray-client, ...
-      │
-      ├── [LAN-устройства как шлюз-клиенты]
-      │   Smart TV, консоль, IoT, ПК
-      │   gateway = 192.168.1.100, DNS = 192.168.1.100
-      │   → прозрачный split tunneling без VPN-клиента
-      │   → работает для всего, что не умеет WireGuard
-      │
-      └── [Мобильные AWG/WG клиенты]
-          Телефон, ноутбук — один конфиг, endpoint = router_external_ip
-          Дома (WiFi):
-            пакет → шлюз (сервер) → nftables HAIRPIN redirect → WireGuard ✅
-            AWG выключен → трафик через шлюз, split tunneling на сервере ✅
-          Вне дома:
-            пакет → интернет → роутер → port forward → сервер ✅
+      ├── ДОМАШНИЙ СЕРВЕР (192.168.1.100) ← шлюз
+      ├── Smart TV     (gateway=192.168.1.100, dns=192.168.1.100) ← прозрачный VPN
+      ├── Консоль      (gateway=192.168.1.100, dns=192.168.1.100) ← прозрачный VPN
+      └── ПК           (gateway=192.168.1.100, dns=192.168.1.100) ← прозрачный VPN
+
+  Мобильные AWG/WG клиенты — endpoint = 80.93.52.223 (IP роутера)
+    Дома (WiFi): пакет → шлюз (сервер) → HAIRPIN redirect → WireGuard ✅
+    Вне дома:    пакет → интернет → роутер → port forward → сервер ✅
+    Один конфиг работает везде — HAIRPIN решает проблему на стороне сервера
   ```
 
-  **Ключевые детали реализации:**
-  - HAIRPIN в nftables на сервере — решает hairpin NAT без поддержки роутером, один конфиг работает везде
-  - MASQUERADE для LAN-подсети → сервер делает SNAT перед отправкой в роутер
-  - ip rule: добавить `from 192.168.1.0/24 → lookup 100` (аналогично WG-клиентам)
-  - dnsmasq: добавить `interface=eth0` (или LAN-интерфейс) — уже слушает, проверить
-  - Роутер DHCP: выдавать gateway=192.168.1.100 и DNS=192.168.1.100 (один параметр меняет всё)
-  - Сервер — точка отказа для домашнего интернета: при падении watchdog/сервера LAN теряет сеть → предусмотреть failsafe (если tun недоступен — всё равно пускать трафик через eth0, не дропать)
+  **1. HAIRPIN NAT**
+  - Проблема: LAN-клиент шлёт UDP на IP роутера (80.93.52.223:51820) → сервер пытается форвардить обратно в интернет → петля, роутер не поддерживает hairpin NAT
+  - Решение: новая цепочка `prerouting_nat (type nat hook prerouting priority dstnat)`:
+    ```
+    iifname $LAN_IFACE ip saddr $LAN_SUBNET ip daddr $ROUTER_EXTERNAL_IP
+        udp dport 51820 redirect to :51820
+    iifname $LAN_IFACE ip saddr $LAN_SUBNET ip daddr $ROUTER_EXTERNAL_IP
+        udp dport 51821 redirect to :51821
+    ```
+  - После REDIRECT: dst → 192.168.1.100:51820, WireGuard принимает, ответ идёт по LAN напрямую
+  - Динамический IP роутера: nft set `router_external_ips`, watchdog обновляет при смене IP (та же логика что DDNS-update)
 
-  **Изменения в setup.sh:** вопрос «сервер на VPS или дома?»; при режиме B — определить LAN IP, записать LAN_SUBNET в .env, добавить HAIRPIN и MASQUERADE правила в nftables, добавить ip rule для LAN-подсети, инструкция по настройке DHCP на роутере
+  **2. Split tunneling для LAN-устройств (добавления в nftables.conf)**
+  - В `chain prerouting (mangle)`:
+    ```
+    iifname $LAN_IFACE ip saddr $LAN_SUBNET ip daddr @dpi_direct    meta mark set 0x2 accept
+    iifname $LAN_IFACE ip saddr $LAN_SUBNET ip daddr @blocked_static  meta mark set 0x1 accept
+    iifname $LAN_IFACE ip saddr $LAN_SUBNET ip daddr @blocked_dynamic meta mark set 0x1 accept
+    ```
+  - В `chain forward`:
+    ```
+    # Kill switch для LAN-клиентов (зеркало WireGuard-правил)
+    ip saddr $LAN_SUBNET ip daddr @blocked_static  oifname != "tun*" drop
+    ip saddr $LAN_SUBNET ip daddr @blocked_dynamic oifname != "tun*" drop
+    # Форвард LAN ↔ интернет
+    iifname $LAN_IFACE ip saddr $LAN_SUBNET accept
+    oifname $LAN_IFACE ip daddr $LAN_SUBNET accept
+    ```
+  - В `chain postrouting`:
+    ```
+    # MASQUERADE только для tun (VPS видит адрес сервера, не 192.168.1.x)
+    # Для eth0 MASQUERADE не нужен — роутер сам делает SNAT для всей LAN
+    ip saddr $LAN_SUBNET oifname "tun*" masquerade
+    ```
 
-  **Конфиг-билдер:** в режиме B endpoint = router_external_ip (тот же, что и сейчас) — менять ничего не нужно, HAIRPIN решает проблему на уровне сервера
+  **3. Policy routing для LAN-подсети**
+  - `ip rule add priority 200 from $LAN_SUBNET lookup 100` — зеркало правил для wg0/wg1
+  - table 100: `default via 192.168.1.1 dev $LAN_IFACE` (через роутер)
+  - Незаблокированный LAN-трафик → table 100 → eth0 → роутер → интернет
+  - Заблокированный (fwmark 0x1) → table 200 → tun → VPS
+
+  **4. dnsmasq — слушать на LAN-интерфейсе**
+  - Добавить `interface=$LAN_IFACE` в dnsmasq.conf
+  - LAN-устройства шлют DNS на 192.168.1.100 → dnsmasq форвардит заблокированные домены на VPS DNS → IP добавляется в blocked_dynamic → следующий пакет к этому IP получает fwmark 0x1
+  - Цепочка: Smart TV → DNS `api.instagram.com` → dnsmasq → VPS DNS → реальный IP → nftset → fwmark → tun. Прозрачно, без клиента.
+
+  **5. Failsafe — сервер как точка отказа**
+  - tun упал, watchdog жив: незаблокированный LAN-трафик продолжает идти через eth0 ✅; заблокированный → kill switch → drop (ожидаемо) ✅
+  - watchdog упал, tun упал: маршруты и nftables остаются в ядре → аналогично ✅
+  - nftables service упал: правила выгружаются → forward chain policy drop → LAN теряет форвард ❌ → watchdog мониторит `nft list ruleset` каждые 30 сек, перезагружает при пустом ruleset
+  - Сервер полностью недоступен (питание): LAN теряет шлюз — фундаментальная PoF → документировать ИБП; некоторые роутеры поддерживают dual-gateway (основной 192.168.1.100, резервный 192.168.1.1)
+
+  **6. Изменения в setup.sh**
+  - Фаза 0, новый вопрос: `[A] Сервер на хостинге  [B] Сервер дома за роутером`
+  - Если B: автоопределить LAN IP и интерфейс; спросить IP роутера (или DDNS-домен)
+  - Записать в .env: `SERVER_MODE=gateway`, `LAN_IFACE=eth0`, `LAN_SUBNET=192.168.1.0/24`, `ROUTER_EXTERNAL_IP=80.93.52.223`
+  - Генерировать nftables.conf через envsubst с LAN-переменными (отдельный шаблон `nftables-gateway.conf.j2`)
+  - Добавить `interface=$LAN_IFACE` в dnsmasq.conf
+  - Добавить ip rule в vpn-routes.service ExecStart
+  - Фаза 5 — инструкция по настройке роутера:
+    ```
+    Port forwarding: UDP 51820 → 192.168.1.100, UDP 51821 → 192.168.1.100
+    DHCP (для Smart TV / консолей / IoT без WireGuard):
+      Default gateway: 192.168.1.100
+      DNS server:      192.168.1.100
+    ```
+
+  **7. Watchdog — дополнения для Режима B**
+  - Мониторинг nftables ruleset: `nft list ruleset` каждые 30 сек → перезагрузить при пустом
+  - /status: показывать кол-во активных LAN-клиентов (из conntrack: src in LAN_SUBNET)
+  - nft set `router_external_ips` обновлять при смене IP (уже есть логика для DDNS)
+
+  **8. Что НЕ меняется в Режиме B**
+  - Плагины стеков, watchdog failover, конфиг-билдер, Telegram-бот, базы РКН, AllowedIPs
+  - Конфиги AWG/WG клиентов: endpoint = ROUTER_EXTERNAL_IP — тот же, HAIRPIN решает на сервере
 
 -----
 
