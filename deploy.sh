@@ -272,37 +272,46 @@ git_pull() {
             git -C "$REPO_DIR" remote add vps-mirror \
                 "ssh://sysadmin@${VPS_IP}:${ssh_port}/opt/vpn/vpn-repo.git"
 
-        # Сначала из VPS-зеркала
+        # Сначала из VPS-зеркала (с тегами)
         if GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes" \
-           git -C "$REPO_DIR" fetch vps-mirror 2>/dev/null; then
+           git -C "$REPO_DIR" fetch --tags vps-mirror 2>/dev/null; then
             log_info "Получено из VPS-зеркала"
-            local _before; _before=$(git -C "$REPO_DIR" rev-parse HEAD)
-            git -C "$REPO_DIR" merge --ff-only vps-mirror/main 2>/dev/null || \
-                git -C "$REPO_DIR" merge --ff-only vps-mirror/master 2>/dev/null || true
-            local _after; _after=$(git -C "$REPO_DIR" rev-parse HEAD)
-            if [[ "$_before" != "$_after" ]]; then
-                return 0  # зеркало принесло новые коммиты
-            fi
-            log_info "VPS-зеркало не принесло новых коммитов, пробуем GitHub..."
         else
             log_warn "VPS-зеркало недоступно, пробуем GitHub напрямую..."
+            if ! git -C "$REPO_DIR" fetch --tags origin 2>/dev/null; then
+                log_warn "Не удалось получить обновления"
+                return 1
+            fi
+            log_info "Получено из GitHub"
         fi
+    else
+        if ! git -C "$REPO_DIR" fetch --tags origin 2>/dev/null; then
+            log_warn "Не удалось получить обновления"
+            return 1
+        fi
+        log_info "Получено из GitHub"
     fi
 
-    # Fallback: GitHub напрямую
-    if ! git -C "$REPO_DIR" fetch origin 2>/dev/null; then
-        log_warn "Не удалось получить обновления"
+    # Найти последний тег vX.Y.Z
+    local latest_tag
+    latest_tag="$(git -C "$REPO_DIR" tag -l 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null \
+        | sort -V | tail -1)"
+    if [[ -z "$latest_tag" ]]; then
+        log_warn "Теги vX.Y.Z не найдены"
         return 1
     fi
+
     local _before; _before=$(git -C "$REPO_DIR" rev-parse HEAD)
-    git -C "$REPO_DIR" merge --ff-only origin/main 2>/dev/null || \
-        git -C "$REPO_DIR" merge --ff-only origin/master 2>/dev/null || {
-            log_warn "Не удалось смержить обновления"
-            return 1
-        }
+    git -C "$REPO_DIR" checkout --detach "$latest_tag" 2>/dev/null || {
+        log_warn "Не удалось переключиться на тег $latest_tag"
+        return 1
+    }
     local _after; _after=$(git -C "$REPO_DIR" rev-parse HEAD)
-    [[ "$_before" != "$_after" ]] && return 0
-    log_info "Нет новых коммитов"
+    if [[ "$_before" != "$_after" ]]; then
+        log_ok "Переключено на $latest_tag"
+        return 0
+    fi
+    log_info "Уже на последнем теге: $latest_tag"
     return 1
 }
 
@@ -736,21 +745,21 @@ check_updates() {
     local current_ver; current_ver="$(cat "$REPO_DIR/version" 2>/dev/null | tr -d '[:space:]' || echo 'unknown')"
     log_info "Текущая версия: ${current_ver}"
 
-    # Синхронизировать VPS-зеркало
+    # Синхронизировать VPS-зеркало (сервер тянет с GitHub)
     if [[ -n "${VPS_IP:-}" ]]; then
-        vps_exec "cd /opt/vpn/vpn-repo.git && git fetch --all --quiet" 2>/dev/null || true
+        vps_exec "cd /opt/vpn/vpn-repo.git && git fetch --tags --quiet" 2>/dev/null || true
     fi
 
-    # Получить версию из удалённого репозитория (не применять локально)
-    local remote_ver
+    # Получить последний тег vX.Y.Z из удалённого репозитория (не применять локально)
+    local remote_ver=""
     if [[ -n "${VPS_IP:-}" ]]; then
         remote_ver="$(GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes" \
-            git -C "$REPO_DIR" fetch vps-mirror 2>/dev/null && \
-            git -C "$REPO_DIR" show vps-mirror/master:version 2>/dev/null | tr -d '[:space:]')" || true
+            git -C "$REPO_DIR" ls-remote --tags vps-mirror 'refs/tags/v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null \
+            | awk '{print $2}' | sed 's|refs/tags/||' | grep -v '\^{}' | sort -V | tail -1)" || true
     fi
     if [[ -z "${remote_ver:-}" ]]; then
-        git -C "$REPO_DIR" fetch origin --quiet 2>/dev/null || true
-        remote_ver="$(git -C "$REPO_DIR" show origin/master:version 2>/dev/null | tr -d '[:space:]')" || true
+        remote_ver="$(git -C "$REPO_DIR" ls-remote --tags origin 'refs/tags/v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null \
+            | awk '{print $2}' | sed 's|refs/tags/||' | grep -v '\^{}' | sort -V | tail -1)" || true
     fi
 
     if [[ -z "${remote_ver:-}" || "${remote_ver}" == "${current_ver}" ]]; then
@@ -767,7 +776,7 @@ check_updates() {
         return 0
     fi
 
-    # Извлечь секцию CHANGELOG для новой версии
+    # Извлечь секцию CHANGELOG для новой версии (из origin/master без применения)
     local changelog
     changelog="$(git -C "$REPO_DIR" show origin/master:CHANGELOG.md 2>/dev/null \
         | awk "/^## \[${remote_ver}\]/{found=1; next} found && /^## \[/{exit} found{print}" \

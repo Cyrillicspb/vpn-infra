@@ -109,6 +109,45 @@ else
     warn "MASQUERADE не найден (VPN-трафик может не выходить в интернет)"
 fi
 
+# 12. Поведенческий тест: заблокированный трафик идёт через tun, не через eth0
+# Берём первый IP из blocked_static — он должен маршрутизироваться через table 200
+BLOCKED_IP=$(nft list set inet vpn blocked_static 2>/dev/null \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+if [[ -n "$BLOCKED_IP" ]]; then
+    route_out=$(ip route get "$BLOCKED_IP" mark 0x1 2>/dev/null || true)
+    if echo "$route_out" | grep -qE "(tun[0-9]|awgtun|UNREACHABLE)"; then
+        if echo "$route_out" | grep -q "UNREACHABLE"; then
+            pass "kill switch ACTIVE: $BLOCKED_IP → UNREACHABLE (tun упал, трафик заблокирован)"
+        else
+            tun_dev=$(echo "$route_out" | grep -oP 'dev \K\S+' | head -1)
+            pass "kill switch routing OK: $BLOCKED_IP → tun ($tun_dev)"
+        fi
+    elif echo "$route_out" | grep -qE "dev (eth|ens|enp)"; then
+        fail "УТЕЧКА: $BLOCKED_IP (fwmark 0x1) маршрутизируется через eth0!"
+        echo "       ip route get: $route_out"
+    else
+        warn "kill switch: неожиданный маршрут для $BLOCKED_IP: $route_out"
+    fi
+else
+    warn "blocked_static пуст — нет IP для поведенческого теста"
+fi
+
+# 13. Незаблокированный трафик идёт через eth0 (split tunneling работает)
+# Берём IP из table 100 (должен идти напрямую)
+ETH_IFACE=$(ip route show default table main 2>/dev/null | grep -oP 'dev \K\S+' | head -1)
+if [[ -n "$ETH_IFACE" ]]; then
+    # 8.8.8.8 — Google DNS, не должен быть в blocked_static (незаблокированный)
+    TEST_IP="8.8.8.8"
+    route_direct=$(ip route get "$TEST_IP" from 10.177.1.1 2>/dev/null || true)
+    if echo "$route_direct" | grep -q "dev $ETH_IFACE"; then
+        pass "split tunneling: незаблокированный $TEST_IP → $ETH_IFACE (прямой выход)"
+    elif echo "$route_direct" | grep -qE "tun|UNREACHABLE"; then
+        warn "split tunneling: $TEST_IP идёт через tun или UNREACHABLE (всё через VPN?)"
+    else
+        warn "split tunneling: неожиданный маршрут для $TEST_IP: $route_direct"
+    fi
+fi
+
 echo ""
 echo "Итог ${TEST_NAME}: PASS=$PASS FAIL=$FAIL WARN=$WARN"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1

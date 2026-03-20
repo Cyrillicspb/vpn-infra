@@ -12,71 +12,13 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
     exit 1
 fi
 
-# ── Цвета и константы ────────────────────────────────────────────────────────
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
+# ── Константы и общие функции ─────────────────────────────────────────────────
 
 STEP="${STEP:-8}"
-TOTAL_STEPS=57
-STATE_FILE="/opt/vpn/.setup-state"
-ENV_FILE="/opt/vpn/.env"
-
-# ── Вспомогательные функции ──────────────────────────────────────────────────
-
-log_info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
-log_ok()    { echo -e "${GREEN}[✓]${NC}   $*"; }
-log_warn()  { echo -e "${YELLOW}[!]${NC}   $*"; }
-log_error() { echo -e "${RED}[✗]${NC}   $*" >&2; }
-
-_progress_bar() {
-    local current="$1" total="$2" width=40
-    local pct=$(( current * 100 / total ))
-    local filled=$(( current * width / total ))
-    local empty=$(( width - filled ))
-    local bar=""
-    local i
-    for (( i=0; i<filled; i++ )); do bar+="█"; done
-    for (( i=0; i<empty;  i++ )); do bar+="░"; done
-    echo -e "    ${CYAN}[${bar}]${NC} ${BOLD}${pct}%${NC} (${current}/${total})"
-}
-
-step() {
-    ((STEP++)) || true
-    echo ""
-    echo -e "${CYAN}${BOLD}━━━ Шаг ${STEP}/${TOTAL_STEPS}: $* ━━━${NC}"
-    _progress_bar "$STEP" "$TOTAL_STEPS"
-}
-
-is_done()   { grep -qxF "$1" "$STATE_FILE" 2>/dev/null; }
-step_done() { echo "$1" >> "$STATE_FILE"; log_ok "Готово: $1"; }
-step_skip() { ((STEP++)) || true; log_info "Пропуск (уже выполнено): $1"; }
-
-die() {
-    log_error "$*"
-    echo ""
-    echo -e "${RED}━━━ Ошибка ━━━${NC}"
-    echo "  Проблема: $*"
-    echo "  Действие: проверьте вывод выше и устраните причину."
-    echo "  Повтор:   sudo bash setup.sh  (выполненные шаги будут пропущены)"
-    exit 1
-}
-
-env_set() {
-    local key="$1" val="$2"
-    mkdir -p "$(dirname "$ENV_FILE")"
-    touch "$ENV_FILE"
-    # Используем grep+delete+append вместо sed — безопасно для значений с |, /, &, \
-    # || true: grep возвращает 1 на пустом файле или если строка не найдена — это нормально
-    { grep -v "^${key}=" "$ENV_FILE" || true; } > "${ENV_FILE}.tmp"
-    mv "${ENV_FILE}.tmp" "$ENV_FILE"
-    echo "${key}=${val}" >> "$ENV_FILE"
-}
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=common.sh
+source "$_SCRIPT_DIR/common.sh"
+unset _SCRIPT_DIR
 
 # ── Загрузка переменных окружения ────────────────────────────────────────────
 

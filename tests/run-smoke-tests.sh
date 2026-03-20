@@ -28,7 +28,7 @@ while [[ $# -gt 0 ]]; do
         --timeout) TIMEOUT="${2:-60}"; shift 2 ;;
         -h|--help)
             echo "Использование: $0 [--test <имя>] [--quick] [--verbose] [--timeout <сек>]"
-            echo "Имена тестов: dns, tunnel, split, kill_switch, watchdog, bot, docker, blocked_sites"
+            echo "Имена тестов: key_consistency, state_files, ssh_proxy, dns, tunnel, split, kill_switch, watchdog, bot, docker, blocked_sites"
             exit 0
             ;;
         *) echo "Неизвестный параметр: $1"; exit 1 ;;
@@ -45,10 +45,13 @@ declare -A TESTS=(
     ["docker"]="$SMOKE_DIR/test_docker.sh"
     ["bot"]="$SMOKE_DIR/test_bot.sh"
     ["blocked_sites"]="$SMOKE_DIR/test_blocked_sites.sh"
+    ["key_consistency"]="$SMOKE_DIR/test_key_consistency.sh"
+    ["state_files"]="$SMOKE_DIR/test_state_files.sh"
+    ["ssh_proxy"]="$SMOKE_DIR/test_ssh_proxy.sh"
 )
 
 # Порядок выполнения
-TEST_ORDER=(dns split kill_switch tunnel watchdog docker bot blocked_sites)
+TEST_ORDER=(key_consistency state_files ssh_proxy dns split kill_switch tunnel watchdog docker bot blocked_sites)
 
 # Медленные тесты (пропускаются в --quick режиме)
 SLOW_TESTS=(blocked_sites)

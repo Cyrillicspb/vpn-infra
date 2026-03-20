@@ -97,6 +97,47 @@ else
     warn "wg0 не имеет peers (нет клиентов?)"
 fi
 
+# 10. WireGuard handshake: Tier-2 пир (VPS) должен иметь свежий handshake
+WG0_PEERS=$(sudo wg show wg0 latest-handshakes 2>/dev/null || true)
+if [[ -n "$WG0_PEERS" ]]; then
+    now=$(date +%s)
+    stale_count=0
+    fresh_count=0
+    while read -r pubkey ts; do
+        [[ -z "$pubkey" || -z "$ts" ]] && continue
+        [[ "$ts" == "0" ]] && continue  # ни разу не соединялся
+        age=$(( now - ts ))
+        if (( age < 180 )); then
+            (( fresh_count++ ))
+        else
+            (( stale_count++ ))
+        fi
+    done <<< "$WG0_PEERS"
+
+    if (( fresh_count > 0 )); then
+        pass "wg0: $fresh_count peer(s) с handshake < 3 мин (активные)"
+    elif (( stale_count > 0 )); then
+        warn "wg0: $stale_count peer(s) с устаревшим handshake > 3 мин"
+    fi
+fi
+
+# 11. WG1 handshake аналогично
+WG1_PEERS=$(sudo wg show wg1 latest-handshakes 2>/dev/null || true)
+if [[ -n "$WG1_PEERS" ]]; then
+    now=$(date +%s)
+    stale_wg1=0; fresh_wg1=0
+    while read -r pubkey ts; do
+        [[ -z "$pubkey" || -z "$ts" || "$ts" == "0" ]] && continue
+        age=$(( now - ts ))
+        (( age < 180 )) && (( fresh_wg1++ )) || (( stale_wg1++ ))
+    done <<< "$WG1_PEERS"
+    if (( fresh_wg1 > 0 )); then
+        pass "wg1: $fresh_wg1 peer(s) с handshake < 3 мин"
+    elif (( stale_wg1 > 0 )); then
+        warn "wg1: $stale_wg1 peer(s) без свежего handshake"
+    fi
+fi
+
 echo ""
 echo "Итог ${TEST_NAME}: PASS=$PASS FAIL=$FAIL WARN=$WARN"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
