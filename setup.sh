@@ -667,7 +667,13 @@ phase0() {
 
         # Создание каталога vpn-routes
         mkdir -p /etc/vpn-routes
-        [[ -f /etc/vpn-routes/manual-vpn.txt ]]   || touch /etc/vpn-routes/manual-vpn.txt
+        if [[ ! -f /etc/vpn-routes/manual-vpn.txt ]]; then
+            # Предзаполняем Telegram API — нужен для алертов watchdog с хоста
+            cat > /etc/vpn-routes/manual-vpn.txt << 'EOF'
+# Telegram API — требуется для отправки алертов watchdog напрямую с хоста
+api.telegram.org
+EOF
+        fi
         [[ -f /etc/vpn-routes/manual-direct.txt ]] || touch /etc/vpn-routes/manual-direct.txt
         [[ -f /etc/vpn-routes/combined.cidr ]]     || touch /etc/vpn-routes/combined.cidr
 
