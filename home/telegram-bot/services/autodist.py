@@ -20,7 +20,7 @@ import io
 import logging
 
 from aiogram.types import BufferedInputFile
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -138,9 +138,13 @@ class AutoDist:
             )
 
         # .conf файл
+        if device.get("is_router"):
+            _filename = f"vpn-{device['device_name']}.conf"
+        else:
+            _filename = f"{device['device_name']}_{date.today()}.conf"
         await self.bot.send_document(
             chat_id,
-            document=BufferedInputFile(conf_text.encode(), filename=f"vpn-{device['device_name']}.conf"),
+            document=BufferedInputFile(conf_text.encode(), filename=_filename),
             caption=f"Конфигурация `{device['device_name']}`{caption_reason}",
         )
 

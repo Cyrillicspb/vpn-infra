@@ -3149,9 +3149,12 @@ async def cb_adm_broadcast_configs(cb: CallbackQuery, **kw):
                     f"📋 Конфиг <b>{device['device_name']}</b> обновлён\n"
                     f"⚠️ Приватный ключ — не пересылайте!"
                 )
+                from datetime import date as _date
+                _fname = f"vpn-{device['device_name']}.conf" if device.get("is_router") \
+                    else f"{device['device_name']}_{_date.today()}.conf"
                 await bot.send_document(
                     chat_id,
-                    BufferedInputFile(conf_text.encode(), filename=f"{device['device_name']}.conf"),
+                    BufferedInputFile(conf_text.encode(), filename=_fname),
                     caption=caption,
                     parse_mode="HTML",
                 )
