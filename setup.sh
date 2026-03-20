@@ -398,53 +398,170 @@ phase0() {
             log_info "SSH-ключ уже существует: /root/.ssh/vpn_id_ed25519"
         fi
 
-        SSH_PORT="${VPS_SSH_PORT:-22}"
+        # ─── 4-этапный bootstrap: определяем метод подключения к VPS ───────────
+        SSH_PORT=""
+        BOOTSTRAP_METHOD=""
+        PROXY_CMD=""
+        NFQWS_BOOTSTRAP_STARTED=false
 
-        # Проверка доступности порта VPS
-        log_info "Проверка доступности VPS ${VPS_IP}:${SSH_PORT}..."
-        if ! timeout 10 bash -c ">/dev/tcp/${VPS_IP}/${SSH_PORT}" 2>/dev/null; then
-            log_warn "Порт ${SSH_PORT} недоступен. Пробуем порт 22..."
-            if ! timeout 10 bash -c ">/dev/tcp/${VPS_IP}/22" 2>/dev/null; then
-                echo ""
-                echo -e "${RED}━━━ VPS недоступен ━━━${NC}"
-                echo "  Ни порт ${SSH_PORT}, ни порт 22 на ${VPS_IP} не отвечают."
-                echo "  Действия:"
-                echo "    - Войдите в веб-консоль VPS-провайдера"
-                echo "    - Убедитесь что SSH запущен: systemctl status ssh (или sshd)"
-                echo "    - Проверьте firewall: ufw status или iptables -L"
-                die "VPS недоступен через SSH"
+        # Попытка 1: порт 22 напрямую
+        log_info "Попытка 1/4: SSH напрямую порт 22..."
+        if timeout 10 bash -c ">/dev/tcp/${VPS_IP}/22" 2>/dev/null; then
+            SSH_PORT="22"; BOOTSTRAP_METHOD="direct"
+            log_ok "VPS доступен на порту 22"
+
+        # Попытка 2: порт 443 напрямую (SSH уже настроен на 443 при повторном запуске)
+        elif timeout 10 bash -c ">/dev/tcp/${VPS_IP}/443" 2>/dev/null; then
+            SSH_PORT="443"; BOOTSTRAP_METHOD="direct"
+            log_ok "VPS доступен на порту 443"
+
+        else
+            # Попытка 3: DPI bypass через nfqws
+            log_warn "Прямой SSH недоступен. Попытка 3/4: DPI bypass через nfqws..."
+
+            _install_nfqws_minimal() {
+                if [[ -x /usr/local/bin/nfqws ]]; then
+                    log_info "nfqws уже установлен, используем существующий"; return 0
+                fi
+                local arch_dir tmp_dir release_url bin
+                case "$(uname -m)" in
+                    x86_64)  arch_dir="x86_64" ;;
+                    aarch64) arch_dir="aarch64" ;;
+                    *) log_warn "Неподдерживаемая архитектура: $(uname -m)"; return 1 ;;
+                esac
+                tmp_dir=$(mktemp -d)
+                release_url=""
+                if curl -sSfL --connect-timeout 15 \
+                        "https://api.github.com/repos/bol-van/zapret/releases/latest" \
+                        -o "$tmp_dir/r.json" 2>/dev/null; then
+                    release_url=$(python3 -c "
+import json
+d=json.load(open('$tmp_dir/r.json'))
+for a in d.get('assets',[]):
+    if a['name'].endswith('.tar.gz'): print(a['browser_download_url']); break
+" 2>/dev/null || true)
+                fi
+                [[ -z "$release_url" ]] && \
+                    release_url="https://github.com/bol-van/zapret/archive/refs/heads/master.tar.gz"
+                if ! curl -sSfL --connect-timeout 60 "$release_url" \
+                        -o "$tmp_dir/z.tar.gz" 2>/dev/null; then
+                    rm -rf "$tmp_dir"; log_warn "Не удалось загрузить zapret"; return 1
+                fi
+                tar -xzf "$tmp_dir/z.tar.gz" -C "$tmp_dir" 2>/dev/null
+                bin=$(find "$tmp_dir" -path "*binaries/${arch_dir}/nfqws" -type f 2>/dev/null | head -1)
+                [[ -z "$bin" ]] && \
+                    bin=$(find "$tmp_dir" -name "nfqws" -type f 2>/dev/null | head -1)
+                if [[ -z "$bin" ]]; then
+                    rm -rf "$tmp_dir"; log_warn "nfqws бинарник не найден в архиве"; return 1
+                fi
+                cp "$bin" /usr/local/bin/nfqws && chmod +x /usr/local/bin/nfqws
+                rm -rf "$tmp_dir"
+                log_ok "nfqws установлен"
+            }
+
+            if _install_nfqws_minimal; then
+                modprobe nfnetlink_queue 2>/dev/null || true
+                # Временные nftables правила: отправляем SSH/HTTPS к VPS через nfqws
+                nft add table inet vpn_bootstrap 2>/dev/null || true
+                nft add chain inet vpn_bootstrap output \
+                    '{ type filter hook output priority mangle; }' 2>/dev/null || true
+                nft add rule inet vpn_bootstrap output \
+                    ip daddr "${VPS_IP}" tcp dport "{22,443}" \
+                    queue num 200 bypass 2>/dev/null || true
+                /usr/local/bin/nfqws --daemon --qnum=200 \
+                    --filter-tcp=22,443 \
+                    --dpi-desync=fakedsplit --dpi-desync-autottl=2 \
+                    2>/dev/null && NFQWS_BOOTSTRAP_STARTED=true || true
+                sleep 2
+                if timeout 10 bash -c ">/dev/tcp/${VPS_IP}/22" 2>/dev/null; then
+                    SSH_PORT="22"; BOOTSTRAP_METHOD="nfqws"
+                    log_ok "VPS доступен через nfqws на порту 22"
+                elif timeout 10 bash -c ">/dev/tcp/${VPS_IP}/443" 2>/dev/null; then
+                    SSH_PORT="443"; BOOTSTRAP_METHOD="nfqws"
+                    log_ok "VPS доступен через nfqws на порту 443"
+                else
+                    log_warn "nfqws не помог — переходим к socat bootstrap"
+                fi
             fi
-            SSH_PORT="22"
-            env_set "VPS_SSH_PORT" "22"
-            VPS_SSH_PORT="22"
+
+            # Попытка 4: socat bootstrap через веб-консоль VPS
+            if [[ -z "$BOOTSTRAP_METHOD" ]]; then
+                log_warn "Попытка 4/4: Bootstrap через веб-консоль VPS..."
+                apt-get install -y -qq socat 2>/dev/null || \
+                    die "Не удалось установить socat. Проверьте доступ к интернету."
+                echo ""
+                echo -e "${BOLD}${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                echo -e "${BOLD}${YELLOW}  SSH к VPS заблокирован провайдером${NC}"
+                echo -e "${BOLD}${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                echo ""
+                echo "  Нужно выполнить одну команду в веб-консоли VPS."
+                echo ""
+                echo "  1. Зайдите в панель управления VPS-провайдера"
+                echo "  2. Откройте Console / VNC / noVNC"
+                echo "  3. Войдите как root"
+                echo "  4. Выполните команду:"
+                echo ""
+                echo -e "  ${CYAN}${BOLD}bash <(curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/bootstrap-vps.sh)${NC}"
+                echo ""
+                echo "  Или вручную (если GitHub недоступен):"
+                echo -e "  ${CYAN}apt install -y socat openssl"
+                echo "  openssl req -x509 -newkey rsa:2048 -keyout /tmp/k.pem -out /tmp/c.pem \\"
+                echo "    -days 1 -nodes -subj '/CN=vpn' 2>/dev/null"
+                echo "  cat /tmp/c.pem /tmp/k.pem > /tmp/vpn-bootstrap.pem && rm /tmp/k.pem /tmp/c.pem"
+                echo -e "  socat OPENSSL-LISTEN:443,reuseaddr,fork,cert=/tmp/vpn-bootstrap.pem,verify=0 TCP:127.0.0.1:22 &${NC}"
+                echo ""
+                read -r -p "  Нажмите Enter когда команда выполнена на VPS..." _bs_dummy
+                echo ""
+
+                log_info "Проверка socat bootstrap (порт 443 VPS)..."
+                _bs_retry=0
+                while ! timeout 10 bash -c ">/dev/tcp/${VPS_IP}/443" 2>/dev/null; do
+                    _bs_retry=$(( _bs_retry + 1 ))
+                    [[ $_bs_retry -ge 6 ]] && die \
+                        "Порт 443 VPS не отвечает. Убедитесь что команда bootstrap выполнена."
+                    log_warn "Порт 443 не отвечает, ждём... (${_bs_retry}/6)"
+                    sleep 5
+                done
+
+                # Socat создаёт TLS-туннель 443 → SSH :22 на VPS
+                SSH_PORT="22"
+                PROXY_CMD="socat - OPENSSL-CONNECT:${VPS_IP}:443,verify=0"
+                BOOTSTRAP_METHOD="socat"
+                log_ok "Socat bootstrap активен"
+            fi
         fi
-        log_ok "VPS доступен на порту ${SSH_PORT}"
+
+        [[ -z "$BOOTSTRAP_METHOD" ]] && die "Не удалось подключиться к VPS"
+        env_set "VPS_SSH_PORT" "${SSH_PORT}"
+        VPS_SSH_PORT="${SSH_PORT}"
+        log_ok "Метод подключения: ${BOOTSTRAP_METHOD}, порт: ${SSH_PORT}"
 
         # Временная функция для подключения как root
+        # Динамически читает PROXY_CMD и SSH_PORT (меняются при переключении метода)
         _vps_root_exec() {
+            local _extra=()
+            [[ -n "${PROXY_CMD:-}" ]] && _extra+=(-o "ProxyCommand=${PROXY_CMD}")
             ssh -p "${SSH_PORT}" -i /root/.ssh/vpn_id_ed25519 \
                 -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+                "${_extra[@]}" \
                 "root@${VPS_IP}" "$@"
         }
 
         # Копирование ключа на VPS через sshpass
-        # Сначала проверяем: может ключ уже установлен (повторный запуск)
         log_info "Копирование SSH-ключа на VPS..."
-        if ssh -i /root/.ssh/vpn_id_ed25519 \
-                -p "${SSH_PORT}" \
-                -o StrictHostKeyChecking=no \
-                -o ConnectTimeout=10 \
-                -o BatchMode=yes \
-                "root@${VPS_IP}" "echo ok" 2>/dev/null; then
+        SSH_KEY_TEST_OPTS=(-p "${SSH_PORT}" -i /root/.ssh/vpn_id_ed25519
+                           -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes)
+        [[ -n "${PROXY_CMD:-}" ]] && SSH_KEY_TEST_OPTS+=(-o "ProxyCommand=${PROXY_CMD}")
+        if ssh "${SSH_KEY_TEST_OPTS[@]}" "root@${VPS_IP}" "echo ok" 2>/dev/null; then
             log_ok "SSH-ключ уже установлен на VPS, пропускаем ssh-copy-id"
         else
             [[ -z "${VPS_ROOT_PASSWORD:-}" ]] && \
                 die "VPS_ROOT_PASSWORD не задан. Добавьте в /opt/vpn/.env и повторите."
+            SSH_COPY_OPTS=(-i /root/.ssh/vpn_id_ed25519.pub -p "${SSH_PORT}"
+                           -o StrictHostKeyChecking=no)
+            [[ -n "${PROXY_CMD:-}" ]] && SSH_COPY_OPTS+=(-o "ProxyCommand=${PROXY_CMD}")
             sshpass -p "${VPS_ROOT_PASSWORD}" ssh-copy-id \
-                -i /root/.ssh/vpn_id_ed25519.pub \
-                -p "${SSH_PORT}" \
-                -o StrictHostKeyChecking=no \
-                "root@${VPS_IP}" 2>/dev/null \
+                "${SSH_COPY_OPTS[@]}" "root@${VPS_IP}" 2>/dev/null \
                 || die "Не удалось скопировать SSH-ключ на VPS. Проверьте пароль root."
             log_ok "SSH-ключ скопирован на VPS"
         fi
@@ -465,22 +582,60 @@ phase0() {
              chmod 440 /etc/sudoers.d/sysadmin"
 
         # Отключение root SSH и парольной аутентификации
-        log_info "Защита SSH на VPS..."
+        log_info "Настройка SSH на VPS..."
         _vps_root_exec \
             "sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config; \
              grep -q '^PermitRootLogin' /etc/ssh/sshd_config \
                  || echo 'PermitRootLogin no' >> /etc/ssh/sshd_config; \
              sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config; \
              grep -q '^PasswordAuthentication' /etc/ssh/sshd_config \
-                 || echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config; \
-             systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true" 2>/dev/null || true
+                 || echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config" 2>/dev/null || true
+
+        if [[ "$BOOTSTRAP_METHOD" == "socat" ]]; then
+            # Socat bootstrap: добавляем SSH порт 443 на VPS, затем убираем socat.
+            # nohup чтобы команда пережила разрыв соединения при kill socat.
+            log_info "Переводим VPS SSH на порт 443, убираем socat..."
+            _vps_root_exec \
+                "grep -q '^Port 443' /etc/ssh/sshd_config \
+                     || echo 'Port 443' >> /etc/ssh/sshd_config; \
+                 nohup bash -c 'sleep 3 && \
+                     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null; \
+                     sleep 1 && pkill -f \"socat.*443\" 2>/dev/null; \
+                     rm -f /tmp/vpn-bootstrap.pem' \
+                     >/dev/null 2>&1 &" 2>/dev/null || true
+            # Соединение разорвётся через ~3 сек (socat убит), ждём прямого SSH:443
+            log_info "Ожидание прямого SSH на порту 443..."
+            sleep 6
+            _bs_wait=0
+            while ! timeout 10 bash -c ">/dev/tcp/${VPS_IP}/443" 2>/dev/null; do
+                _bs_wait=$(( _bs_wait + 1 ))
+                [[ $_bs_wait -ge 12 ]] && die \
+                    "SSH порт 443 не ответил после перезагрузки (ждали 36 сек)"
+                sleep 3
+            done
+            SSH_PORT="443"; PROXY_CMD=""
+            env_set "VPS_SSH_PORT" "443"; VPS_SSH_PORT="443"
+            log_ok "Переключились на прямой SSH:443 (socat bootstrap завершён)"
+        else
+            _vps_root_exec \
+                "systemctl reload ssh 2>/dev/null || \
+                 systemctl reload sshd 2>/dev/null || true" 2>/dev/null || true
+        fi
+
+        # Cleanup: удаляем временные nfqws bootstrap правила
+        if [[ "$NFQWS_BOOTSTRAP_STARTED" == "true" ]]; then
+            log_info "Очистка временных nfqws bootstrap правил..."
+            pkill -f "nfqws.*qnum=200" 2>/dev/null || true
+            nft delete table inet vpn_bootstrap 2>/dev/null || true
+            log_ok "Временные nfqws правила удалены"
+        fi
 
         # Пароль root больше не нужен — очищаем из .env
         env_set "VPS_ROOT_PASSWORD" ""
         unset VPS_ROOT_PASSWORD
         log_info "VPS_ROOT_PASSWORD очищен из .env"
 
-        log_ok "VPS защищён: sysadmin настроен, root SSH и парольный вход отключены"
+        log_ok "VPS настроен: sysadmin создан, SSH защищён (метод: ${BOOTSTRAP_METHOD})"
         step_done "step06_vps_ssh_bootstrap"
     fi
 
