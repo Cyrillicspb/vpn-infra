@@ -190,6 +190,14 @@ phase0() {
         mkdir -p /opt/vpn
         [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
 
+        # step03 мог быть пропущен (повторный запуск), а EXTERNAL_IP ещё не в .env
+        if [[ -z "${EXTERNAL_IP:-}" ]]; then
+            EXTERNAL_IP=$(curl -sf --max-time 8 https://api.ipify.org 2>/dev/null) \
+                || EXTERNAL_IP=$(curl -sf --max-time 8 https://ifconfig.me 2>/dev/null) \
+                || EXTERNAL_IP=$(curl -sf --max-time 8 https://icanhazip.com 2>/dev/null) \
+                || EXTERNAL_IP=""
+        fi
+
         echo ""
         echo -e "${BOLD}  Введите данные для подключения к VPS:${NC}"
         ask VPS_IP "IP-адрес VPS (например: 1.2.3.4)"
@@ -229,7 +237,8 @@ phase0() {
             ask DDNS_TOKEN "DDNS токен" yes
             WG_HOST="${DDNS_DOMAIN}"
         else
-            WG_HOST="${EXTERNAL_IP}"
+            WG_HOST="${EXTERNAL_IP:-}"
+            [[ -z "$WG_HOST" ]] && die "Не удалось определить внешний IP. Укажите DDNS или проверьте интернет."
         fi
 
         # ── CDN-стек (Cloudflare Workers) — опциональный ──────────────────────────
