@@ -1,0 +1,26 @@
+# ~/.ssh/config — генерируется setup.sh через envsubst из home/ssh/vps.conf.template
+# Не редактировать вручную: будет перезаписан при повторном запуске setup.sh
+
+Host vps
+  HostName ${VPS_IP}
+  User sysadmin
+  Port ${VPS_SSH_PORT}
+  ProxyCommand /opt/vpn/scripts/ssh-proxy.sh %h %p
+  ServerAliveInterval 15
+  ServerAliveCountMax 3
+  IdentityFile /root/.ssh/vpn_id_ed25519
+  StrictHostKeyChecking no
+
+# Прямое подключение без прокси — для диагностики и bootstrap
+Host vps-direct
+  HostName ${VPS_IP}
+  User sysadmin
+  Port ${VPS_SSH_PORT}
+  IdentityFile /root/.ssh/vpn_id_ed25519
+  StrictHostKeyChecking no
+
+Host *
+  IdentityFile /root/.ssh/vpn_id_ed25519
+  StrictHostKeyChecking no
+  ConnectTimeout 15
+  ServerAliveInterval 60

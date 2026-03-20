@@ -82,13 +82,64 @@ load_env() {
 }
 
 # ── SSH к VPS ─────────────────────────────────────────────────────────────────
+SSH_PROXY_CMD="/opt/vpn/scripts/ssh-proxy.sh"
+
+# vps_exec — быстрые read-only команды (echo, cat, docker ps, etc.)
+# Обрыв соединения при переключении стека не критичен — легко повторить.
 vps_exec() {
     local port="${VPS_SSH_PORT:-22}"
+    local proxy_opts=()
+    [[ -x "$SSH_PROXY_CMD" ]] && proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
     ssh -p "$port" -i "$SSH_KEY" \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=15 \
         -o BatchMode=yes \
+        "${proxy_opts[@]}" \
         "sysadmin@${VPS_IP:-localhost}" "$@" 2>/dev/null
+}
+
+# vps_tmux_exec — все команды которые что-то меняют на VPS (docker, apt, git).
+# Запускает команду в tmux-сессии, устойчив к переключению стека.
+# При обрыве SSH-сессии команда продолжает работать на VPS.
+vps_tmux_exec() {
+    local cmd="$1"
+    local timeout="${2:-300}"  # секунд ожидания, по умолчанию 5 минут
+    local port="${VPS_SSH_PORT:-22}"
+    local proxy_opts=()
+    [[ -x "$SSH_PROXY_CMD" ]] && proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
+    local _ssh="ssh -p $port -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes ${proxy_opts[*]}"
+    local session="deploy_$$_${RANDOM}"
+    local out_file="/tmp/${session}.out"
+    local rc_file="/tmp/${session}.rc"
+
+    # Запускаем команду в detached tmux-сессии
+    $_ssh "sysadmin@${VPS_IP}" \
+        "tmux new-session -d -s '${session}' \
+         'bash -c \"${cmd//\"/\\\"}\" > ${out_file} 2>&1; echo \$? > ${rc_file}'" \
+        2>/dev/null || return 1
+
+    # Ждём завершения (опрос rc_file)
+    local elapsed=0
+    while (( elapsed < timeout )); do
+        sleep 3; elapsed=$(( elapsed + 3 ))
+        if $_ssh "sysadmin@${VPS_IP}" \
+                "[ -f '${rc_file}' ] && echo done" 2>/dev/null | grep -q "done"; then
+            break
+        fi
+    done
+
+    # Читаем вывод и exit code
+    local output rc_val
+    output=$($_ssh "sysadmin@${VPS_IP}" "cat '${out_file}' 2>/dev/null" 2>/dev/null || true)
+    rc_val=$($_ssh "sysadmin@${VPS_IP}" "cat '${rc_file}' 2>/dev/null" 2>/dev/null || echo "1")
+
+    # Очищаем tmux-сессию и временные файлы
+    $_ssh "sysadmin@${VPS_IP}" \
+        "tmux kill-session -t '${session}' 2>/dev/null; \
+         rm -f '${out_file}' '${rc_file}'" 2>/dev/null || true
+
+    [[ -n "$output" ]] && echo "$output"
+    return "${rc_val:-1}"
 }
 
 # =============================================================================
@@ -384,6 +435,8 @@ deploy_vps() {
 
     local ssh_port="${VPS_SSH_PORT:-22}"
     local rsync_ssh="ssh -p $ssh_port -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes"
+    [[ -x "$SSH_PROXY_CMD" ]] && \
+        rsync_ssh+=" -o ProxyCommand='${SSH_PROXY_CMD} %h %p'"
     local vps_target="sysadmin@${VPS_IP}"
 
     # ── Синхронизация конфигов VPS при изменениях ───────────────────────────────
@@ -447,7 +500,7 @@ deploy_vps() {
         # Общий up -d: подхватит новые образы и изменения в compose
         cmd+=" && docker compose up -d --remove-orphans"
 
-        if vps_exec "$cmd"; then
+        if vps_tmux_exec "$cmd" 300; then
             log_ok "VPS ${VPS_IP} обновлён"
             VPS_DEPLOY_STATUS="✅ ${VPS_IP}"
             return 0

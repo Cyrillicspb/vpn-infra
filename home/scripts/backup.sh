@@ -264,15 +264,29 @@ log_ok "Финальный файл: $(basename "$FINAL_FILE") ($(du -m "$FINAL_
 if [[ "$NO_UPLOAD" == "false" && -n "${VPS_IP:-}" ]]; then
     log "Отправка на VPS ${VPS_IP}..."
     SSH_PORT="${VPS_SSH_PORT:-22}"
-    if scp -P "$SSH_PORT" -i "$SSH_KEY" \
-        -o StrictHostKeyChecking=no \
-        -o ConnectTimeout=30 \
-        "$FINAL_FILE" "${FINAL_FILE}.sha256" \
-        "sysadmin@${VPS_IP}:${VPS_BACKUP_DIR}/" 2>/dev/null; then
+    SSH_PROXY_CMD="/opt/vpn/scripts/ssh-proxy.sh"
+    SSH_PROXY_OPTS=()
+    [[ -x "$SSH_PROXY_CMD" ]] && SSH_PROXY_OPTS=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
+
+    _backup_scp=false
+    for _retry in 1 2 3; do
+        if scp -P "$SSH_PORT" -i "$SSH_KEY" \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=30 \
+            "${SSH_PROXY_OPTS[@]}" \
+            "$FINAL_FILE" "${FINAL_FILE}.sha256" \
+            "sysadmin@${VPS_IP}:${VPS_BACKUP_DIR}/" 2>/dev/null; then
+            _backup_scp=true; break
+        fi
+        [[ $_retry -lt 3 ]] && { log_warn "scp retry ${_retry}/3..."; sleep 10; }
+    done
+
+    if [[ "$_backup_scp" == "true" ]]; then
         log_ok "Отправлено на VPS"
         # Ротация на VPS (оставить последние 30 дней)
         ssh -p "$SSH_PORT" -i "$SSH_KEY" \
             -o StrictHostKeyChecking=no -o BatchMode=yes \
+            "${SSH_PROXY_OPTS[@]}" \
             "sysadmin@${VPS_IP}" \
             "find ${VPS_BACKUP_DIR} -name 'vpn-backup-*' -mtime +${RETENTION_DAYS} -delete 2>/dev/null || true" \
             2>/dev/null || true

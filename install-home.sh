@@ -1314,3 +1314,45 @@ else
 
     step_done "step32_install_zapret"
 fi
+
+# ── Шаг 33: Адаптивный SSH-прокси и SSH config ───────────────────────────────
+if is_done "step33_ssh_proxy"; then
+    step_skip "step33_ssh_proxy"
+else
+    step "Установка адаптивного SSH-прокси (ssh-proxy.sh + SSH config)"
+
+    # netcat-openbsd нужен для nc -X 5 (SOCKS5 ProxyCommand)
+    if ! dpkg -l netcat-openbsd 2>/dev/null | grep -q "^ii"; then
+        log_info "Установка netcat-openbsd..."
+        apt-get install -y -qq netcat-openbsd
+    fi
+    log_ok "netcat-openbsd установлен"
+
+    # Устанавливаем ssh-proxy.sh
+    mkdir -p /opt/vpn/scripts
+    if [[ -f "${REPO_DIR}/home/scripts/ssh-proxy.sh" ]]; then
+        cp "${REPO_DIR}/home/scripts/ssh-proxy.sh" /opt/vpn/scripts/ssh-proxy.sh
+        chmod +x /opt/vpn/scripts/ssh-proxy.sh
+        log_ok "ssh-proxy.sh установлен: /opt/vpn/scripts/ssh-proxy.sh"
+    else
+        log_warn "home/scripts/ssh-proxy.sh не найден в ${REPO_DIR}"
+    fi
+
+    # Генерируем ~/.ssh/config из шаблона
+    SSH_CONFIG_TEMPLATE="${REPO_DIR}/home/ssh/vps.conf.template"
+    if [[ -f "$SSH_CONFIG_TEMPLATE" ]]; then
+        mkdir -p /root/.ssh
+        chmod 700 /root/.ssh
+        # envsubst подставляет VPS_IP и VPS_SSH_PORT из .env
+        envsubst '${VPS_IP} ${VPS_SSH_PORT}' < "$SSH_CONFIG_TEMPLATE" \
+            > /root/.ssh/config
+        chmod 600 /root/.ssh/config
+        log_ok "SSH config сгенерирован: /root/.ssh/config"
+        log_info "  Host vps → ${VPS_IP}:${VPS_SSH_PORT:-22} через ssh-proxy.sh"
+        log_info "  Host vps-direct → ${VPS_IP}:${VPS_SSH_PORT:-22} напрямую"
+    else
+        log_warn "Шаблон SSH config не найден: $SSH_CONFIG_TEMPLATE"
+    fi
+
+    step_done "step33_ssh_proxy"
+fi

@@ -1367,6 +1367,44 @@ async def test_standby_tunnels() -> None:
 _LOCK = asyncio.Lock()   # глобальный mutex decision engine
 
 
+def _get_stack_socks_port(stack_name: str) -> int:
+    """Возвращает SOCKS5-порт плагина, читая из client.yaml."""
+    plugin = plugins.get(stack_name)
+    if not plugin:
+        return 1080
+    cy_path = plugin.dir / "client.yaml"
+    if not cy_path.exists():
+        return 1080
+    try:
+        import yaml as _yaml
+        cy = _yaml.safe_load(cy_path.read_text())
+        sp = cy.get("socks_port")
+        if sp is None:
+            listen = cy.get("socks5", {}).get("listen", "127.0.0.1:1080")
+            sp = listen.split(":")[-1]
+        return int(sp)
+    except Exception:
+        return 1080
+
+
+def _write_vpn_state_files(stack_name: str) -> None:
+    """Атомарно записывает /var/run/vpn-active-{socks-port,stack}.
+    Используется ssh-proxy.sh для адаптивного туннелирования SSH.
+    """
+    socks_port = _get_stack_socks_port(stack_name)
+    for path, content in (
+        ("/var/run/vpn-active-socks-port", str(socks_port)),
+        ("/var/run/vpn-active-stack",      stack_name),
+    ):
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(content)
+            os.replace(tmp, path)
+        except Exception as e:
+            logger.warning(f"Не удалось записать {path}: {e}")
+
+
 async def _do_switch(new_stack: str, reason: str) -> bool:
     """
     Make-before-break переключение стека.
@@ -1431,6 +1469,7 @@ async def _do_switch(new_stack: str, reason: str) -> bool:
     if len(state.rotation_log) > 20:
         state.rotation_log = state.rotation_log[-20:]
     state.save()
+    _write_vpn_state_files(new_stack)
 
     logger.info(f"Стек переключён: {old_stack} → {new_stack}")
     alert(f"🔄 VPN стек переключён: *{old_stack}* → *{new_stack}*\nПричина: {reason}")
@@ -2896,6 +2935,9 @@ async def on_startup() -> None:
 
     # Загружаем состояние
     state.load()
+
+    # Обновляем state files для ssh-proxy.sh на основе загруженного состояния
+    _write_vpn_state_files(state.active_stack)
 
     # Инициализируем vps_list из .env если список пустой
     if VPS_IP and not any(v["ip"] == VPS_IP for v in state.vps_list):
