@@ -217,6 +217,7 @@ async def reg_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
     except Exception:
         pass
 
+    await cb.message.answer("📋 Меню", reply_markup=menu_reply_kb())
     await cb.message.answer(
         f"✅ *Регистрация завершена!*\n\n"
         f"Устройство: `{device_name}`\n"
@@ -235,7 +236,7 @@ async def reg_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
         await cb.message.answer(
             "📖 <b>Как установить:</b>\n"
             "1. Скачайте AmneziaWG: "
-            "<a href='https://apps.apple.com/app/amneziawg/id1600529900'>iOS</a> | "
+            "<a href='https://apps.apple.com/app/amneziawg/id6478942951'>iOS</a> | "
             "<a href='https://play.google.com/store/apps/details?id=org.amnezia.awg'>Android</a>\n"
             "2. Откройте приложение → \"+\" → \"Импортировать из QR-кода\" (или из файла)\n"
             "3. Включите переключатель — готово!\n\n"
@@ -292,7 +293,7 @@ async def reg_protocol(message: Message, state: FSMContext, **kw):
         f"Устройство: `{device_name}`\n"
         f"Протокол: `{protocol.upper()}`\n\n"
         f"Конфиг отправляется...",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=menu_reply_kb(),
     )
     await message.answer("Выберите действие:", reply_markup=client_main_menu())
     await state.clear()
@@ -307,7 +308,7 @@ async def reg_protocol(message: Message, state: FSMContext, **kw):
         await message.answer(
             "📖 <b>Как установить:</b>\n"
             "1. Скачайте AmneziaWG: "
-            "<a href='https://apps.apple.com/app/amneziawg/id1600529900'>iOS</a> | "
+            "<a href='https://apps.apple.com/app/amneziawg/id6478942951'>iOS</a> | "
             "<a href='https://play.google.com/store/apps/details?id=org.amnezia.awg'>Android</a>\n"
             "2. Откройте приложение → \"+\" → \"Импортировать из QR-кода\" (или из файла)\n"
             "3. Включите переключатель — готово!\n\n"
