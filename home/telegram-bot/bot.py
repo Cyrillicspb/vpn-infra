@@ -241,7 +241,10 @@ async def main() -> None:
     dp.shutdown.register(_shutdown)
 
     logger.info(f"Запуск polling (admin={config.admin_chat_id})")
-    await bot.delete_webhook(drop_pending_updates=True)
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        logger.warning(f"delete_webhook не удался (сеть недоступна?): {e}")
     await dp.start_polling(bot)
 
 
