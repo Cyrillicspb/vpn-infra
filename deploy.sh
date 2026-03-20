@@ -239,12 +239,20 @@ git_pull() {
     fi
 
     # Fallback: GitHub напрямую
-    git -C "$REPO_DIR" fetch origin 2>/dev/null && \
-        git -C "$REPO_DIR" merge --ff-only origin/main 2>/dev/null || \
+    if ! git -C "$REPO_DIR" fetch origin 2>/dev/null; then
+        log_warn "Не удалось получить обновления"
+        return 1
+    fi
+    local _before; _before=$(git -C "$REPO_DIR" rev-parse HEAD)
+    git -C "$REPO_DIR" merge --ff-only origin/main 2>/dev/null || \
         git -C "$REPO_DIR" merge --ff-only origin/master 2>/dev/null || {
-            log_warn "Не удалось получить обновления"
+            log_warn "Не удалось смержить обновления"
             return 1
         }
+    local _after; _after=$(git -C "$REPO_DIR" rev-parse HEAD)
+    [[ "$_before" != "$_after" ]] && return 0
+    log_info "Нет новых коммитов"
+    return 1
 }
 
 # =============================================================================
