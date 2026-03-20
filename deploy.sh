@@ -263,6 +263,8 @@ apply_system_configs() {
         if nft -c -f "$src" 2>/dev/null; then
             cp "$src" "$dst"
             nft -f "$dst" && log_ok "nftables обновлён" || log_warn "nft -f завершился с ошибкой"
+            # nftables.conf делает flush ruleset — восстанавливаем blocked_static
+            nft -f /etc/nftables-blocked-static.conf 2>/dev/null && log_ok "blocked_static восстановлен" || log_warn "blocked_static не найден — будет заполнен dnsmasq"
             changed=true
         else
             log_warn "nftables.conf не прошёл валидацию (nft -c) — пропускаем"
