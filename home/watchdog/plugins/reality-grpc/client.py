@@ -46,7 +46,7 @@ async def start(temp_port: str = ""):
     proc = subprocess.Popen([
         "/usr/local/bin/tun2socks",
         "-device", tun_name,
-        "-proxy", f"socks5h://127.0.0.1:{socks_port}",
+        "-proxy", f"socks5://127.0.0.1:{socks_port}",
         "-loglevel", "warning",
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -72,7 +72,7 @@ async def stop():
 async def test() -> int:
     rc, stdout, _ = await run_cmd(
         ["curl", "-s", "--max-time", "10",
-         "--proxy", f"socks5h://127.0.0.1:{SOCKS_PORT}",
+         "--proxy", f"socks5://127.0.0.1:{SOCKS_PORT}",
          "-o", "/dev/null", "-w", "%{http_code}",
          "https://youtube.com"],
         timeout=15,
