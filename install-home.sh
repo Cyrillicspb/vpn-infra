@@ -1263,8 +1263,12 @@ else
         mkdir -p /opt/vpn/telegram-bot/data
         chmod 777 /opt/vpn/telegram-bot/data
 
+        log_info "Сборка локальных Docker-образов (telegram-bot)..."
+        docker compose build --quiet 2>/dev/null \
+            || log_warn "docker compose build завершился с предупреждениями"
+
         log_info "Загрузка Docker-образов..."
-        docker compose pull --quiet 2>/dev/null || true
+        docker compose pull --ignore-buildable --quiet 2>/dev/null || true
 
         log_info "Запуск контейнеров..."
         docker compose up -d --remove-orphans 2>/dev/null \
