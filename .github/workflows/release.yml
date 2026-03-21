@@ -27,9 +27,8 @@ jobs:
 
       - name: Собрать архив репозитория
         run: |
-          # vpn-infra.tar.gz — полный архив для scp-установки.
-          # Исключения: .git, *.pyc, __pycache__, venv, node_modules, *.log, .env
-          tar -czf vpn-infra.tar.gz \
+          # Пишем в /tmp чтобы избежать "file changed as we read it"
+          tar -czf /tmp/vpn-infra.tar.gz \
             --exclude='.git' \
             --exclude='*.pyc' \
             --exclude='__pycache__' \
@@ -38,6 +37,7 @@ jobs:
             --exclude='*.log' \
             --exclude='.env' \
             -C . .
+          mv /tmp/vpn-infra.tar.gz vpn-infra.tar.gz
           echo "Размер архива: $(du -sh vpn-infra.tar.gz | cut -f1)"
 
       - name: Создать GitHub Release с установщиками
