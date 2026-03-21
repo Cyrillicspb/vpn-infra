@@ -171,7 +171,7 @@ if is_done "step36_vps_nftables"; then
 else
     step "Настройка nftables на VPS (rate limiting + защита портов)"
     log_info "Rate limiting: TCP/UDP 443 — 200/сек, burst 500 (защита Xray + Hysteria2)"
-    log_info "Открытые порты: 22 (SSH), 443 (Xray/Hysteria2)"
+    log_info "Открытые порты: 22 (SSH), 443 (Xray/Hysteria2), 8022 (SSH аварийный)"
 
     vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables"
 
@@ -189,8 +189,8 @@ table inet filter {
         # Established/related
         ct state established,related accept
 
-        # SSH (стандартный порт + опциональный 443)
-        tcp dport { 22, 443 } ct state new accept
+        # SSH основной порт + аварийный 8022 (DPI блокирует 22 и 443 при падении стеков)
+        tcp dport { 22, 8022 } ct state new accept
 
         # CDN-стек: Cloudflare Worker → VPS:8080 (VLESS+splithttp, защищён UUID)
         tcp dport 8080 ct state new accept
@@ -267,7 +267,7 @@ else
     step "Настройка fail2ban на VPS"
 
     vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fail2ban"
-    vps_exec "printf '[DEFAULT]\nbantime = 86400\nfindtime = 300\nmaxretry = 3\nbackend = systemd\n\n[sshd]\nenabled = true\nport = 22,443\nfilter = sshd\nmode = aggressive\nmaxretry = 3\n' | \
+    vps_exec "printf '[DEFAULT]\nbantime = 86400\nfindtime = 300\nmaxretry = 3\nbackend = systemd\n\n[sshd]\nenabled = true\nport = 22,8022\nfilter = sshd\nmode = aggressive\nmaxretry = 3\n' | \
         sudo tee /etc/fail2ban/jail.local > /dev/null"
     vps_exec "sudo systemctl enable fail2ban && sudo systemctl restart fail2ban"
 
@@ -475,6 +475,15 @@ else
         log_ok "SSH освобождён с порта 443, остался на порту 22"
         log_info "Примечание: дальнейший доступ к VPS — через адаптивный SOCKS5 прокси (Block 2)"
     fi
+
+    # Добавляем аварийный SSH порт 8022 — доступен напрямую при падении всех стеков.
+    # DPI блокирует SSH на 22 и 443, 8022 остаётся как запасной выход без прокси.
+    vps_exec "grep -q '^Port 8022$' /etc/ssh/sshd_config || { \
+        grep -q '^Port 22$' /etc/ssh/sshd_config || echo 'Port 22' | sudo tee -a /etc/ssh/sshd_config; \
+        echo 'Port 8022' | sudo tee -a /etc/ssh/sshd_config; \
+        sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null; \
+    }"
+    log_ok "SSH слушает на порту 22 + 8022 (аварийный)"
 
     # Проверяем наличие docker-compose.yml на VPS
     if ! vps_exec "[ -f /opt/vpn/docker-compose.yml ] && echo exists" 2>/dev/null \

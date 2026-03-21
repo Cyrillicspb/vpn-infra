@@ -18,10 +18,17 @@ if [[ -f "$SOCKS_PORT_FILE" ]]; then
     SOCKS_PORT=$(tr -d '[:space:]' < "$SOCKS_PORT_FILE" 2>/dev/null)
 fi
 
+EMERGENCY_PORT="8022"
+
 if [[ -n "$SOCKS_PORT" && "$SOCKS_PORT" =~ ^[0-9]+$ ]]; then
     # Через активный SOCKS5-прокси стека
     exec nc -X 5 -x "127.0.0.1:${SOCKS_PORT}" "$HOST" "$PORT"
 else
-    # Прямое подключение — fallback
-    exec nc "$HOST" "$PORT"
+    # Прямое подключение — watchdog не запущен или стеки недоступны.
+    # Пробуем основной порт; если недоступен (DPI блокирует) — аварийный 8022.
+    if nc -z -w 5 "$HOST" "$PORT" 2>/dev/null; then
+        exec nc "$HOST" "$PORT"
+    else
+        exec nc "$HOST" "$EMERGENCY_PORT"
+    fi
 fi

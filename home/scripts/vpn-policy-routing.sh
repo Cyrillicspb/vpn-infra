@@ -70,6 +70,18 @@ route_exists() {
     ip route show table "$table" | grep -q "$*"
 }
 
+# Явные маршруты VPS через eth0 — предотвращают routing loop.
+# hysteria2 добавляет host route VPS_IP dev tun-hysteria2 в main table,
+# из-за чего xray-client (reality, grpc, cdn) уходит через tun → loop.
+# Маршрут с metric 1 ниже чем hysteria2 добавляет, поэтому побеждает.
+ensure_vps_routes() {
+    for vps_ip in ${VPS_IP:-} ${VPS_IP2:-} ${VPS_IP3:-}; do
+        [[ -z "$vps_ip" ]] && continue
+        ip route replace "$vps_ip" via "$GATEWAY" dev "$ETH_IFACE" metric 1
+        log "VPS route: $vps_ip via $GATEWAY dev $ETH_IFACE metric 1 (anti-loop)"
+    done
+}
+
 # ── UP: настройка routing ────────────────────────────────────────────────────
 setup_routing() {
     log "Настройка policy routing (tun=$TUN_IFACE, eth=$ETH_IFACE, gw=$GATEWAY)"
@@ -150,6 +162,9 @@ setup_routing() {
         log "Rule: from $WG_SUBNET → table $TABLE_VPN (priority 200)"
     fi
 
+    # Защита от routing loop: VPS IP всегда через eth0
+    ensure_vps_routes
+
     # Сохраняем активный tun в state file
     echo "${TUN_IFACE:-}" > "$STATE_FILE"
 
@@ -176,6 +191,10 @@ update_tun() {
     # ip route replace = replace or add (без окна без маршрута)
     ip route replace default dev "$new_tun" table $TABLE_MARKED
     echo "$new_tun" > "$STATE_FILE"
+
+    # После смены tun повторно закрепляем VPS IP через eth0 —
+    # hysteria2 мог добавить host route в main table при старте
+    ensure_vps_routes
 
     log "Table $TABLE_MARKED: default → $new_tun"
 }

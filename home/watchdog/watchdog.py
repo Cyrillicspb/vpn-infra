@@ -1471,6 +1471,13 @@ async def _do_switch(new_stack: str, reason: str) -> bool:
     state.save()
     _write_vpn_state_files(new_stack)
 
+    # Перезапускаем tier-2 SSH туннель — он зависит от активного стека (SOCKS5).
+    # После смены стека меняется порт прокси, autossh должен переподключиться.
+    asyncio.create_task(run_cmd(
+        ["systemctl", "restart", "autossh-vpn"],
+        timeout=15,
+    ))
+
     logger.info(f"Стек переключён: {old_stack} → {new_stack}")
     alert(f"🔄 VPN стек переключён: *{old_stack}* → *{new_stack}*\nПричина: {reason}")
     return True

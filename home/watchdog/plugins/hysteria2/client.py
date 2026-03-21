@@ -48,7 +48,7 @@ async def start(temp_port: str = ""):
     proc = subprocess.Popen([
         "/usr/local/bin/tun2socks",
         "-device", tun_name,
-        "-proxy", f"socks5://127.0.0.1:{SOCKS_PORT}",
+        "-proxy", f"socks5h://127.0.0.1:{SOCKS_PORT}",
         "-loglevel", "warning",
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -77,7 +77,7 @@ async def test() -> int:
     """Тест работоспособности стека через SOCKS5."""
     rc, stdout, _ = await run_cmd(
         ["curl", "-s", "--max-time", "10",
-         "--proxy", f"socks5://127.0.0.1:{SOCKS_PORT}",
+         "--proxy", f"socks5h://127.0.0.1:{SOCKS_PORT}",
          "-o", "/dev/null", "-w", "%{http_code}",
          "http://www.gstatic.com/generate_204"],
         timeout=15,
@@ -87,7 +87,7 @@ async def test() -> int:
         start_t = time.time()
         rc2, _, _ = await run_cmd(
             ["curl", "-s", "--max-time", "15",
-             "--proxy", f"socks5://127.0.0.1:{SOCKS_PORT}",
+             "--proxy", f"socks5h://127.0.0.1:{SOCKS_PORT}",
              "-o", "/dev/null",
              "https://speed.cloudflare.com/__down?bytes=1048576"],
             timeout=20,
