@@ -5,6 +5,14 @@
 
 ---
 
+## [v0.3.0.2] — 2026-03-22 — Исправление сборки Docker-образа telegram-bot
+
+### Исправления
+
+- **install-home.sh**: добавлен `docker compose build` перед `docker compose up` — telegram-bot собирается локально из Dockerfile, а не тянется с Docker Hub (где его нет). `docker compose pull` получил флаг `--ignore-buildable` чтобы не пытаться pull образов с `build:` секцией.
+
+---
+
 ## [v0.3.0.1] — 2026-03-22 — Исправления vpn-routes и autossh-vpn
 
 ### Исправления
