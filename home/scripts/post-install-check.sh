@@ -42,21 +42,21 @@ section() {
 ok() {
     local name="$1"
     log_ok "$name"
-    ((PASS++))
+    PASS=$((PASS+1))
     REPORT_LINES+=("✅ $name")
 }
 
 fail() {
     local name="$1" hint="${2:-}"
     log_fail "$name${hint:+ — $hint}"
-    ((FAIL++))
+    FAIL=$((FAIL+1))
     REPORT_LINES+=("❌ $name${hint:+ (${hint})}")
 }
 
 warn() {
     local name="$1" hint="${2:-}"
     log_warn "$name${hint:+ — $hint}"
-    ((WARN++))
+    WARN=$((WARN+1))
     REPORT_LINES+=("⚠️ $name${hint:+ (${hint})}")
 }
 
