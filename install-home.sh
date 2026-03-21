@@ -1103,6 +1103,14 @@ EOF
         log_ok "Скрипты скопированы в /opt/vpn/scripts/"
     fi
 
+    # Первоначальная загрузка баз РКН (не ждать до 03:00)
+    log_info "Первоначальная загрузка баз маршрутов..."
+    if python3 /opt/vpn/scripts/update-routes.py >> /var/log/vpn-routes.log 2>&1; then
+        log_ok "Базы маршрутов загружены ($(wc -l < /etc/vpn-routes/combined.cidr) записей)"
+    else
+        log_warn "Загрузка баз маршрутов завершилась с ошибкой — проверьте /var/log/vpn-routes.log"
+    fi
+
     log_ok "Cron-задания настроены"
     step_done "step29_configure_cron"
 fi
