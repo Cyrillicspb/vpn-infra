@@ -776,13 +776,15 @@ if is_done "step24_policy_routing_units"; then
 else
     step "Настройка policy routing и systemd-юнитов"
 
-    # Скрипт policy routing уже в /opt/vpn/scripts/ (из репозитория)
-    ROUTING_SCRIPT="/opt/vpn/scripts/vpn-policy-routing.sh"
-    if [[ ! -f "$ROUTING_SCRIPT" ]]; then
-        # Попробуем найти в другом месте
-        ROUTING_SCRIPT="/opt/vpn/home/scripts/vpn-policy-routing.sh"
+    # Скрипт policy routing должен быть в /opt/vpn/scripts/ — туда указывает ExecStart.
+    # step29 копирует все скрипты позже, поэтому копируем явно уже здесь.
+    STEP24_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    mkdir -p /opt/vpn/scripts
+    if [[ ! -f /opt/vpn/scripts/vpn-policy-routing.sh ]]; then
+        SRC="${STEP24_REPO}/home/scripts/vpn-policy-routing.sh"
+        [[ -f "$SRC" ]] && cp "$SRC" /opt/vpn/scripts/vpn-policy-routing.sh
     fi
-    [[ -f "$ROUTING_SCRIPT" ]] && chmod +x "$ROUTING_SCRIPT"
+    chmod +x /opt/vpn/scripts/vpn-policy-routing.sh 2>/dev/null || true
 
     # Создание /etc/iproute2/rt_tables записей если нет
     grep -q "^100 " /etc/iproute2/rt_tables 2>/dev/null \
