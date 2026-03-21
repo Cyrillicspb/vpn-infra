@@ -162,9 +162,20 @@ async def reg_invite(message: Message, state: FSMContext, **kw):
     bootstrap = await db.get_invite_bootstrap_info(code)
     await state.update_data(invite_code=code, _fsm_ts=_now(),
                             is_bootstrap=bool(bootstrap))
-    await message.answer(
-        "✅ Код принят!\n\nВведите *имя вашего устройства* (iPhone, MacBook, PC…):"
-    )
+    if bootstrap:
+        await message.answer(
+            "✅ Код принят!\n\n"
+            "📌 Это *bootstrap-инвайт* — конфиги были созданы заранее.\n\n"
+            "• Если вы *уже подключились* по одному из присланных конфигов — "
+            "просто введите имя устройства. Конфиг останется рабочим.\n"
+            "• Если вы *ещё не использовали* конфиги — тоже введите имя. "
+            "Временные конфиги будут удалены и бот создаст новый.\n\n"
+            "Введите *имя устройства* (iPhone, MacBook, PC…):"
+        )
+    else:
+        await message.answer(
+            "✅ Код принят!\n\nВведите *имя вашего устройства* (iPhone, MacBook, PC…):"
+        )
     await state.set_state(RegFSM.device_name)
 
 
@@ -176,7 +187,14 @@ async def _complete_bootstrap_registration(
     state: FSMContext,
     kw: dict,
 ) -> None:
-    """Завершить регистрацию по bootstrap-инвайту. Пир уже на сервере."""
+    """Завершить регистрацию по bootstrap-инвайту.
+
+    Два случая:
+    - last_handshake > 0: пользователь подключился через bootstrap AWG пир →
+      принимаем пир как постоянный, удаляем только WG temp пир.
+    - last_handshake == 0: конфиги не использовались →
+      удаляем оба temp пира, переходим к стандартному выбору протокола.
+    """
     db: Database = kw.get("db")
     data        = await state.get_data()
     invite_code = data.get("invite_code", "")
@@ -192,6 +210,42 @@ async def _complete_bootstrap_registration(
         await state.set_state(RegFSM.protocol)
         return
 
+    awg_peer_id = bootstrap.get("awg_peer_id", "")
+    wg_peer_id  = bootstrap.get("wg_peer_id", "")
+
+    # Проверяем, подключался ли пользователь через bootstrap AWG пир
+    peer_was_used = False
+    try:
+        wdc = WatchdogClient(config.watchdog_url, config.watchdog_token)
+        peers_info = await wdc.get_peers()
+        for p in (peers_info or {}).get("peers", []):
+            if p.get("public_key") == awg_peer_id and p.get("last_handshake", 0) > 0:
+                peer_was_used = True
+                break
+    except Exception:
+        # Если watchdog недоступен — предполагаем что пользовался (безопаснее)
+        peer_was_used = True
+
+    if not peer_was_used:
+        # Пользователь не подключался через bootstrap конфиги.
+        # Удаляем оба temp пира и переходим к стандартной регистрации.
+        try:
+            wdc2 = WatchdogClient(config.watchdog_url, config.watchdog_token)
+            await wdc2.remove_peer(awg_peer_id, interface="wg0")
+            await wdc2.remove_peer(wg_peer_id,  interface="wg1")
+        except Exception:
+            pass
+        # Сбрасываем bootstrap флаг — дальше пройдёт обычная регистрация
+        await state.update_data(is_bootstrap=False)
+        await message.answer(
+            "ℹ️ Временные конфиги не использовались и удалены.\n\n"
+            "Выберите *протокол* для нового подключения:",
+            reply_markup=proto_inline_kb(),
+        )
+        await state.set_state(RegFSM.protocol)
+        return  # reg_protocol_cb сделает register_client() + add_device() + watchdog add_peer
+
+    # Пользователь подключился через bootstrap AWG пир — принимаем его.
     try:
         await db.register_client(chat_id, username, invite_code, first_name)
     except ValueError as e:
@@ -199,17 +253,17 @@ async def _complete_bootstrap_registration(
         await state.clear()
         return
 
-    # Регистрируем AWG устройство с предсозданными ключами и IP
+    # Регистрируем AWG устройство с предсозданными ключами и IP (пир уже в wg0)
     device = await db.add_device(
         chat_id, device_name, "awg",
-        public_key=bootstrap.get("awg_peer_id", ""),
+        public_key=awg_peer_id,
         private_key=bootstrap.get("awg_privkey", ""),
         ip_address=bootstrap.get("awg_ip") or None,
     )
-    # Удаляем WG peer (он был только для bootstrap)
+    # Удаляем только WG temp пир (AWG остаётся)
     try:
         await WatchdogClient(config.watchdog_url, config.watchdog_token).remove_peer(
-            bootstrap.get("wg_peer_id", ""), interface="wg1"
+            wg_peer_id, interface="wg1"
         )
     except Exception:
         pass
@@ -219,8 +273,8 @@ async def _complete_bootstrap_registration(
         f"✅ *Регистрация завершена!*\n\n"
         f"Устройство: `{device_name}`\n"
         f"Протокол: `AWG`\n\n"
-        f"Конфиг у вас уже есть — тот, по которому вы подключились.\n"
-        f"/myconfig — посмотреть конфиг ещё раз.",
+        f"Ваш конфиг уже работает — ничего менять не нужно.\n"
+        f"/myconfig — посмотреть или переслать конфиг ещё раз.",
         reply_markup=client_main_menu(),
     )
     await state.clear()

@@ -639,14 +639,14 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
         awg_ip = (awg_resp or {}).get("ip") or ""
         wg_ip  = (wg_resp  or {}).get("ip") or ""
 
-        # Если watchdog не вернул IP — читаем из wg show
+        # Если watchdog не вернул IP — читаем из wg show (поле allowed_ips = "x.x.x.x/32")
         if not awg_ip or not wg_ip:
             peers_info = await wdc.get_peers()
             for p in (peers_info or {}).get("peers", []):
                 if p.get("public_key") == awg_pubkey:
-                    awg_ip = p.get("ip", "")
+                    awg_ip = p.get("allowed_ips", "").split("/")[0]
                 if p.get("public_key") == wg_pubkey:
-                    wg_ip = p.get("ip", "")
+                    wg_ip = p.get("allowed_ips", "").split("/")[0]
 
         code = await db.create_bootstrap_invite(
             str(message.from_user.id),
@@ -675,15 +675,20 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
 
         await message.answer(
             f"🎫 <b>Bootstrap-инвайт создан.</b>\n\n"
-            f"Перешлите клиенту конфиги ниже через любой мессенджер.\n"
-            f"Код для регистрации в боте: <code>{code}</code>\n\n"
-            f"Инструкция клиенту:\n"
+            f"Перешлите клиенту конфиги ниже через любой мессенджер (WhatsApp, Email и т.д.).\n"
+            f"Код для регистрации: <code>{code}</code>\n\n"
+            f"<b>Сценарий A — Telegram заблокирован (основной):</b>\n"
             f"1. Установите AmneziaWG или WireGuard\n"
             f"2. Импортируйте один из конфигов (.conf или QR)\n"
-            f"3. Включите VPN → откройте Telegram → напишите боту /start\n"
-            f"4. Введите код: <code>{code}</code>\n\n"
+            f"3. Включите VPN → откройте Telegram → напишите /start\n"
+            f"4. Введите код: <code>{code}</code>\n"
+            f"→ Конфиг останется прежним, AWG-пир сохранится как постоянный.\n\n"
+            f"<b>Сценарий B — Telegram уже доступен (без VPN):</b>\n"
+            f"1. Напишите боту /start\n"
+            f"2. Введите код: <code>{code}</code>\n"
+            f"→ Временные конфиги будут удалены, бот создаст и пришлёт новый конфиг.\n\n"
             f"Бот: {bot_link}\n"
-            f"⏳ Конфиги активны 24 часа.",
+            f"⏳ Bootstrap-конфиги активны 24 часа.",
             parse_mode="HTML",
         )
         # AWG конфиг + QR
@@ -2009,9 +2014,9 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
             peers_info = await wdc.get_peers()
             for p in (peers_info or {}).get("peers", []):
                 if p.get("public_key") == awg_pubkey:
-                    awg_ip = p.get("ip", "")
+                    awg_ip = p.get("allowed_ips", "").split("/")[0]
                 if p.get("public_key") == wg_pubkey:
-                    wg_ip = p.get("ip", "")
+                    wg_ip = p.get("allowed_ips", "").split("/")[0]
         code = await db.create_bootstrap_invite(
             str(cb.from_user.id),
             awg_peer_id=awg_pubkey, wg_peer_id=wg_pubkey,
@@ -2028,10 +2033,15 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
         bot_link = f"https://t.me/{me.username}" if me.username else "(открыть Telegram-бот)"
         await cb.message.answer(
             f"🎫 <b>Bootstrap-инвайт создан.</b>\n\n"
-            f"Перешлите конфиги клиенту через любой мессенджер.\n"
+            f"Перешлите конфиги клиенту через любой мессенджер (WhatsApp, Email и т.д.).\n"
             f"Код: <code>{code}</code>\n\n"
-            f"Инструкция: установить AWG/WG → включить VPN → /start в боте → ввести код.\n"
-            f"Бот: {bot_link}\n⏳ 24 часа.", parse_mode="HTML",
+            f"<b>Сценарий A — Telegram заблокирован:</b>\n"
+            f"AWG/WG → включить VPN → /start → ввести код.\n"
+            f"→ Конфиг останется прежним.\n\n"
+            f"<b>Сценарий B — Telegram доступен без VPN:</b>\n"
+            f"/start → ввести код (без VPN).\n"
+            f"→ Временные конфиги удалятся, бот пришлёт новый.\n\n"
+            f"Бот: {bot_link}\n⏳ Bootstrap-конфиги активны 24 часа.", parse_mode="HTML",
         )
         await cb.message.answer_document(
             BufferedInputFile(awg_conf.encode(), filename="vpn-bootstrap-awg.conf"),
