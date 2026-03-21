@@ -99,12 +99,12 @@ setup_routing() {
 
     if [[ -n "$TUN_IFACE" ]]; then
         # Маршрут по умолчанию через tun
-        ip route add default dev "$TUN_IFACE" table $TABLE_MARKED
+        ip route replace default dev "$TUN_IFACE" table $TABLE_MARKED
         log "Table $TABLE_MARKED: default dev $TUN_IFACE"
     else
         # Нет активного tun → UNREACHABLE (kill switch через routing)
-        ip route add unreachable default table $TABLE_MARKED
-        log "Table $TABLE_MARKED: unreachable (tun не определён)"
+        ip route replace unreachable default table $TABLE_MARKED
+        log "Table $TABLE_MARKED: unreachable (тun не определён)"
     fi
 
     # --- Table 100: VPN-клиенты (незаблокированное) → eth0 ---
@@ -113,7 +113,7 @@ setup_routing() {
     ip route flush table $TABLE_VPN 2>/dev/null || true
 
     # Маршрут по умолчанию через основной gateway
-    ip route add default via "$GATEWAY" dev "$ETH_IFACE" table $TABLE_VPN
+    ip route replace default via "$GATEWAY" dev "$ETH_IFACE" table $TABLE_VPN
     log "Table $TABLE_VPN: default via $GATEWAY dev $ETH_IFACE"
 
     # Локальная сеть — напрямую
@@ -123,7 +123,7 @@ setup_routing() {
     # --- Table 201: DPI-bypass (fwmark 0x2) → eth0 + zapret ---
 
     ip route flush table $TABLE_DPI 2>/dev/null || true
-    ip route add default via "$GATEWAY" dev "$ETH_IFACE" table $TABLE_DPI
+    ip route replace default via "$GATEWAY" dev "$ETH_IFACE" table $TABLE_DPI
     log "Table $TABLE_DPI: default via $GATEWAY dev $ETH_IFACE (DPI bypass)"
 
     # --- ip rules ---

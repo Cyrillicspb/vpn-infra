@@ -5,6 +5,15 @@
 
 ---
 
+## [v0.3.0.1] — 2026-03-22 — Исправления vpn-routes и autossh-vpn
+
+### Исправления
+
+- **vpn-policy-routing.sh**: `ip route add` → `ip route replace` — устраняет "RTNETLINK answers: File exists" при перезапуске сервиса или повторном запуске скрипта (идемпотентность).
+- **autossh-vpn.service**: убран несуществующий пользователь `vpntunnel` и несуществующий ключ `/opt/vpn/.ssh/vpn-tunnel-key`. Сервис теперь запускается от `root`, использует `/root/.ssh/vpn_id_ed25519` и подключается как `sysadmin@VPS` — аналогично `autossh-tier2`.
+
+---
+
 ## [v0.3.0.0] — 2026-03-21 — Bootstrap-инвайт, устойчивость установки
 
 ### Новое

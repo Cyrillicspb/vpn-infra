@@ -7,7 +7,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=vpntunnel
+User=root
 
 # autossh: автоматический перезапуск SSH при обрыве
 # AUTOSSH_GATETIME=0 — не ждать первого успешного соединения
@@ -25,11 +25,11 @@ ExecStart=/usr/bin/autossh -M 0 \
     -o "StrictHostKeyChecking=accept-new" \
     -o "BatchMode=yes" \
     -o "ConnectTimeout=15" \
-    -i /opt/vpn/.ssh/vpn-tunnel-key \
+    -i /root/.ssh/vpn_id_ed25519 \
     -N \
     -D 127.0.0.1:1083 \
     -p ${VPS_SSH_PORT:-22} \
-    vpntunnel@${VPS_IP}
+    sysadmin@${VPS_IP}
 
 Restart=on-failure
 RestartSec=10
