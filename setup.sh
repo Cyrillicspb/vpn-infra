@@ -1407,19 +1407,14 @@ phase4() {
             http://localhost:8080/status" \
         "systemctl status watchdog; journalctl -u watchdog -n 30"
 
-    # Шаг 53 — Telegram Bot
-    step "Тест Telegram-бота"
-    run_test "Telegram getMe API" \
-        "curl -sf --max-time 10 \
-            'https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN:-x}/getMe' \
-            | python3 -c \"import sys,json; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)\"" \
-        "Проверьте TELEGRAM_BOT_TOKEN в ${ENV_FILE}"
-
-    # Шаг 54 — Policy routing
+    # Шаг 53 — Policy routing
     step "Тест split tunneling (policy routing)"
-    run_test "Таблица маршрутизации 200 (blocked → tun)" \
-        "for i in \$(seq 1 15); do ip route show table 200 2>/dev/null | grep -q default && break || sleep 2; done; ip route show table 200 2>/dev/null | grep -q default" \
-        "systemctl status vpn-routes; bash /opt/vpn/scripts/vpn-policy-routing.sh status"
+    # Проверяем ip rule fwmark 0x1 → lookup 200, а НЕ маршрут в table 200.
+    # Маршрут default dev tun-X появляется только после старта watchdog и первого стека,
+    # а ip rule создаётся сразу при старте vpn-routes.service.
+    run_test "Policy routing: fwmark 0x1 → lookup 200" \
+        "ip rule show | grep -q 'fwmark 0x1 lookup 200'" \
+        "systemctl status vpn-routes; systemctl restart vpn-routes; ip rule show"
 
     # Шаг 55 — Мониторинг (домашний сервер)
     step "Тест мониторинга (домашний сервер)"
@@ -1439,6 +1434,22 @@ phase4() {
         "lsmod 2>/dev/null | grep -qi amneziawg \
             || dkms status 2>/dev/null | grep -qi amneziawg" \
         "dkms status; apt install amneziawg-dkms"
+
+    # Шаг 57 — Telegram Bot (после watchdog + активного стека + прогрева DNS)
+    # Telegram заблокирован в России — доступен только через VPN-туннель.
+    # Ждём до 60 сек пока watchdog поднимет первый стек и DNS прогреется.
+    step "Тест Telegram-бота (через VPN-туннель)"
+    run_test "Telegram getMe API (через тун)" \
+        "for i in \$(seq 1 12); do
+             if curl -sf --max-time 10 \
+                 'https://api.telegram.org/bot\${TELEGRAM_BOT_TOKEN:-x}/getMe' \
+                 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); exit(0 if d.get(\"ok\") else 1)'; then
+                 exit 0
+             fi
+             sleep 5
+         done
+         exit 1" \
+        "Telegram недоступен через тун. Проверьте: ip route show table 200; systemctl status watchdog; journalctl -u watchdog -n 30"
 
     # Итоги
     TOTAL=$((PASS + FAIL))

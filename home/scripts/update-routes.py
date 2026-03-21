@@ -218,8 +218,6 @@ STATIC_BLOCKED_DOMAINS: list[str] = [
     "google.com", "googleapis.com", "gstatic.com",
     "googleusercontent.com", "googletagmanager.com",
     "googlesyndication.com", "google-analytics.com",
-    # Мессенджеры (в случае блокировки)
-    "telegram.org", "t.me",
     # Новости/СМИ
     "meduza.io", "bbc.com", "bbc.co.uk", "dw.com",
     "rferl.org", "currenttime.tv", "svoboda.org",
@@ -229,6 +227,18 @@ STATIC_BLOCKED_DOMAINS: list[str] = [
     # Dev/Tech
     "github.com", "raw.githubusercontent.com",
     "stackoverflow.com",
+]
+
+# ── Tier-1 домены — всегда в blocked_static, неудаляемые ──────────────────────
+# Сервер в России — эти домены заблокированы на уровне ISP.
+# Вносятся в dnsmasq и nft blocked_static независимо от баз РКН и ручных списков.
+# НЕ могут быть удалены через /direct add или правкой manual-direct.txt.
+TIER1_DOMAINS: list[str] = [
+    # Telegram API — сервер использует для отправки алертов
+    "api.telegram.org",
+    "web.telegram.org",
+    "telegram.org",
+    "t.me",
 ]
 
 
@@ -1007,6 +1017,8 @@ def main() -> None:
 
     # Добавляем статические домены
     all_domains.update(STATIC_BLOCKED_DOMAINS)
+    # Tier-1 домены — всегда включены, неудаляемые (Telegram API и др.)
+    all_domains.update(TIER1_DOMAINS)
 
     # Загружаем ручные списки (manual-vpn.txt → в оба set-а)
     manual_networks, manual_domains = load_manual_vpn()
