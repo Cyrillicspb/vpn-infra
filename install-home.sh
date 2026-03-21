@@ -1111,6 +1111,16 @@ EOF
         log_warn "Загрузка баз маршрутов завершилась с ошибкой — проверьте /var/log/vpn-routes.log"
     fi
 
+    # Прогрев DNS-кэша (заполнить blocked_dynamic через dnsmasq)
+    if [[ -x /opt/vpn/scripts/dns-warmup.sh ]]; then
+        log_info "Прогрев DNS-кэша..."
+        if bash /opt/vpn/scripts/dns-warmup.sh >> /var/log/vpn-dns-warmup.log 2>&1; then
+            log_ok "DNS-кэш прогрет"
+        else
+            log_warn "Прогрев DNS завершился с ошибкой — проверьте /var/log/vpn-dns-warmup.log"
+        fi
+    fi
+
     log_ok "Cron-задания настроены"
     step_done "step29_configure_cron"
 fi
