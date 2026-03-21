@@ -171,6 +171,29 @@ class Database:
                 if "is_router" not in dev_cols:
                     conn.execute("ALTER TABLE devices ADD COLUMN is_router INTEGER NOT NULL DEFAULT 0")
                     conn.commit()
+                # Миграция: bootstrap invite поля
+                inv_cols = {r[1] for r in conn.execute("PRAGMA table_info(invite_codes)")}
+                if "awg_peer_id" not in inv_cols:
+                    conn.execute("ALTER TABLE invite_codes ADD COLUMN awg_peer_id TEXT")
+                    conn.commit()
+                if "wg_peer_id" not in inv_cols:
+                    conn.execute("ALTER TABLE invite_codes ADD COLUMN wg_peer_id TEXT")
+                    conn.commit()
+                if "is_bootstrap" not in inv_cols:
+                    conn.execute("ALTER TABLE invite_codes ADD COLUMN is_bootstrap INTEGER NOT NULL DEFAULT 0")
+                    conn.commit()
+                if "awg_ip" not in inv_cols:
+                    conn.execute("ALTER TABLE invite_codes ADD COLUMN awg_ip TEXT")
+                    conn.commit()
+                if "wg_ip" not in inv_cols:
+                    conn.execute("ALTER TABLE invite_codes ADD COLUMN wg_ip TEXT")
+                    conn.commit()
+                if "awg_privkey" not in inv_cols:
+                    conn.execute("ALTER TABLE invite_codes ADD COLUMN awg_privkey TEXT")
+                    conn.commit()
+                if "wg_privkey" not in inv_cols:
+                    conn.execute("ALTER TABLE invite_codes ADD COLUMN wg_privkey TEXT")
+                    conn.commit()
                 logger.info("БД инициализирована")
             finally:
                 conn.close()
@@ -320,6 +343,78 @@ class Database:
                 conn.close()
         return code
 
+    async def create_bootstrap_invite(
+        self,
+        created_by: str,
+        awg_peer_id: str,
+        wg_peer_id: str,
+        awg_ip: str,
+        wg_ip: str,
+        awg_privkey: str = "",
+        wg_privkey: str = "",
+        ttl_hours: int = 24,
+    ) -> str:
+        """Bootstrap-инвайт с предсозданными временными пирами. TTL 24ч."""
+        code = secrets.token_urlsafe(16)
+        expires_at = (datetime.now() + timedelta(hours=ttl_hours)).isoformat()
+        async with self._lock:
+            conn = self._conn()
+            try:
+                conn.execute(
+                    """INSERT INTO invite_codes
+                       (code, created_by, expires_at, is_bootstrap,
+                        awg_peer_id, wg_peer_id, awg_ip, wg_ip, awg_privkey, wg_privkey)
+                       VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)""",
+                    (code, str(created_by), expires_at,
+                     awg_peer_id, wg_peer_id, awg_ip, wg_ip, awg_privkey, wg_privkey),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return code
+
+    async def get_invite_bootstrap_info(self, code: str) -> Optional[dict]:
+        """Вернуть bootstrap-данные инвайта (peer IDs, IP). None если не bootstrap."""
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM invite_codes WHERE code = ? AND is_bootstrap = 1",
+                (code,)
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    async def get_expired_bootstrap_invites(self) -> list[dict]:
+        """Вернуть истёкшие bootstrap-инвайты с peer IDs для удаления."""
+        conn = self._conn()
+        try:
+            rows = conn.execute("""
+                SELECT * FROM invite_codes
+                WHERE is_bootstrap = 1
+                  AND used_by IS NULL
+                  AND datetime(expires_at) <= datetime('now')
+            """).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def delete_expired_bootstrap_invites(self) -> int:
+        """Удалить истёкшие bootstrap-инвайты из БД. Вернуть количество."""
+        async with self._lock:
+            conn = self._conn()
+            try:
+                cur = conn.execute("""
+                    DELETE FROM invite_codes
+                    WHERE is_bootstrap = 1
+                      AND used_by IS NULL
+                      AND datetime(expires_at) <= datetime('now')
+                """)
+                conn.commit()
+                return cur.rowcount
+            finally:
+                conn.close()
+
     async def reserve_invite_code(self, code: str, reserved_by: str) -> bool:
         async with self._lock:
             conn = self._conn()
@@ -421,6 +516,7 @@ class Database:
         private_key: str = "",
         pending: bool = False,
         is_router: bool = False,
+        ip_address: Optional[str] = None,
     ) -> dict:
         async with self._lock:
             conn = self._conn()
@@ -431,24 +527,24 @@ class Database:
                 if not client:
                     raise ValueError("Клиент не найден")
 
-                # IP пул
+                # IP пул — используем переданный IP (bootstrap) или выделяем новый
                 subnet = "10.177.1." if protocol == "awg" else "10.177.3."
-                used_ips = {
-                    r["ip_address"]
-                    for r in conn.execute(
-                        "SELECT ip_address FROM devices WHERE ip_address LIKE ?",
-                        (f"{subnet}%",),
-                    ).fetchall()
-                    if r["ip_address"]
-                }
-                ip_address = None
-                for i in range(2, 254):
-                    candidate = f"{subnet}{i}"
-                    if candidate not in used_ips:
-                        ip_address = candidate
-                        break
                 if not ip_address:
-                    raise ValueError(f"IP пул {subnet}0/24 исчерпан")
+                    used_ips = {
+                        r["ip_address"]
+                        for r in conn.execute(
+                            "SELECT ip_address FROM devices WHERE ip_address LIKE ?",
+                            (f"{subnet}%",),
+                        ).fetchall()
+                        if r["ip_address"]
+                    }
+                    for i in range(2, 254):
+                        candidate = f"{subnet}{i}"
+                        if candidate not in used_ips:
+                            ip_address = candidate
+                            break
+                    if not ip_address:
+                        raise ValueError(f"IP пул {subnet}0/24 исчерпан")
 
                 conn.execute("""
                     INSERT INTO devices

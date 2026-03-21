@@ -158,11 +158,76 @@ async def reg_invite(message: Message, state: FSMContext, **kw):
     if not await db.reserve_invite_code(code, str(message.from_user.id)):
         await message.answer("❌ Код неверный, использован или истёк.\nПопробуйте снова:")
         return
-    await state.update_data(invite_code=code, _fsm_ts=_now())
+    # Запоминаем флаг bootstrap для этапа завершения регистрации
+    bootstrap = await db.get_invite_bootstrap_info(code)
+    await state.update_data(invite_code=code, _fsm_ts=_now(),
+                            is_bootstrap=bool(bootstrap))
     await message.answer(
         "✅ Код принят!\n\nВведите *имя вашего устройства* (iPhone, MacBook, PC…):"
     )
     await state.set_state(RegFSM.device_name)
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap-регистрация (без выбора протокола — AWG пир уже создан)
+# ---------------------------------------------------------------------------
+async def _complete_bootstrap_registration(
+    message: Message,
+    state: FSMContext,
+    kw: dict,
+) -> None:
+    """Завершить регистрацию по bootstrap-инвайту. Пир уже на сервере."""
+    db: Database = kw.get("db")
+    data        = await state.get_data()
+    invite_code = data.get("invite_code", "")
+    device_name = data.get("device_name", "")
+    chat_id     = str(message.from_user.id)
+    username    = message.from_user.username or ""
+    first_name  = message.from_user.first_name or ""
+
+    bootstrap = await db.get_invite_bootstrap_info(invite_code)
+    if not bootstrap:
+        # Fallback: пройти обычный путь
+        await message.answer("Выберите *протокол*:", reply_markup=proto_inline_kb())
+        await state.set_state(RegFSM.protocol)
+        return
+
+    try:
+        await db.register_client(chat_id, username, invite_code, first_name)
+    except ValueError as e:
+        await message.answer(f"❌ {e}")
+        await state.clear()
+        return
+
+    # Регистрируем AWG устройство с предсозданными ключами и IP
+    device = await db.add_device(
+        chat_id, device_name, "awg",
+        public_key=bootstrap.get("awg_peer_id", ""),
+        private_key=bootstrap.get("awg_privkey", ""),
+        ip_address=bootstrap.get("awg_ip") or None,
+    )
+    # Удаляем WG peer (он был только для bootstrap)
+    try:
+        await WatchdogClient(config.watchdog_url, config.watchdog_token).remove_peer(
+            bootstrap.get("wg_peer_id", ""), interface="wg1"
+        )
+    except Exception:
+        pass
+
+    await message.answer("📋 Меню", reply_markup=menu_reply_kb())
+    await message.answer(
+        f"✅ *Регистрация завершена!*\n\n"
+        f"Устройство: `{device_name}`\n"
+        f"Протокол: `AWG`\n\n"
+        f"Конфиг у вас уже есть — тот, по которому вы подключились.\n"
+        f"/myconfig — посмотреть конфиг ещё раз.",
+        reply_markup=client_main_menu(),
+    )
+    await state.clear()
+
+    autodist: "AutoDist" = kw.get("autodist")
+    if autodist and device:
+        asyncio.create_task(autodist.send_to_device(chat_id, device, "Регистрация"))
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +240,12 @@ async def reg_name(message: Message, state: FSMContext, **kw):
         await message.answer("Имя должно быть от 2 до 30 символов:")
         return
     await state.update_data(device_name=name, _fsm_ts=_now())
+    data = await state.get_data()
+    if data.get("is_bootstrap"):
+        # Bootstrap-инвайт: пиры уже созданы, всегда используем AWG.
+        # Сразу завершаем регистрацию без выбора протокола.
+        await _complete_bootstrap_registration(message, state, kw)
+        return
     await message.answer("Выберите *протокол*:", reply_markup=proto_inline_kb())
     await state.set_state(RegFSM.protocol)
 

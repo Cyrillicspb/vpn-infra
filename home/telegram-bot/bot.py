@@ -154,6 +154,34 @@ async def reminder_loop(autodist: AutoDist) -> None:
             logger.error(f"reminder_loop: {exc}")
 
 
+async def _bootstrap_cleanup_loop(db: "Database") -> None:
+    """Каждый час удаляем истёкшие bootstrap-инвайты (пиры + DB-записи)."""
+    from services.watchdog_client import WatchdogClient
+    from config import config as _cfg
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            expired = await db.get_expired_bootstrap_invites()
+            if not expired:
+                continue
+            wdc = WatchdogClient(_cfg.watchdog_url, _cfg.watchdog_token)
+            for inv in expired:
+                for peer_id, iface in [
+                    (inv.get("awg_peer_id"), "wg0"),
+                    (inv.get("wg_peer_id"),  "wg1"),
+                ]:
+                    if peer_id:
+                        try:
+                            await wdc.remove_peer(peer_id, interface=iface)
+                        except Exception:
+                            pass
+            removed = await db.delete_expired_bootstrap_invites()
+            if removed:
+                logger.info(f"bootstrap_cleanup: удалено {removed} истёкших инвайтов")
+        except Exception as exc:
+            logger.error(f"bootstrap_cleanup_loop: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Startup / Shutdown
 # ---------------------------------------------------------------------------
@@ -184,6 +212,9 @@ async def on_startup(bot: Bot, dp: Dispatcher, db: Database, autodist: AutoDist)
 
     # Напоминания о конфигах
     asyncio.create_task(reminder_loop(autodist), name="reminder-loop")
+
+    # Очистка истёкших bootstrap-инвайтов (пиры + DB записи)
+    asyncio.create_task(_bootstrap_cleanup_loop(db), name="bootstrap-cleanup")
 
     try:
         await bot.send_message(config.admin_chat_id, "✅ *Бот запущен* и готов к работе.")

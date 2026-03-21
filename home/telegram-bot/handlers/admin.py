@@ -615,6 +615,99 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
         return
     await state.clear()
     db: Database = kw.get("db")
+
+    # Попытка создать bootstrap-инвайт с предсозданными пирами AWG + WG.
+    # Это позволяет получить конфиги заранее и переслать их через любой мессенджер
+    # (нужно для пользователей у которых Telegram заблокирован и нет VPN-доступа).
+    wdc = WatchdogClient(config.watchdog_url, config.watchdog_token)
+    try:
+        from services.config_builder import ConfigBuilder, wg_genkey
+        builder = ConfigBuilder()
+
+        # Генерируем пары ключей локально
+        awg_privkey, awg_pubkey = wg_genkey()
+        wg_privkey,  wg_pubkey  = wg_genkey()
+
+        # Добавляем временные пиры на сервер (watchdog выдаёт IP)
+        awg_resp = await wdc.add_peer(f"bootstrap-awg-{message.from_user.id}", "awg", awg_pubkey)
+        wg_resp  = await wdc.add_peer(f"bootstrap-wg-{message.from_user.id}",  "wg",  wg_pubkey)
+
+        # Небольшая пауза чтобы watchdog записал пир в wg0/wg1 и вернул IP
+        await asyncio.sleep(1.5)
+
+        # Получаем IP из ответа watchdog (ключ "ip") или вычисляем из пулов
+        awg_ip = (awg_resp or {}).get("ip") or ""
+        wg_ip  = (wg_resp  or {}).get("ip") or ""
+
+        # Если watchdog не вернул IP — читаем из wg show
+        if not awg_ip or not wg_ip:
+            peers_info = await wdc.get_peers()
+            for p in (peers_info or {}).get("peers", []):
+                if p.get("public_key") == awg_pubkey:
+                    awg_ip = p.get("ip", "")
+                if p.get("public_key") == wg_pubkey:
+                    wg_ip = p.get("ip", "")
+
+        code = await db.create_bootstrap_invite(
+            str(message.from_user.id),
+            awg_peer_id=awg_pubkey,
+            wg_peer_id=wg_pubkey,
+            awg_ip=awg_ip,
+            wg_ip=wg_ip,
+            awg_privkey=awg_privkey,
+            wg_privkey=wg_privkey,
+        )
+
+        # Строим конфиги для обоих пиров
+        awg_device = {
+            "protocol": "awg", "private_key": awg_privkey, "public_key": awg_pubkey,
+            "ip_address": awg_ip, "preshared_key": "",
+        }
+        wg_device = {
+            "protocol": "wg", "private_key": wg_privkey, "public_key": wg_pubkey,
+            "ip_address": wg_ip, "preshared_key": "",
+        }
+        awg_conf, awg_qr, _ = await builder.build(awg_device)
+        wg_conf,  wg_qr,  _ = await builder.build(wg_device)
+
+        me = await bot.get_me()
+        bot_link = f"https://t.me/{me.username}" if me.username else "(открыть Telegram-бот)"
+
+        await message.answer(
+            f"🎫 <b>Bootstrap-инвайт создан.</b>\n\n"
+            f"Перешлите клиенту конфиги ниже через любой мессенджер.\n"
+            f"Код для регистрации в боте: <code>{code}</code>\n\n"
+            f"Инструкция клиенту:\n"
+            f"1. Установите AmneziaWG или WireGuard\n"
+            f"2. Импортируйте один из конфигов (.conf или QR)\n"
+            f"3. Включите VPN → откройте Telegram → напишите боту /start\n"
+            f"4. Введите код: <code>{code}</code>\n\n"
+            f"Бот: {bot_link}\n"
+            f"⏳ Конфиги активны 24 часа.",
+            parse_mode="HTML",
+        )
+        # AWG конфиг + QR
+        await message.answer_document(
+            BufferedInputFile(awg_conf.encode(), filename="vpn-bootstrap-awg.conf"),
+            caption="📄 AmneziaWG конфиг (рекомендуется)",
+        )
+        if awg_qr:
+            await message.answer_photo(BufferedInputFile(awg_qr, filename="awg-qr.png"),
+                                        caption="QR для AmneziaWG")
+        # WG конфиг + QR
+        await message.answer_document(
+            BufferedInputFile(wg_conf.encode(), filename="vpn-bootstrap-wg.conf"),
+            caption="📄 WireGuard конфиг (запасной)",
+        )
+        if wg_qr:
+            await message.answer_photo(BufferedInputFile(wg_qr, filename="wg-qr.png"),
+                                        caption="QR для WireGuard")
+        return
+
+    except Exception as e:
+        logger.warning(f"/invite: bootstrap не удался ({e}), создаём обычный инвайт")
+
+    # Fallback: обычный инвайт без предсозданных пиров (watchdog недоступен)
     code = await db.create_invite_code(str(message.from_user.id))
     me = await bot.get_me()
     bot_link = f"https://t.me/{me.username}" if me.username else None
@@ -1897,26 +1990,75 @@ async def cb_adm_routes_info(cb: CallbackQuery, **kw):
 
 @router.callback_query(F.data == "adm:invite")
 async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
+    """Кнопка «Пригласить» в меню — используем bootstrap-логику из cmd_invite."""
     await cb.answer()
+    # Имитируем поведение cmd_invite: сообщения отправляем через cb.message.answer
     db: Database = kw.get("db")
+    wdc = WatchdogClient(config.watchdog_url, config.watchdog_token)
+    try:
+        from services.config_builder import ConfigBuilder, wg_genkey
+        builder = ConfigBuilder()
+        awg_privkey, awg_pubkey = wg_genkey()
+        wg_privkey,  wg_pubkey  = wg_genkey()
+        awg_resp = await wdc.add_peer(f"bootstrap-awg-{cb.from_user.id}", "awg", awg_pubkey)
+        wg_resp  = await wdc.add_peer(f"bootstrap-wg-{cb.from_user.id}",  "wg",  wg_pubkey)
+        await asyncio.sleep(1.5)
+        awg_ip = (awg_resp or {}).get("ip") or ""
+        wg_ip  = (wg_resp  or {}).get("ip") or ""
+        if not awg_ip or not wg_ip:
+            peers_info = await wdc.get_peers()
+            for p in (peers_info or {}).get("peers", []):
+                if p.get("public_key") == awg_pubkey:
+                    awg_ip = p.get("ip", "")
+                if p.get("public_key") == wg_pubkey:
+                    wg_ip = p.get("ip", "")
+        code = await db.create_bootstrap_invite(
+            str(cb.from_user.id),
+            awg_peer_id=awg_pubkey, wg_peer_id=wg_pubkey,
+            awg_ip=awg_ip, wg_ip=wg_ip,
+            awg_privkey=awg_privkey, wg_privkey=wg_privkey,
+        )
+        awg_conf, awg_qr, _ = await builder.build(
+            {"protocol": "awg", "private_key": awg_privkey, "public_key": awg_pubkey,
+             "ip_address": awg_ip, "preshared_key": ""})
+        wg_conf, wg_qr, _ = await builder.build(
+            {"protocol": "wg", "private_key": wg_privkey, "public_key": wg_pubkey,
+             "ip_address": wg_ip, "preshared_key": ""})
+        me = await bot.get_me()
+        bot_link = f"https://t.me/{me.username}" if me.username else "(открыть Telegram-бот)"
+        await cb.message.answer(
+            f"🎫 <b>Bootstrap-инвайт создан.</b>\n\n"
+            f"Перешлите конфиги клиенту через любой мессенджер.\n"
+            f"Код: <code>{code}</code>\n\n"
+            f"Инструкция: установить AWG/WG → включить VPN → /start в боте → ввести код.\n"
+            f"Бот: {bot_link}\n⏳ 24 часа.", parse_mode="HTML",
+        )
+        await cb.message.answer_document(
+            BufferedInputFile(awg_conf.encode(), filename="vpn-bootstrap-awg.conf"),
+            caption="📄 AmneziaWG (рекомендуется)")
+        if awg_qr:
+            await cb.message.answer_photo(BufferedInputFile(awg_qr, filename="awg-qr.png"))
+        await cb.message.answer_document(
+            BufferedInputFile(wg_conf.encode(), filename="vpn-bootstrap-wg.conf"),
+            caption="📄 WireGuard (запасной)")
+        if wg_qr:
+            await cb.message.answer_photo(BufferedInputFile(wg_qr, filename="wg-qr.png"))
+        return
+    except Exception as e:
+        logger.warning(f"cb_adm_invite: bootstrap не удался ({e}), создаём обычный инвайт")
     code = await db.create_invite_code(str(cb.from_user.id))
     me = await bot.get_me()
     bot_link = f"https://t.me/{me.username}" if me.username else None
-    await cb.message.answer(
-        f"🎫 <b>Код приглашения создан.</b>\n\n"
-        f"Перешлите клиенту два сообщения ниже 👇",
-        parse_mode="HTML",
-    )
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="👉 Открыть бота", url=bot_link)
     ]]) if bot_link else None
     await cb.message.answer(
-        f"Для подключения к VPN:\n"
-        f"1. Скопируйте код из следующего сообщения 👇\n"
-        f"2. Нажмите кнопку ниже чтобы открыть бота\n"
-        f"3. Нажмите «Старт» и введите код",
-        reply_markup=kb,
-    )
+        f"🎫 <b>Код приглашения создан.</b>\n\nПерешлите клиенту два сообщения ниже 👇",
+        parse_mode="HTML")
+    await cb.message.answer(
+        f"Для подключения к VPN:\n1. Скопируйте код 👇\n"
+        f"2. Нажмите кнопку → откройте бота\n3. /start → введите код",
+        reply_markup=kb)
     await cb.message.answer(f"<code>{code}</code>", parse_mode="HTML")
 
 
