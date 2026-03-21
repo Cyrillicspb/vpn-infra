@@ -305,24 +305,6 @@ phase0() {
             fi
         fi
 
-        if [[ "${USE_CLOUDFLARE,,}" == "y" ]]; then
-            echo ""
-            echo -e "${CYAN}${BOLD}  Шаг C — Cloudflare Tunnel Token${NC}"
-            echo "  1. dash.cloudflare.com → Zero Trust → Networks → Tunnels"
-            echo "  2. «Create a tunnel» → тип: Cloudflared → дайте имя (например vpn-home)"
-            echo "  3. Скопируйте токен на странице «Install connector» (длинная строка после --token)"
-            echo ""
-            read -rp "  Вставьте Cloudflare Tunnel Token: " CF_TUNNEL_TOKEN
-            CF_TUNNEL_TOKEN="${CF_TUNNEL_TOKEN//[[:space:]]/}"
-            if [[ -z "$CF_TUNNEL_TOKEN" ]]; then
-                log_warn "Токен не введён — CDN-стек пропущен."
-                USE_CLOUDFLARE="n"
-                CF_CDN_HOSTNAME=""
-            else
-                log_ok "Tunnel token получен"
-            fi
-        fi
-
         # Сохранение всех параметров в .env
         env_set "VPS_IP"                 "${VPS_IP}"
         env_set "XRAY_SERVER"            "${VPS_IP}"

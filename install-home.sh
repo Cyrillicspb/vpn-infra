@@ -282,8 +282,22 @@ else
 
     AWG_INSTALLED=0
 
-    # Попытка установки из PPA Amnezia
-    if add-apt-repository -y ppa:amnezia/ppa 2>/dev/null; then
+    # Чистим все старые записи amnezia PPA — Ubuntu 24.04 выдаёт ошибку
+    # "конфликтующие значения Signed-By" если PPA добавлен дважды разными способами.
+    rm -f /etc/apt/sources.list.d/amnezia*.list \
+          /etc/apt/sources.list.d/amnezia*.sources \
+          /etc/apt/trusted.gpg.d/amnezia*.gpg 2>/dev/null || true
+
+    # Современный способ: явный signed-by → /usr/share/keyrings/ (не trusted.gpg.d)
+    log_info "Добавляем AmneziaWG PPA (modern signed-by format)..."
+    curl -fsSL \
+        "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EBB9386EA7B5F00" \
+        | gpg --dearmor -o /usr/share/keyrings/amnezia-ppa.gpg 2>/dev/null || true
+
+    if [[ -s /usr/share/keyrings/amnezia-ppa.gpg ]]; then
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/amnezia-ppa.gpg] \
+https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu noble main" \
+            > /etc/apt/sources.list.d/amnezia.list
         apt-get update -qq 2>/dev/null || true
         if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             amneziawg-dkms amneziawg-tools 2>/dev/null; then
@@ -293,22 +307,9 @@ else
     fi
 
     if [[ $AWG_INSTALLED -eq 0 ]]; then
-        # Попытка ручного добавления PPA для noble
-        log_warn "PPA недоступен. Попытка через ручной источник..."
-        cat > /etc/apt/sources.list.d/amnezia.list \
-            << 'EOF'
-deb https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu noble main
-EOF
-        curl -fsSL \
-            "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x2EBB9386EA7B5F00" \
-            | gpg --dearmor > /etc/apt/trusted.gpg.d/amnezia.gpg 2>/dev/null || true
-        apt-get update -qq 2>/dev/null || true
-
-        if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            amneziawg-dkms amneziawg-tools 2>/dev/null; then
-            AWG_INSTALLED=1
-            log_ok "AmneziaWG установлен (ручной PPA)"
-        fi
+        log_warn "AmneziaWG не удалось установить автоматически."
+        log_warn "Установите вручную: https://github.com/amnezia-vpn/amneziawg-linux-kernel-module"
+        log_warn "Продолжаем установку — AmneziaWG можно добавить позже."
     fi
 
     if [[ $AWG_INSTALLED -eq 0 ]]; then
