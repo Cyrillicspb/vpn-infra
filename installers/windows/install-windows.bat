@@ -126,34 +126,47 @@ if /i "!CONFIRM!" neq "y" (
 )
 echo.
 
-:: --- upload full repo if available locally, else download on server ---
+:: --- upload repo as tar archive if available locally, else download release on server ---
 set REPO_ROOT=%~dp0..\..
 set SETUP_PATH=/tmp/setup.sh
 
-if not exist "!REPO_ROOT!\setup.sh" goto download_scripts
-if not exist "!REPO_ROOT!\install-home.sh" goto download_scripts
-if not exist "!REPO_ROOT!\home" goto download_scripts
+if not exist "!REPO_ROOT!\setup.sh" goto download_release
+if not exist "!REPO_ROOT!\install-home.sh" goto download_release
+if not exist "!REPO_ROOT!\home" goto download_release
 
-echo  Uploading full repository to server /opt/vpn ...
+echo  Упаковка репозитория в архив...
+tar -czf "%TEMP%\vpn-infra.tar.gz" ^
+    --exclude=".git" --exclude="*.pyc" --exclude="__pycache__" ^
+    --exclude="*/venv/*" --exclude="node_modules" --exclude="*.log" ^
+    --exclude=".env" ^
+    -C "!REPO_ROOT!" .
+if %errorlevel% neq 0 goto download_release
+echo  [OK] Архив создан.
+
+echo  Загрузка архива на сервер...
 ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "sudo mkdir -p /opt/vpn && sudo chown !SERVER_USER!:!SERVER_USER! /opt/vpn"
-scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new -r "!REPO_ROOT!\." !SERVER_USER!@!SERVER_IP!:/opt/vpn/
-if %errorlevel% neq 0 goto download_scripts
+scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "%TEMP%\vpn-infra.tar.gz" !SERVER_USER!@!SERVER_IP!:/tmp/vpn-infra.tar.gz
+if %errorlevel% neq 0 goto download_release
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn && rm /tmp/vpn-infra.tar.gz"
+if %errorlevel% neq 0 goto download_release
 set SETUP_PATH=/opt/vpn/setup.sh
-echo  [OK] Uploaded full repo from local copy.
+del "%TEMP%\vpn-infra.tar.gz" >nul 2>&1
+echo  [OK] Репозиторий загружен из локальной копии.
 goto run_setup
 
-:download_scripts
-echo  Downloading scripts on server (GitHub then jsdelivr CDN fallback)...
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "cd /tmp && dl(){ local f=$1; for b in https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master https://cdn.jsdelivr.net/gh/Cyrillicspb/vpn-infra@master; do curl -fsSL --max-time 30 $b/$f -o $f 2>/dev/null && echo OK:$f && return 0; done; echo ERR:$f; return 1; }; dl setup.sh && dl install-home.sh && dl install-vps.sh && chmod +x setup.sh install-home.sh install-vps.sh"
+:download_release
+echo  Скачивание последнего релиза на сервере...
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "cd /tmp && RELEASE_URL=$(curl -sSfL --max-time 10 https://api.github.com/repos/Cyrillicspb/vpn-infra/releases/latest 2>/dev/null | python3 -c 'import sys,json; assets=[a for a in json.load(sys.stdin)[\"assets\"] if a[\"name\"]==\"vpn-infra.tar.gz\"]; print(assets[0][\"browser_download_url\"] if assets else \"\")' 2>/dev/null) && [ -n \"$RELEASE_URL\" ] && curl -fsSL --max-time 120 \"$RELEASE_URL\" -o vpn-infra.tar.gz && mkdir -p /opt/vpn && tar xzf vpn-infra.tar.gz -C /opt/vpn && rm vpn-infra.tar.gz && echo OK || (echo FAILED; exit 1)"
 if %errorlevel% neq 0 (
     echo.
-    echo  ERROR: Could not download scripts from GitHub or jsdelivr CDN.
-    echo  Try manually copying setup.sh to the server: scp setup.sh user@ip:/tmp/
+    echo  ERROR: Could not download release from GitHub.
+    echo  Try manually: scp vpn-infra.tar.gz user@ip:/tmp/ then tar xzf on server.
     echo.
     pause
     exit /b 1
 )
-echo  [OK] Downloaded ^(GitHub or jsdelivr CDN^).
+set SETUP_PATH=/opt/vpn/setup.sh
+echo  [OK] Последний релиз скачан с GitHub.
 
 :run_setup
 echo.

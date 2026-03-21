@@ -25,6 +25,21 @@ jobs:
           echo "Файл release_notes.md:"
           cat release_notes.md
 
+      - name: Собрать архив репозитория
+        run: |
+          # vpn-infra.tar.gz — полный архив для scp-установки.
+          # Исключения: .git, *.pyc, __pycache__, venv, node_modules, *.log, .env
+          tar -czf vpn-infra.tar.gz \
+            --exclude='.git' \
+            --exclude='*.pyc' \
+            --exclude='__pycache__' \
+            --exclude='*/venv/*' \
+            --exclude='node_modules' \
+            --exclude='*.log' \
+            --exclude='.env' \
+            -C . .
+          echo "Размер архива: $(du -sh vpn-infra.tar.gz | cut -f1)"
+
       - name: Создать GitHub Release с установщиками
         uses: softprops/action-gh-release@v2
         with:
@@ -34,3 +49,4 @@ jobs:
             installers/windows/install-windows.bat
             installers/macos/install-macos.command
             installers/linux/install-linux.sh
+            vpn-infra.tar.gz

@@ -103,30 +103,49 @@ echo -e "${BOLD}Запуск установки...${RESET}"
 echo -e "${BLUE}══════════════════════════════════════════${RESET}"
 echo ""
 
-# Загрузка скриптов на сервер: сначала из локального репозитория,
-# при отсутствии — скачать на сервере с GitHub (fallback: jsdelivr CDN)
+# Загрузка репо на сервер: сначала tar архив из локального репозитория,
+# при отсутствии — скачать vpn-infra.tar.gz из последнего GitHub Release.
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+SETUP_PATH="/opt/vpn/setup.sh"
 
-if [[ -f "$REPO_ROOT/setup.sh" && -f "$REPO_ROOT/install-home.sh" ]]; then
-    echo "Загрузка скриптов из локального репозитория..."
+if [[ -f "$REPO_ROOT/setup.sh" && -f "$REPO_ROOT/install-home.sh" && -d "$REPO_ROOT/home" ]]; then
+    echo -e "${BLUE}Упаковка репозитория в архив...${RESET}"
+    TMP_ARCHIVE="$(mktemp /tmp/vpn-infra-XXXXXX.tar.gz)"
+    tar -czf "$TMP_ARCHIVE" \
+        --exclude='.git' --exclude='*.pyc' --exclude='__pycache__' \
+        --exclude='*/venv/*' --exclude='node_modules' --exclude='*.log' \
+        --exclude='.env' \
+        -C "$REPO_ROOT" .
+    echo -e "${BLUE}Загрузка архива на сервер...${RESET}"
+    ssh -i "$SSH_KEY" -o "StrictHostKeyChecking=accept-new" -p "$SSH_PORT" \
+        "${SERVER_USER}@${SERVER_IP}" \
+        "sudo mkdir -p /opt/vpn && sudo chown ${SERVER_USER}:${SERVER_USER} /opt/vpn"
     scp -i "$SSH_KEY" -P "$SSH_PORT" -o "StrictHostKeyChecking=accept-new" \
-        "$REPO_ROOT/setup.sh" \
-        "$REPO_ROOT/install-home.sh" \
-        "${SERVER_USER}@${SERVER_IP}:/tmp/"
-    [[ -f "$REPO_ROOT/install-vps.sh" ]] && scp -i "$SSH_KEY" -P "$SSH_PORT" \
-        -o "StrictHostKeyChecking=accept-new" \
-        "$REPO_ROOT/install-vps.sh" "${SERVER_USER}@${SERVER_IP}:/tmp/"
-    echo -e "${GREEN}✓ Скрипты загружены из локального репозитория${RESET}"
+        "$TMP_ARCHIVE" "${SERVER_USER}@${SERVER_IP}:/tmp/vpn-infra.tar.gz"
+    ssh -i "$SSH_KEY" -o "StrictHostKeyChecking=accept-new" -p "$SSH_PORT" \
+        "${SERVER_USER}@${SERVER_IP}" \
+        "tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn && rm /tmp/vpn-infra.tar.gz"
+    rm -f "$TMP_ARCHIVE"
+    echo -e "${GREEN}✓ Репозиторий загружен из локальной копии${RESET}"
 else
-    echo "Скачивание скриптов на сервере (GitHub, fallback: jsdelivr CDN)..."
+    echo -e "${BLUE}Скачивание последнего релиза на сервере...${RESET}"
     ssh -i "$SSH_KEY" -o "StrictHostKeyChecking=accept-new" -o "ServerAliveInterval=30" \
-        -p "$SSH_PORT" "${SERVER_USER}@${SERVER_IP}" \
-        'cd /tmp && for f in setup.sh install-home.sh install-vps.sh; do
-            for b in https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master \
-                     https://cdn.jsdelivr.net/gh/Cyrillicspb/vpn-infra@master; do
-                curl -fsSL --max-time 30 "$b/$f" -o "$f" 2>/dev/null && echo "OK: $f" && break
-            done
-        done && chmod +x setup.sh install-home.sh install-vps.sh'
+        -p "$SSH_PORT" "${SERVER_USER}@${SERVER_IP}" 'bash -s' << 'REMOTE_EOF'
+RELEASE_URL=$(curl -sSfL --max-time 10 \
+    https://api.github.com/repos/Cyrillicspb/vpn-infra/releases/latest 2>/dev/null \
+    | python3 -c "
+import sys, json
+assets = [a for a in json.load(sys.stdin)['assets'] if a['name']=='vpn-infra.tar.gz']
+print(assets[0]['browser_download_url'] if assets else '')
+" 2>/dev/null)
+[ -z "$RELEASE_URL" ] && { echo "ERROR: GitHub Release не найден"; exit 1; }
+curl -fsSL --max-time 120 "$RELEASE_URL" -o /tmp/vpn-infra.tar.gz
+sudo mkdir -p /opt/vpn
+sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn
+rm /tmp/vpn-infra.tar.gz
+echo "OK"
+REMOTE_EOF
+    echo -e "${GREEN}✓ Последний релиз скачан с GitHub${RESET}"
 fi
 
 echo ""
@@ -138,7 +157,7 @@ ssh -i "$SSH_KEY" \
     -o "ServerAliveCountMax=10" \
     -p "$SSH_PORT" \
     -t "${SERVER_USER}@${SERVER_IP}" \
-    "sudo bash /tmp/setup.sh 2>&1 | tee /tmp/vpn-setup.log; exit \${PIPESTATUS[0]}"
+    "sudo bash $SETUP_PATH 2>&1 | tee /tmp/vpn-setup.log; exit \${PIPESTATUS[0]}"
 
 RESULT=$?
 echo ""
