@@ -69,8 +69,6 @@ set SERVER_USER=
 echo  Detecting SSH user...
 
 :: Try root with key (no password, BatchMode).
-:: -n prevents SSH from reading stdin (equivalent to < /dev/null).
-:: Save errorlevel immediately -- any subsequent command (even echo) resets it.
 echo  Trying root...
 ssh -n -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes -p !SSH_PORT! root@!SERVER_IP! "exit 0" >nul 2>nul
 set SSH_RC=!errorlevel!
@@ -134,16 +132,12 @@ if not exist "!REPO_ROOT!\setup.sh" goto download_release
 if not exist "!REPO_ROOT!\install-home.sh" goto download_release
 if not exist "!REPO_ROOT!\home" goto download_release
 
-echo  Упаковка репозитория в архив...
-tar -czf "%TEMP%\vpn-infra.tar.gz" ^
-    --exclude=".git" --exclude="*.pyc" --exclude="__pycache__" ^
-    --exclude="*/venv/*" --exclude="node_modules" --exclude="*.log" ^
-    --exclude=".env" ^
-    -C "!REPO_ROOT!" .
+echo  Packing repository into archive...
+tar -czf "%TEMP%\vpn-infra.tar.gz" --exclude=".git" --exclude="*.pyc" --exclude="__pycache__" --exclude="*/venv/*" --exclude="node_modules" --exclude="*.log" --exclude=".env" -C "!REPO_ROOT!" .
 if %errorlevel% neq 0 goto download_release
-echo  [OK] Архив создан.
+echo  [OK] Archive created.
 
-echo  Загрузка архива на сервер...
+echo  Uploading archive to server...
 ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "sudo mkdir -p /opt/vpn && sudo chown !SERVER_USER!:!SERVER_USER! /opt/vpn"
 scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "%TEMP%\vpn-infra.tar.gz" !SERVER_USER!@!SERVER_IP!:/tmp/vpn-infra.tar.gz
 if %errorlevel% neq 0 goto download_release
@@ -151,11 +145,11 @@ ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USE
 if %errorlevel% neq 0 goto download_release
 set SETUP_PATH=/opt/vpn/setup.sh
 del "%TEMP%\vpn-infra.tar.gz" >nul 2>&1
-echo  [OK] Репозиторий загружен из локальной копии.
+echo  [OK] Repository loaded from local copy.
 goto run_setup
 
 :download_release
-echo  Скачивание последнего релиза на сервере...
+echo  Downloading latest release from GitHub...
 ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "cd /tmp && RELEASE_URL=$(curl -sSfL --max-time 10 https://api.github.com/repos/Cyrillicspb/vpn-infra/releases/latest 2>/dev/null | python3 -c 'import sys,json; assets=[a for a in json.load(sys.stdin)[\"assets\"] if a[\"name\"]==\"vpn-infra.tar.gz\"]; print(assets[0][\"browser_download_url\"] if assets else \"\")' 2>/dev/null) && [ -n \"$RELEASE_URL\" ] && curl -fsSL --max-time 120 \"$RELEASE_URL\" -o vpn-infra.tar.gz && mkdir -p /opt/vpn && tar xzf vpn-infra.tar.gz -C /opt/vpn && rm vpn-infra.tar.gz && echo OK || (echo FAILED; exit 1)"
 if %errorlevel% neq 0 (
     echo.
@@ -166,7 +160,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 set SETUP_PATH=/opt/vpn/setup.sh
-echo  [OK] Последний релиз скачан с GitHub.
+echo  [OK] Latest release downloaded from GitHub.
 
 :run_setup
 echo.
