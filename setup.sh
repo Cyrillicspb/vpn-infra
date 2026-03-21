@@ -1413,7 +1413,7 @@ phase4() {
     # Маршрут default dev tun-X появляется только после старта watchdog и первого стека,
     # а ip rule создаётся сразу при старте vpn-routes.service.
     run_test "Policy routing: fwmark 0x1 → lookup 200" \
-        "ip rule show | grep -q 'fwmark 0x1 lookup 200'" \
+        "ip rule show | grep -qE 'fwmark 0x1 lookup (200|marked)'" \
         "systemctl status vpn-routes; systemctl restart vpn-routes; ip rule show"
 
     # Шаг 55 — Мониторинг (домашний сервер)
