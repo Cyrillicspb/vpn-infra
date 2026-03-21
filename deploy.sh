@@ -266,23 +266,23 @@ git_pull() {
     log_step "Получение обновлений"
 
     # Настраиваем remote vps-mirror если не настроен
-    # Используем туннельный IP (VPS_TUNNEL_IP) — всегда доступен через tier-2 туннель
+    # Используем публичный VPS_IP + ssh-proxy.sh (SOCKS5 через активный стек)
     if [[ -n "${VPS_IP:-}" ]]; then
-        local ssh_port="22"  # туннельный интерфейс всегда на порту 22
-        local mirror_host="${VPS_TUNNEL_IP:-10.177.2.2}"
+        local ssh_port="${VPS_SSH_PORT:-22}"
         local current_url
         current_url=$(git -C "$REPO_DIR" remote get-url vps-mirror 2>/dev/null || true)
-        # Обновить URL если указывает на публичный IP вместо туннельного
         if [[ -z "$current_url" ]]; then
             git -C "$REPO_DIR" remote add vps-mirror \
-                "ssh://sysadmin@${mirror_host}:${ssh_port}/opt/vpn/vpn-repo.git"
-        elif [[ "$current_url" != *"$mirror_host"* ]]; then
+                "ssh://sysadmin@${VPS_IP}:${ssh_port}/opt/vpn/vpn-repo.git"
+        elif [[ "$current_url" != *"${VPS_IP}"* ]]; then
             git -C "$REPO_DIR" remote set-url vps-mirror \
-                "ssh://sysadmin@${mirror_host}:${ssh_port}/opt/vpn/vpn-repo.git"
+                "ssh://sysadmin@${VPS_IP}:${ssh_port}/opt/vpn/vpn-repo.git"
         fi
 
-        # Сначала из VPS-зеркала (с тегами)
-        if GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes" \
+        # Сначала из VPS-зеркала через ssh-proxy.sh (SOCKS5 активного стека)
+        local proxy_cmd=""
+        [[ -x "$SSH_PROXY_CMD" ]] && proxy_cmd="-o ProxyCommand=${SSH_PROXY_CMD} %h %p"
+        if GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes ${proxy_cmd}" \
            git -C "$REPO_DIR" fetch --tags vps-mirror 2>/dev/null; then
             log_info "Получено из VPS-зеркала"
         else
