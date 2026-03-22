@@ -1375,7 +1375,8 @@ phase4() {
 
     run_test() {
         local name="$1" cmd="$2" hint="$3"
-        if eval "$cmd" &>/dev/null 2>&1; then
+        # Используем subshell чтобы exit 0/exit 1 внутри команды не завершали setup.sh
+        if (eval "$cmd") &>/dev/null 2>&1; then
             log_ok "  PASS: $name"
             ((PASS++)) || true
         else
@@ -1385,18 +1386,27 @@ phase4() {
         fi
     }
 
-    # Шаг 50 — DNS
+    # Шаг 50 — DNS (dnsmasq форвардит youtube.com через VPS DNS 10.177.2.2)
+    # Требует работающего tier-2 туннеля. Тест запускается первым но с retry.
     step "Тест DNS (dnsmasq)"
-    log_info "Проверяем: dig @127.0.0.1 youtube.com — должен вернуть IP VPS (через туннель)"
+    log_info "Проверяем: dig @127.0.0.1 youtube.com — должен вернуть IP (через VPS DNS)"
     run_test "DNS резолвинг через 127.0.0.1" \
-        "dig @127.0.0.1 youtube.com +short +time=5 2>/dev/null | grep -qE '^[0-9]'" \
+        "for _i in \$(seq 1 6); do
+             dig @127.0.0.1 youtube.com +short +time=5 2>/dev/null | grep -qE '^[0-9]' && exit 0
+             sleep 5
+         done; exit 1" \
         "systemctl status dnsmasq; journalctl -u dnsmasq -n 30"
 
-    # Шаг 51 — VPN туннель
+    # Шаг 51 — VPN туннель Tier-2 (autossh-tier2 через SOCKS5 watchdog)
+    # Туннель поднимается после старта watchdog + активации первого VPN-стека.
+    # Ждём до 60 сек.
     step "Тест VPN-туннеля Tier-2"
     run_test "Ping Tier-2 (10.177.2.2)" \
-        "ping -c 3 -W 2 10.177.2.2" \
-        "systemctl status awg-quick@wg0; awg show wg0"
+        "for _i in \$(seq 1 12); do
+             ping -c 1 -W 2 10.177.2.2 &>/dev/null && exit 0
+             sleep 5
+         done; exit 1" \
+        "systemctl status autossh-tier2; journalctl -u autossh-tier2 -n 20; systemctl status watchdog"
 
     # Шаг 52 — Watchdog API
     step "Тест Watchdog HTTP API"

@@ -1277,15 +1277,25 @@ else
         chmod 777 /opt/vpn/telegram-bot/data
 
         log_info "Сборка локальных Docker-образов (telegram-bot)..."
-        docker compose build --quiet 2>/dev/null \
-            || log_warn "docker compose build завершился с предупреждениями"
+        _BUILD_LOG=$(docker compose build telegram-bot 2>&1)
+        _BUILD_EXIT=$?
+        if [[ $_BUILD_EXIT -ne 0 ]]; then
+            log_warn "docker compose build завершился с ошибкой:"
+            echo "$_BUILD_LOG" | tail -30
+        fi
 
         log_info "Загрузка Docker-образов..."
         docker compose pull --ignore-buildable --quiet 2>/dev/null || true
 
         log_info "Запуск контейнеров..."
-        docker compose up -d --remove-orphans 2>/dev/null \
-            || log_warn "docker compose up завершился с предупреждениями"
+        _UP_LOG=$(docker compose up -d --remove-orphans 2>&1)
+        _UP_EXIT=$?
+        if [[ $_UP_EXIT -ne 0 ]]; then
+            log_warn "docker compose up завершился с ошибкой. Пробуем --no-build..."
+            echo "$_UP_LOG" | tail -20
+            # Запускаем без telegram-bot если образ не собрался
+            docker compose up -d --no-build --remove-orphans 2>&1 | tail -10 || true
+        fi
 
         sleep 5
         echo ""

@@ -141,7 +141,7 @@ echo  Uploading archive to server...
 ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "sudo mkdir -p /opt/vpn && sudo chown !SERVER_USER!:!SERVER_USER! /opt/vpn"
 scp -i "!SSH_KEY!" -P !SSH_PORT! -o StrictHostKeyChecking=accept-new "%TEMP%\vpn-infra.tar.gz" !SERVER_USER!@!SERVER_IP!:/tmp/vpn-infra.tar.gz
 if %errorlevel% neq 0 goto download_release
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn && rm /tmp/vpn-infra.tar.gz"
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner 2>/dev/null; rm /tmp/vpn-infra.tar.gz"
 if %errorlevel% neq 0 goto download_release
 set SETUP_PATH=/opt/vpn/setup.sh
 del "%TEMP%\vpn-infra.tar.gz" >nul 2>&1
@@ -150,7 +150,7 @@ goto run_setup
 
 :download_release
 echo  Downloading latest release from GitHub...
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "cd /tmp && RELEASE_URL=$(curl -sSfL --max-time 10 https://api.github.com/repos/Cyrillicspb/vpn-infra/releases/latest 2>/dev/null | python3 -c 'import sys,json; assets=[a for a in json.load(sys.stdin)[\"assets\"] if a[\"name\"]==\"vpn-infra.tar.gz\"]; print(assets[0][\"browser_download_url\"] if assets else \"\")' 2>/dev/null) && [ -n \"$RELEASE_URL\" ] && curl -fsSL --max-time 120 \"$RELEASE_URL\" -o vpn-infra.tar.gz && mkdir -p /opt/vpn && tar xzf vpn-infra.tar.gz -C /opt/vpn && rm vpn-infra.tar.gz && echo OK || (echo FAILED; exit 1)"
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "cd /tmp && RELEASE_URL=$(curl -sSfL --max-time 10 https://api.github.com/repos/Cyrillicspb/vpn-infra/releases/latest 2>/dev/null | python3 -c 'import sys,json; assets=[a for a in json.load(sys.stdin)[\"assets\"] if a[\"name\"]==\"vpn-infra.tar.gz\"]; print(assets[0][\"browser_download_url\"] if assets else \"\")' 2>/dev/null) && [ -n \"$RELEASE_URL\" ] && curl -fsSL --max-time 120 \"$RELEASE_URL\" -o vpn-infra.tar.gz && mkdir -p /opt/vpn && tar xzf vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner 2>/dev/null; rm -f vpn-infra.tar.gz && echo OK || (echo FAILED; exit 1)"
 if %errorlevel% neq 0 (
     echo.
     echo  ERROR: Could not download release from GitHub.

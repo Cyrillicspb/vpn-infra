@@ -5,6 +5,18 @@
 
 ---
 
+## [v0.3.0.7] — 2026-03-22 — Исправления установщика: docker compose, smoke-тесты, tar
+
+### Исправления
+
+- **setup.sh** (`run_test`): `eval "$cmd"` заменён на `(eval "$cmd")` — команды с `exit 0`/`exit 1` внутри smoke-тестов теперь не завершают setup.sh. Telegram-тест (шаг 57) вызывал `exit 1` при недоступном Telegram, прерывая всю установку.
+- **install-home.sh** (шаг 31): `docker compose build` теперь показывает реальные ошибки вместо `2>/dev/null`. При ошибке build запускается `docker compose up --no-build`, чтобы все прочие контейнеры (prometheus, grafana, xray-client) стартовали даже если telegram-bot не собрался.
+- **install-windows.bat**: `tar xzf ... -C /opt/vpn` → добавлены `--no-same-permissions --no-same-owner 2>/dev/null` (аналог уже исправленных Linux/macOS установщиков).
+- **setup.sh** (шаг 51, tier-2 тест): добавлено ожидание до 60 сек — туннель поднимается после инициализации watchdog и первого стека. Исправлена подсказка: `autossh-tier2` вместо `awg-quick@wg0`.
+- **setup.sh** (шаг 50, DNS тест): добавлено ожидание до 30 сек — DNS через VPS доступен только после подъёма tier-2.
+
+---
+
 ## [v0.3.0.6] — 2026-03-22 — Исправление tar extraction в установщиках
 
 ### Исправления
