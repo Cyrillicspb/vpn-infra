@@ -124,7 +124,7 @@ if [[ -f "$REPO_ROOT/setup.sh" && -f "$REPO_ROOT/install-home.sh" && -d "$REPO_R
         "$TMP_ARCHIVE" "${SERVER_USER}@${SERVER_IP}:/tmp/vpn-infra.tar.gz"
     ssh -i "$SSH_KEY" -o "StrictHostKeyChecking=accept-new" -p "$SSH_PORT" \
         "${SERVER_USER}@${SERVER_IP}" \
-        "tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn && rm /tmp/vpn-infra.tar.gz"
+        "tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner 2>/dev/null; rm /tmp/vpn-infra.tar.gz"
     rm -f "$TMP_ARCHIVE"
     echo -e "${GREEN}✓ Репозиторий загружен из локальной копии${RESET}"
 else
@@ -141,7 +141,7 @@ print(assets[0]['browser_download_url'] if assets else '')
 [ -z "$RELEASE_URL" ] && { echo "ERROR: GitHub Release не найден"; exit 1; }
 curl -fsSL --max-time 120 "$RELEASE_URL" -o /tmp/vpn-infra.tar.gz
 sudo mkdir -p /opt/vpn
-sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn
+sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner 2>/dev/null; true
 rm /tmp/vpn-infra.tar.gz
 echo "OK"
 REMOTE_EOF

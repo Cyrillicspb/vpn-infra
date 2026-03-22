@@ -5,6 +5,22 @@
 
 ---
 
+## [v0.3.0.6] — 2026-03-22 — Исправление tar extraction в установщиках
+
+### Исправления
+
+- **install-linux.sh / install-macos.command**: добавлены флаги `--no-same-permissions --no-same-owner` и подавление ошибок прав доступа при распаковке `vpn-infra.tar.gz`. Tar выдавал «Cannot utime / Cannot change mode» и завершался с ошибкой, прерывая установку.
+
+---
+
+## [v0.3.0.5] — 2026-03-22 — Исправление _SCRIPT_DIR в install-home.sh
+
+### Исправления
+
+- **install-home.sh**: переменная `_SCRIPT_DIR` сбрасывалась через `unset` в `common.sh`, что вызывало ошибку «unbound variable» на строке 357. Исправлено: путь сохраняется в `REPO_DIR` до вызова `unset`.
+
+---
+
 ## [v0.3.0.4] — 2026-03-22 — Исправление release.yml (tun2socks unzip)
 
 ### Исправления
