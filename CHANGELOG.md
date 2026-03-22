@@ -5,6 +5,15 @@
 
 ---
 
+## [v0.3.1.2] — 2026-03-22 — Автодетект tun2socks в install-home.sh + hysteria2 в server-install.sh
+
+### Исправления
+
+- **install-home.sh** (шаг 18): tun2socks теперь определяет актуальную версию через GitHub API с фоллбэком на `v2.5.2`. Аналогично hysteria2 в шаге 17.
+- **plugins/hysteria2/server-install.sh**: hysteria2 для VPS обновлён с `v2.5.1` до автодетекта через GitHub API (фоллбэк `v2.7.1`).
+
+---
+
 ## [v0.3.1.1] — 2026-03-22 — Автодетект версий hysteria2/tun2socks в release.yml
 
 ### Исправления

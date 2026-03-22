@@ -401,14 +401,20 @@ if is_done "step18_install_tun2socks"; then
 else
     step "Установка tun2socks"
 
-    TUN2SOCKS_VER="v2.5.2"
+    _TUN2SOCKS_FALLBACK="v2.5.2"
     _ARCH="$(uname -m)"; [[ "$_ARCH" == "aarch64" ]] && _ARCH="arm64" || _ARCH="amd64"
     _BUNDLED="$REPO_DIR/tools/tun2socks-linux-${_ARCH}"
 
     if [[ -f "$_BUNDLED" ]]; then
-        log_info "Использую бандл tun2socks ${TUN2SOCKS_VER} (${_ARCH})..."
+        TUN2SOCKS_VER="bundled"
+        log_info "Использую бандл tun2socks (${_ARCH})..."
         cp "$_BUNDLED" /usr/local/bin/tun2socks
     else
+        TUN2SOCKS_VER=$(curl -sSfL --max-time 10 \
+            https://api.github.com/repos/xjasonlyu/tun2socks/releases/latest \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" \
+            2>/dev/null) || TUN2SOCKS_VER="$_TUN2SOCKS_FALLBACK"
+        [[ -z "$TUN2SOCKS_VER" ]] && TUN2SOCKS_VER="$_TUN2SOCKS_FALLBACK"
         log_info "Загрузка tun2socks ${TUN2SOCKS_VER} с GitHub..."
         TUN2SOCKS_URL="https://github.com/xjasonlyu/tun2socks/releases/download/${TUN2SOCKS_VER}/tun2socks-linux-${_ARCH}.zip"
         curl -fsSL "$TUN2SOCKS_URL" -o /tmp/tun2socks.zip \

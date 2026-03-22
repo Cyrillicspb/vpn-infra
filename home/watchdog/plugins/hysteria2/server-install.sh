@@ -3,17 +3,22 @@
 # Вызывается через: ssh vps "bash -s" < server-install.sh
 set -euo pipefail
 
-HYSTERIA_VERSION="app/v2.5.1"
-HYSTERIA_URL="https://github.com/apernet/hysteria/releases/download/${HYSTERIA_VERSION}/hysteria-linux-amd64"
+_HYSTERIA_FALLBACK="v2.7.1"
+HYSTERIA_VERSION=$(curl -sSfL --max-time 10 \
+    https://api.github.com/repos/apernet/hysteria/releases/latest \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'].replace('app/',''))" \
+    2>/dev/null) || HYSTERIA_VERSION="$_HYSTERIA_FALLBACK"
+[[ -z "$HYSTERIA_VERSION" ]] && HYSTERIA_VERSION="$_HYSTERIA_FALLBACK"
+HYSTERIA_URL="https://github.com/apernet/hysteria/releases/download/app%2F${HYSTERIA_VERSION}/hysteria-linux-amd64"
 
-echo "=== Установка Hysteria2 на VPS ==="
+echo "=== Установка Hysteria2 ${HYSTERIA_VERSION} на VPS ==="
 
 # Установка бинаря
 if [[ ! -f /usr/local/bin/hysteria ]]; then
-    echo "Скачивание Hysteria2..."
+    echo "Скачивание Hysteria2 ${HYSTERIA_VERSION}..."
     curl -fsSL "$HYSTERIA_URL" -o /usr/local/bin/hysteria
     chmod +x /usr/local/bin/hysteria
-    echo "OK: hysteria установлен"
+    echo "OK: hysteria ${HYSTERIA_VERSION} установлен"
 fi
 
 # Создание конфига
