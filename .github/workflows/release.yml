@@ -28,7 +28,7 @@ jobs:
       - name: Скачать бинарники для бандла
         run: |
           set -euo pipefail
-          HYSTERIA_VERSION="v2.5.1"
+          HYSTERIA_VERSION="v2.7.1"
           TUN2SOCKS_VERSION="v2.5.2"
           mkdir -p tools
 

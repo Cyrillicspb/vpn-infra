@@ -362,7 +362,7 @@ if is_done "step17_install_hysteria2"; then
 else
     step "Установка Hysteria2 (бинарник)"
 
-    HYSTERIA_VERSION="v2.5.1"
+    HYSTERIA_VERSION="v2.7.1"
     _ARCH="$(uname -m)"; [[ "$_ARCH" == "aarch64" ]] && _ARCH="arm64" || _ARCH="amd64"
     _BUNDLED="$REPO_DIR/tools/hysteria2-linux-${_ARCH}"
 
