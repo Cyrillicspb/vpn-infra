@@ -53,8 +53,8 @@ vps_exec() {
 }
 
 # vps_exec_long — для долгих команд на VPS (apt-get, docker pull и т.п.)
-# Команда запускается через nohup и выживает при обрыве SSH.
-# При реконнекте setup.sh просто повторяет шаг (идемпотентность).
+# Команда запускается через nohup — выживает при обрыве SSH.
+# При обрыве tail-соединения автоматически переподключается и продолжает.
 vps_exec_long() {
     local log="/tmp/vps-cmd-$RANDOM.log"
     local done_file="${log}.done"
@@ -64,12 +64,28 @@ vps_exec_long() {
     # Запустить в фоне — выживет при обрыве SSH
     $_ssh "nohup bash -c '$cmd > $log 2>&1; echo \$? > $done_file' >/dev/null 2>&1 &"
 
-    # Стримить вывод и ждать завершения
-    $_ssh "tail -n +1 -f $log 2>/dev/null &
-           TAIL=\$!
-           until [[ -f $done_file ]]; do sleep 2; done
-           sleep 1; kill \$TAIL 2>/dev/null
-           exit \$(cat $done_file)"
+    # Стримить вывод с авто-реконнектом при обрыве
+    local _exit=1
+    while true; do
+        # Подключаемся и tail-им до завершения команды
+        $_ssh "tail -n +1 -f $log 2>/dev/null &
+               TAIL=\$!
+               until [[ -f $done_file ]]; do sleep 2; done
+               sleep 1; kill \$TAIL 2>/dev/null
+               exit \$(cat $done_file)"
+        _exit=$?
+
+        # SSH завершился — проверяем: команда готова или обрыв?
+        if $_ssh "[[ -f $done_file ]]" 2>/dev/null; then
+            _exit=$($_ssh "cat $done_file" 2>/dev/null || echo 1)
+            break
+        fi
+
+        # Команда ещё работает — обрыв SSH, переподключаемся
+        log_warn "SSH обрыв. Переподключение через 10 сек..."
+        sleep 10
+    done
+    return "$_exit"
 }
 
 vps_copy() {
