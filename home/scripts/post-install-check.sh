@@ -227,7 +227,7 @@ if [[ -n "$VPS_IP" && -f "$SSH_KEY" ]]; then
 
     check_warn "Ping tier-2 (10.177.2.2)" \
         "ping -c 2 -W 3 10.177.2.2" \
-        "tier-2 WG туннель не поднят"
+        "SSH tier-2 туннель не поднят (autossh-tier2)"
 
     # Docker на VPS
     VPS_CONTAINERS=$(ssh -i "$SSH_KEY" -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
