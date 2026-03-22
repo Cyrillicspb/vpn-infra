@@ -104,7 +104,7 @@ else
 
     vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
         curl wget git jq wireguard-tools openssl gnupg2 ca-certificates \
-        python3 python3-pip net-tools"
+        python3 python3-pip net-tools mosh"
 
     log_ok "Пакеты на VPS обновлены"
     step_done "step33_vps_update_packages"
@@ -205,6 +205,9 @@ table inet filter {
 
         # ICMP
         icmp type echo-request limit rate 10/second accept
+
+        # Mosh — UDP порты для терминала (только от tier-2 туннеля)
+        iifname "tun0" udp dport 60000-61000 accept
 
         # DNS от Tier-2 туннеля (dnsmasq на VPS слушает на tun0 10.177.2.2)
         iifname "tun0" udp dport 53 accept

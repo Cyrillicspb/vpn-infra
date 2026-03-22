@@ -234,7 +234,7 @@ phase0() {
         if [[ "${USE_DDNS,,}" == "y" ]]; then
             ask DDNS_PROVIDER "Провайдер DDNS (duckdns/noip/cloudflare)"
             ask DDNS_DOMAIN "DDNS домен (например: myhome.duckdns.org)"
-            ask DDNS_TOKEN "DDNS токен" yes
+            ask DDNS_TOKEN "DDNS токен (для DuckDNS: UUID с сайта duckdns.org, напр. a1b2c3d4-...)" yes
             WG_HOST="${DDNS_DOMAIN}"
         else
             WG_HOST="${EXTERNAL_IP:-}"
@@ -949,6 +949,7 @@ exec autossh -M 0 \
     -o ServerAliveInterval=10 \
     -o ServerAliveCountMax=3 \
     -o ExitOnForwardFailure=yes \
+    -o "ProxyCommand=ncat --proxy 127.0.0.1:1089 --proxy-type socks5 %h %p" \
     -w 0:0 \
     -i /root/.ssh/vpn_id_ed25519 \
     -p "${VPS_SSH_PORT:-22}" \
@@ -961,7 +962,7 @@ CONNEOF
         cat > /etc/systemd/system/autossh-tier2.service << UNITEOF
 [Unit]
 Description=SSH Tier-2 Tunnel to VPS (10.177.2.0/30)
-After=network-online.target
+After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
@@ -972,8 +973,7 @@ EnvironmentFile=/opt/vpn/.env
 ExecStart=/opt/vpn/scripts/tier2-connect.sh
 ExecStop=/bin/bash -c 'ip link set tun0 down 2>/dev/null; true'
 Restart=always
-RestartSec=10
-RestartPreventExitStatus=255
+RestartSec=15
 
 [Install]
 WantedBy=multi-user.target

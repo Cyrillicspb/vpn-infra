@@ -353,11 +353,18 @@ else
     step "Установка Hysteria2 (бинарник)"
 
     HYSTERIA_VERSION="v2.5.1"
-    HYSTERIA_URL="https://github.com/apernet/hysteria/releases/download/app%2F${HYSTERIA_VERSION}/hysteria-linux-amd64"
+    _ARCH="$(uname -m)"; [[ "$_ARCH" == "aarch64" ]] && _ARCH="arm64" || _ARCH="amd64"
+    _BUNDLED="$_SCRIPT_DIR/tools/hysteria2-linux-${_ARCH}"
 
-    log_info "Загрузка Hysteria2 ${HYSTERIA_VERSION}..."
-    curl -fsSL --progress-bar "$HYSTERIA_URL" -o /usr/local/bin/hysteria \
-        || die "Не удалось загрузить Hysteria2 с ${HYSTERIA_URL}"
+    if [[ -f "$_BUNDLED" ]]; then
+        log_info "Использую бандл hysteria2 ${HYSTERIA_VERSION} (${_ARCH})..."
+        cp "$_BUNDLED" /usr/local/bin/hysteria
+    else
+        log_info "Загрузка Hysteria2 ${HYSTERIA_VERSION} с GitHub..."
+        HYSTERIA_URL="https://github.com/apernet/hysteria/releases/download/app%2F${HYSTERIA_VERSION}/hysteria-linux-${_ARCH}"
+        curl -fsSL --progress-bar "$HYSTERIA_URL" -o /usr/local/bin/hysteria \
+            || die "Не удалось загрузить Hysteria2 с ${HYSTERIA_URL}"
+    fi
     chmod +x /usr/local/bin/hysteria
 
     # Проверка запуска
@@ -377,27 +384,32 @@ else
     step "Установка tun2socks"
 
     TUN2SOCKS_VER="v2.5.2"
-    TUN2SOCKS_URL="https://github.com/xjasonlyu/tun2socks/releases/download/${TUN2SOCKS_VER}/tun2socks-linux-amd64.zip"
+    _ARCH="$(uname -m)"; [[ "$_ARCH" == "aarch64" ]] && _ARCH="arm64" || _ARCH="amd64"
+    _BUNDLED="$_SCRIPT_DIR/tools/tun2socks-linux-${_ARCH}"
 
-    log_info "Загрузка tun2socks ${TUN2SOCKS_VER}..."
-    curl -fsSL "$TUN2SOCKS_URL" -o /tmp/tun2socks.zip \
-        || die "Не удалось загрузить tun2socks"
-
-    cd /tmp
-    unzip -qo tun2socks.zip "tun2socks-linux-amd64" 2>/dev/null \
-        || unzip -qo tun2socks.zip 2>/dev/null \
-        || die "Не удалось распаковать tun2socks.zip"
-
-    if [[ -f /tmp/tun2socks-linux-amd64 ]]; then
-        mv /tmp/tun2socks-linux-amd64 /usr/local/bin/tun2socks
-    elif [[ -f /tmp/tun2socks ]]; then
-        mv /tmp/tun2socks /usr/local/bin/tun2socks
+    if [[ -f "$_BUNDLED" ]]; then
+        log_info "Использую бандл tun2socks ${TUN2SOCKS_VER} (${_ARCH})..."
+        cp "$_BUNDLED" /usr/local/bin/tun2socks
     else
-        die "Бинарник tun2socks не найден после распаковки"
+        log_info "Загрузка tun2socks ${TUN2SOCKS_VER} с GitHub..."
+        TUN2SOCKS_URL="https://github.com/xjasonlyu/tun2socks/releases/download/${TUN2SOCKS_VER}/tun2socks-linux-${_ARCH}.zip"
+        curl -fsSL "$TUN2SOCKS_URL" -o /tmp/tun2socks.zip \
+            || die "Не удалось загрузить tun2socks"
+        cd /tmp
+        unzip -qo tun2socks.zip "tun2socks-linux-${_ARCH}" 2>/dev/null \
+            || unzip -qo tun2socks.zip 2>/dev/null \
+            || die "Не удалось распаковать tun2socks.zip"
+        if [[ -f /tmp/tun2socks-linux-${_ARCH} ]]; then
+            mv /tmp/tun2socks-linux-${_ARCH} /usr/local/bin/tun2socks
+        elif [[ -f /tmp/tun2socks ]]; then
+            mv /tmp/tun2socks /usr/local/bin/tun2socks
+        else
+            die "Бинарник tun2socks не найден после распаковки"
+        fi
+        rm -f /tmp/tun2socks.zip
     fi
 
     chmod +x /usr/local/bin/tun2socks
-    rm -f /tmp/tun2socks.zip
 
     log_ok "tun2socks ${TUN2SOCKS_VER} установлен"
     step_done "step18_install_tun2socks"

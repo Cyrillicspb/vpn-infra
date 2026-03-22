@@ -4,6 +4,7 @@ resilience: 4          # highest resilience
 protocol: vless
 transport: ws
 port: 443
+socks_port: 1082
 tun_name: tun-cf-cdn
 requires:
   - cloudflare-worker

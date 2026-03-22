@@ -25,6 +25,31 @@ jobs:
           echo "Файл release_notes.md:"
           cat release_notes.md
 
+      - name: Скачать бинарники для бандла
+        run: |
+          HYSTERIA_VERSION="v2.5.1"
+          TUN2SOCKS_VERSION="v2.5.2"
+          mkdir -p tools
+
+          echo "Загрузка hysteria2 ${HYSTERIA_VERSION}..."
+          curl -fsSL "https://github.com/apernet/hysteria/releases/download/app%2F${HYSTERIA_VERSION}/hysteria-linux-amd64" \
+            -o tools/hysteria2-linux-amd64
+          curl -fsSL "https://github.com/apernet/hysteria/releases/download/app%2F${HYSTERIA_VERSION}/hysteria-linux-arm64" \
+            -o tools/hysteria2-linux-arm64
+          chmod +x tools/hysteria2-linux-amd64 tools/hysteria2-linux-arm64
+
+          echo "Загрузка tun2socks ${TUN2SOCKS_VERSION}..."
+          curl -fsSL "https://github.com/xjasonlyu/tun2socks/releases/download/${TUN2SOCKS_VERSION}/tun2socks-linux-amd64.zip" \
+            -o /tmp/tun2socks-amd64.zip
+          curl -fsSL "https://github.com/xjasonlyu/tun2socks/releases/download/${TUN2SOCKS_VERSION}/tun2socks-linux-arm64.zip" \
+            -o /tmp/tun2socks-arm64.zip
+          cd /tmp && unzip -qo tun2socks-amd64.zip && mv tun2socks-linux-amd64 $GITHUB_WORKSPACE/tools/
+          cd /tmp && unzip -qo tun2socks-arm64.zip && mv tun2socks-linux-arm64 $GITHUB_WORKSPACE/tools/
+          chmod +x $GITHUB_WORKSPACE/tools/tun2socks-linux-amd64 $GITHUB_WORKSPACE/tools/tun2socks-linux-arm64
+
+          echo "Содержимое tools/:"
+          ls -lh tools/
+
       - name: Собрать архив репозитория
         run: |
           # Пишем в /tmp чтобы избежать "file changed as we read it"

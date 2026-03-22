@@ -4,6 +4,7 @@ resilience: 1          # 1=lowest, 4=highest
 protocol: quic
 transport: udp
 port: 443
+socks_port: 1083
 obfs: salamander
 requires:
   - hysteria2-binary

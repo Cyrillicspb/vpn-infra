@@ -5,6 +5,23 @@
 
 ---
 
+## [v0.3.0.3] — 2026-03-22 — Tier-2 туннель через активный стек, Mosh на VPS
+
+### Новое
+
+- **Tier-2 proxy в watchdog** (`:1089`): стабильный SOCKS5 форвардер, всегда проксирует через `socks_port` активного стека. При failover autossh-tier2 переподключается через новый стек автоматически.
+- **autossh-tier2**: SSH теперь идёт через `ProxyCommand=ncat ... 127.0.0.1:1089` — ТСПУ видит обфусцированный REALITY/gRPC/CDN трафик вместо голого SSH.
+- **Mosh на VPS**: `mosh-server` устанавливается при `install-vps.sh`. UDP 60000-61000 открыт в nftables только с tun0. Терминальная сессия к VPS переживает переподключение tier-2 без потери вывода.
+- **metadata.yaml**: добавлено поле `socks_port` во все плагины (reality: 1080, reality-grpc: 1081, cloudflare-cdn: 1082, hysteria2: 1083).
+- **Бандл бинарников**: `release.yml` скачивает hysteria2 и tun2socks (amd64+arm64) и включает в `vpn-infra.tar.gz` под `tools/`. `install-home.sh` использует бандл если доступен, иначе скачивает с GitHub (fallback).
+
+### Исправления
+
+- **setup.sh (DDNS)**: подсказка для `DDNS_TOKEN` теперь явно указывает что нужен UUID-токен с duckdns.org.
+- **watchdog (_update_ddns)**: DuckDNS API URL использовал полный домен вместо subdomain. Исправлено: `cyrillicvps.duckdns.org` → `cyrillicvps`.
+
+---
+
 ## [v0.3.0.2] — 2026-03-22 — Исправление сборки Docker-образа telegram-bot
 
 ### Исправления

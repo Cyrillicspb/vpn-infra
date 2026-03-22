@@ -7,6 +7,7 @@ port: 2087
 flow: ""
 fingerprint: chrome
 dest: microsoft.com
+socks_port: 1080
 tun_name: tun-reality
 requires:
   - xray-client

@@ -87,8 +87,13 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:2024.5.0
     container_name: cloudflared
-    restart: always
-    command: tunnel run --token ${CF_TUNNEL_TOKEN}
+    restart: on-failure
+    command: >
+      sh -c 'if [ -z "$$CF_TUNNEL_TOKEN" ]; then
+        echo "CF_TUNNEL_TOKEN not configured, cloudflared CDN stack disabled";
+        exit 0;
+      fi;
+      exec cloudflared tunnel run --token "$$CF_TUNNEL_TOKEN"'
     network_mode: host
     env_file: .env
     healthcheck:

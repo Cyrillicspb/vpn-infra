@@ -84,6 +84,7 @@ CERT_WARN_CLIENT_DAYS     = 14
 CERT_WARN_CA_DAYS         = 30
 ROUTES_CACHE_ALERT_DAYS   = 3
 ALL_STACKS_DOWN_MINUTES   = 5
+TIER2_PROXY_PORT          = 1089  # Stable SOCKS5 port для tier-2 SSH туннеля
 
 # ---------------------------------------------------------------------------
 # DPI bypass (zapret lane)
@@ -937,7 +938,9 @@ async def check_external_ip() -> None:
 async def _update_ddns(ip: str) -> None:
     try:
         if DDNS_PROVIDER == "duckdns":
-            url = f"https://www.duckdns.org/update?domains={DDNS_DOMAIN}&token={DDNS_TOKEN}&ip={ip}"
+            # DuckDNS API expects subdomain only, not full domain
+            ddns_subdomain = DDNS_DOMAIN.replace(".duckdns.org", "")
+            url = f"https://www.duckdns.org/update?domains={ddns_subdomain}&token={DDNS_TOKEN}&ip={ip}"
             async with aiohttp.ClientSession() as s:
                 async with s.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
                     logger.info(f"DuckDNS: {await r.text()}")
@@ -2932,6 +2935,81 @@ async def post_fail2ban_unban(request: Request, req: F2bUnbanRequest, _: bool = 
 # ---------------------------------------------------------------------------
 # Startup / Shutdown / Signals
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Tier-2 proxy — стабильный SOCKS5 порт для autossh-tier2
+# ---------------------------------------------------------------------------
+# Всегда слушает на 127.0.0.1:1089 и форвардит на socks_port активного стека.
+# При смене стека старые соединения рвутся (autossh переподключается),
+# новые соединения идут через новый стек автоматически.
+
+def _get_active_socks_port() -> int:
+    """Возвращает socks_port активного стека из metadata.yaml."""
+    plugin = plugins.get(state.active_stack)
+    if plugin:
+        sp = plugin.meta.get("socks_port")
+        if sp:
+            return int(sp)
+    return 1080  # fallback
+
+
+async def _tier2_proxy_pipe(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+) -> None:
+    try:
+        while True:
+            data = await reader.read(65536)
+            if not data:
+                break
+            writer.write(data)
+            await writer.drain()
+    except Exception:
+        pass
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+
+async def _tier2_proxy_handler(
+    client_reader: asyncio.StreamReader,
+    client_writer: asyncio.StreamWriter,
+) -> None:
+    socks_port = _get_active_socks_port()
+    try:
+        upstream_reader, upstream_writer = await asyncio.open_connection(
+            "127.0.0.1", socks_port
+        )
+    except Exception as exc:
+        logger.debug(f"tier2-proxy: не удалось подключиться к :{socks_port}: {exc}")
+        try:
+            client_writer.close()
+        except Exception:
+            pass
+        return
+    logger.debug(
+        f"tier2-proxy: соединение → 127.0.0.1:{socks_port} (стек: {state.active_stack})"
+    )
+    await asyncio.gather(
+        _tier2_proxy_pipe(client_reader, upstream_writer),
+        _tier2_proxy_pipe(upstream_reader, client_writer),
+        return_exceptions=True,
+    )
+
+
+async def _run_tier2_proxy() -> None:
+    server = await asyncio.start_server(
+        _tier2_proxy_handler, "127.0.0.1", TIER2_PROXY_PORT
+    )
+    logger.info(
+        f"Tier-2 proxy запущен на 127.0.0.1:{TIER2_PROXY_PORT} "
+        f"→ socks5://127.0.0.1:{_get_active_socks_port()} (стек: {state.active_stack})"
+    )
+    async with server:
+        await server.serve_forever()
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     logger.info("=" * 60)
@@ -3016,6 +3094,7 @@ async def on_startup() -> None:
     asyncio.create_task(_watchdog_ping_loop(), name="watchdog-ping")
     asyncio.create_task(decision_loop(),       name="decision-loop")
     asyncio.create_task(monitoring_loop(),     name="monitoring-loop")
+    asyncio.create_task(_run_tier2_proxy(),    name="tier2-proxy")
 
     _notify_systemd(b"READY=1")
     logger.info(f"Watchdog готов. Стек: {state.active_stack}, degraded={state.degraded_mode}")

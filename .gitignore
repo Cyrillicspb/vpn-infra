@@ -73,6 +73,9 @@ vps/3x-ui/
 vps/grafana/data/
 vps/prometheus/data/
 
+# Бинарники (скачиваются CI при релизе, не хранятся в git)
+tools/
+
 # Временные fix-скрипты
 add_xhttp_inbound.py
 check_db.py
