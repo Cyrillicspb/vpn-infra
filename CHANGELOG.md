@@ -5,6 +5,16 @@
 
 ---
 
+## [v0.3.0.9] — 2026-03-22 — Исправление docker build: DNS + pipefail
+
+### Исправления
+
+- **install-home.sh** (шаг 31): два бага вместе вызывали обрыв SSH при сборке telegram-bot:
+  1. **pipefail + тee**: `docker compose build | tee` при ошибке — `set -o pipefail` убивал весь скрипт через set -e → SSH закрывался. Исправлено: `set +e; set +o pipefail` на время docker-операций, `set -e; set -o pipefail` после.
+  2. **DNS**: Docker BuildKit читает `/etc/resolv.conf` (127.0.0.1/dnsmasq), а dnsmasq возвращает SERVFAIL для `registry-1.docker.io` потому что VPN ещё не поднят. `daemon.json` с `"dns": ["8.8.8.8"]` влияет только на контейнеры, не на BuildKit. Исправлено: перед docker-операциями resolv.conf временно переключается на `8.8.8.8`, после — восстанавливается.
+
+---
+
 ## [v0.3.0.8] — 2026-03-22 — Исправление обрыва SSH при docker build
 
 ### Исправления

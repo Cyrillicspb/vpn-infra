@@ -1285,24 +1285,39 @@ else
         mkdir -p /opt/vpn/telegram-bot/data
         chmod 777 /opt/vpn/telegram-bot/data
 
+        # Перед docker-операциями временно используем публичный DNS:
+        # resolv.conf уже указывает на 127.0.0.1 (dnsmasq), но Docker BuildKit
+        # читает resolv.conf напрямую — и VPN ещё не поднят, поэтому dnsmasq
+        # возвращает SERVFAIL для docker.io. Daemon.json(8.8.8.8) помогает
+        # только контейнерам, но не самому BuildKit.
+        cp /etc/resolv.conf /etc/resolv.conf.docker-bak 2>/dev/null || true
+        printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" > /etc/resolv.conf
+
+        # Отключаем errexit+pipefail на время docker-операций,
+        # чтобы сбой build/up не убил весь скрипт.
+        set +e; set +o pipefail
+
         log_info "Сборка локальных Docker-образов (telegram-bot)..."
-        # Вывод напрямую в TTY — генерирует активность в SSH-сессии,
-        # иначе минуты тишины → ТСПУ/NAT обрывает соединение.
-        docker compose build telegram-bot 2>&1 | tee /tmp/docker-build.log; _BUILD_EXIT=${PIPESTATUS[0]}
-        if [[ $_BUILD_EXIT -ne 0 ]]; then
-            log_warn "docker compose build завершился с ошибкой (код $_BUILD_EXIT)"
-        fi
+        docker compose build telegram-bot 2>&1 | tee /tmp/docker-build.log
+        _BUILD_EXIT=${PIPESTATUS[0]}
+        [[ $_BUILD_EXIT -ne 0 ]] && log_warn "docker compose build завершился с ошибкой (код $_BUILD_EXIT)"
 
         log_info "Загрузка Docker-образов..."
         docker compose pull --ignore-buildable --quiet 2>/dev/null || true
 
         log_info "Запуск контейнеров..."
-        docker compose up -d --remove-orphans 2>&1 | tee /tmp/docker-up.log; _UP_EXIT=${PIPESTATUS[0]}
+        docker compose up -d --remove-orphans 2>&1 | tee /tmp/docker-up.log
+        _UP_EXIT=${PIPESTATUS[0]}
         if [[ $_UP_EXIT -ne 0 ]]; then
             log_warn "docker compose up завершился с ошибкой. Пробуем --no-build..."
-            # Запускаем без telegram-bot если образ не собрался
             docker compose up -d --no-build --remove-orphans 2>&1 || true
         fi
+
+        set -e; set -o pipefail
+
+        # Восстанавливаем dnsmasq
+        cp /etc/resolv.conf.docker-bak /etc/resolv.conf 2>/dev/null \
+            || echo "nameserver 127.0.0.1" > /etc/resolv.conf
 
         sleep 5
         echo ""
