@@ -166,7 +166,7 @@ ssh -i "$SSH_KEY" \
     -o "ServerAliveCountMax=10" \
     -p "$SSH_PORT" \
     -t "${SERVER_USER}@${SERVER_IP}" \
-    "sudo bash $SETUP_PATH 2>&1 | tee /tmp/vpn-setup.log; exit \${PIPESTATUS[0]}"
+    "tmux new-session -A -s vpn-install 'sudo bash $SETUP_PATH'"
 
 RESULT=$?
 echo ""

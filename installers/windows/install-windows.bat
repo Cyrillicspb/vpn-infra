@@ -167,7 +167,7 @@ echo.
 echo  Running setup.sh on server...
 echo  ==========================================
 echo.
-ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! "bash -c 'sudo bash !SETUP_PATH! 2>&1 | tee /tmp/vpn-setup.log; exit ${PIPESTATUS[0]}'"
+ssh -i "!SSH_KEY!" -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! "tmux new-session -A -s vpn-install 'sudo bash !SETUP_PATH!'"
 set RESULT=!errorlevel!
 
 echo.

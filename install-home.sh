@@ -55,23 +55,10 @@ else
         sshpass autossh ncat tmux \
         uuid-runtime openssl dkms build-essential \
         iperf3
-    pip3 install --quiet --break-system-packages aggregate6
+    pip3 install --quiet --break-system-packages aggregate6 2>/dev/null \
+        || pip3 install --break-system-packages aggregate6
     log_ok "Системные пакеты установлены"
     step_done "step10_install_packages"
-fi
-
-# ── Авто-переход в tmux после установки пакетов ──────────────────────────────
-# Обрывы SSH происходят на долгих операциях (docker build, nmap).
-# Шаги 1-10 быстрые, поэтому переходим в tmux здесь — с шага 11.
-if [[ -z "${TMUX:-}" ]] && command -v tmux &>/dev/null; then
-    SESSION="vpn-install"
-    if tmux has-session -t "$SESSION" 2>/dev/null; then
-        log_info "Tmux-сессия '$SESSION' уже существует. Присоединяемся..."
-        exec tmux attach-session -t "$SESSION"
-    else
-        log_info "Переходим в tmux '$SESSION' для защиты от обрывов SSH..."
-        exec tmux new-session -s "$SESSION" "sudo bash $BASH_SOURCE $*"
-    fi
 fi
 
 # ── Шаг 11: Создание sysadmin и защита SSH ──────────────────────────────────
