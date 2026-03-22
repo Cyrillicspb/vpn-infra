@@ -5,6 +5,15 @@
 
 ---
 
+## [v0.3.0.8] — 2026-03-22 — Исправление обрыва SSH при docker build
+
+### Исправления
+
+- **install-home.sh** (шаг 31): `docker compose build` теперь пишет вывод напрямую в TTY через `tee` вместо `$(...)`-capture. Command substitution глотал весь вывод → минуты тишины в SSH-трубе → ТСПУ/NAT обрывал сессию. Аналогично для `docker compose up`.
+- **install-home.sh** (шаг 11): добавлены `ClientAliveInterval 60` и `ClientAliveCountMax 10` в sshd_config — сервер пингует клиента каждые 60 сек, терпит до 10 мин паузы. Защита от разрыва при долгих операциях (apt, docker pull).
+
+---
+
 ## [v0.3.0.7] — 2026-03-22 — Исправления установщика: docker compose, smoke-тесты, tar
 
 ### Исправления

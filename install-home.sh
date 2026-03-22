@@ -108,6 +108,15 @@ else
     grep -q '^PermitRootLogin' /etc/ssh/sshd_config \
         || echo 'PermitRootLogin no' >> /etc/ssh/sshd_config
 
+    # Keepalive: сервер пингует клиента каждые 60 сек, 10 попыток = 10 мин терпения.
+    # Без этого ТСПУ/NAT обрывает долгие SSH-сессии (docker build, apt upgrade).
+    sed -i 's/^#*ClientAliveInterval.*/ClientAliveInterval 60/' /etc/ssh/sshd_config
+    grep -q '^ClientAliveInterval' /etc/ssh/sshd_config \
+        || echo 'ClientAliveInterval 60' >> /etc/ssh/sshd_config
+    sed -i 's/^#*ClientAliveCountMax.*/ClientAliveCountMax 10/' /etc/ssh/sshd_config
+    grep -q '^ClientAliveCountMax' /etc/ssh/sshd_config \
+        || echo 'ClientAliveCountMax 10' >> /etc/ssh/sshd_config
+
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
     log_ok "SSH: PermitRootLogin no (вход по паролю для sysadmin сохранён)"
     log_warn "Для входа: ssh sysadmin@${HOME_SERVER_IP:-$(hostname -I | awk '{print $1}')}"
@@ -1277,24 +1286,22 @@ else
         chmod 777 /opt/vpn/telegram-bot/data
 
         log_info "Сборка локальных Docker-образов (telegram-bot)..."
-        _BUILD_LOG=$(docker compose build telegram-bot 2>&1)
-        _BUILD_EXIT=$?
+        # Вывод напрямую в TTY — генерирует активность в SSH-сессии,
+        # иначе минуты тишины → ТСПУ/NAT обрывает соединение.
+        docker compose build telegram-bot 2>&1 | tee /tmp/docker-build.log; _BUILD_EXIT=${PIPESTATUS[0]}
         if [[ $_BUILD_EXIT -ne 0 ]]; then
-            log_warn "docker compose build завершился с ошибкой:"
-            echo "$_BUILD_LOG" | tail -30
+            log_warn "docker compose build завершился с ошибкой (код $_BUILD_EXIT)"
         fi
 
         log_info "Загрузка Docker-образов..."
         docker compose pull --ignore-buildable --quiet 2>/dev/null || true
 
         log_info "Запуск контейнеров..."
-        _UP_LOG=$(docker compose up -d --remove-orphans 2>&1)
-        _UP_EXIT=$?
+        docker compose up -d --remove-orphans 2>&1 | tee /tmp/docker-up.log; _UP_EXIT=${PIPESTATUS[0]}
         if [[ $_UP_EXIT -ne 0 ]]; then
             log_warn "docker compose up завершился с ошибкой. Пробуем --no-build..."
-            echo "$_UP_LOG" | tail -20
             # Запускаем без telegram-bot если образ не собрался
-            docker compose up -d --no-build --remove-orphans 2>&1 | tail -10 || true
+            docker compose up -d --no-build --remove-orphans 2>&1 || true
         fi
 
         sleep 5
