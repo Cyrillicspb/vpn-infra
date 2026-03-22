@@ -633,8 +633,8 @@ else
     LAN_IP="${LAN_IP:-127.0.0.1}"
 
     log_info "nmap TCP (top-100 портов) → $LAN_IP ..."
-    # --open: только открытые; -oG: grepable; -T4: быстро
-    open_tcp=$(nmap -sT --top-ports 100 --open -T4 -oG - "$LAN_IP" 2>/dev/null \
+    # --open: только открытые; -oG: grepable; -T5: максимально быстро; timeout 20s
+    open_tcp=$(timeout 20 nmap -sT --top-ports 100 --open -T5 --max-retries 1 -oG - "$LAN_IP" 2>/dev/null \
         | grep -oP '\d+/open/tcp' | cut -d/ -f1 | sort -n | tr '\n' ' ' || true)
     open_tcp="${open_tcp%% }"   # trim trailing space
 

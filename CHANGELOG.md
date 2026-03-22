@@ -5,6 +5,14 @@
 
 ---
 
+## [v0.3.1.3] — 2026-03-22 — nmap timeout в шаге 21
+
+### Исправления
+
+- **install-home.sh** (шаг 21): `nmap` теперь ограничен `timeout 20s` + `-T5 --max-retries 1`. Долгое сканирование вызывало разрыв SSH (ТСПУ убивает idle-соединения).
+
+---
+
 ## [v0.3.1.2] — 2026-03-22 — Автодетект tun2socks в install-home.sh + hysteria2 в server-install.sh
 
 ### Исправления
