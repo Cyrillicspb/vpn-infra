@@ -362,14 +362,22 @@ if is_done "step17_install_hysteria2"; then
 else
     step "Установка Hysteria2 (бинарник)"
 
-    HYSTERIA_VERSION="v2.7.1"
+    _HYSTERIA_FALLBACK="v2.7.1"
     _ARCH="$(uname -m)"; [[ "$_ARCH" == "aarch64" ]] && _ARCH="arm64" || _ARCH="amd64"
     _BUNDLED="$REPO_DIR/tools/hysteria2-linux-${_ARCH}"
 
     if [[ -f "$_BUNDLED" ]]; then
-        log_info "Использую бандл hysteria2 ${HYSTERIA_VERSION} (${_ARCH})..."
+        # Версия из бандла — читаем из бинарника
+        HYSTERIA_VERSION="bundled"
+        log_info "Использую бандл hysteria2 (${_ARCH})..."
         cp "$_BUNDLED" /usr/local/bin/hysteria
     else
+        # Запрашиваем актуальную версию через GitHub API — не зависим от хардкода
+        HYSTERIA_VERSION=$(curl -sSfL --max-time 10 \
+            https://api.github.com/repos/apernet/hysteria/releases/latest \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'].replace('app/',''))" \
+            2>/dev/null) || HYSTERIA_VERSION="$_HYSTERIA_FALLBACK"
+        [[ -z "$HYSTERIA_VERSION" ]] && HYSTERIA_VERSION="$_HYSTERIA_FALLBACK"
         log_info "Загрузка Hysteria2 ${HYSTERIA_VERSION} с GitHub..."
         HYSTERIA_URL="https://github.com/apernet/hysteria/releases/download/app%2F${HYSTERIA_VERSION}/hysteria-linux-${_ARCH}"
         curl -fsSL --progress-bar "$HYSTERIA_URL" -o /usr/local/bin/hysteria \

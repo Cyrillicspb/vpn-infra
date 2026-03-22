@@ -28,8 +28,24 @@ jobs:
       - name: Скачать бинарники для бандла
         run: |
           set -euo pipefail
-          HYSTERIA_VERSION="v2.7.1"
-          TUN2SOCKS_VERSION="v2.5.2"
+
+          # Автоопределение последних версий через GitHub API
+          HYSTERIA_FALLBACK="v2.7.1"
+          TUN2SOCKS_FALLBACK="v2.5.2"
+
+          HYSTERIA_VERSION=$(curl -sSfL --max-time 10 \
+            https://api.github.com/repos/apernet/hysteria/releases/latest \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'].replace('app/',''))" \
+            2>/dev/null) || HYSTERIA_VERSION="$HYSTERIA_FALLBACK"
+          [[ -z "$HYSTERIA_VERSION" ]] && HYSTERIA_VERSION="$HYSTERIA_FALLBACK"
+
+          TUN2SOCKS_VERSION=$(curl -sSfL --max-time 10 \
+            https://api.github.com/repos/xjasonlyu/tun2socks/releases/latest \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" \
+            2>/dev/null) || TUN2SOCKS_VERSION="$TUN2SOCKS_FALLBACK"
+          [[ -z "$TUN2SOCKS_VERSION" ]] && TUN2SOCKS_VERSION="$TUN2SOCKS_FALLBACK"
+
+          echo "hysteria2: ${HYSTERIA_VERSION}, tun2socks: ${TUN2SOCKS_VERSION}"
           mkdir -p tools
 
           echo "Загрузка hysteria2 ${HYSTERIA_VERSION}..."
