@@ -52,7 +52,7 @@ else
         sqlite3 net-tools conntrack traceroute \
         fail2ban unattended-upgrades apt-transport-https \
         logrotate cron gnupg2 ca-certificates \
-        sshpass autossh \
+        sshpass autossh ncat \
         uuid-runtime openssl dkms build-essential \
         iperf3
     pip3 install --quiet --break-system-packages aggregate6
