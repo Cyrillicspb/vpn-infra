@@ -135,6 +135,19 @@ else
     log_ok "SSH: PermitRootLogin no (вход по паролю для sysadmin сохранён)"
     log_warn "Для входа: ssh sysadmin@${HOME_SERVER_IP:-$(hostname -I | awk '{print $1}')}"
 
+    # Tmux авто-старт при SSH-подключении (для эксплуатации и долгих операций)
+    TMUX_SNIPPET='
+# Авто-вход в tmux при SSH-подключении
+if [[ -n "$SSH_CONNECTION" ]] && [[ -z "$TMUX" ]] && command -v tmux &>/dev/null; then
+    tmux attach-session -t main 2>/dev/null || tmux new-session -s main
+fi'
+    for _rcfile in /home/sysadmin/.bashrc /root/.bashrc; do
+        if ! grep -q 'tmux attach-session -t main' "$_rcfile" 2>/dev/null; then
+            echo "$TMUX_SNIPPET" >> "$_rcfile"
+        fi
+    done
+    log_ok "Tmux авто-старт добавлен в .bashrc (sysadmin + root)"
+
     step_done "step11_home_sysadmin"
 fi
 
