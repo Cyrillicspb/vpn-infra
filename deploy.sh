@@ -756,7 +756,7 @@ check_updates() {
 
     # Синхронизировать VPS-зеркало (сервер тянет с GitHub)
     if [[ -n "${VPS_IP:-}" ]]; then
-        vps_exec "cd /opt/vpn/vpn-repo.git && git fetch --tags --quiet" 2>/dev/null || true
+        vps_tmux_exec "cd /opt/vpn/vpn-repo.git && git fetch --tags --quiet" 60 2>/dev/null || true
     fi
 
     # Получить последний тег vX.Y.Z из удалённого репозитория (не применять локально)
