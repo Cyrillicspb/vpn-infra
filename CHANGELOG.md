@@ -5,6 +5,14 @@
 
 ---
 
+## [v0.3.1.8] — 2026-03-22 — vps_exec_long: долгие команды на VPS через nohup
+
+### Улучшения
+
+- **install-vps.sh**: добавлена функция `vps_exec_long` — запускает команду через `nohup` на VPS, выживает при обрыве SSH. Вывод пишется в лог на VPS и стримится обратно через `tail -f`. Заменены 4 длинные операции: `apt-get update/upgrade`, `apt-get install`, Docker install, `docker compose pull/up`.
+
+---
+
 ## [v0.3.1.7] — 2026-03-22 — Tmux авто-старт при SSH для эксплуатации
 
 ### Улучшения

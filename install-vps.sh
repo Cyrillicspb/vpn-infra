@@ -52,6 +52,26 @@ vps_exec() {
         "sysadmin@${VPS_IP}" "$@"
 }
 
+# vps_exec_long — для долгих команд на VPS (apt-get, docker pull и т.п.)
+# Команда запускается через nohup и выживает при обрыве SSH.
+# При реконнекте setup.sh просто повторяет шаг (идемпотентность).
+vps_exec_long() {
+    local log="/tmp/vps-cmd-$RANDOM.log"
+    local done_file="${log}.done"
+    local cmd="$*"
+    local _ssh="ssh -p ${VPS_SSH_PORT:-22} -i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=15 sysadmin@${VPS_IP}"
+
+    # Запустить в фоне — выживет при обрыве SSH
+    $_ssh "nohup bash -c '$cmd > $log 2>&1; echo \$? > $done_file' >/dev/null 2>&1 &"
+
+    # Стримить вывод и ждать завершения
+    $_ssh "tail -n +1 -f $log 2>/dev/null &
+           TAIL=\$!
+           until [[ -f $done_file ]]; do sleep 2; done
+           sleep 1; kill \$TAIL 2>/dev/null
+           exit \$(cat $done_file)"
+}
+
 vps_copy() {
     scp -P "${VPS_SSH_PORT:-22}" -i "$SSH_KEY" \
         -o StrictHostKeyChecking=no "$@"
@@ -99,10 +119,10 @@ if is_done "step33_vps_update_packages"; then
 else
     step "Обновление системных пакетов на VPS"
 
-    vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
+    vps_exec_long "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
         sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq"
 
-    vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    vps_exec_long "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
         curl wget git jq wireguard-tools openssl gnupg2 ca-certificates \
         python3 python3-pip net-tools mosh"
 
@@ -138,7 +158,7 @@ else
         log_info "Docker уже установлен на VPS"
     else
         log_info "Установка Docker на VPS через get.docker.com..."
-        vps_exec "curl -fsSL https://get.docker.com | sudo sh" \
+        vps_exec_long "curl -fsSL https://get.docker.com | sudo sh" \
             || die "Не удалось установить Docker на VPS"
         vps_exec "sudo systemctl enable docker && sudo systemctl start docker"
     fi
@@ -495,10 +515,10 @@ else
         log_warn "Скопируйте файл VPS конфигурации и повторите шаг."
     else
         log_info "Загрузка Docker-образов на VPS..."
-        vps_exec "cd /opt/vpn && sudo docker compose pull --quiet 2>/dev/null || true"
+        vps_exec_long "cd /opt/vpn && sudo docker compose pull --quiet 2>/dev/null || true"
 
         log_info "Запуск контейнеров на VPS..."
-        vps_exec "cd /opt/vpn && sudo docker compose up -d --remove-orphans 2>/dev/null \
+        vps_exec_long "cd /opt/vpn && sudo docker compose up -d --remove-orphans 2>/dev/null \
             || sudo docker compose up -d 2>/dev/null || true"
 
         # Ожидание запуска 3x-ui
