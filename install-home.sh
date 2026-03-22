@@ -16,6 +16,7 @@ fi
 
 STEP="${STEP:-8}"
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="${_SCRIPT_DIR}"   # сохраняем до unset — используется для tools/
 # shellcheck source=common.sh
 source "$_SCRIPT_DIR/common.sh"
 unset _SCRIPT_DIR
@@ -354,7 +355,7 @@ else
 
     HYSTERIA_VERSION="v2.5.1"
     _ARCH="$(uname -m)"; [[ "$_ARCH" == "aarch64" ]] && _ARCH="arm64" || _ARCH="amd64"
-    _BUNDLED="$_SCRIPT_DIR/tools/hysteria2-linux-${_ARCH}"
+    _BUNDLED="$REPO_DIR/tools/hysteria2-linux-${_ARCH}"
 
     if [[ -f "$_BUNDLED" ]]; then
         log_info "Использую бандл hysteria2 ${HYSTERIA_VERSION} (${_ARCH})..."
@@ -385,7 +386,7 @@ else
 
     TUN2SOCKS_VER="v2.5.2"
     _ARCH="$(uname -m)"; [[ "$_ARCH" == "aarch64" ]] && _ARCH="arm64" || _ARCH="amd64"
-    _BUNDLED="$_SCRIPT_DIR/tools/tun2socks-linux-${_ARCH}"
+    _BUNDLED="$REPO_DIR/tools/tun2socks-linux-${_ARCH}"
 
     if [[ -f "$_BUNDLED" ]]; then
         log_info "Использую бандл tun2socks ${TUN2SOCKS_VER} (${_ARCH})..."
