@@ -27,6 +27,7 @@ jobs:
 
       - name: Скачать бинарники для бандла
         run: |
+          set -euo pipefail
           HYSTERIA_VERSION="v2.5.1"
           TUN2SOCKS_VERSION="v2.5.2"
           mkdir -p tools
@@ -43,9 +44,14 @@ jobs:
             -o /tmp/tun2socks-amd64.zip
           curl -fsSL "https://github.com/xjasonlyu/tun2socks/releases/download/${TUN2SOCKS_VERSION}/tun2socks-linux-arm64.zip" \
             -o /tmp/tun2socks-arm64.zip
-          cd /tmp && unzip -qo tun2socks-amd64.zip && mv tun2socks-linux-amd64 $GITHUB_WORKSPACE/tools/
-          cd /tmp && unzip -qo tun2socks-arm64.zip && mv tun2socks-linux-arm64 $GITHUB_WORKSPACE/tools/
-          chmod +x $GITHUB_WORKSPACE/tools/tun2socks-linux-amd64 $GITHUB_WORKSPACE/tools/tun2socks-linux-arm64
+
+          # Распаковываем в отдельные директории, берём первый файл (имя бинарника не фиксировано)
+          mkdir -p /tmp/t2s-amd64 /tmp/t2s-arm64
+          unzip -qo /tmp/tun2socks-amd64.zip -d /tmp/t2s-amd64/
+          unzip -qo /tmp/tun2socks-arm64.zip -d /tmp/t2s-arm64/
+          cp "$(find /tmp/t2s-amd64/ -maxdepth 1 -type f | head -1)" tools/tun2socks-linux-amd64
+          cp "$(find /tmp/t2s-arm64/ -maxdepth 1 -type f | head -1)" tools/tun2socks-linux-arm64
+          chmod +x tools/tun2socks-linux-amd64 tools/tun2socks-linux-arm64
 
           echo "Содержимое tools/:"
           ls -lh tools/
