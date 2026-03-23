@@ -552,7 +552,7 @@ for a in d.get('assets',[]):
                      || echo 'Port 443' >> /etc/ssh/sshd_config; \
                  nohup bash -c 'sleep 3 && \
                      systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null; \
-                     sleep 1 && pkill -f \"socat.*443\" 2>/dev/null; \
+                     sleep 1 && pkill -f \"socat.*OPENSSL-LISTEN:443\" 2>/dev/null; \
                      rm -f /tmp/vpn-bootstrap.pem' \
                      >/dev/null 2>&1 &" 2>/dev/null || true
             # Соединение разорвётся через ~3 сек (socat убит), ждём прямого SSH:443
@@ -944,6 +944,8 @@ phase3() {
     fi
     sleep 3
 done) &
+MONITOR_PID=$!
+echo $MONITOR_PID > /run/tier2-monitor.pid
 
 exec autossh -M 0 \
     -o StrictHostKeyChecking=no \
@@ -972,7 +974,7 @@ User=root
 Environment=AUTOSSH_GATETIME=0
 EnvironmentFile=/opt/vpn/.env
 ExecStart=/opt/vpn/scripts/tier2-connect.sh
-ExecStop=/bin/bash -c 'ip link set tun0 down 2>/dev/null; true'
+ExecStop=/bin/bash -c 'kill $(cat /run/tier2-monitor.pid 2>/dev/null) 2>/dev/null; ip link set tun0 down 2>/dev/null; true'
 Restart=always
 RestartSec=15
 
@@ -1558,7 +1560,7 @@ phase5() {
     echo "                                            — заблокированных IP"
     echo "   docker compose -f /opt/vpn/docker-compose.yml ps"
     echo "                                            — контейнеры"
-    echo "   curl -sf http://localhost:8080/status -H 'Authorization: Bearer \$(grep WATCHDOG_API_TOKEN /opt/vpn/.env | cut -d= -f2)'"
+    echo "   curl -sf http://localhost:8080/status -H 'Authorization: Bearer \$(grep '^WATCHDOG_API_TOKEN=' /opt/vpn/.env | cut -d= -f2-)'"
     echo "                                            — статус watchdog"
     echo ""
     echo -e "${BOLD}━━━ SSH ДОСТУП ━━━${NC}"

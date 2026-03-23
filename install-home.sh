@@ -277,6 +277,9 @@ else
     update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
 
     # Конфигурация Docker daemon
+    # Намеренно: контейнеры резолвят через публичные DNS (8.8.8.8/1.1.1.1), минуя dnsmasq.
+    # Это предотвращает попадание DNS-запросов бота (например /check domain) в blocked_dynamic
+    # и нежелательную маршрутизацию контейнерного трафика через VPN.
     cat > /etc/docker/daemon.json << 'EOF'
 {
     "log-driver": "json-file",
@@ -535,6 +538,11 @@ else
         # Базовый шаблон на случай отсутствия файла в репозитории
         cat > /etc/nftables.conf << 'EOF'
 #!/usr/sbin/nft -f
+# ⚠️ flush ruleset уничтожает ВСЕ таблицы включая Docker.
+# Безопасно ТОЛЬКО потому что Docker использует iptables-legacy (шаг 15).
+# При переходе Docker на nftables-backend — заменить на:
+#   delete table inet vpn (если существует)
+#   add table inet vpn
 flush ruleset
 
 table inet vpn {
@@ -1321,6 +1329,11 @@ else
         # читает resolv.conf напрямую — и VPN ещё не поднят, поэтому dnsmasq
         # возвращает SERVFAIL для docker.io. Daemon.json(8.8.8.8) помогает
         # только контейнерам, но не самому BuildKit.
+        _restore_resolv() {
+            cp /etc/resolv.conf.docker-bak /etc/resolv.conf 2>/dev/null \
+                || echo "nameserver 127.0.0.1" > /etc/resolv.conf
+        }
+        trap _restore_resolv EXIT
         cp /etc/resolv.conf /etc/resolv.conf.docker-bak 2>/dev/null || true
         printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" > /etc/resolv.conf
 
@@ -1347,8 +1360,8 @@ else
         set -e; set -o pipefail
 
         # Восстанавливаем dnsmasq
-        cp /etc/resolv.conf.docker-bak /etc/resolv.conf 2>/dev/null \
-            || echo "nameserver 127.0.0.1" > /etc/resolv.conf
+        trap - EXIT
+        _restore_resolv
 
         sleep 5
         echo ""

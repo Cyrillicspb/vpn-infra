@@ -53,9 +53,10 @@ step() {
 }
 
 # ── Состояние шагов (.setup-state) ────────────────────────────────────────────
-is_done()   { grep -qxF "$1" "$STATE_FILE" 2>/dev/null; }
-step_done() { echo "$1" >> "$STATE_FILE"; log_ok "Готово: $1"; }
-step_skip() { ((STEP++)) || true; log_info "Пропуск (уже выполнено): $1"; }
+is_done()    { grep -qxF "$1" "$STATE_FILE" 2>/dev/null; }
+step_done()  { echo "$1" >> "$STATE_FILE"; log_ok "Готово: $1"; }
+step_skip()  { ((STEP++)) || true; log_info "Пропуск (уже выполнено): $1"; }
+step_reset() { sed -i "/^$(printf '%s' "$1" | sed 's/[.[\*^$]/\\&/g')$/d" "$STATE_FILE" 2>/dev/null || true; }
 
 # ── Завершение с ошибкой ──────────────────────────────────────────────────────
 die() {

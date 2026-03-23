@@ -102,13 +102,16 @@ vps_tmux_exec() {
     local port="${VPS_SSH_PORT:-22}"
     local proxy_opts=()
     [[ -x "$SSH_PROXY_CMD" ]] && proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
-    local _ssh="ssh -p $port -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes ${proxy_opts[*]}"
-    local session="deploy_$$_${RANDOM}"
-    local out_file="/tmp/${session}.out"
+    local -a ssh_base=( ssh -p "$port" -i "$SSH_KEY"
+        -o StrictHostKeyChecking=no -o BatchMode=yes
+        -o ConnectTimeout=15
+        "${proxy_opts[@]}" )
+    local session="deploy_${$}_$(date +%s%N | tail -c 9)"
+    local out_file="/tmp/deploy_${$}_$(date +%s%N | tail -c 9).out"
     local rc_file="/tmp/${session}.rc"
 
     # Запускаем команду в detached tmux-сессии
-    $_ssh "sysadmin@${VPS_IP}" \
+    "${ssh_base[@]}" "sysadmin@${VPS_IP}" \
         "tmux new-session -d -s '${session}' \
          'bash -c \"${cmd//\"/\\\"}\" > ${out_file} 2>&1; echo \$? > ${rc_file}'" \
         2>/dev/null || return 1
@@ -117,7 +120,7 @@ vps_tmux_exec() {
     local elapsed=0
     while (( elapsed < timeout )); do
         sleep 3; elapsed=$(( elapsed + 3 ))
-        if $_ssh "sysadmin@${VPS_IP}" \
+        if "${ssh_base[@]}" "sysadmin@${VPS_IP}" \
                 "[ -f '${rc_file}' ] && echo done" 2>/dev/null | grep -q "done"; then
             break
         fi
@@ -125,11 +128,11 @@ vps_tmux_exec() {
 
     # Читаем вывод и exit code
     local output rc_val
-    output=$($_ssh "sysadmin@${VPS_IP}" "cat '${out_file}' 2>/dev/null" 2>/dev/null || true)
-    rc_val=$($_ssh "sysadmin@${VPS_IP}" "cat '${rc_file}' 2>/dev/null" 2>/dev/null || echo "1")
+    output=$("${ssh_base[@]}" "sysadmin@${VPS_IP}" "cat '${out_file}' 2>/dev/null" 2>/dev/null || true)
+    rc_val=$("${ssh_base[@]}" "sysadmin@${VPS_IP}" "cat '${rc_file}' 2>/dev/null" 2>/dev/null || echo "1")
 
     # Очищаем tmux-сессию и временные файлы
-    $_ssh "sysadmin@${VPS_IP}" \
+    "${ssh_base[@]}" "sysadmin@${VPS_IP}" \
         "tmux kill-session -t '${session}' 2>/dev/null; \
          rm -f '${out_file}' '${rc_file}'" 2>/dev/null || true
 
@@ -178,6 +181,13 @@ create_snapshot() {
     # Создаём tar.gz снапшота
     tar -czf "$snap_path/snapshot.tar.gz" --ignore-failed-read \
         "${tar_args[@]}" 2>/dev/null || true
+
+    # Верификация критичных путей в снапшоте
+    for check_path in "wireguard" "nftables" ".env"; do
+        if ! tar -tzf "$snap_path/snapshot.tar.gz" 2>/dev/null | grep -q "$check_path"; then
+            log_warn "Снапшот может быть неполным — $check_path не найден в архиве"
+        fi
+    done
 
     # Метаданные снапшота
     cat > "$snap_path/meta.json" << EOF
@@ -674,7 +684,10 @@ do_deploy() {
 
     # Xray конфиги: шаблоны из home/xray/ → подставить .env → xray/
     # ВАЖНО: home/xray/*.json — шаблоны с ${VAR}, нельзя rsync напрямую
-    source "$REPO_DIR/.env" 2>/dev/null || true
+    # .env уже загружен в load_env() → main(). Повторный source после git checkout
+    # опасен: может подхватить шаблонные переменные из нового тега.
+    # Если нужны новые переменные — добавлять через env_set() в миграциях.
+    # source "$REPO_DIR/.env" 2>/dev/null || true
     for tmpl in "$REPO_DIR/home/xray/"*.json; do
         name=$(basename "$tmpl")
         result=$(envsubst < "$tmpl")
@@ -745,7 +758,9 @@ json.dump(cfg, open('$REPO_DIR/xray/config-cdn.json', 'w'), indent=4)
 
     # Smoke-тесты: откат только если появились НОВЫЕ провалы
     local after_fails; after_fails="$(_get_failed_tests)"
-    local new_fails; new_fails="$(comm -13 <(echo "$baseline_fails") <(echo "$after_fails"))"
+    local new_fails; new_fails="$(LC_ALL=C comm -13 \
+        <(echo "$baseline_fails" | LC_ALL=C sort) \
+        <(echo "$after_fails" | LC_ALL=C sort))"
     if [[ -n "$new_fails" ]]; then
         log_error "Новые провалы после деплоя:"
         echo "$new_fails" | while read -r t; do log_error "  - $t"; done
