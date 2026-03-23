@@ -118,6 +118,11 @@ services:
     volumes:
       - ./xray/config-reality.json:/etc/xray/config.json:ro
     network_mode: host
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
     healthcheck:
       test: ["CMD", "sh", "-c", "nc -z localhost 1080 || exit 1"]
       interval: 30s
@@ -138,6 +143,11 @@ services:
     volumes:
       - ./xray/config-grpc.json:/etc/xray/config.json:ro
     network_mode: host
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
     healthcheck:
       test: ["CMD", "sh", "-c", "nc -z localhost 1081 || exit 1"]
       interval: 30s
@@ -160,6 +170,11 @@ services:
     volumes:
       - ./xray/config-cdn.json:/etc/xray/config.json:ro
     network_mode: host
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
     healthcheck:
       test: ["CMD", "sh", "-c", "nc -z localhost 1082 || exit 1"]
       interval: 30s
@@ -394,7 +409,7 @@ services:
       net.ipv4.ip_forward: "1"
     environment:
       WG_HOST: ${WG_HOST}
-      PASSWORD: ${WG_EASY_PASSWORD:-changeme}
+      PASSWORD: ${WG_EASY_PASSWORD:?WG_EASY_PASSWORD must be set}
       WG_PORT: ${WG_AWG_PORT:-51820}
       WG_DEFAULT_ADDRESS: "10.177.1.x"
       WG_DEFAULT_DNS: "10.177.1.1"

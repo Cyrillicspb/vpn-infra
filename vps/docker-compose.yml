@@ -29,7 +29,7 @@ services:
   # network_mode: host — Xray биндит 443/TCP (REALITY), 443/UDP (Hysteria2)
   # Панель доступна через Nginx :8443 с mTLS
   3x-ui:
-    image: ghcr.io/mhsanaei/3x-ui:latest
+    image: ghcr.io/mhsanaei/3x-ui:2.3.14
     container_name: 3x-ui
     restart: always
     network_mode: host
@@ -137,7 +137,7 @@ services:
   # Слушает только на 10.177.2.2 (tier-2 интерфейс) → недоступен из интернета
   # Используется watchdog /assess для базовой линии скорости
   iperf3:
-    image: networkstatic/iperf3:latest
+    image: networkstatic/iperf3:3.16
     container_name: iperf3
     restart: always
     network_mode: host
