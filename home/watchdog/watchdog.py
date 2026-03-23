@@ -1127,6 +1127,12 @@ async def check_nftables_integrity() -> None:
                 issues.append("set blocked_static отсутствует")
             if "blocked_dynamic" not in out_s:
                 issues.append("set blocked_dynamic отсутствует")
+            if "dpi_direct" not in out_s:
+                issues.append("set dpi_direct отсутствует")
+        else:
+            rc_dp, _, _ = await run_cmd(["nft", "list", "set", "inet", "vpn", "dpi_direct"], timeout=5)
+            if rc_dp != 0:
+                issues.append("set dpi_direct отсутствует")
 
     if not issues:
         logger.debug("check_nftables_integrity: OK")
@@ -1138,12 +1144,15 @@ async def check_nftables_integrity() -> None:
     # Восстановить правила
     rc_r, _, err = await run_cmd(["nft", "-f", "/etc/nftables.conf"], timeout=15)
     if rc_r == 0:
-        # Восстановить blocked_static (без blocked_dynamic — он self-healing через dnsmasq)
+        # Восстановить blocked_static (blocked_dynamic и dpi_direct — self-healing через dnsmasq после warmup)
         await run_cmd(["nft", "-f", "/etc/nftables-blocked-static.conf"], timeout=15)
+        # AR3 fix: запустить dns-warmup чтобы dnsmasq заново заполнил blocked_dynamic и dpi_direct
+        logger.warning("nftables restored — running DNS warmup to refill dynamic sets")
+        await run_cmd(["bash", "/opt/vpn/scripts/dns-warmup.sh"], timeout=60)
         alert(
             f"🔥 *nftables: правила изменены или сброшены!*\n\n"
             f"Проблемы: `{details}`\n\n"
-            f"✅ Правила восстановлены из `/etc/nftables.conf`"
+            f"✅ Правила восстановлены из `/etc/nftables.conf`, DNS warmup запущен"
         )
         logger.info("check_nftables_integrity: правила восстановлены")
     else:
