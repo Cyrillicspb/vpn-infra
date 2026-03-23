@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import re
 from datetime import date
 from typing import TYPE_CHECKING
 
@@ -59,6 +60,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+# Per-user lock to prevent race condition in adddevice (TOCTOU between count check and insert)
+_adddevice_locks: dict[int, asyncio.Lock] = {}
+
+_DOMAIN_RE = re.compile(r'^[a-z0-9]([a-z0-9\-\.]*[a-z0-9])?$')
 
 
 # ---------------------------------------------------------------------------
@@ -566,15 +572,22 @@ async def cmd_adddevice(message: Message, state: FSMContext, **kw):
     if not client:
         await message.answer("Сначала зарегистрируйтесь: /start")
         return
-
-    count = await db.count_devices(str(message.from_user.id))
-    limit = client.get("device_limit", config.device_limit_per_client)
-    if count >= limit:
-        await message.answer(
-            f"Достигнут лимит устройств: {count}/{limit}.\n"
-            f"Обратитесь к администратору."
-        )
+    if client.get("is_disabled"):
+        await message.answer("❌ Ваш аккаунт отключён. Обратитесь к администратору.")
         return
+
+    chat_id = str(message.from_user.id)
+    if chat_id not in _adddevice_locks:
+        _adddevice_locks[chat_id] = asyncio.Lock()
+    async with _adddevice_locks[chat_id]:
+        count = await db.count_devices(chat_id)
+        limit = client.get("device_limit", config.device_limit_per_client)
+        if count >= limit:
+            await message.answer(
+                f"Достигнут лимит устройств: {count}/{limit}.\n"
+                f"Обратитесь к администратору."
+            )
+            return
 
     await message.answer("Введите *имя нового устройства*:")
     await state.update_data(_fsm_ts=_now())
@@ -721,6 +734,9 @@ async def cmd_request(message: Message, state: FSMContext, **kw):
 
     direction = args[1]
     domain    = args[2].lower().strip(".")
+    if not _DOMAIN_RE.match(domain) or len(domain) > 253:
+        await message.answer("❌ Неверный формат домена. Пример: `example.com`")
+        return
     req_id    = await db.create_domain_request(str(message.from_user.id), domain, direction)
     await message.answer(
         f"✅ Запрос #{req_id} отправлен.\n"
@@ -1043,6 +1059,9 @@ async def fsm_request_domain(message: Message, state: FSMContext, **kw):
     data = await state.get_data()
     direction = data.get("_req_direction", "vpn")
     domain = message.text.strip().lower().strip(".")
+    if not _DOMAIN_RE.match(domain) or len(domain) > 253:
+        await message.answer("❌ Неверный формат домена. Пример: `example.com`")
+        return
     await state.clear()
     db: Database = kw.get("db")
     bot = kw.get("bot")
@@ -1144,6 +1163,10 @@ async def cb_cl_ex_del(cb: CallbackQuery, **kw):
     device_id = int(parts[0])
     subnet = parts[1]
     db: Database = kw.get("db")
+    device = await db.get_device_by_id(device_id)
+    if not device or str(device.get("chat_id", "")) != str(cb.from_user.id):
+        await cb.answer("❌ Нет доступа", show_alert=True)
+        return
     await db.remove_exclude(device_id, subnet)
     await cb.answer(f"Удалено: {subnet}")
     await cb.message.edit_text(f"✅ `{subnet}` удалён из исключений.")
@@ -1413,14 +1436,20 @@ async def cb_cl_adddevice(cb: CallbackQuery, state: FSMContext, **kw):
     if not client:
         await cb.message.answer("Сначала зарегистрируйтесь: /start")
         return
-    count = await db.count_devices(chat_id)
-    limit = client.get("device_limit", config.device_limit_per_client)
-    if count >= limit:
-        await cb.message.answer(
-            f"Достигнут лимит устройств: {count}/{limit}.\nОбратитесь к администратору.",
-            reply_markup=client_main_menu(),
-        )
+    if client.get("is_disabled"):
+        await cb.answer("❌ Ваш аккаунт отключён", show_alert=True)
         return
+    if chat_id not in _adddevice_locks:
+        _adddevice_locks[chat_id] = asyncio.Lock()
+    async with _adddevice_locks[chat_id]:
+        count = await db.count_devices(chat_id)
+        limit = client.get("device_limit", config.device_limit_per_client)
+        if count >= limit:
+            await cb.message.answer(
+                f"Достигнут лимит устройств: {count}/{limit}.\nОбратитесь к администратору.",
+                reply_markup=client_main_menu(),
+            )
+            return
     await cb.message.answer("Введите *имя нового устройства*:")
     await state.update_data(_fsm_ts=_now())
     await state.set_state(AddDeviceFSM.device_name)

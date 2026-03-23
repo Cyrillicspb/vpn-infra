@@ -895,6 +895,9 @@ async def cmd_requests(message: Message, state: FSMContext, **kw):
 
 @router.callback_query(F.data.startswith("dev_approve_"))
 async def cb_dev_approve(cb: CallbackQuery, **kw):
+    if str(cb.from_user.id) != str(config.admin_chat_id):
+        await cb.answer("❌ Доступ запрещён", show_alert=True)
+        return
     from handlers.requests import notify_device_approved, safe_edit
     device_id = int(cb.data.split("_")[-1])
     db: Database = kw.get("db")
@@ -922,6 +925,9 @@ async def cb_dev_approve(cb: CallbackQuery, **kw):
 
 @router.callback_query(F.data.startswith("dev_reject_"))
 async def cb_dev_reject(cb: CallbackQuery, **kw):
+    if str(cb.from_user.id) != str(config.admin_chat_id):
+        await cb.answer("❌ Доступ запрещён", show_alert=True)
+        return
     from handlers.requests import notify_device_rejected, safe_edit
     device_id = int(cb.data.split("_")[-1])
     db: Database = kw.get("db")
@@ -938,6 +944,9 @@ async def cb_dev_reject(cb: CallbackQuery, **kw):
 
 @router.callback_query(F.data.startswith("req_approve_"))
 async def cb_req_approve(cb: CallbackQuery, **kw):
+    if str(cb.from_user.id) != str(config.admin_chat_id):
+        await cb.answer("❌ Доступ запрещён", show_alert=True)
+        return
     from handlers.requests import notify_request_approved, safe_edit
     req_id = int(cb.data.split("_")[-1])
     db: Database = kw.get("db")
@@ -960,6 +969,9 @@ async def cb_req_approve(cb: CallbackQuery, **kw):
 
 @router.callback_query(F.data.startswith("req_reject_"))
 async def cb_req_reject(cb: CallbackQuery, **kw):
+    if str(cb.from_user.id) != str(config.admin_chat_id):
+        await cb.answer("❌ Доступ запрещён", show_alert=True)
+        return
     from handlers.requests import notify_request_rejected, safe_edit
     req_id = int(cb.data.split("_")[-1])
     db: Database = kw.get("db")
