@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import random
+import re
 import signal
 import socket
 import subprocess
@@ -28,6 +29,7 @@ import time
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
+from secrets import compare_digest
 from typing import Any, Optional
 
 import aiohttp
@@ -523,8 +525,8 @@ async def ping_vps(target: str = "") -> tuple[bool, float]:
                     listen = cy.get("socks5", {}).get("listen", "127.0.0.1:1080")
                     sp = listen.split(":")[-1]
                 socks_port = int(sp)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Не удалось определить socks_port из конфига: %s", exc)
     import time as _time
     start = _time.time()
     rc, out, _ = await run_cmd(
@@ -573,14 +575,14 @@ async def _measure_throughput(url: str, proxy: str = "", interface: str = "") ->
     return 0.0
 
 
-def _get_active_tun() -> str:
+async def _get_active_tun() -> str:
     """Вернуть имя активного tun-интерфейса, или '' для direct_mode (zapret) и при ошибке."""
     try:
         plugin = plugins.get(state.active_stack)
         if not plugin or plugin.meta.get("direct_mode"):
             return ""   # zapret: нет tun, трафик идёт напрямую
         tun = plugin.meta.get("tun_name", f"tun-{state.active_stack}")
-        rc = subprocess.run(["ip", "link", "show", tun], capture_output=True).returncode
+        rc, _, _ = await run_cmd(["ip", "link", "show", tun], timeout=3)
         return tun if rc == 0 else ""
     except Exception:
         return ""
@@ -588,7 +590,7 @@ def _get_active_tun() -> str:
 
 async def speedtest_small() -> float:
     """100KB тест через активный стек. Возвращает Mbps."""
-    tun = _get_active_tun()
+    tun = await _get_active_tun()
     mbps = await _measure_throughput(SPEED_URL_SMALL, interface=tun)
     if mbps > 0:
         state.small_speedtest.append(mbps)
@@ -598,7 +600,7 @@ async def speedtest_small() -> float:
 
 async def speedtest_large() -> float:
     """10MB тест через активный стек. Возвращает Mbps."""
-    tun = _get_active_tun()
+    tun = await _get_active_tun()
     mbps = await _measure_throughput(SPEED_URL_LARGE, interface=tun)
     if mbps > 0:
         state.large_speedtest.append(mbps)
@@ -607,34 +609,37 @@ async def speedtest_large() -> float:
 
 async def speedtest_upload() -> float:
     """100KB upload-тест через активный стек. Возвращает Mbps."""
-    tun = _get_active_tun()
+    tun = await _get_active_tun()
     tmp = "/tmp/wdg_upload_100k.bin"
-    # Генерируем 100KB случайных данных
-    rc, _, _ = await run_cmd(
-        ["dd", "if=/dev/urandom", f"of={tmp}", "bs=1024", "count=100"],
-        timeout=5,
-    )
-    if rc != 0:
-        return 0.0
-    cmd = ["curl", "-s", "--max-time", "30",
-           "-X", "POST", "--data-binary", f"@{tmp}",
-           "-o", "/dev/null", "-w", "%{speed_upload}",
-           "https://speed.cloudflare.com/__up"]
-    if tun:
-        cmd = ["curl", "-s", "--max-time", "30", "--interface", tun,
+    try:
+        # Генерируем 100KB случайных данных
+        rc, _, _ = await run_cmd(
+            ["dd", "if=/dev/urandom", f"of={tmp}", "bs=1024", "count=100"],
+            timeout=5,
+        )
+        if rc != 0:
+            return 0.0
+        cmd = ["curl", "-s", "--max-time", "30",
                "-X", "POST", "--data-binary", f"@{tmp}",
                "-o", "/dev/null", "-w", "%{speed_upload}",
                "https://speed.cloudflare.com/__up"]
-    rc, out, _ = await run_cmd(cmd, timeout=35)
-    if rc == 0:
-        try:
-            mbps = round(float(out.strip()) * 8 / 1_000_000, 2)
-            if mbps > 0:
-                state.last_upload_mbps = mbps
-            return mbps
-        except Exception:
-            pass
-    return 0.0
+        if tun:
+            cmd = ["curl", "-s", "--max-time", "30", "--interface", tun,
+                   "-X", "POST", "--data-binary", f"@{tmp}",
+                   "-o", "/dev/null", "-w", "%{speed_upload}",
+                   "https://speed.cloudflare.com/__up"]
+        rc, out, _ = await run_cmd(cmd, timeout=35)
+        if rc == 0:
+            try:
+                mbps = round(float(out.strip()) * 8 / 1_000_000, 2)
+                if mbps > 0:
+                    state.last_upload_mbps = mbps
+                return mbps
+            except Exception:
+                pass
+        return 0.0
+    finally:
+        Path(tmp).unlink(missing_ok=True)
 
 
 async def speedtest_direct() -> float:
@@ -1822,7 +1827,7 @@ security = HTTPBearer(auto_error=False)
 def _auth(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> bool:
     if not API_TOKEN:
         return True
-    if credentials is None or credentials.credentials != API_TOKEN:
+    if credentials is None or not compare_digest(credentials.credentials, API_TOKEN):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return True
 
@@ -2200,8 +2205,8 @@ async def _deploy_task(req: DeployRequest) -> None:
         try:
             with open("/opt/vpn/version") as f:
                 ver = f.read().strip()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Не удалось прочитать /opt/vpn/version: %s", exc)
         # Определить что произошло по выводу
         output = (out or "").strip()
         if "не требуется" in output or "актуальна" in output:
@@ -2226,6 +2231,8 @@ class SkipVersionRequest(BaseModel):
 @app.post("/deploy/skip")
 @limiter.limit("10/second")
 async def post_deploy_skip(request: Request, req: SkipVersionRequest, _: bool = Depends(_auth)):
+    if not re.match(r'^\d+\.\d+\.\d+(\.\d+)?$', req.version):
+        raise HTTPException(status_code=400, detail="Invalid version format")
     skip_file = "/opt/vpn/.skip-version"
     try:
         with open(skip_file, "w") as f:
@@ -2346,8 +2353,8 @@ async def get_dpi_status(_: bool = Depends(_auth)):
     if zp:
         try:
             zapret_ok, _ = await zp.test(timeout=5)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("zapret test failed: %s", exc)
     return {
         "enabled": state.dpi_enabled,
         "zapret_running": zapret_ok,
@@ -2476,6 +2483,8 @@ async def post_check_domain(request: Request, _: bool = Depends(_auth)):
     domain = body.get("domain", "").strip().lower().strip(".").split("/")[0]
     if not domain:
         raise HTTPException(status_code=400, detail="domain required")
+    if not re.match(r'^[a-z0-9][a-z0-9.\-]*[a-z0-9]$', domain) or len(domain) > 253:
+        raise HTTPException(status_code=400, detail="Invalid domain")
 
     result: dict[str, Any] = {"domain": domain}
 
@@ -2533,8 +2542,8 @@ async def post_diagnose(request: Request, device: str, _: bool = Depends(_auth))
                 ).fetchone()
             if row:
                 peer_pubkey = row[0] or ""
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Не удалось найти peer_pubkey для устройства: %s", exc)
 
     wg_peer_ok = False
     if peer_pubkey:
@@ -2595,6 +2604,10 @@ async def post_vps_add(request: Request, req: VpsRequest, _: bool = Depends(_aut
 @limiter.limit("5/minute")
 async def post_vps_install(request: Request, req: VpsInstallRequest, _: bool = Depends(_auth)):
     """Запустить установку нового VPS через add-vps.sh (background task)."""
+    if not re.match(r'^(\d{1,3}\.){3}\d{1,3}$', req.ip):
+        raise HTTPException(status_code=400, detail="Invalid IP address")
+    if not (1 <= req.ssh_port <= 65535):
+        raise HTTPException(status_code=400, detail="Invalid SSH port")
     script = Path("/opt/vpn/add-vps.sh")
     if not script.exists():
         raise HTTPException(status_code=500, detail="add-vps.sh не найден")
@@ -2746,6 +2759,7 @@ async def post_dpi_test(request: Request, req: DpiTestRequest, _: bool = Depends
 # zapret on-demand probe + history
 # ---------------------------------------------------------------------------
 ZAPRET_HISTORY_FILE = PLUGINS_DIR / "zapret" / "preset_history.log"
+_probe_lock = asyncio.Lock()
 
 
 class ZapretProbeRequest(BaseModel):
@@ -2761,19 +2775,22 @@ async def post_zapret_probe(request: Request, req: ZapretProbeRequest, bg: Backg
     probe_script = PLUGINS_DIR / "zapret" / "probe.py"
     if not probe_script.exists():
         raise HTTPException(status_code=503, detail="zapret plugin не установлен")
+    if _probe_lock.locked():
+        raise HTTPException(status_code=409, detail="Probe already running")
 
     async def _run_probe():
-        await tg_alert(f"🔍 zapret: запущен {req.mode} probe...")
-        rc, out, err = await run_cmd(
-            [sys.executable, str(probe_script), req.mode],
-            timeout=600 if req.mode == "full" else 120,
-        )
-        if rc == 0:
-            best = next((l.strip() for l in out.splitlines() if "Лучший пресет:" in l), "")
-            msg = f"✅ zapret {req.mode} probe завершён.\n{best}" if best else f"✅ zapret {req.mode} probe завершён."
-            await tg_alert(msg)
-        else:
-            await tg_alert(f"⚠️ zapret probe завершился с ошибкой:\n<code>{err.strip()[:300]}</code>")
+        async with _probe_lock:
+            tg.enqueue(f"🔍 zapret: запущен {req.mode} probe...")
+            rc, out, err = await run_cmd(
+                [sys.executable, str(probe_script), req.mode],
+                timeout=600 if req.mode == "full" else 120,
+            )
+            if rc == 0:
+                best = next((l.strip() for l in out.splitlines() if "Лучший пресет:" in l), "")
+                msg = f"✅ zapret {req.mode} probe завершён.\n{best}" if best else f"✅ zapret {req.mode} probe завершён."
+                tg.enqueue(msg)
+            else:
+                tg.enqueue(f"⚠️ zapret probe завершился с ошибкой:\n<code>{err.strip()[:300]}</code>")
 
     bg.add_task(_run_probe)
     return {"status": "started", "mode": req.mode}
@@ -2798,7 +2815,7 @@ async def post_backup(request: Request, bg: BackgroundTasks, _: bool = Depends(_
     async def _run_backup():
         rc, out, err = await run_cmd(["/opt/vpn/scripts/backup.sh"], timeout=120)
         if rc != 0:
-            await tg_alert(f"⚠️ Backup завершился с ошибкой (rc={rc}):\n<code>{err[:400]}</code>")
+            tg.enqueue(f"⚠️ Backup завершился с ошибкой (rc={rc}):\n<code>{err[:400]}</code>")
 
     bg.add_task(_run_backup)
     return {"status": "started"}
