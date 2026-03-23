@@ -47,13 +47,8 @@ log_step()  { _log "${CYAN}${BOLD}━━━ $* ━━━${NC}"; }
 notify() {
     local msg
     msg="$(printf '%b' "$1")"
-    [[ -z "${TELEGRAM_BOT_TOKEN:-}" ]] && return 0
-    curl -sf --max-time 10 \
-        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-        -d "chat_id=${TELEGRAM_ADMIN_CHAT_ID}" \
-        --data-urlencode "text=${msg}" \
-        -d "parse_mode=Markdown" \
-        > /dev/null 2>&1 || true
+    [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_ADMIN_CHAT_ID:-}" ]] && return 0
+    "${REPO_DIR}/scripts/tg-send.sh" "${TELEGRAM_ADMIN_CHAT_ID}" "${msg}" || true
 }
 
 notify_update_available() {

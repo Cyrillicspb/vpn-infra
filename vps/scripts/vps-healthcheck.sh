@@ -69,7 +69,7 @@ notify_dedup() {
     # Отправить алерт
     if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_ADMIN_CHAT_ID:-}" ]]; then
         curl -sf --max-time 10 \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --config <(printf 'url = "https://api.telegram.org/bot%s/sendMessage"' "${TELEGRAM_BOT_TOKEN}") \
             -d "chat_id=${TELEGRAM_ADMIN_CHAT_ID}" \
             --data-urlencode "text=${msg}" \
             -d "parse_mode=Markdown" \
@@ -88,7 +88,7 @@ clear_dedup() {
     if [[ -f "${DEDUP_DIR}/${key}" && -n "$name" ]]; then
         if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_ADMIN_CHAT_ID:-}" ]]; then
             curl -sf --max-time 10 \
-                "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+                --config <(printf 'url = "https://api.telegram.org/bot%s/sendMessage"' "${TELEGRAM_BOT_TOKEN}") \
                 -d "chat_id=${TELEGRAM_ADMIN_CHAT_ID}" \
                 --data-urlencode "text=✅ *VPS: восстановлено* — ${name}" \
                 -d "parse_mode=Markdown" \

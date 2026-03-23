@@ -88,6 +88,8 @@ else
     if [[ -n "$ROOT_HASH" && "$ROOT_HASH" != "!" && "$ROOT_HASH" != "*" ]]; then
         usermod -p "$ROOT_HASH" sysadmin
         log_ok "Пароль sysadmin = пароль root"
+        log_warn "РЕКОМЕНДАЦИЯ: смените пароль sysadmin командой: passwd sysadmin"
+        log_warn "Пароль от VPS-провайдера может быть небезопасным для постоянного использования"
     else
         log_warn "У root нет пароля — задайте пароль sysadmin вручную: passwd sysadmin"
     fi
@@ -967,9 +969,9 @@ EOF
 # Cron failsafe: проверка watchdog каждые 5 минут
 SHELL=/bin/bash
 */5 * * * * root systemctl is-active watchdog &>/dev/null || \
-    curl -sf "https://api.telegram.org/bot$(grep TELEGRAM_BOT_TOKEN /opt/vpn/.env | cut -d= -f2)/sendMessage" \
-        -d "chat_id=$(grep TELEGRAM_ADMIN_CHAT_ID /opt/vpn/.env | cut -d= -f2)&text=WATCHDOG+МЁРТВ" \
-        > /dev/null 2>&1 || true
+    /opt/vpn/scripts/tg-send.sh \
+        "$(. /opt/vpn/.env 2>/dev/null; echo "${TELEGRAM_ADMIN_CHAT_ID:-}")" \
+        "WATCHDOG МЁРТВ" > /dev/null 2>&1 || true
 EOF
     fi
     chmod 644 /etc/cron.d/vpn-watchdog-failsafe

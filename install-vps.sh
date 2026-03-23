@@ -55,6 +55,9 @@ vps_exec() {
 # vps_exec_long — для долгих команд на VPS (apt-get, docker pull и т.п.)
 # Команда запускается через nohup — выживает при обрыве SSH.
 # При обрыве tail-соединения автоматически переподключается и продолжает.
+# ⚠️ SECURITY: $cmd подставляется в одиночные кавычки на удалённой стороне.
+# Вызывать ТОЛЬКО с хардкодированными строками, НИКОГДА с пользовательским вводом.
+# При необходимости динамических аргументов — использовать base64-кодирование.
 vps_exec_long() {
     local log="/tmp/vps-cmd-$RANDOM.log"
     local done_file="${log}.done"
@@ -173,8 +176,18 @@ else
     if vps_exec "command -v docker &>/dev/null" 2>/dev/null; then
         log_info "Docker уже установлен на VPS"
     else
-        log_info "Установка Docker на VPS через get.docker.com..."
-        vps_exec_long "curl -fsSL https://get.docker.com | sudo sh" \
+        log_info "Установка Docker на VPS через APT + GPG..."
+        vps_exec "sudo install -m 0755 -d /etc/apt/keyrings && \
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+                | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
+            sudo chmod a+r /etc/apt/keyrings/docker.gpg"
+        vps_exec ". /etc/os-release && \
+            echo \"deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+            https://download.docker.com/linux/ubuntu \${VERSION_CODENAME} stable\" \
+            | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null && \
+            sudo apt-get update -qq"
+        vps_exec_long "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            docker-ce docker-ce-cli containerd.io docker-compose-plugin" \
             || die "Не удалось установить Docker на VPS"
         vps_exec "sudo systemctl enable docker && sudo systemctl start docker"
     fi
@@ -229,7 +242,8 @@ table inet filter {
         tcp dport { 22, 8022 } ct state new accept
 
         # CDN-стек: Cloudflare Worker → VPS:8080 (VLESS+splithttp, защищён UUID)
-        tcp dport 8080 ct state new accept
+        tcp dport 8080 ct state new limit rate 100/second burst 200 packets accept
+        tcp dport 8080 ct state new drop
 
         # Rate limiting TCP 443 (защита Xray/Nginx от flood)
         tcp dport 443 limit rate 200/second burst 500 packets accept
@@ -454,6 +468,14 @@ else
             -addext \"subjectAltName=IP:${VPS_IP}\" 2>/dev/null && \
         sudo chmod 600 /opt/vpn/hysteria2/server.key"
 
+    # Извлекаем SHA256-хеш публичного ключа cert — используется как pinSHA256 на клиенте
+    HYSTERIA2_CERT_HASH=$(vps_exec "openssl x509 -in /opt/vpn/hysteria2/server.crt \
+        -pubkey -noout 2>/dev/null \
+        | openssl pkey -pubin -outform DER 2>/dev/null \
+        | openssl dgst -sha256 -binary 2>/dev/null \
+        | base64") || true
+    [[ -n "${HYSTERIA2_CERT_HASH:-}" ]] && env_set HYSTERIA2_CERT_HASH "$HYSTERIA2_CERT_HASH"
+
     # Генерируем server.yaml с реальными значениями из .env
     vps_exec "sudo tee /opt/vpn/hysteria2/server.yaml > /dev/null << 'HYEOF'
 listen: :443
@@ -631,9 +653,7 @@ source /opt/vpn/.env 2>/dev/null || true
 
 send_alert() {
     local msg=\"\$1\"
-    curl -sf \"https://api.telegram.org/bot\${TELEGRAM_BOT_TOKEN}/sendMessage\" \
-        -d \"chat_id=\${TELEGRAM_ADMIN_CHAT_ID}&text=\${msg}\" \
-        > /dev/null 2>&1 || true
+    /opt/vpn/scripts/tg-send.sh \"\${TELEGRAM_ADMIN_CHAT_ID}\" \"\${msg}\" > /dev/null 2>&1 || true
 }
 
 # Проверка остановленных контейнеров

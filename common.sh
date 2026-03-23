@@ -74,6 +74,7 @@ env_set() {
     local key="$1" val="$2"
     [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || { log_error "Невалидное имя переменной: $key"; return 1; }
     mkdir -p "$(dirname "$ENV_FILE")"
+    chmod 700 "$(dirname "$ENV_FILE")"
     touch "$ENV_FILE"
     # || true: grep возвращает 1 если строка не найдена — это нормально
     { grep -v "^${key}=" "$ENV_FILE" || true; } > "${ENV_FILE}.tmp"

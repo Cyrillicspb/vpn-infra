@@ -42,7 +42,8 @@ fi
 # 4. Telegram API доступен и бот зарегистрирован
 if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]]; then
     TGME=$(curl -sf --max-time 10 \
-        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" 2>/dev/null || true)
+        --config <(printf 'url = "https://api.telegram.org/bot%s/getMe"' "$TELEGRAM_BOT_TOKEN") \
+        2>/dev/null || true)
     if [[ -n "$TGME" ]]; then
         BOT_NAME=$(echo "$TGME" | python3 -c \
             "import json,sys; d=json.load(sys.stdin); print(d['result']['username'])" 2>/dev/null || echo "?")
