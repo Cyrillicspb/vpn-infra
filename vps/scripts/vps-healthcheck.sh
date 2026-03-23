@@ -136,16 +136,12 @@ log "=== Healthcheck start ==="
 check_container "3x-ui"
 check_container "nginx"
 check_container "cloudflared"
-check_container "prometheus"
-check_container "alertmanager"
-check_container "grafana"
+# prometheus, alertmanager, grafana НЕ запущены на VPS — мониторинг на домашнем сервере
 check_container "node-exporter"
 check_container "hysteria2"
 
 check_container_health "3x-ui"
 check_container_health "nginx"
-check_container_health "prometheus"
-check_container_health "grafana"
 
 # ── Xray XHTTP: порты 2087 (microsoft.com) и 2083 (cdn.jsdelivr.net) ─────────
 check "Xray XHTTP 2087" "xray_xhttp_2087" \
@@ -164,18 +160,6 @@ check "Nginx 8443" "nginx_8443" \
 # ── Cloudflared: metrics endpoint ─────────────────────────────────────────────
 check "Cloudflared metrics" "cloudflared_metrics" \
     "curl -sf --max-time 5 http://localhost:20241/metrics | grep -q cloudflared"
-
-# ── Prometheus: API ───────────────────────────────────────────────────────────
-check "Prometheus healthy" "prometheus_health" \
-    "curl -sf --max-time 5 http://localhost:9090/-/healthy | grep -qi ok"
-
-# ── Alertmanager: API ─────────────────────────────────────────────────────────
-check "Alertmanager healthy" "alertmanager_health" \
-    "curl -sf --max-time 5 http://localhost:9093/-/healthy | grep -qi ok"
-
-# ── Grafana: API ──────────────────────────────────────────────────────────────
-check "Grafana healthy" "grafana_health" \
-    "curl -sf --max-time 5 http://localhost:3000/api/health | grep -qi ok"
 
 # ── 3x-ui panel: доступна (localhost) ─────────────────────────────────────────
 check "3x-ui panel" "xui_panel" \

@@ -591,7 +591,8 @@ table inet vpn {
         udp dport 51820 drop
         udp dport 51821 limit rate 100/second burst 200 packets accept
         udp dport 51821 drop
-        tcp dport 22 ct state new accept
+        ct state invalid drop
+        tcp dport 22 ct state new limit rate 5/minute burst 10 packets accept
         ip saddr 172.20.0.0/24 tcp dport 8080 accept
         ip saddr { 127.0.0.1, 10.177.2.0/30 } tcp dport 8090 accept
         iifname { "wg0", "wg1" } udp dport 53 accept
@@ -606,6 +607,16 @@ table inet vpn {
         ip saddr 10.177.1.0/24 oifname "tun*" masquerade
         ip saddr 10.177.3.0/24 oifname "tun*" masquerade
         ip saddr 172.20.0.0/24 oifname != "br-vpn" masquerade
+    }
+}
+
+# IPv6 отключён в sysctl, но добавляем DROP как defense-in-depth
+table ip6 filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+    }
+    chain forward {
+        type filter hook forward priority 0; policy drop;
     }
 }
 EOF

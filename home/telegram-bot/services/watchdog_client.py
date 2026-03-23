@@ -15,43 +15,56 @@ class WatchdogError(Exception):
 
 class WatchdogClient:
     def __init__(self, base_url: str, token: str = "") -> None:
-        self.base_url = base_url.rstrip("/")
-        self._headers = {"Authorization": f"Bearer {token}"} if token else {}
+        self._base_url = base_url.rstrip("/")
+        self._token = token
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            headers = {"Authorization": f"Bearer {self._token}"} if self._token else {}
+            self._session = aiohttp.ClientSession(
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            )
+        return self._session
+
+    async def close(self) -> None:
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
 
     async def _get(self, path: str, timeout: int = 15) -> Any:
-        async with aiohttp.ClientSession() as s:
-            try:
-                async with s.get(
-                    f"{self.base_url}{path}",
-                    headers=self._headers,
-                    timeout=aiohttp.ClientTimeout(total=timeout),
-                ) as r:
-                    if r.status == 200:
-                        ct = r.headers.get("Content-Type", "")
-                        if "json" in ct:
-                            return await r.json()
-                        return await r.read()
-                    raise WatchdogError(f"HTTP {r.status}: {await r.text()}")
-            except aiohttp.ClientError as exc:
-                raise WatchdogError(f"Watchdog недоступен: {exc}") from exc
+        session = await self._get_session()
+        try:
+            async with session.get(
+                f"{self._base_url}{path}",
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as r:
+                if r.status == 200:
+                    ct = r.headers.get("Content-Type", "")
+                    if "json" in ct:
+                        return await r.json()
+                    return await r.read()
+                raise WatchdogError(f"HTTP {r.status}: {await r.text()}")
+        except aiohttp.ClientError as exc:
+            raise WatchdogError("Watchdog недоступен") from None
 
     async def _post(self, path: str, data: Optional[dict] = None, timeout: int = 30) -> Any:
-        async with aiohttp.ClientSession() as s:
-            try:
-                async with s.post(
-                    f"{self.base_url}{path}",
-                    json=data or {},
-                    headers=self._headers,
-                    timeout=aiohttp.ClientTimeout(total=timeout),
-                ) as r:
-                    if r.status in (200, 202):
-                        ct = r.headers.get("Content-Type", "")
-                        if "json" in ct:
-                            return await r.json()
-                        return await r.read()
-                    raise WatchdogError(f"HTTP {r.status}: {await r.text()}")
-            except aiohttp.ClientError as exc:
-                raise WatchdogError(f"Watchdog недоступен: {exc}") from exc
+        session = await self._get_session()
+        try:
+            async with session.post(
+                f"{self._base_url}{path}",
+                json=data or {},
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as r:
+                if r.status in (200, 202):
+                    ct = r.headers.get("Content-Type", "")
+                    if "json" in ct:
+                        return await r.json()
+                    return await r.read()
+                raise WatchdogError(f"HTTP {r.status}: {await r.text()}")
+        except aiohttp.ClientError as exc:
+            raise WatchdogError("Watchdog недоступен") from None
 
     # -----------------------------------------------------------------------
     # Status / metrics

@@ -844,6 +844,7 @@ async def cmd_broadcast(message: Message, state: FSMContext, **kw):
             try:
                 await bot.send_message(c["chat_id"], f"📢 *Объявление:*\n\n{args[1]}", reply_markup=menu_reply_kb())
                 sent += 1
+                await asyncio.sleep(0.05)  # 20 msg/sec — Telegram rate limit
             except Exception:
                 pass
     await message.answer(f"✅ Отправлено {sent}/{len(clients)} клиентам.")
@@ -1272,7 +1273,7 @@ async def cmd_diagnose(message: Message, state: FSMContext, **kw):
         return
     device_name = args[1]
     try:
-        r = await _wc().diagnose(device_name)
+        r = await asyncio.wait_for(_wc().diagnose(device_name), timeout=15)
         text = (
             f"*Диагностика `{device_name}`:*\n\n"
             f"WG peer: {'✅' if r.get('wg_peer_found') else '❌'}\n"

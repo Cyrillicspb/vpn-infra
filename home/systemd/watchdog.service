@@ -26,6 +26,9 @@ ExecStart=/opt/vpn/watchdog/venv/bin/python watchdog.py
 # Перезагрузка плагинов без полного рестарта
 ExecReload=/bin/kill -HUP $MAINPID
 
+# KillMode=process: не убивает tun2socks и nfqws при рестарте watchdog
+KillMode=process
+
 Restart=always
 RestartSec=5
 StartLimitBurst=5
