@@ -216,7 +216,8 @@ phase0() {
         if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]]; then
             log_info "Проверка Telegram Bot Token..."
             _tg_check=$(curl -sf --max-time 8 \
-                "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" 2>/dev/null) || true
+                --config <(printf 'url = "https://api.telegram.org/bot%s/getMe"' "$TELEGRAM_BOT_TOKEN") \
+                2>/dev/null) || true
             if [[ -n "$_tg_check" ]] && echo "$_tg_check" \
                 | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
                 _bot_name=$(echo "$_tg_check" \
@@ -1287,13 +1288,27 @@ CDNEOF
     else
         step "Генерация конфига Hysteria2-клиента"
 
+        # Перезагружаем .env — HYSTERIA2_CERT_HASH был добавлен в install-vps.sh
+        [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
+
+        # TLS: self-signed cert — используем pinSHA256 если хеш известен
+        local _tls_section
+        if [[ -n "${HYSTERIA2_CERT_HASH:-}" ]]; then
+            _tls_section="tls:
+  insecure: false
+  pinSHA256: ${HYSTERIA2_CERT_HASH}"
+        else
+            _tls_section="tls:
+  insecure: false"
+            log_warn "HYSTERIA2_CERT_HASH не задан — TLS включён без pin-верификации"
+        fi
+
         mkdir -p /etc/hysteria
         cat > /etc/hysteria/config.yaml << EOF
 # Hysteria2 клиент — stack 4 (QUIC + Salamander)
 server: ${VPS_IP}:443
 
-tls:
-  insecure: true
+${_tls_section}
 
 auth: ${HYSTERIA2_AUTH}
 
