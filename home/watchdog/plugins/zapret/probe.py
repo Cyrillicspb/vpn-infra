@@ -223,6 +223,10 @@ PRESETS: list[dict] = [
 PRESET_IDS = [p["id"] for p in PRESETS]
 N_ARMS = len(PRESETS)
 
+# Коэффициент забывания для full probe: 10% старых наблюдений обесценивается за каждый цикл.
+# При full probe раз в сутки alpha=50 → ~2.1 за 30 дней → почти uniform prior.
+DECAY_FACTOR = 0.9
+
 
 # ---------------------------------------------------------------------------
 # Thompson Sampling
@@ -262,6 +266,11 @@ class ThompsonSampling:
         """Список (arm_idx, mean) отсортированный по убыванию."""
         means = [(i, self.alpha[i] / (self.alpha[i] + self.beta[i])) for i in range(len(self.alpha))]
         return sorted(means, key=lambda x: -x[1])
+
+    def apply_decay(self) -> None:
+        """Уменьшить вес старых наблюдений после full probe (забывание 10%)."""
+        self.alpha = [max(1.0, a * DECAY_FACTOR) for a in self.alpha]
+        self.beta  = [max(1.0, b * DECAY_FACTOR) for b in self.beta]
 
     def to_dict(self) -> dict:
         return {"alpha": self.alpha, "beta": self.beta}
@@ -542,6 +551,8 @@ async def run_full_probe() -> str:
     finally:
         await _stop_nfqws()
         await _del_nft_probe_rules()
+
+    probe_state.ts.apply_decay()
 
     best_idx = probe_state.ts.best_arm()
     best = PRESETS[best_idx]
