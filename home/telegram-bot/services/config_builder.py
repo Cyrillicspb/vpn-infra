@@ -19,7 +19,9 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+import re
+
+from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +35,17 @@ AWG_PARAMS = {"Jc": 4, "Jmin": 50, "Jmax": 1000, "S1": 30, "S2": 40,
 WG_PARAMS  = {"PersistentKeepalive": 25, "MTU": 1320}
 
 
+_DEVICE_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]{2,30}$')
+
+
 def wg_genkey() -> tuple[str, str]:
     """Генерация пары ключей wg. Возвращает (private_key, public_key)."""
-    privkey = subprocess.check_output(["wg", "genkey"], text=True).strip()
-    pubkey  = subprocess.check_output(["wg", "pubkey"], input=privkey, text=True).strip()
+    try:
+        privkey = subprocess.check_output(["wg", "genkey"], text=True, timeout=5).strip()
+        pubkey  = subprocess.check_output(["wg", "pubkey"], input=privkey, text=True, timeout=5).strip()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        logger.error("wg genkey failed: %s", exc)
+        raise RuntimeError("Не удалось сгенерировать WireGuard ключ") from exc
     return privkey, pubkey
 
 
@@ -74,6 +83,7 @@ def _render(device: dict, allowed_ips: list[str]) -> str:
         loader=FileSystemLoader(str(TEMPLATES_DIR)),
         autoescape=select_autoescape([]),
         keep_trailing_newline=True,
+        undefined=StrictUndefined,
     )
     tmpl = env.get_template(template_name)
     pubkey_env = "AWG_SERVER_PUBLIC_KEY" if protocol == "awg" else "WG_SERVER_PUBLIC_KEY"
@@ -215,12 +225,16 @@ echo "VPN started! Status: sudo systemctl status wg-quick@$NAME"
 
 def build_installer(device_name: str, conf_text: str, platform: str) -> Optional[bytes]:
     """Сгенерировать скрипт-установщик с вшитым конфигом для указанной платформы."""
+    if not _DEVICE_NAME_RE.match(device_name):
+        raise ValueError(f"Invalid device name: {device_name!r}")
     info = PLATFORM_SCRIPTS.get(platform)
     if not info:
         return None
-    conf_escaped = conf_text.replace("'", "'\\''")  # для bash heredoc
+    conf_escaped = conf_text.replace("'", "'\\''")  # для bash single-quote escape
+    # PowerShell: escape backtick and $ to prevent variable expansion inside here-string
+    ps_conf = conf_text.replace("`", "``").replace("$", "`$")
     script = info["template"].format(
-        conf=conf_text,
+        conf=ps_conf if platform == "windows" else conf_text,
         conf_escaped=conf_escaped,
         name=device_name,
     )
