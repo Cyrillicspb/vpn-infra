@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # Хэш последнего коммита home/telegram-bot/ — для надёжной детекции изменений в deploy.sh
 ARG GIT_HASH=unknown
