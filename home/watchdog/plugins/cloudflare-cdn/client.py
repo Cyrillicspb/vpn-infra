@@ -7,10 +7,12 @@ Cloudflare CDN плагин для watchdog (Workers вариант).
 """
 import asyncio
 import json
-import subprocess
 import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from base import BasePlugin
 
 SOCKS_PORT = 1082
 TUN_IFACE  = "tun-cf-cdn"    # 10 chars — в лимите Linux 15
@@ -18,92 +20,119 @@ TUN_TMP    = "tun-cf-cdn-t"  # 12 chars
 CONTAINER_NAME = "xray-client-cdn"
 
 
-async def run_cmd(cmd: list, timeout: int = 30) -> tuple[int, str, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    return proc.returncode or 0, stdout.decode(), stderr.decode()
+class CloudflareCdnPlugin(BasePlugin):
+    name = "cloudflare-cdn"
+    pid_file = Path("/run/tun2socks-cf-cdn.pid")
+    _pid_file_tmp = Path("/run/tun2socks-cf-cdn-t.pid")
 
+    async def start(self, temp_port: str = "") -> int:
+        """Запуск CDN стека: xray-client-cdn + tun2socks."""
+        tun_name = TUN_TMP if temp_port else TUN_IFACE
+        pf = self._pid_file_tmp if temp_port else self.pid_file
 
-async def start(temp_port: str = ""):
-    """Запуск CDN стека: xray-client-cdn + tun2socks."""
-    tun_name = TUN_TMP if temp_port else TUN_IFACE
+        # 1. Запускаем xray-client-cdn если не запущен
+        rc, stdout, _ = await self.run_cmd(
+            ["docker", "inspect", "-f", "{{.State.Running}}", CONTAINER_NAME]
+        )
+        if "true" not in stdout.lower():
+            rc, _, err = await self.run_cmd(["docker", "start", CONTAINER_NAME], timeout=15)
+            if rc != 0:
+                print(json.dumps({"status": "error", "message": f"Не удалось запустить {CONTAINER_NAME}: {err}"}))
+                return 1
 
-    # 1. Запускаем xray-client-cdn если не запущен
-    rc, stdout, _ = await run_cmd(["docker", "inspect", "-f", "{{.State.Running}}", CONTAINER_NAME])
-    if "true" not in stdout.lower():
-        rc, _, err = await run_cmd(["docker", "start", CONTAINER_NAME], timeout=15)
-        if rc != 0:
-            print(json.dumps({"status": "error", "message": f"Не удалось запустить {CONTAINER_NAME}: {err}"}))
+        # Ждём SOCKS5 порт
+        for _ in range(30):
+            await asyncio.sleep(1)
+            rc, _, _ = await self.run_cmd(["nc", "-z", "127.0.0.1", str(SOCKS_PORT)])
+            if rc == 0:
+                break
+        else:
+            print(json.dumps({"status": "error", "message": f"SOCKS5 :{SOCKS_PORT} недоступен"}))
             return 1
 
-    # Ждём SOCKS5 порт
-    for _ in range(30):
-        await asyncio.sleep(1)
-        rc, _, _ = await run_cmd(["nc", "-z", "127.0.0.1", str(SOCKS_PORT)])
-        if rc == 0:
-            break
-    else:
-        print(json.dumps({"status": "error", "message": f"SOCKS5 :{SOCKS_PORT} недоступен"}))
+        # 2. Запускаем tun2socks с PID tracking
+        proc = await self.start_process([
+            "/usr/local/bin/tun2socks",
+            "-device", tun_name,
+            "-proxy", f"socks5://127.0.0.1:{SOCKS_PORT}",
+            "-loglevel", "warning",
+        ], pid_file=pf)
+        if proc is None:
+            return 1
+
+        # Ждём tun интерфейс
+        for _ in range(15):
+            await asyncio.sleep(1)
+            rc, _, _ = await self.run_cmd(["ip", "link", "show", tun_name])
+            if rc == 0:
+                await self.run_cmd(["ip", "link", "set", tun_name, "up"])
+                print(json.dumps({"status": "started", "tun": tun_name, "pid": proc.pid}))
+                return 0
+
+        print(json.dumps({"status": "error", "message": "tun interface not created"}))
+        await self.stop_process(pf)
         return 1
 
-    # 2. Запускаем tun2socks
-    proc = subprocess.Popen([
-        "/usr/local/bin/tun2socks",
-        "-device", tun_name,
-        "-proxy", f"socks5://127.0.0.1:{SOCKS_PORT}",
-        "-loglevel", "warning",
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    # Ждём tun интерфейс
-    for _ in range(15):
+    async def stop(self) -> int:
+        """Остановка CDN стека."""
+        await self.stop_process(self.pid_file)
+        await self.stop_process(self._pid_file_tmp)
+        # Fallback для процессов запущенных до PID tracking
+        await self.run_cmd(["pkill", "-f", f"tun2socks.*{TUN_IFACE}"], timeout=5)
+        await self.run_cmd(["pkill", "-f", f"tun2socks.*{TUN_TMP}"], timeout=5)
         await asyncio.sleep(1)
-        rc, _, _ = await run_cmd(["ip", "link", "show", tun_name])
-        if rc == 0:
-            await run_cmd(["ip", "link", "set", tun_name, "up"])
-            print(json.dumps({"status": "started", "tun": tun_name, "pid": proc.pid}))
-            return 0
+        return 0
 
-    print(json.dumps({"status": "error", "message": "tun interface not created"}))
-    proc.terminate()
-    return 1
+    async def test(self) -> int:
+        """Тест CDN стека: проверка connectivity + реальный замер throughput."""
+        rc, stdout, _ = await self.run_cmd(
+            ["curl", "-s", "--max-time", "10",
+             "--proxy", f"socks5://127.0.0.1:{SOCKS_PORT}",
+             "-o", "/dev/null", "-w", "%{http_code}",
+             "https://youtube.com"],
+            timeout=15,
+        )
+        if rc != 0 or stdout.strip() not in ["200", "301", "302"]:
+            print(json.dumps({"status": "fail", "throughput_mbps": 0}))
+            return 1
+
+        # Реальный замер throughput (1 MB)
+        start_t = time.time()
+        rc2, _, _ = await self.run_cmd(
+            ["curl", "-s", "--max-time", "15",
+             "--proxy", f"socks5://127.0.0.1:{SOCKS_PORT}",
+             "-o", "/dev/null",
+             "https://speed.cloudflare.com/__down?bytes=1048576"],
+            timeout=20,
+        )
+        elapsed = time.time() - start_t
+        throughput = round((1048576 * 8 / 1_000_000) / max(elapsed, 0.1), 2)
+        print(json.dumps({"status": "ok", "throughput_mbps": throughput}))
+        return 0
+
+    async def activate(self) -> int:
+        return 0
+
+    async def deactivate(self) -> int:
+        return 0
 
 
-async def stop():
-    """Остановка CDN стека."""
-    await run_cmd(["pkill", "-f", f"tun2socks.*{TUN_IFACE}"])
-    await run_cmd(["pkill", "-f", f"tun2socks.*{TUN_TMP}"])
-    await asyncio.sleep(1)
-    return 0
+_p = CloudflareCdnPlugin()
 
+
+async def start(temp_port: str = "") -> int:
+    return await _p.start(temp_port)
+
+async def stop() -> int:
+    return await _p.stop()
 
 async def test() -> int:
-    """Тест CDN стека через SOCKS5 :1082."""
-    start_time = time.time()
-    rc, stdout, _ = await run_cmd(
-        ["curl", "-s", "--max-time", "15",
-         "--proxy", f"socks5://127.0.0.1:{SOCKS_PORT}",
-         "-o", "/dev/null", "-w", "%{http_code}",
-         "https://youtube.com"],
-        timeout=20,
-    )
-    if rc == 0 and stdout.strip() in ["200", "301", "302"]:
-        elapsed = time.time() - start_time
-        throughput = 10.0 / max(elapsed, 0.1)
-        print(json.dumps({"status": "ok", "throughput_mbps": round(min(throughput, 100), 2)}))
-        return 0
-    print(json.dumps({"status": "fail", "throughput_mbps": 0}))
-    return 1
+    return await _p.test()
 
-
-async def rotate():
-    """Ротация CDN соединения."""
-    await stop()
+async def rotate() -> int:
+    await _p.stop()
     await asyncio.sleep(2)
-    return await start()
+    return await _p.start()
 
 
 async def main():
