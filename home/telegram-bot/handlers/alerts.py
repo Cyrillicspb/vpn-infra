@@ -10,8 +10,10 @@ handlers/alerts.py — HTTP-сервер для приёма алертов
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+from hmac import compare_digest
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -42,7 +44,7 @@ def _check_auth(request: web.Request) -> bool:
     if not NOTIFY_TOKEN:
         return True
     auth = request.headers.get("Authorization", "")
-    return auth == f"Bearer {NOTIFY_TOKEN}"
+    return compare_digest(auth, f"Bearer {NOTIFY_TOKEN}")
 
 
 # ---------------------------------------------------------------------------
@@ -181,3 +183,9 @@ async def start_notify_server(bot: "Bot", db: "Database") -> None:
     site = web.TCPSite(runner, "0.0.0.0", NOTIFY_PORT)
     await site.start()
     logger.info("Notify server запущен на 0.0.0.0:%d", NOTIFY_PORT)
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        logger.info("Notify server shutting down")
+        await runner.cleanup()
+        raise

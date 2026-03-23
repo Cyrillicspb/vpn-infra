@@ -779,6 +779,20 @@ class Database:
             conn.close()
 
     # -----------------------------------------------------------------------
+    # Lifecycle
+    # -----------------------------------------------------------------------
+    async def close(self) -> None:
+        """Flush WAL и закрыть соединение с SQLite."""
+        async with self._lock:
+            conn = self._conn()
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.commit()
+                logger.info("Database WAL checkpointed")
+            finally:
+                conn.close()
+
+    # -----------------------------------------------------------------------
     # Backup
     # -----------------------------------------------------------------------
     async def backup(self, backup_path: str) -> None:

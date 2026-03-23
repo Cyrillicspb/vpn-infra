@@ -50,10 +50,24 @@ class AutoDist:
             name="autodist",
         )
 
+    async def shutdown(self) -> None:
+        """Graceful остановка — отменить pending debounced send."""
+        if self._pending_task and not self._pending_task.done():
+            self._pending_task.cancel()
+            try:
+                await self._pending_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("AutoDist stopped")
+
     async def _debounced_send(self, reason: str) -> None:
-        logger.info(f"AutoDist: ожидание {DEBOUNCE_SECONDS}с (причина: {reason})")
-        await asyncio.sleep(DEBOUNCE_SECONDS)
-        await self.send_all(reason)
+        try:
+            logger.info(f"AutoDist: ожидание {DEBOUNCE_SECONDS}с (причина: {reason})")
+            await asyncio.sleep(DEBOUNCE_SECONDS)
+            await self.send_all(reason)
+        except asyncio.CancelledError:
+            logger.debug("AutoDist debounce cancelled: %s", reason)
+            raise
 
     async def send_all(self, reason: str = "") -> tuple[int, int]:
         """

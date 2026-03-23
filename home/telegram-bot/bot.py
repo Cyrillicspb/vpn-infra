@@ -146,40 +146,48 @@ class DependencyMiddleware:
 # ---------------------------------------------------------------------------
 async def reminder_loop(autodist: AutoDist) -> None:
     """Каждые 6 часов отправляем напоминания клиентам с устаревшими конфигами."""
-    while True:
-        await asyncio.sleep(6 * 3600)
-        try:
-            await autodist.send_reminders()
-        except Exception as exc:
-            logger.error(f"reminder_loop: {exc}")
+    try:
+        while True:
+            await asyncio.sleep(6 * 3600)
+            try:
+                await autodist.send_reminders()
+            except Exception as exc:
+                logger.error(f"reminder_loop: {exc}")
+    except asyncio.CancelledError:
+        logger.info("reminder_loop stopped")
+        raise
 
 
 async def _bootstrap_cleanup_loop(db: "Database") -> None:
     """Каждый час удаляем истёкшие bootstrap-инвайты (пиры + DB-записи)."""
     from services.watchdog_client import WatchdogClient
     from config import config as _cfg
-    while True:
-        await asyncio.sleep(3600)
-        try:
-            expired = await db.get_expired_bootstrap_invites()
-            if not expired:
-                continue
-            wdc = WatchdogClient(_cfg.watchdog_url, _cfg.watchdog_token)
-            for inv in expired:
-                for peer_id, iface in [
-                    (inv.get("awg_peer_id"), "wg0"),
-                    (inv.get("wg_peer_id"),  "wg1"),
-                ]:
-                    if peer_id:
-                        try:
-                            await wdc.remove_peer(peer_id, interface=iface)
-                        except Exception:
-                            pass
-            removed = await db.delete_expired_bootstrap_invites()
-            if removed:
-                logger.info(f"bootstrap_cleanup: удалено {removed} истёкших инвайтов")
-        except Exception as exc:
-            logger.error(f"bootstrap_cleanup_loop: {exc}")
+    try:
+        while True:
+            await asyncio.sleep(3600)
+            try:
+                expired = await db.get_expired_bootstrap_invites()
+                if not expired:
+                    continue
+                wdc = WatchdogClient(_cfg.watchdog_url, _cfg.watchdog_token)
+                for inv in expired:
+                    for peer_id, iface in [
+                        (inv.get("awg_peer_id"), "wg0"),
+                        (inv.get("wg_peer_id"),  "wg1"),
+                    ]:
+                        if peer_id:
+                            try:
+                                await wdc.remove_peer(peer_id, interface=iface)
+                            except Exception:
+                                pass
+                removed = await db.delete_expired_bootstrap_invites()
+                if removed:
+                    logger.info(f"bootstrap_cleanup: удалено {removed} истёкших инвайтов")
+            except Exception as exc:
+                logger.error(f"bootstrap_cleanup_loop: {exc}")
+    except asyncio.CancelledError:
+        logger.info("_bootstrap_cleanup_loop stopped")
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -207,14 +215,14 @@ async def on_startup(bot: Bot, dp: Dispatcher, db: Database, autodist: AutoDist)
         await db.update_client_info(config.admin_chat_id, admin_username, admin_first_name)
         logger.info(f"Имя администратора обновлено: {admin_first_name}")
 
-    # Notify-сервер для алертов от watchdog
-    asyncio.create_task(start_notify_server(bot, db), name="notify-server")
-
-    # Напоминания о конфигах
-    asyncio.create_task(reminder_loop(autodist), name="reminder-loop")
-
-    # Очистка истёкших bootstrap-инвайтов (пиры + DB записи)
-    asyncio.create_task(_bootstrap_cleanup_loop(db), name="bootstrap-cleanup")
+    # Фоновые задачи — сохраняем ссылки чтобы GC не собрал и можно было отменить
+    bot._tasks = [
+        asyncio.create_task(start_notify_server(bot, db), name="notify-server"),
+        asyncio.create_task(reminder_loop(autodist), name="reminder-loop"),
+        asyncio.create_task(_bootstrap_cleanup_loop(db), name="bootstrap-cleanup"),
+    ]
+    bot._db = db
+    bot._autodist = autodist
 
     try:
         await bot.send_message(config.admin_chat_id, "✅ *Бот запущен* и готов к работе.")
@@ -226,11 +234,32 @@ async def on_startup(bot: Bot, dp: Dispatcher, db: Database, autodist: AutoDist)
 
 async def on_shutdown(bot: Bot) -> None:
     logger.info("Бот завершается...")
+
+    # 1. Отменить named background tasks
+    task_names = {"notify-server", "reminder-loop", "bootstrap-cleanup"}
+    to_cancel = [t for t in asyncio.all_tasks() if t.get_name() in task_names]
+    for task in to_cancel:
+        task.cancel()
+
+    # 2. Дождаться завершения отменённых задач
+    if to_cancel:
+        await asyncio.gather(*to_cancel, return_exceptions=True)
+
+    # 3. Остановить autodist
+    if hasattr(bot, "_autodist") and bot._autodist:
+        await bot._autodist.shutdown()
+
+    # 4. Закрыть DB (WAL checkpoint)
+    if hasattr(bot, "_db") and bot._db:
+        await bot._db.close()
+
+    # 5. Уведомить админа (может не дойти если Telegram недоступен)
     try:
-        await bot.send_message(config.admin_chat_id, "⚠️ *Бот завершается.*")
+        await bot.send_message(config.admin_chat_id, "⚠️ Бот завершается.")
     except Exception:
         pass
-    await bot.session.close()
+
+    # НЕ вызывать bot.session.close() — aiogram 3.x закрывает сессию сам
 
 
 # ---------------------------------------------------------------------------
