@@ -326,9 +326,9 @@ VPS: `/opt/vpn/` — docker-compose, nginx/, 3x-ui/, cloudflared/, scripts/.
 - do-release-upgrade запрещено → переустановка + restore.sh
 - xray/*.json — шаблоны с `${VAR}`, деплоить через envsubst
 - VPS 23.95.252.178 геолоцируется Google как Beijing → нужна смена VPS
-- **AR1**: dpi_direct + UDP/QUIC — nfqws перехватывает только TCP; YouTube QUIC (UDP 443) идёт без DPI bypass → шейпинг остаётся
-- **AR2**: Thompson Sampling без decay — при смене DPI-конфига ISP сходимость к новому пресету медленная (накопленные alpha/beta тянут к старому)
-- **AR3**: `nft -f` flush при `check_nftables_integrity` сбрасывает `blocked_dynamic` и `dpi_direct`; dnsmasq не знает о сбросе → sets пустые до следующих DNS-запросов
+- **AR1**: dpi_direct + UDP/QUIC — nfqws перехватывает только TCP; YouTube QUIC (UDP 443) идёт без DPI bypass → шейпинг остаётся *(архитектурное ограничение)*
+- **AR2**: Thompson Sampling без decay — при смене DPI-конфига ISP сходимость к новому пресету медленная *(planned: decay параметр)*
+- ~~**AR3**: `nft -f` flush сбрасывает `blocked_dynamic` и `dpi_direct`~~ → **исправлено**: dns-warmup.sh запускается автоматически после восстановления nftables
 
 -----
 
@@ -346,4 +346,4 @@ VPS: `/opt/vpn/` — docker-compose, nginx/, 3x-ui/, cloudflared/, scripts/.
 - VPS: 23.95.252.178 — 3x-ui, nginx, cloudflared, node-exporter
 - ⚠️ VPS геолоцируется Google как Beijing → нужна смена на Hetzner/Vultr/DigitalOcean
 
-*Промпт v4.2 — оптимизация размера, TODO-спеки вынесены в docs/TODO-SPECS.md*
+*Промпт v4.3 — исправлены AR3 + security hardening (8 групп fixes)*
