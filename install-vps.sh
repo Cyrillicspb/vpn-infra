@@ -230,7 +230,7 @@ flush ruleset
 
 table inet filter {
     chain input {
-        type filter hook input priority filter; policy accept;
+        type filter hook input priority filter; policy drop;
 
         # Loopback
         iifname \"lo\" accept
@@ -238,23 +238,26 @@ table inet filter {
         # Established/related
         ct state established,related accept
 
+        # Invalid — drop before processing
+        ct state invalid drop
+
         # SSH основной порт + аварийный 8022 (DPI блокирует 22 и 443 при падении стеков)
-        tcp dport { 22, 8022 } ct state new accept
+        tcp dport { 22, 8022 } ct state new limit rate 5/minute burst 10 packets accept
 
         # CDN-стек: Cloudflare Worker → VPS:8080 (VLESS+splithttp, защищён UUID)
         tcp dport 8080 ct state new limit rate 100/second burst 200 packets accept
-        tcp dport 8080 ct state new drop
+
+        # Xray REALITY inbounds (прямое подключение, XTLS-Vision + gRPC)
+        tcp dport { 2083, 2087 } ct state new limit rate 200/second burst 500 packets accept
 
         # Rate limiting TCP 443 (защита Xray/Nginx от flood)
-        tcp dport 443 limit rate 200/second burst 500 packets accept
-        tcp dport 443 drop
+        tcp dport 443 ct state new limit rate 200/second burst 500 packets accept
 
         # Rate limiting UDP 443 (защита Hysteria2 от flood)
         udp dport 443 limit rate 200/second burst 500 packets accept
-        udp dport 443 drop
 
         # ICMP
-        icmp type echo-request limit rate 10/second accept
+        icmp type { echo-request, echo-reply, destination-unreachable } limit rate 10/second accept
 
         # Mosh — UDP порты для терминала (только от tier-2 туннеля)
         iifname "tun0" udp dport 60000-61000 accept
@@ -262,6 +265,9 @@ table inet filter {
         # DNS от Tier-2 туннеля (dnsmasq на VPS слушает на tun0 10.177.2.2)
         iifname "tun0" udp dport 53 accept
         iifname "tun0" tcp dport 53 accept
+
+        # Node-exporter — только через tier-2 туннель (10.177.2.0/30)
+        ip saddr 10.177.2.0/30 tcp dport 9100 accept
     }
 
     chain forward {
