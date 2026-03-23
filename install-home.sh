@@ -572,6 +572,9 @@ table inet vpn {
         ip saddr 10.177.3.0/24 ip daddr @blocked_static  oifname != "tun*" drop
         ip saddr 10.177.3.0/24 ip daddr @blocked_dynamic oifname != "tun*" drop
         ct state established,related accept
+        # AR1: блокировать QUIC (UDP 443) для dpi_direct — принудить браузер к TCP
+        # TCP обрабатывается nfqws, QUIC нет → шейпинг без bypass
+        iifname { "wg0", "wg1" } ip daddr @dpi_direct udp dport 443 drop
         iifname { "wg0", "wg1" } accept
         oifname { "wg0", "wg1" } accept
         iifname "tun*" accept
