@@ -500,11 +500,8 @@ sudo bash setup.sh
 |---|---|
 | [COMMANDS.md](COMMANDS.md) | Все команды Telegram-бота (admin и client) |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Архитектура системы, схемы, принципы работы |
-| [HARDWARE.md](HARDWARE.md) | Выбор оборудования, VPS-провайдеры, тесты upload |
+| [REQUIREMENTS.md](REQUIREMENTS.md) | Детальные требования, оборудование, формулы расчёта нагрузки |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Типичные проблемы и способы их решения |
-| [UPDATE.md](UPDATE.md) | Обновление системы через бот и вручную |
-| [DISASTER-RECOVERY.md](DISASTER-RECOVERY.md) | Восстановление после сбоя, миграция на новый VPS |
-| [SECURITY.md](SECURITY.md) | Безопасность: mTLS, fail2ban, ротация ключей |
-| [PRIVACY.md](PRIVACY.md) | Что логируется, что нет, DNS-приватность |
+| [UPDATE.md](UPDATE.md) | Обновление системы, откат, восстановление после сбоя |
+| [SECURITY.md](SECURITY.md) | Безопасность: mTLS, fail2ban, приватность, ротация ключей |
 | [FAQ.md](FAQ.md) | Частые вопросы |
-| [REQUIREMENTS.md](REQUIREMENTS.md) | Детальные требования, формулы расчёта нагрузки |

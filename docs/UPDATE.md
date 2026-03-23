@@ -206,3 +206,135 @@ migrations/
 ```
 
 Если что-то сломалось: `/rollback` или `sudo bash deploy.sh --rollback`
+
+---
+
+## Восстановление после сбоя (Disaster Recovery)
+
+### Хранение бэкапов
+
+| Расположение | Путь | TTL |
+|--------------|------|-----|
+| Домашний сервер | `/opt/vpn/backups/vpn-backup-*.tar.gz.gpg` | 30 дней |
+| VPS | `/opt/vpn/backups/vpn-backup-*.tar.gz.gpg` | 30 дней |
+| Telegram | Сообщение от бота в чате с собой | Навсегда |
+
+GPG-passphrase: переменная `BACKUP_GPG_PASSPHRASE` из `.env`. Если `.env` утерян — нужен passphrase из Telegram-бэкапа.
+
+---
+
+### Сценарий 1: Домашний сервер вышел из строя
+
+**Время восстановления: ~40–60 минут**
+
+1. Установить Ubuntu Server 24.04 на новое железо (пользователь `sysadmin`, OpenSSH, Ethernet, тот же LAN IP)
+2. Получить бэкап с VPS: `scp -i ~/.ssh/vpn_vps sysadmin@<VPS_IP>:/opt/vpn/backups/vpn-backup-<DATE>.tar.gz.gpg ~/`
+3. Запустить восстановление:
+```bash
+curl -sO https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/restore.sh
+sudo bash restore.sh vpn-backup-YYYYMMDD_HHMMSS.tar.gz.gpg
+```
+
+`restore.sh` расшифрует бэкап, проверит sha256 и восстановит компоненты в правильном порядке. Клиентам не нужно обновлять конфиги — ключи сохранились.
+
+---
+
+### Сценарий 2: Повреждена ОС (сервер жив)
+
+**Время восстановления: ~20–30 минут**
+
+```bash
+# Откат к снимку deploy:
+sudo bash /opt/vpn/deploy.sh --rollback
+
+# Восстановление из бэкапа:
+sudo bash restore.sh /opt/vpn/backups/vpn-backup-<LATEST>.tar.gz.gpg
+
+# Восстановить только конкретный компонент:
+sudo bash restore.sh --component wireguard vpn-backup-LATEST.tar.gz.gpg
+sudo bash restore.sh --component database  vpn-backup-LATEST.tar.gz.gpg
+
+# DKMS слетел после обновления ядра:
+sudo apt install linux-headers-$(uname -r)
+sudo dkms install amneziawg -v $(dkms status | grep amneziawg | awk '{print $2}' | tr -d ',')
+sudo systemctl restart wg-quick@wg0 wg-quick@wg1
+```
+
+---
+
+### Сценарий 3: VPS недоступен
+
+При недоступности VPS все 4 стека не работают — нет автоматического аварийного режима без VPS.
+
+```bash
+# Диагностика:
+ping <VPS_IP> -c 5
+ssh -i /root/.ssh/vpn_id_ed25519 sysadmin@<VPS_IP>
+```
+
+Если VPS завис: войдите в веб-консоль провайдера (Hetzner Console, Vultr VNC) → Hard reset VM → `docker compose up -d`.
+
+---
+
+### Сценарий 4: Смена VPS
+
+```
+/migrate_vps <IP_НОВОГО_VPS>
+```
+
+Бот установит Docker, скопирует конфиги, поднимет сервисы, протестирует стеки и разошлёт новые конфиги клиентам. Если DDNS настроен — клиентам ничего делать не нужно.
+
+```bash
+# Через restore.sh:
+sudo bash restore.sh vpn-backup-LATEST.tar.gz.gpg --migrate-vps <НОВЫЙ_VPS_IP>
+```
+
+---
+
+### Сценарий 5: Компрометация ключей
+
+```bash
+# Немедленно через бота:
+/rotate_keys
+```
+
+`/rotate_keys` сгенерирует новые ключи для сервера и всех пиров, разошлёт новые конфиги клиентам, перезапустит WireGuard.
+
+```bash
+# Проверить нет ли посторонних peers:
+sudo wg show wg0 && sudo wg show wg1
+# Проверить authorized_keys:
+cat /home/sysadmin/.ssh/authorized_keys
+# Проверить логи входов:
+last -n 30
+```
+
+---
+
+### Быстрый старт: команды восстановления
+
+```bash
+# Полное восстановление из бэкапа:
+sudo bash restore.sh <ФАЙЛ_БЕКАПА>
+
+# Восстановить только компоненты:
+sudo bash restore.sh --component env       <ФАЙЛ>
+sudo bash restore.sh --component wireguard <ФАЙЛ>
+sudo bash restore.sh --component database  <ФАЙЛ>
+
+# Откат deploy:
+sudo bash deploy.sh --rollback
+
+# Миграция VPS:
+sudo bash restore.sh <ФАЙЛ> --migrate-vps <IP>
+```
+
+### RTO / RPO
+
+| Сценарий | RTO | RPO |
+|----------|-----|-----|
+| Повреждены конфиги, ОС цела | 10–15 мин | 0 |
+| Новое железо + бэкап | 40–60 мин | ≤24 ч |
+| Смена VPS | 15–30 мин | 0 |
+| Утеря обоих серверов | 60–90 мин | ≤24 ч |
+| Компрометация ключей | 5 мин | 0 |
