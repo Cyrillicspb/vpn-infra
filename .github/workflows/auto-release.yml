@@ -1,0 +1,75 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - '*.md'
+      - 'docs/**'
+      - '.claude/**'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read current version
+        id: version
+        run: |
+          CURRENT=$(cat version | tr -d '[:space:]')
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "Current version: $CURRENT"
+
+      - name: Increment patch version
+        id: next
+        run: |
+          CURRENT="${{ steps.version.outputs.current }}"
+          # Format: 0.3.2.1 → 0.3.2.2 (last segment increments, no upper limit)
+          PREFIX=$(echo "$CURRENT" | rev | cut -d. -f2- | rev)
+          PATCH=$(echo "$CURRENT" | rev | cut -d. -f1 | rev)
+          NEXT_PATCH=$((PATCH + 1))
+          NEXT="${PREFIX}.${NEXT_PATCH}"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "Next version: $NEXT"
+
+      - name: Update version file
+        run: |
+          echo "${{ steps.next.outputs.next }}" > version
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add version
+          git commit -m "chore: bump version to ${{ steps.next.outputs.next }}"
+          git push
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          PREV_TAG=$(git tag --sort=-v:refname | head -1)
+          if [ -n "$PREV_TAG" ]; then
+            NOTES=$(git log "${PREV_TAG}..HEAD~1" --pretty=format:"- %s" --no-merges)
+          else
+            NOTES="Initial release"
+          fi
+          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+          echo "notes<<$EOF" >> "$GITHUB_OUTPUT"
+          echo "$NOTES" >> "$GITHUB_OUTPUT"
+          echo "$EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag and release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEXT="${{ steps.next.outputs.next }}"
+          git tag "v$NEXT"
+          git push origin "v$NEXT"
+          gh release create "v$NEXT" \
+            --title "v$NEXT" \
+            --notes "${{ steps.notes.outputs.notes }}" \
+            --latest
