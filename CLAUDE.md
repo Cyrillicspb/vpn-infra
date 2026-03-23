@@ -1,276 +1,10 @@
 # Проект: Двухуровневая VPN-инфраструктура (v4.0)
 
-# Переходный промпт — полное состояние проекта
-
-## TODO
-
-- [ ] **Email fallback для алертов при недоступности Telegram** (приоритет: низкий)
-  - Когда Telegram API недоступен (режим белых списков), watchdog отправляет алерты через email
-  - SMTP: smtp.yandex.ru / smtp.mail.ru (российские, в белом списке)
-  - Реализация: `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD`, `ALERT_EMAIL` в `.env`; watchdog при N неудачных попытках Telegram переключается на email
-  - Обратное переключение: при восстановлении Telegram API — снова через Telegram
-
-- [ ] Разработать поддержку нескольких администраторов сервера (multi-admin)
-- [ ] Полуавтоматическое обновление пресетов DPI-bypass:
-  - **Источник**: v2fly/domain-list-community — только как источник доменов для уже известных сервисов. НЕ автодискавери новых сервисов из v2fly (их там ~400).
-  - **Набор сервисов фиксированный**: youtube, instagram, twitter, tiktok, spotify, steam. Новый сервис добавляется только через код (V2FLY_MAPPING) или вручную через `/dpi add`. Cron обновляет домены, не сервисы.
-  - **Три слоя**: tier1=core (hardcoded, неудаляемые), tier2=v2fly (обновляемые), tier3=locked (пользователь через бот).
-  - **Хранение**: `/etc/vpn/dpi-presets.json` (cron пишет) + `home/dpi/presets-default.json` (fallback в репо). `DPI_SERVICE_PRESETS` в watchdog загружается из файла, не захардкожен.
-  - **Фильтрация v2fly**: исключать api./auth./login./accounts. домены; дедупликация (родитель покрывает поддомены в dnsmasq); cap 15 доменов на сервис.
-  - **Расписание**: systemd timer, воскресенье 03:30, после обновления маршрутов.
-  - **Watchdog**: новый endpoint `POST /dpi/presets/reload` для hot-reload без рестарта; алерт если presets не обновлялись >30 дней.
-  - **Самообучение**: conntrack-счётчик хитов по доменам из dpi_direct; домены с нулевым трафиком за 30 дней → предложение удалить (алерт админу).
-- [ ] Удобный GUI-установщик:
-
-  **Архитектура: TUI на сервере, лаунчер на клиенте**
-  - TUI (Python + Textual) запускается на сервере — там уже есть Python (нужен для watchdog)
-  - Клиент — только SSH-терминал (встроен в Windows 10+, macOS, Linux). Никаких зависимостей на клиенте.
-  - Лаунчер (`.bat` / `.command` / `.sh`) делает одно: SSH-ключ + scp installer.py + `ssh -t server python3 installer.py`
-  - Все экраны, детект сети, тест VPS, запуск `setup.sh` — внутри TUI на сервере через subprocess
-
-  **Лаунчеры (`.bat` / `.command` / `.sh`) — единый flow, красивый вывод:**
-  - Windows: `.bat` с ANSI-цветами (VTP включается одной строкой `reg add`, работает в cmd Windows 10+, без PowerShell)
-  - macOS: `.command` (bash + ANSI)
-  - Linux: `.sh` (bash + ANSI, тот же скрипт что macOS)
-  - Единственный вопрос на клиенте: IP сервера
-  - Пошаговый прогресс: `✓ SSH доступен`, `→ Копирование ключа...`, `✓ Готово`, `═══ Открываю установщик ═══`
-  - Пароль запрашивается один раз (для копирования SSH-ключа), после — только ключ
-  - Ошибки: чёткое объяснение + что делать
-  - Бесшовный переход в TUI — пользователь не замечает границы
-
-  **TUI-установщик (Textual, 10 экранов):**
-  - Неизменяемый layout: header (шаг N/8) + content + footer (Назад / Помощь / Далее)
-  - Экраны: Приветствие → Подключение к серверу → Автодетект сети + Режим → VPS → Telegram → Опции → Review → Установка → Завершение
-  - **Экран "Автодетект сети + Режим"**: показывает определённый LAN IP, интерфейс, CGNAT-статус; кнопки `[A] Сервер на хостинге` / `[B] Сервер дома за роутером`; при выборе B — поле для IP/DDNS роутера
-  - **Экран "Telegram"**: поле TELEGRAM_BOT_TOKEN + поле "Ваш Telegram ID (главный администратор)"; подпись под полем: «Этот ID будет root-администратором — неудаляем. Дополнительных админов можно добавить после установки через /admin invite»
-  - Inline-валидация полей в реальном времени; [Далее] заблокирован до прохождения валидации
-  - [Проверить подключение] на экранах сервера и VPS — тест прямо в экране без перехода
-  - [✎] на экране Review — прямой переход на нужный экран с возвратом обратно
-  - [? Помощь] — side-panel с контекстной инструкцией (как создать бота, как узнать chat_id)
-  - Экран установки: прогресс-бар + текущий шаг (фиксированы вверху) + скроллируемая консоль
-  - setup.sh выводит `##PROGRESS:N:51:описание` — TUI парсит и обновляет bar; остальное — в консоль
-  - State persistence: `~/.vpn-installer-state.json` — при повторном запуске «Продолжить с шага 4?»
-  - Финальный экран: результаты smoke-тестов; если режим B — инструкция по настройке роутера (port forward + DHCP); SSH-команда для доступа
-
-  **Структура файлов:**
-  ```
-  installers/
-  ├── gui/
-  │   ├── installer.py       ← Textual App, точка входа
-  │   ├── screens/           ← по файлу на экран
-  │   ├── components/        ← ValidatedInput, ProgressPane, ConsolePane
-  │   └── state.py           ← InstallerState + JSON persist
-  ├── windows/
-  │   └── install-windows.bat
-  ├── macos/
-  │   └── install-macos.command
-  └── linux/
-      └── install-linux.sh
-  ```
-- [ ] Два режима развёртывания домашнего сервера:
-
-  **Режим A (текущий)** — сервер на хостинге с публичным IP напрямую на eth0. Клиенты подключаются напрямую. Никаких дополнительных изменений не требует.
-
-  **Режим B — Gateway Mode** — сервер физически дома за роутером. Роутер имеет белый IP + port forward. Сервер становится шлюзом для всей домашней сети.
-
-  ```
-  ИНТЕРНЕТ
-      │
-  РОУТЕР (80.93.52.223, port forward UDP 51820/51821 → 192.168.1.100)
-      │ LAN 192.168.1.0/24
-      ├── ДОМАШНИЙ СЕРВЕР (192.168.1.100) ← шлюз
-      ├── Smart TV     (gateway=192.168.1.100, dns=192.168.1.100) ← прозрачный VPN
-      ├── Консоль      (gateway=192.168.1.100, dns=192.168.1.100) ← прозрачный VPN
-      └── ПК           (gateway=192.168.1.100, dns=192.168.1.100) ← прозрачный VPN
-
-  Мобильные AWG/WG клиенты — endpoint = 80.93.52.223 (IP роутера)
-    Дома (WiFi): пакет → шлюз (сервер) → HAIRPIN redirect → WireGuard ✅
-    Вне дома:    пакет → интернет → роутер → port forward → сервер ✅
-    Один конфиг работает везде — HAIRPIN решает проблему на стороне сервера
-  ```
-
-  **1. HAIRPIN NAT**
-  - Проблема: LAN-клиент шлёт UDP на IP роутера (80.93.52.223:51820) → сервер пытается форвардить обратно в интернет → петля, роутер не поддерживает hairpin NAT
-  - Решение: новая цепочка `prerouting_nat (type nat hook prerouting priority dstnat)`:
-    ```
-    iifname $LAN_IFACE ip saddr $LAN_SUBNET ip daddr $ROUTER_EXTERNAL_IP
-        udp dport 51820 redirect to :51820
-    iifname $LAN_IFACE ip saddr $LAN_SUBNET ip daddr $ROUTER_EXTERNAL_IP
-        udp dport 51821 redirect to :51821
-    ```
-  - После REDIRECT: dst → 192.168.1.100:51820, WireGuard принимает, ответ идёт по LAN напрямую
-  - Динамический IP роутера: nft set `router_external_ips`, watchdog обновляет при смене IP (та же логика что DDNS-update)
-
-  **2. Split tunneling для LAN-устройств (добавления в nftables.conf)**
-  - В `chain prerouting (mangle)`:
-    ```
-    iifname $LAN_IFACE ip saddr $LAN_SUBNET ip daddr @dpi_direct    meta mark set 0x2 accept
-    iifname $LAN_IFACE ip saddr $LAN_SUBNET ip daddr @blocked_static  meta mark set 0x1 accept
-    iifname $LAN_IFACE ip saddr $LAN_SUBNET ip daddr @blocked_dynamic meta mark set 0x1 accept
-    ```
-  - В `chain forward`:
-    ```
-    # Kill switch для LAN-клиентов (зеркало WireGuard-правил)
-    ip saddr $LAN_SUBNET ip daddr @blocked_static  oifname != "tun*" drop
-    ip saddr $LAN_SUBNET ip daddr @blocked_dynamic oifname != "tun*" drop
-    # Форвард LAN ↔ интернет
-    iifname $LAN_IFACE ip saddr $LAN_SUBNET accept
-    oifname $LAN_IFACE ip daddr $LAN_SUBNET accept
-    ```
-  - В `chain postrouting`:
-    ```
-    # MASQUERADE только для tun (VPS видит адрес сервера, не 192.168.1.x)
-    # Для eth0 MASQUERADE не нужен — роутер сам делает SNAT для всей LAN
-    ip saddr $LAN_SUBNET oifname "tun*" masquerade
-    ```
-
-  **3. Policy routing для LAN-подсети**
-  - `ip rule add priority 200 from $LAN_SUBNET lookup 100` — зеркало правил для wg0/wg1
-  - table 100: `default via 192.168.1.1 dev $LAN_IFACE` (через роутер)
-  - Незаблокированный LAN-трафик → table 100 → eth0 → роутер → интернет
-  - Заблокированный (fwmark 0x1) → table 200 → tun → VPS
-
-  **4. dnsmasq — слушать на LAN-интерфейсе**
-  - Добавить `interface=$LAN_IFACE` в dnsmasq.conf
-  - LAN-устройства шлют DNS на 192.168.1.100 → dnsmasq форвардит заблокированные домены на VPS DNS → IP добавляется в blocked_dynamic → следующий пакет к этому IP получает fwmark 0x1
-  - Цепочка: Smart TV → DNS `api.instagram.com` → dnsmasq → VPS DNS → реальный IP → nftset → fwmark → tun. Прозрачно, без клиента.
-
-  **5. Failsafe — сервер как точка отказа**
-  - tun упал, watchdog жив: незаблокированный LAN-трафик продолжает идти через eth0 ✅; заблокированный → kill switch → drop (ожидаемо) ✅
-  - watchdog упал, tun упал: маршруты и nftables остаются в ядре → аналогично ✅
-  - nftables service упал: правила выгружаются → forward chain policy drop → LAN теряет форвард ❌ → watchdog мониторит `nft list ruleset` каждые 30 сек, перезагружает при пустом ruleset
-  - Сервер полностью недоступен (питание): LAN теряет шлюз — фундаментальная PoF → документировать ИБП; некоторые роутеры поддерживают dual-gateway (основной 192.168.1.100, резервный 192.168.1.1)
-
-  **6. Изменения в setup.sh**
-  - Фаза 0, новый вопрос: `[A] Сервер на хостинге  [B] Сервер дома за роутером`
-  - Если B: автоопределить LAN IP и интерфейс; спросить IP роутера (или DDNS-домен)
-  - Записать в .env: `SERVER_MODE=gateway`, `LAN_IFACE=eth0`, `LAN_SUBNET=192.168.1.0/24`, `ROUTER_EXTERNAL_IP=80.93.52.223`
-  - Генерировать nftables.conf через envsubst с LAN-переменными (отдельный шаблон `nftables-gateway.conf.j2`)
-  - Добавить `interface=$LAN_IFACE` в dnsmasq.conf
-  - Добавить ip rule в vpn-routes.service ExecStart
-  - Фаза 5 — инструкция по настройке роутера:
-    ```
-    Port forwarding: UDP 51820 → 192.168.1.100, UDP 51821 → 192.168.1.100
-    DHCP (для Smart TV / консолей / IoT без WireGuard):
-      Default gateway: 192.168.1.100
-      DNS server:      192.168.1.100
-    ```
-
-  **7. Watchdog — дополнения для Режима B**
-  - Мониторинг nftables ruleset: `nft list ruleset` каждые 30 сек → перезагрузить при пустом
-  - /status: показывать кол-во активных LAN-клиентов (из conntrack: src in LAN_SUBNET)
-  - nft set `router_external_ips` обновлять при смене IP (уже есть логика для DDNS)
-
-  **8. Что НЕ меняется в Режиме B**
-  - Плагины стеков, watchdog failover, конфиг-билдер, Telegram-бот, базы РКН, AllowedIPs
-  - Конфиги AWG/WG клиентов: endpoint = ROUTER_EXTERNAL_IP — тот же, HAIRPIN решает на сервере
-
-- [ ] Разработать поддержку нескольких администраторов сервера (multi-admin):
-
-  **Модель прав**
-  - **Root admin** = `TELEGRAM_ADMIN_CHAT_ID` из `.env` (вводится при установке через TUI). Хранится только в `.env`, не в БД. Неудаляем. Единственный, кто может добавлять и удалять других adminов.
-  - **Дополнительные admins** = `is_admin=1` в таблице `clients`. Имеют те же права в боте, что root, за исключением: не могут управлять другими adminами (`/admin add|remove` — только root).
-  - Клиент без `is_admin` и не root — обычный пользователь.
-
-  **`_is_admin()` в handlers/admin.py**
-  ```python
-  def _is_admin(uid: int) -> bool:
-      return str(uid) == str(config.admin_chat_id) or db.is_admin(uid)
-
-  def _is_root(uid: int) -> bool:
-      return str(uid) == str(config.admin_chat_id)
-  ```
-  Все 59 мест с проверкой прав (37 в admin.py + 13 в client.py + 9 в requests.py) используют `_is_admin()`. Управление adminами (`/admin add|remove|list`) дополнительно проверяет `_is_root()`.
-
-  **Миграция БД**
-  - `is_admin INTEGER DEFAULT 0` — уже существует в таблице `clients` (database.py:52)
-  - Новое поле: `admin_added_by TEXT` — chat_id того, кто выдал права (аудит). Добавить в migration.
-  - Таблица `invite_codes`: новое поле `grants_admin INTEGER DEFAULT 0` — флаг, что invite выдаёт права admin.
-
-  **Команды бота**
-  ```
-  /admin list                  — список всех adminов (root + доп.)
-  /admin invite                — создать admin-invite (только root; отдельный код от клиентского /invite)
-  /admin remove <username>     — снять права admin (только root; нельзя снять с себя)
-  ```
-  Клиентский `/invite` выдаёт обычный пользовательский код. Admin-invite создаётся отдельно через `/admin invite` и помечен `grants_admin=1`. При `/start` с таким кодом: `is_admin=1`, `admin_added_by=root_chat_id`.
-
-  **Регистрация первого admin при /start**
-  - `register_admin()` (database.py:195) — автоматически при первом `/start` от TELEGRAM_ADMIN_CHAT_ID
-  - Если пользователь с этим `chat_id` уже в `clients` → проставить `is_admin=1` (idempotent)
-  - Сообщение при регистрации root: «Вы зарегистрированы как главный администратор. Используйте /admin invite чтобы добавить другого администратора.»
-
-  **Watchdog**
-  - `state.admin_chat_ids: list[str]` — список всех adminов (root + доп. из БД). Единый источник для рассылки алертов и DPI-пресетов.
-  - Инициализация: при старте watchdog читает из SQLite `SELECT chat_id FROM clients WHERE is_admin=1`, добавляет root из env.
-  - Новый endpoint: `POST /admin-notify` — рассылка сообщения всем в `state.admin_chat_ids`. Используется ботом при `/broadcast` и внутренними алертами.
-  - Hot reload: `POST /admin-notify/reload` — пересчитать список из БД (вызывается после `/admin add|remove`).
-
-  **Согласование с другими TODO**
-  - DPI-пресеты используют тот же `state.admin_chat_ids` для алерта «домены с нулевым трафиком». Нет конфликта — единый список.
-  - GUI-установщик: экран "Telegram" подписывает поле ID как root-admin и информирует о `/admin invite` (уже внесено в TODO GUI).
-  - Gateway Mode: не затрагивает систему прав. Нет пересечений.
-
------
-
-## ПРИНЦИПЫ РАЗРАБОТКИ И ЭКСПЛУАТАЦИИ
-
-### Принцип 1: Никогда не правим данные на серверах напрямую
-
-Если на сервере что-то не работает — мы НЕ правим конфиги, файлы, данные на сервере руками. Мы находим источник проблемы: скрипт, процедуру, шаблон, который сформировал неправильные данные, и чиним ЕГО. Затем удаляем пометки о пройденных шагах в `.setup-state` для соответствующих шагов и перезапускаем скрипт. Скрипт пересоздаёт данные корректно.
-
-Это гарантирует что:
-- Исправление воспроизводимо (не "починили руками и забыли как")
-- При переустановке, миграции, restore — тот же баг не повторится
-- Скрипты всегда являются источником правды
-
-### Принцип 2: Единый источник правды для ключей и параметров
-
-Все секреты, ключи, пароли, UUID генерируются ОДИН РАЗ в ОДНОМ МЕСТЕ (setup.sh, функция generate_secrets). Записываются в `.env` (chmod 600). ВСЕ компоненты (скрипты, конфиги, шаблоны) читают из `.env`. Никакой повторной генерации в разных скриптах.
-
-### Принцип 3: Согласованность скриптов
-
-Все скрипты (setup.sh, install-home.sh, install-vps.sh, deploy.sh, restore.sh, bootstrap-vps.sh) используют:
-- Одну общую библиотеку функций (`common.sh`)
-- Один `.env` как источник всех параметров
-- Одинаковые пути к файлам и конфигам
-- Одинаковые имена сервисов, портов, интерфейсов
-
-Не должно быть ситуации когда один скрипт пишет в один путь, а другой читает из другого.
-
-### Принцип 4: Тесты на каждом этапе
-
-Везде где возможно — расширяем тесты. После каждого шага установки — проверка что шаг выполнен корректно. После полной установки — smoke-тесты. Во время эксплуатации — watchdog мониторинг. При обнаружении нового типа ошибки — добавляем тест для неё.
-
-Тесты согласованности ключей: после установки скрипт берёт ключ из конфига VPS, берёт ключ из конфига домашнего сервера, сравнивает. Если не совпадают — ошибка ДО запуска сервисов.
-
-### Принцип 5: Обновление только через релизы
-
-Обновление системы всегда выглядит так:
-1. Разработчик формирует новый релиз на GitHub (`git tag`)
-2. Админ запускает deploy на сервере (или бот предлагает)
-3. `deploy.sh` скачивает конкретный релиз, не произвольный коммит
-
-Никаких ручных `git pull` из main. Только помеченные теги.
-
-### Принцип 6: Версионирование
-
-Формат: `vX.Y.Z`
-- `Z` (последний разряд) — инкрементируется при каждом деплое/релизе (`v0.1.0 → v0.1.1 → v0.1.2 → ...`)
-- `Y` (средний) — значимые функциональные изменения
-- `X` (старший) — архитектурные изменения
-
-Каждый деплой = инкремент Z.
-
------
-
 ## КОНТЕКСТ И РОЛЬ
 
 Ты продолжаешь работу над проектом двухуровневой VPN-инфраструктуры. Проект работает в production. Задача — доработки, баг-фиксы и новые фичи из раздела TODO.
 
 Работай пошагово, по одному шагу за раз. После каждого шага жди подтверждения.
-
------
 
 ## ЦЕЛЬ ПРОЕКТА
 
@@ -283,86 +17,73 @@
 - Установка одним скриптом, автообновление через GitHub
 - Распространяемое решение для нетехнических пользователей
 
+## TODO
+
+Краткий перечень задач. Полные спецификации — в `docs/TODO-SPECS.md`.
+
+- [ ] Email fallback для алертов при недоступности Telegram (приоритет: низкий)
+- [ ] Multi-admin: поддержка нескольких администраторов (root + дополнительные через `/admin invite`)
+- [ ] Полуавтоматическое обновление пресетов DPI-bypass (v2fly source, Thompson Sampling, 3 тира)
+- [ ] GUI-установщик: TUI на сервере (Python + Textual), лаунчеры .bat/.command/.sh на клиенте
+- [ ] Режим B — Gateway Mode: сервер дома за роутером, HAIRPIN NAT, split tunneling для LAN-устройств
+
+-----
+
+## ПРИНЦИПЫ РАЗРАБОТКИ И ЭКСПЛУАТАЦИИ
+
+### Принцип 1: Никогда не правим данные на серверах напрямую
+
+Если на сервере что-то не работает — мы НЕ правим конфиги руками. Находим источник проблемы (скрипт, шаблон), чиним ЕГО. Удаляем пометки в `.setup-state` и перезапускаем скрипт.
+
+### Принцип 2: Единый источник правды для ключей и параметров
+
+Все секреты генерируются ОДИН РАЗ в ОДНОМ МЕСТЕ (setup.sh → `.env`, chmod 600). ВСЕ компоненты читают из `.env`.
+
+### Принцип 3: Согласованность скриптов
+
+Все скрипты используют одну общую библиотеку (`common.sh`), один `.env`, одинаковые пути и имена сервисов.
+
+### Принцип 4: Тесты на каждом этапе
+
+После каждого шага установки — проверка. После полной установки — smoke-тесты. При эксплуатации — watchdog. При новом типе ошибки — добавляем тест.
+
+### Принцип 5: Обновление только через релизы
+
+`deploy.sh` скачивает конкретный помеченный тег, не произвольный коммит. Никаких `git pull` из main.
+
+### Принцип 6: Версионирование `vX.Y.Z`
+
+Z — каждый деплой, Y — значимые фичи, X — архитектурные изменения.
+
 -----
 
 ## ОБОРУДОВАНИЕ
 
-**Домашний сервер** (любой x86_64):
-- Минимум: 4 GB RAM, 64 GB SSD, Ethernet
-- Рекомендуется: 8+ GB RAM, 128+ GB SSD
-- ОС: Ubuntu Server 24.04.2 LTS
-- LAN IP: определяется автоматически
-- Бутылочное горлышко: upload канала (формула: max_clients ≈ upload_Mbps ÷ 5 для HD)
-
-**Роутер** (любой с port forwarding):
-- **КРИТИЧНО: реальный (белый) IP, не CGNAT**
-- Или DDNS при динамическом IP
-- Port forward UDP 51820 + 51821
-
-**VPS** (один или несколько):
-- KVM, 2 vCPU, 2 GB RAM, 40 GB SSD
-- Рекомендуемые локации: US, Europe
-
-**Обязательные внешние зависимости**: только VPS и Telegram.
-**Рекомендуемые**: Cloudflare аккаунт (бесплатный, для CDN-стека), домен (опционально).
+- **Домашний сервер**: x86_64, 4+ GB RAM, 64+ GB SSD, Ubuntu 24.04, Ethernet, max_clients ≈ upload_Mbps ÷ 5
+- **Роутер**: реальный (белый) IP, не CGNAT, port forward UDP 51820 + 51821
+- **VPS**: KVM, 2 vCPU, 2 GB RAM, US/Europe
+- **Внешние зависимости**: VPS + Telegram (обязательно), Cloudflare + домен (опционально)
 
 -----
 
 ## СЕТЕВАЯ ТОПОЛОГИЯ
 
 ```
-КЛИЕНТЫ (телефоны, ноутбуки, роутеры)
-    │
-    │ AmneziaWG UDP 51820 / WireGuard UDP 51821
-    ▼
-РОУТЕР (port forward)
-    ▼
-ДОМАШНИЙ СЕРВЕР — Ubuntu 24.04
-    │
-    │ === НА ХОСТЕ (systemd) ===
-    ├── amneziawg-dkms (wg0: AWG 10.177.1.0/24)
-    ├── wireguard (wg1: WG 10.177.3.0/24)
-    ├── hysteria2 (Tier-2, systemd)
-    ├── tun2socks (для fallback-стеков)
-    ├── autossh-vpn (SSH fallback)
-    ├── dnsmasq (DNS + nftset=/ для blocked_dynamic)
-    ├── watchdog (центральный агент, async Python, HTTP API :8080)
-    ├── nftables (NAT + fwmark routing + kill switch)
-    ├── ip rule/route (fwmark 0x1→table 200, VPN-src→table 100)
-    └── cron failsafe (проверка watchdog каждые 5 мин)
-    │
-    │ === В DOCKER ===
-    ├── telegram-bot    (→ watchdog HTTP API)
-    ├── xray-client     (SOCKS5 :1080, standby)
-    ├── xray-client-2   (SOCKS5 :1081, standby, dest apple.com)
-    ├── xray-client-cdn (SOCKS5 :1082, CDN-стек)
-    ├── cloudflared     (CDN-стек, standby)
-    ├── prometheus + alertmanager + grafana + grafana-renderer
-    ├── node-exporter
-    ├── amnezia-wg-easy [опционально, read-only]
-    ├── portainer       [опционально]
-    ├── homepage        [опционально]
-    └── socket-proxy
-    │
-    │ 4 стека failover (адаптивный выбор по устойчивости/скорости):
-    │   1. VLESS+WebSocket через Cloudflare CDN (cloudflared)
-    │   2. VLESS+REALITY+gRPC (dest cdn.jsdelivr.net, без flow vision)
-    │   3. VLESS+REALITY (dest microsoft.com, flow xtls-rprx-vision)
-    │   4. Hysteria2 (QUIC + Salamander)
-    │
-    │ + zapret (nfqws) — DPI desync (НЕ стек, отдельный инструмент):
-    │   Трафик к dpi_direct IP → ens3 напрямую через nfqws (без VPS hop)
-    ▼
-VPS (один или несколько)
-    ├── [DOCKER] 3x-ui (network_mode: host)
-    │     ├── Xray: TCP 443 REALITY + fallback → Nginx :8443
-    │     ├── Xray: gRPC inbound (SNI cdn.jsdelivr.net)
-    │     └── Hysteria2: UDP 443 Salamander
-    ├── [DOCKER] nginx (mTLS + панели, :8443)
-    ├── [DOCKER] cloudflared (tunnel для CDN-стека)
-    ├── [DOCKER] node-exporter (scrape домашним Prometheus)
-    ├── [HOST]   vps-healthcheck.sh (cron 5 мин → Telegram)
-    └── [HOST]   git-зеркало (cron sync с GitHub)
+КЛИЕНТЫ (AWG UDP 51820 / WG UDP 51821)
+    → РОУТЕР (port forward)
+    → ДОМАШНИЙ СЕРВЕР (Ubuntu 24.04)
+        На хосте: amneziawg wg0, wireguard wg1, hysteria2, tun2socks,
+                  dnsmasq, watchdog (:8080), nftables, ip rule/route, cron failsafe
+        Docker:   telegram-bot, xray-client (:1080), xray-client-2 (:1081),
+                  xray-client-cdn (:1082), cloudflared, prometheus, alertmanager,
+                  grafana, node-exporter, socket-proxy
+        4 стека failover:
+          1. VLESS+WS через Cloudflare CDN
+          2. VLESS+REALITY+gRPC (dest cdn.jsdelivr.net)
+          3. VLESS+REALITY (dest microsoft.com)
+          4. Hysteria2 (QUIC + Salamander)
+        + zapret (nfqws) — DPI desync без VPS hop
+    → VPS: 3x-ui (Xray), nginx (mTLS :8443), cloudflared, node-exporter
 ```
 
 ### Адресное пространство
@@ -373,279 +94,114 @@ VPS (один или несколько)
 | WG клиенты | 10.177.3.0/24 |
 | Tier-2 туннель | 10.177.2.0/30 |
 | Docker домашний | 172.20.0.0/24 |
-| Альтернативная (при конфликте с офисным /8) | 172.29.177.0/24 |
+| Альтернативная | 172.29.177.0/24 |
 
 -----
 
 ## SPLIT TUNNELING — ГИБРИД B+
 
-### Принцип
+**Уровень 1 — AllowedIPs на клиенте**: ≤500 CIDR-записей (крупные AS + базы РКН). Определяет что ПОПАДАЕТ на сервер.
 
-Два уровня split tunneling работают совместно:
+**Уровень 2 — nftables fwmark на сервере** (три категории):
+- dst в `blocked_static`/`blocked_dynamic` → fwmark 0x1 → table 200 → tun → VPS
+- dst в `dpi_direct` → fwmark 0x2 → table 201 → ens3 → nfqws DPI desync
+- dst не в sets → table 100 → ens3 напрямую
 
-**Уровень 1 — AllowedIPs на клиенте (широкий забор)**:
-- Крупные AS-подсети CDN-провайдеров (Google, Meta, Cloudflare) — агрегированные
-- Конкретные подсети заблокированных сервисов из крупных AS (AWS, Microsoft, Akamai)
-- Конкретные CIDR из баз РКН
-- DNS сервер 10.177.1.1/32 + резервный 1.1.1.1/32
-- ≤500 записей (CIDR-агрегация через aggregate6/cidr-merger)
-- Определяет какой трафик ПОПАДАЕТ на домашний сервер
-
-**Уровень 2 — nftables fwmark + nft sets на сервере (точный split, три категории)**:
-- Трафик от VPN-клиентов, попавший на сервер, маршрутизируется по трём категориям:
-  - dst в `blocked_static`/`blocked_dynamic` → fwmark 0x1 → table 200 → tun (VPS). IP-заблокированное: Meta, РКН
-  - dst в `dpi_direct` → fwmark 0x2 → table 201 → ens3 → nfqws DPI desync. SNI-throttled: YouTube, Discord, Steam, Twitch
-  - dst не в sets → table 100 → ens3 напрямую (российские сайты, незаблокированное)
-- dnsmasq nftset=/ при DNS-резолве добавляет IP в blocked_dynamic или dpi_direct (timeout 24h)
-- Базы РКН загружаются в blocked_static (без timeout)
-- DNS для обеих категорий — через VPS DNS (10.177.2.2), не российские resolver
-
-**Kill switch (двойная защита)**:
-- fwmark routing: заблокированный → tun, при падении tun → UNREACHABLE → drop
-- nftables forward: src VPN, dst in blocked, oifname != tun* → DROP
-- Незаблокированный трафик через eth0 продолжает работать при падении tun
-- Kill switch правила ПЕРЕД ct state established для VPN-подсетей
+**Kill switch**: fwmark routing + nftables forward DROP (src VPN, dst blocked, oifname != tun*). Правила ПЕРЕД ct state established.
 
 ### Policy routing
 
 ```
-ip rule priority 100: fwmark 0x1 → lookup 200 (blocked_static/dynamic → VPN)
-ip rule priority 200: from 10.177.1.0/24 → lookup 100 (незаблокированное → прямой)
+ip rule priority 100: fwmark 0x1 → lookup 200 (blocked → VPN)
+ip rule priority 200: from 10.177.1.0/24 → lookup 100 (прямой)
 ip rule priority 200: from 10.177.3.0/24 → lookup 100
 table 200: default dev tun-активный
 table 100: default via $GATEWAY dev $ETH_IFACE
 ```
 
-⚠️ **НЕ добавлять** `ip rule to 1.1.1.1/8.8.8.8 → lookup 200` — это ломает dnsmasq
-(upstream DNS dnsmasq попадает в table 200 → UNREACHABLE → REFUSED).
+⚠️ **НЕ добавлять** `ip rule to 1.1.1.1/8.8.8.8 → lookup 200` — ломает dnsmasq upstream DNS.
 
-### nftables — три nft sets
+### nft sets
 
-- **blocked_static** — из баз РКН, без timeout, обновляется скриптом (IP-заблокированные)
-- **blocked_dynamic** — из dnsmasq nftset=/ для blocked доменов, timeout 24h, self-cleaning
-- **dpi_direct** — из dnsmasq nftset=/ для SNI-throttled доменов, timeout 24h, self-cleaning (fwmark 0x2)
-
-Обновление blocked_static: генерируется полный nft-скрипт → `nft -f` атомарно
-(никакого flush+add — окно утечки!).
-
-### nftables rate limiting
-
-- UDP 51820/51821: limit rate 100/second burst 200 (защита от UDP flood)
-- Watchdog API: POST endpoints — 10 req/sec
+- **blocked_static** — из баз РКН, без timeout, атомарное обновление `nft -f`
+- **blocked_dynamic** — dnsmasq nftset=/ для blocked доменов, timeout 24h
+- **dpi_direct** — dnsmasq nftset=/ для SNI-throttled, timeout 24h, fwmark 0x2
 
 ### dnsmasq
 
-- На хосте (systemd unit, не Docker), nftset=/ для blocked_dynamic и dpi_direct
-- server=/domain/10.177.2.2 для ОБЕИХ категорий (резолв через VPS DNS, не российские)
-  - заблокированные: `server=/instagram.com/10.177.2.2` + `nftset=/instagram.com/4#inet#filter#blocked_dynamic`
-  - dpi_direct: `server=/youtube.com/10.177.2.2` + `nftset=/youtube.com/4#inet#filter#dpi_direct`
-- Поддомены покрываются автоматически (server=/youtube.com/ → *.youtube.com)
-- НЕ логирует DNS-запросы в production (privacy)
-- DNS домашнего сервера → 127.0.0.1 (свой dnsmasq)
-- Прогрев DNS-кэша при старте (пререзолв популярных доменов)
-
-### Восстановление nft sets после перезагрузки
-
-- vpn-sets-restore.service (After=nftables): `nft -f /etc/nftables-blocked-static.conf`
-- blocked_dynamic и dpi_direct пустые → dnsmasq прогрев кэша заполнит
+На хосте (systemd), nftset=/ для blocked_dynamic и dpi_direct. DNS через VPS (10.177.2.2) для обеих категорий. Поддомены покрываются автоматически. НЕ логирует DNS-запросы.
 
 ### Источники списков (cron 03:00)
 
-- antifilter.download, community.antifilter.download
-- iplist.opencck.org, github.com/zapret-info/z-i
-- github.com/RockBlack-VPN (геоблок)
-- Статический список AS-подсетей CDN (в репозитории)
-- /etc/vpn-routes/manual-vpn.txt, manual-direct.txt
-- Per-source кэш: при недоступности источника → предыдущая версия
-- Алерт при возрасте кэша > 3 дней
-- Валидация: формат IP/CIDR, размер >100, дельта <50%
-- Конкурентность: flock /var/run/vpn-routes.lock
-
-### Самообучение (оптимизация AllowedIPs)
-
-Watchdog собирает статистику через conntrack раз в час: какие подсети из AllowedIPs стабильно идут через eth0 (незаблокированные). Рекомендация админу убрать подсеть ТОЛЬКО если:
-- 100% трафика через eth0 (ни одного IP в nft set blocked)
-- Подсеть присутствует в AllowedIPs как отдельная запись (не разбивать крупные AS)
-- Нет пересечения с nft set blocked_static
-
-AS-блоки — постоянный «широкий забор», самообучение для них не работает.
-Эффективно только для мелких CIDR из баз РКН.
+antifilter.download, community.antifilter.download, iplist.opencck.org, zapret-info/z-i, статические AS. Per-source кэш, валидация (формат, >100, дельта <50%), flock, алерт при кэше >3 дней.
 
 -----
 
 ## АДАПТИВНЫЙ FAILOVER — 4 СТЕКА
 
-### Стеки (по устойчивости от максимальной)
+1. **CDN** — VLESS+WS через Cloudflare (неблокируем, медленнее)
+2. **reality-grpc** — VLESS+REALITY+gRPC, dest cdn.jsdelivr.net (flow пустой — vision несовместим с gRPC)
+3. **reality** — VLESS+REALITY, dest microsoft.com (flow: xtls-rprx-vision)
+4. **hysteria2** — QUIC+Salamander UDP 443 (быстрый, легко блокируется)
 
-1. **VLESS+WebSocket через Cloudflare CDN** (cloudflared)
-   - Неблокируем без блокировки Cloudflare
-   - Медленнее (дополнительный hop через CDN)
-   - Требует бесплатный Cloudflare аккаунт
-   - Архитектура: VPS cloudflared tunnel → Xray VLESS localhost → CDN → домашний сервер cloudflared access → Xray client → tun2socks
+### Логика watchdog
 
-2. **VLESS+REALITY+gRPC** (dest cdn.jsdelivr.net)
-   - Очень устойчив, маскировка под gRPC-сервис
-   - flow: пустой (НЕ xtls-rprx-vision, vision несовместим с gRPC)
+- Первый запуск: CDN → тест всех → промотировать самый быстрый
+- Деградация: последовательно вверх по устойчивости, 10-сек тест каждого
+- Восстановление: полная переоценка раз в час, protocol failback авто, VPS failback — с подтверждением
+- Детекция: ping fail 3×30с, RTT >3× baseline, throughput < порог, speedtest 100KB/5мин + 10MB/6ч
 
-3. **VLESS+REALITY** (dest microsoft.com)
-   - Устойчив, маскировка под HTTPS к Microsoft
-   - flow: xtls-rprx-vision, fingerprint: chrome
+### Ротация (анти-DPI)
 
-4. **Hysteria2** (QUIC + Salamander)
-   - Быстрый, но легко блокируется (QUIC-паттерн)
-   - UDP 443
-
-### Адаптивная логика watchdog
-
-```
-Первый запуск:
-  → Начать с CDN (гарантированно работает)
-  → Последовательно тестировать все стеки (throughput, 10 сек каждый)
-  → Промотировать самый быстрый работающий на роль primary
-
-Деградация primary:
-  → Последовательный проход ВВЕРХ по устойчивости (не прыжок на CDN)
-  → 10-сек тест каждого стека, worst case до CDN ~30 сек
-  → Переключение на первый работающий
-
-Восстановление:
-  → Фоновая полная переоценка всех стеков раз в час
-  → Если более быстрый стек заработал → промотировать
-  → Protocol failback: автоматический
-  → VPS failback: с подтверждением админа
-
-Детекция деградации (три типа):
-  → Ping fail 3 раза подряд (30 сек) → полная потеря
-  → RTT > 3x от baseline (7 дней скользящее) → latency деградация
-  → Throughput < порог от baseline → шейпинг
-  → Speedtest: маленький (100KB каждые 5 мин) + большой (10MB раз в 6ч)
-  → Сравнение tun vs eth0 throughput → исключение ложных срабатываний
-  → Сравнение маленького и большого speedtest → детекция объёмного шейпинга
-```
-
-### Ротация соединений (анти-DPI)
-
-- Make-before-break: новое соединение поднимается ДО закрытия старого
-- Через временный порт (1082), после переключения route → закрыть старое
-- Интервал: 30–60 мин (рандомный ±15 мин)
-- Рандомизация keepalive timing
-- При ротации: тест НОВОГО подключения (dest domain доступен?)
-- Ротация и failover — взаимоисключающие решения (единый decision loop)
-
-### Мульти-VPS
-
-- Каждый VPS — «VPS endpoint» с внутренним failover 4 стеков
-- Один активный tun per VPS наружу
-- Балансировка: round-robin между VPS (weighted позже)
-- VPS down → перераспределение на оставшиеся
-- Тестирование: быстрый failover per VPS (10 сек) + фоновая полная переоценка раз в час
-- /vps list, /vps add, /vps remove
+Make-before-break через временный порт 1082, интервал 30–60 мин ±15. Ротация и failover — взаимоисключающие (единый decision loop).
 
 ### Plugin-архитектура стеков
 
 ```
-plugins/hysteria2/
-├── client.py        — управление на домашнем сервере
-├── client.yaml      — конфиг клиента
-├── server-install.sh — установка на VPS
-├── server.yaml      — конфиг сервера
-└── metadata.yaml    — имя, resilience, порты, зависимости
+plugins/<stack>/
+├── client.py, client.yaml, server-install.sh, server.yaml, metadata.yaml
 ```
 
-Watchdog hot reload: SIGHUP → пересканировать plugins без полного рестарта.
+### Zapret (nfqws) — DPI desync
 
-### Zapret (nfqws) — DPI desync, отдельный инструмент
-
-**Не является стеком failover.** Работает параллельно со стеками:
-- Перехватывает TCP пакеты к `dpi_direct` IP через netfilter queue (FORWARD chain)
-- Модифицирует пакеты (fakedsplit+midsld+autottl+badsum) — ISP DPI не видит SNI
-- Трафик идёт напрямую через ens3, без VPS hop → быстро (нет дополнительного latency)
-- НЕ обходит IP-блокировки (только SNI-throttling)
-
-Plugin: `plugins/zapret/` — client.py (start/activate/deactivate/stop/test/rotate/probe), probe.py, install.sh
-Thompson Sampling: ночной cron 02:30, выбор лучшего пресета параметров
-Режимы: `mode=running` (demон жив) + `traffic_active=true/false` (есть/нет nft FORWARD)
-Начальный список dpi_direct: youtube.com, ytimg.com, googlevideo.com, discord.com, store.steampowered.com, twitch.tv, twitter.com/t.co/x.com
+НЕ стек, работает параллельно. TCP через nfqueue FORWARD → nfqws → ens3 напрямую. Обходит SNI-throttling, НЕ обходит IP-блокировки. Thompson Sampling для подбора пресетов (17 пресетов, ночной probe 02:30).
 
 -----
 
 ## WATCHDOG — ЦЕНТРАЛЬНЫЙ АГЕНТ
 
-**Python async (aiohttp/FastAPI)** на хосте, systemd unit.
+Python async (aiohttp/FastAPI) на хосте, systemd. **KillMode=process** (иначе убивает tun2socks, nfqws).
 
-### Защита от сбоя
-
-- WatchdogSec=30 в systemd
-- **KillMode=process** — КРИТИЧНО: иначе systemd убивает весь process group (tun2socks, nfqws)
-- Restart=always, RestartSec=5, StartLimitBurst=5, StartLimitIntervalSec=300
-- Consistency recovery при старте: проверить все сервисы, при неконсистентности → стоп всё, начать с PRIMARY
-- Degraded mode: работает без туннелей при первой установке
-- Cron failsafe: каждые 5 мин `systemctl is-active watchdog || curl telegram "WATCHDOG МЁРТВ"`
-- SIGTERM handler: алерт «сервер выключается», сохранить состояние, без failover
-
-### API (0.0.0.0:8080 + nftables INPUT accept только 172.20.0.0/24 + bearer token)
+### API (0.0.0.0:8080, nftables accept 172.20.0.0/24, bearer token, rate limit POST 10/sec)
 
 ```
-GET  /status, /metrics, /rotation-log
-GET  /nft/stats       — кол-во элементов blocked_static/blocked_dynamic/dpi_direct
-POST /switch, /peer/add, /peer/remove, /peer/list
-POST /routes/update, /service/restart, /service/update
-POST /deploy, /rollback, /reload-plugins
-POST /graph (→ Grafana Render API → PNG)
-POST /notify-clients
-POST /diagnose/<device>
-POST /dpi/test        — тест DPI bypass по доменам
-POST /backup          — запуск backup.sh
+GET  /status, /metrics, /rotation-log, /nft/stats
+POST /switch, /peer/add|remove|list, /routes/update, /service/restart|update
+POST /deploy, /rollback, /reload-plugins, /graph, /notify-clients
+POST /diagnose/<device>, /dpi/test, /backup
 ```
 
-- POST endpoints: rate limiting 10 req/sec
-- Долгие операции (/routes/update, /deploy): 202 Accepted + background task
-- mutex на /peer/add (race condition при одновременных добавлениях)
+POST: 202 Accepted + background task для долгих. Mutex на /peer/add.
 
-### Мониторинг
+### Мониторинг watchdog
 
-- Ping VPS через tun (каждые 10 сек)
-- curl заблокированных сайтов через тun (каждые 5 мин)
-- Внешний IP (каждые 5 мин) → при смене: DDNS обновление, рассылка конфигов только если DDNS не настроен
-- Heartbeat → VPS (каждые 60 сек)
-- dnsmasq healthcheck: dig @127.0.0.1 (каждые 30 сек), при падении → рестарт + алерт
-- Проверка standby-туннелей (04:30 ежесуточно, test mode: без production side effects), тест НОВОГО подключения
-- DKMS-проверка после обновления ядра
-- Диск: автоочистка 80%, агрессивная 90% (prune all, удалить бэкапы), аварийная 95% (остановить некритичные)
-- Upload utilization канала → алерт > 80%
-- Возраст кэша маршрутов → алерт > 3 дней
-- Speedtest: 100KB/5мин + 10MB/6ч (детекция объёмного шейпинга)
+Ping VPS 10с, curl blocked 5мин, внешний IP 5мин, heartbeat VPS 60с, dnsmasq dig 30с, standby тест 04:30, DKMS, диск (80/90/95%), upload >80%, кэш маршрутов >3д, speedtest.
 
 -----
 
 ## TELEGRAM-БОТ
 
-Python + aiogram 3.x, Docker, через watchdog HTTP API.
+Python + aiogram 3.x, Docker, через watchdog HTTP API. Весь интерфейс на русском.
 
-### Двухрежимный
+### Режимы
 
 - Админ (ADMIN_CHAT_ID): полный доступ
 - Клиенты (зарегистрированные): самообслуживание
 - Незарегистрированные: игнор (кроме /start)
-- Автоматическая регистрация админа при первом запуске (без invite-кода)
-- /start проверяет chat_id в БД: если уже зарегистрирован → показать устройства, не запрашивать invite
-
-### FSM
-
-- Timeout 10 мин для любого состояния
-- Любая команда из другого состояния → сброс FSM → выполнить команду
-- Invite-код резервируется на 10 мин при вводе, разрезервируется при таймауте
-
-### Весь интерфейс на русском
-
-### Default handler
-
-- Зарегистрированные: «Неизвестная команда. /help»
-- Незарегистрированные: игнор
+- FSM timeout 10 мин, invite резервируется на 10 мин
 
 ### SQLite (WAL mode)
 
-Двухтабличная схема (clients + devices):
 ```
 clients: id | chat_id | username | first_name | is_admin | created_at
 devices: id | client_id | device_name | protocol | peer_id | config_version | created_at
@@ -654,502 +210,129 @@ invite_codes: code | created_by | created_at | expires_at | used_by | used_at
 excludes: device_id | subnet | created_at
 ```
 
-- IP pool проверка при создании пира (свободные IP в /24)
-- Device limit per client: по умолчанию 5, настраиваемый /client limit
-- backup.sh: `sqlite3 .backup` для консистентной копии (не cp WAL-файлов)
+Device limit per client: 5 (настраиваемый). IP pool проверка. SQLite backup через `.backup` API.
 
 ### Конфиг-билдер
 
-- Шаблонизатор .conf: ключи + AllowedIPs из combined.cidr + Endpoint + DNS + MTU + AWG-параметры
-- Версия по хешу содержимого (не инкрементальная)
-- /update: не отправлять если конфиг не изменился
-- QR-код только если AllowedIPs ≤ 50 записей (иначе не влезает)
-- Предупреждение о приватном ключе при каждой отправке .conf
+Версия по хешу содержимого. QR только если AllowedIPs ≤50. Предупреждение о приватном ключе.
 
 ### Авторассылка конфигов
 
-Триггеры:
-1. Изменение баз (cron 03:00, diff)
-2. /routes update
-3. Одобрение /request vpn
-4. Смена внешнего IP (только если DDNS НЕ настроен)
-5. /migrate-vps
-6. /vpn add (автоматически добавляет /24 подсеть IP домена в AllowedIPs)
-
-Debounce 5 минут: множественные изменения → один финальный конфиг.
-Группировка: все устройства одного клиента в одном сообщении.
-Напоминание через 24ч если клиент не обновил конфиг.
+Триггеры: базы (cron), /routes update, одобрение /request, смена IP (если нет DDNS), /migrate-vps, /vpn add. Debounce 5 мин. Группировка по клиенту. Напоминание через 24ч.
 
 ### Команды админа
 
 ```
-/status /tunnel /ip /docker /clients /speed
-/logs <сервис> [кол-во строк]
-/graph [tunnel|speed|clients|system] [период]
-/switch <стек>
-/restart <сервис>
-/reboot (подтверждение)
-/update (Docker images, подтверждение)
-/deploy /rollback
-/invite
-/client disable|enable|kick|limit <имя> [значение]
-/broadcast <сообщение>
-/vpn add|remove <домен>
-/direct add|remove <домен>
-/list vpn|direct
-/check <домен>
-/routes update
-/requests
-/vps list|add|remove
-/migrate-vps <IP> [--from-backup]
-/rotate-keys
-/renew-cert (клиентский mTLS)
-/renew-ca (CA, редко)
-/diagnose <устройство>
-/menu
+/status /tunnel /ip /docker /clients /speed /logs /graph
+/switch /restart /reboot /update /deploy /rollback
+/invite /client disable|enable|kick|limit
+/broadcast /vpn add|remove /direct add|remove /list /check
+/routes update /requests /vps list|add|remove
+/migrate-vps /rotate-keys /renew-cert /renew-ca /diagnose /menu
 ```
 
 ### Команды клиента
 
 ```
-/start (регистрация: invite → имя → протокол AWG/WG)
-/mydevices /myconfig <имя> /adddevice (модерация админа) /removedevice
-/update
-/request vpn|direct <домен> (модерация)
-/myrequests
-/exclude add|remove|list <подсеть>
-/report <описание> (сообщение админу)
-/status /help
+/start /mydevices /myconfig /adddevice /removedevice
+/update /request vpn|direct /myrequests
+/exclude add|remove|list /report /status /help
 ```
 
-### Алерты (Telegram)
+### Алерты
 
-- Туннель down > 1 мин / RTT > 500ms / loss > 5% / bandwidth < 5 Mbps
-- Шейпинг обнаружен (throughput < порог от baseline)
-- Объёмный шейпинг (расхождение маленького и большого speedtest)
-- WG peer stale > 180s
-- Контейнер exited/unhealthy
-- Диск > 85%
-- Внешний IP изменился
-- fail2ban: IP забанен
-- Сертификат mTLS/CA истекает (клиентский ≤14 дней, CA ≤30 дней)
-- Heartbeat lost > 5 мин
-- Заблокированные сайты недоступны через туннель
-- DKMS модуль не собран
-- Standby-туннель не прошёл проверку
-- dnsmasq не отвечает
-- Все стеки down > 5 мин (+ уведомление клиентам)
-- REALITY dest domain: новое подключение fail
-- Watchdog мёртв (cron failsafe)
-- Кэш маршрутов устарел > 3 дней
-- Upload utilization > 80%
-- Deploy fail → auto-rollback
+Туннель down/RTT/loss/bandwidth, шейпинг, WG peer stale, контейнер exited, диск >85%, IP изменился, fail2ban, сертификат mTLS/CA, heartbeat lost, blocked недоступны, DKMS, standby fail, dnsmasq down, все стеки down >5мин, deploy fail, watchdog мёртв, кэш маршрутов устарел, upload >80%.
 
-Graceful degradation: при недоступности Telegram API → очередь, отправка при восстановлении.
+Graceful degradation: при недоступности Telegram → очередь.
 
 -----
 
 ## БЕЗОПАСНОСТЬ
 
-- **sysadmin**: setup создаёт пользователя, root SSH закрыт, sudo NOPASSWD
-- **fail2ban**: оба узла, SSH + Xray порт на VPS
-- **Rate limiting VPS**: nftables на TCP/UDP 443
-- **mTLS**: свой CA (4096 bit, TTL 10 лет), клиентский cert (TTL 2 года)
-- **IPv6**: отключён на обоих узлах
-- **Docker socket proxy**: бот и Portainer через proxy
-- **Docker image pinning**: фиксированные версии, Dependabot/Renovate в GitHub
-- **Watchdog API**: 0.0.0.0:8080 + nftables INPUT accept 172.20.0.0/24 + bearer token + rate limit POST
-- **Секреты**: chmod 600, .gitignore, автогенерация setup-скриптом
-- **Ядро**: apt-mark hold + Pin-Priority -1, DKMS-проверка
-- **Автообновление ОС**: unattended-upgrades security only
-- **Автоуправление портами**: watchdog обновляет nftables при переключении стека
-- **Ротация ключей**: /rotate-keys
-- **Приватность логов**: dnsmasq не логирует запросы, логи per client не хранятся
-- **Приватность конфигов**: предупреждение при отправке .conf, рекомендация 2FA
-- **/adddevice**: требует подтверждение админа
-- **Валидация баз маршрутов**: формат, размер, дельта >50%
-- **nftables атомарное обновление**: nft -f (не flush+add)
-
------
-
-## DDNS
-
-- Поддержка: DuckDNS, No-IP, Cloudflare DDNS
-- Endpoint в конфигах = DDNS-домен (не IP)
-- При смене IP: обновить DNS-запись, НЕ рассылать конфиги (Endpoint не изменился)
-- Без DDNS: при смене IP → рассылать конфиги (Endpoint = IP)
-- Известное ограничение: WireGuard не перерезолвит DNS Endpoint; при смене IP → обрыв ~25–60 сек
-
------
-
-## СОСУЩЕСТВОВАНИЕ С ОФИСНЫМ VPN
-
-- Setup.sh обнаруживает активные WG-интерфейсы автоматически
-- Бот при /start и /exclude: управление исключениями per device
-- Наша подсеть 10.177.x.x не пересекается с типичными офисными (10.0.0.0/24, 192.168.x.x)
-- При конфликте (офисный VPN /8 покрывает 10.177.x.x) → алерт + альтернативная подсеть 172.29.177.0/24
-- /exclude add|remove|list per device (таблица excludes в SQLite)
-
------
-
-## БЭКАПЫ
-
-- Cron 04:00, GPG симметричное шифрование
-- Состав: ключи, конфиги, .env, SQLite (.backup API), nftables
-- Исключено: Grafana/Prometheus data (dashboards из git)
-- Гарантия: ≤50 MB (Telegram лимит)
-- Назначение: VPS (30 дней ротация) + Telegram
-- Snapshot перед deploy (для rollback)
-- restore.sh = install-home.sh + overwrite конфигами из бэкапа + пересоздание venv
-- /migrate-vps --from-backup: восстановление ключей на новый VPS
-
------
-
-## МОНИТОРИНГ
-
-- **Pull**: Prometheus на **домашнем сервере** (Docker) ← scrape home node-exporter + VPS node-exporter (10.177.2.2:9100) + watchdog
-- **Push**: Watchdog → Telegram напрямую
-- **Heartbeat**: watchdog → VPS 60 сек, потеря > 5 мин → алерт
-- **VPS healthcheck**: cron 5 мин, проверка Docker + curl сервисов → Telegram
-- **Post-boot**: vpn-postboot.service → проверка + отчёт в Telegram
-- **Grafana → Telegram**: /graph → watchdog → Grafana Render API → PNG
-- Grafana доступна VPN-клиентам: **http://10.177.1.1:3000** (nginx reverse proxy, listen на wg0 IP)
-- VPS: только node-exporter, мониторинга нет
-
------
-
-## ЛОГИРОВАНИЕ
-
-- Docker: json-file, max-size 10m, max-file 3
-- Хостовые: /var/log/vpn-*.log, logrotate daily, rotate 14, compress
-- journald: SystemMaxUse=500M
-- dnsmasq: НЕ логировать запросы
-- Timezone: одинаковый на обоих серверах, логи UTC, отображение местное
-- Бот: /logs <сервис> для просмотра, выгрузка файлом
+- sysadmin user, root SSH закрыт, sudo NOPASSWD
+- fail2ban: SSH + Xray порт
+- mTLS: свой CA 4096 bit (10 лет), клиентский cert (2 года)
+- IPv6 отключён, Docker socket proxy, image pinning
+- Watchdog API: nftables accept 172.20.0.0/24 + bearer + rate limit
+- Ядро: apt-mark hold + Pin-Priority -1, DKMS-проверка
+- nftables rate limiting: UDP 51820/51821 100/s burst 200
+- Ротация ключей: /rotate-keys
+- Приватность: dnsmasq не логирует, per client логи не хранятся
 
 -----
 
 ## АВТОМАТИЗАЦИЯ
 
-### setup.sh — главный мастер
+### setup.sh (5 фаз, 51 шаг, идемпотентность через .setup-state)
 
-- Фаза 0: предусловия (VPS? Telegram? CGNAT? DDNS? Cloudflare? домен?)
-  - Автообнаружение: сеть, IP, gateway, MAC, CGNAT, двойной NAT, Wi-Fi чипсет
-  - CGNAT-сообщение: три причины (CGNAT, двойной NAT, bridge mode)
-  - Пользователь вводит руками: VPS IP, VPS пароль, Telegram bot token, chat_id
-  - Автогенерация ВСЕХ секретов (ключи, пароли, UUID)
-  - VPS bootstrap: если SSH:22 заблокирован → инструкция через веб-консоль VPS
+- Фаза 0: предусловия, автообнаружение сети, CGNAT-проверка, ввод VPS/Telegram
 - Фаза 1: домашний сервер
-- Фаза 2: VPS через SSH (sysadmin, не root)
+- Фаза 2: VPS через SSH (sysadmin)
 - Фаза 3: связка
-- Фаза 4: smoke-тесты (DNS, split, туннель, watchdog API, бот, curl blocked sites, kill switch)
-- Фаза 5: ручные шаги (port forwarding, mTLS)
-- Идемпотентность: /opt/vpn/.setup-state, каждый шаг проверяет «уже сделано?» (включая генерацию ключей, cloudflared tunnel create)
-- Прогресс-бар «Шаг N/51», retry per step
-- При ошибке: что не так + как исправить + продолжить
+- Фаза 4: smoke-тесты
+- Фаза 5: ручные шаги (port forwarding)
 
-### deploy.sh — обновление
+### deploy.sh
 
-⚠️ **Критично**: `docker compose build` берёт код из `/opt/vpn/telegram-bot/`. Нужен `rsync` ПЕРЕД build, иначе старый код попадёт в образ. `docker compose restart` НЕ подхватывает новый код — нужен rebuild.
+⚠️ `docker compose build` берёт код из `/opt/vpn/telegram-bot/`. Нужен `rsync` ПЕРЕД build. `docker compose restart` НЕ подхватывает новый код — нужен rebuild.
 
-- Git pull из VPS-зеркала (не напрямую из GitHub — может быть заблокирован)
-- Snapshot перед обновлением
-- Apply → автоматический smoke-test → при провале → auto-rollback + алерт
-- Миграция конфигов между версиями (migrations/)
-- Обновление VPS через SSH, per-VPS deploy status + retry
-- Если обновляет watchdog.py → deploy.sh как отдельный процесс, переживающий restart watchdog, результат → прямой curl Telegram
-- Бот: «Доступно v1.3→v1.4 [Обновить] [Пропустить] [Подробнее]»
-- Проверка обновлений каждый час (VPS-зеркало)
-- Security-обновления: ⚠️
-
-### VPS git-зеркало
-
-- VPS: cron git fetch из GitHub → локальная копия
-- Домашний сервер: git pull через SSH-туннель к VPS
-- Решает проблему блокировки GitHub из России
-
-### Установочные файлы
-
-- .bat (Windows) / .command (macOS) — SSH к серверу + запуск setup.sh
-- Без PyInstaller (SmartScreen, антивирус)
+Git pull из VPS-зеркала → snapshot → apply → smoke-test → при провале auto-rollback. Если обновляет watchdog.py → отдельный процесс, переживающий restart, результат → curl Telegram.
 
 -----
 
 ## ПАРАМЕТРЫ ПРОТОКОЛОВ
 
-### AmneziaWG
-```
-Jc=4, Jmin=50, Jmax=1000, S1=30, S2=40
-H1/H2/H3/H4 = random uint32
-PersistentKeepalive=25, MTU=1320
-```
-
-### WireGuard
-```
-PersistentKeepalive=25, MTU=1320
-```
-
-### Xray REALITY
-```
-flow: xtls-rprx-vision (голый), пустой (gRPC)
-fingerprint: chrome
-dest: microsoft.com (голый), cdn.jsdelivr.net (gRPC)
-```
-
-### Hysteria2
-```
-obfs: salamander, quic keepAlive 20s
-bandwidth: up 50, down 200 mbps
-```
+- **AmneziaWG**: Jc=4, Jmin=50, Jmax=1000, S1=30, S2=40, H1-H4=random, KA=25, MTU=1320
+- **WireGuard**: KA=25, MTU=1320
+- **Xray REALITY**: flow xtls-rprx-vision (голый), пустой (gRPC), fingerprint chrome
+- **Hysteria2**: salamander, quic KA 20s, bandwidth up 50 / down 200 mbps
 
 -----
 
-## СИСТЕМD — ПОРЯДОК ЗАГРУЗКИ
+## SYSTEMD — ПОРЯДОК ЗАГРУЗКИ
 
-1. nftables.service (правила + пустые sets)
-2. vpn-sets-restore.service (заполнить blocked_static)
-3. wg-quick@wg0, wg-quick@wg1
-4. vpn-routes.service (ip rule/route)
-5. dnsmasq.service (+ прогрев DNS-кэша)
-6. hysteria2.service
-7. watchdog.service (async Python, venv)
-8. docker.service (все контейнеры restart: always)
-9. vpn-postboot.service (проверка + отчёт Telegram)
+1. nftables → 2. vpn-sets-restore → 3. wg-quick@wg0/wg1 → 4. vpn-routes → 5. dnsmasq → 6. hysteria2 → 7. watchdog → 8. docker → 9. vpn-postboot
 
-nftables: БЕЗ ExecStop flush (правила в ядре, исчезнут при shutdown).
+nftables: БЕЗ ExecStop flush.
 
 -----
 
-## СТРУКТУРА ФАЙЛОВ — ДОМАШНИЙ СЕРВЕР
+## СТРУКТУРА ФАЙЛОВ
 
-```
-/opt/vpn/
-├── docker-compose.yml
-├── .env (chmod 600)
-├── .env.example
-├── .setup-state
-├── .deploy-snapshot/
-├── version
-├── amnezia-wg-easy/ [опционально]
-├── xray/ (config-reality.json, config-grpc.json)
-├── cloudflared/ (config.yml)
-├── dnsmasq/
-│   ├── dnsmasq.conf
-│   └── dnsmasq.d/
-│       ├── vpn-domains.conf (server=/ генерируется)
-│       └── vpn-force.conf (server=/ генерируется)
-├── homepage/ [опционально]
-├── socket-proxy/
-├── prometheus/ (prometheus.yml)
-├── alertmanager/ (alertmanager.yml)
-├── grafana/ (provisioning/)
-├── watchdog/
-│   ├── watchdog.py
-│   ├── requirements.txt (пины версий)
-│   ├── venv/
-│   ├── plugins/
-│   │   ├── hysteria2/
-│   │   ├── reality/
-│   │   ├── reality-grpc/
-│   │   ├── cloudflare-cdn/
-│   │   └── zapret/ (client.py, probe.py, install.sh, metadata.yaml)
-│   └── watchdog.service
-├── telegram-bot/
-│   ├── bot.py, config.py, database.py
-│   ├── handlers/ (admin, client, requests, alerts)
-│   ├── services/ (watchdog_client, config_builder, autodist, system)
-│   ├── templates/ (шаблоны .conf)
-│   ├── Dockerfile, docker-compose.yml, .env
-│   └── data/vpn_bot.db
-├── scripts/
-│   ├── update-routes.py
-│   ├── backup.sh
-│   ├── restore.sh
-│   ├── disk-cleanup.sh
-│   ├── postboot-check.sh
-│   └── dns-warmup.sh (прогрев dnsmasq)
-└── backups/
+Домашний сервер: `/opt/vpn/` — docker-compose, .env, xray/, cloudflared/, dnsmasq/, watchdog/ (plugins/), telegram-bot/ (handlers/, services/, templates/), scripts/, prometheus/, grafana/.
+Системные: `/etc/hysteria/`, `/etc/vpn-routes/`, `/etc/nftables*.conf`, `/etc/systemd/system/`.
+VPS: `/opt/vpn/` — docker-compose, nginx/, 3x-ui/, cloudflared/, scripts/.
 
-/etc/hysteria/config.yaml
-/etc/vpn-routes/ (manual-vpn.txt, manual-direct.txt, combined.cidr, per-source кэши)
-/etc/nftables.conf (правила)
-/etc/nftables-blocked-static.conf (элементы set, генерируется)
-/etc/sysctl.d/ (99-disable-ipv6.conf, 99-bbr.conf)
-/etc/docker/daemon.json
-/etc/systemd/system/ (vpn-routes, vpn-sets-restore, hysteria2,
-    tun2socks@, autossh-vpn, watchdog, dnsmasq, vpn-postboot)
-/etc/apt/preferences.d/pin-kernel (Pin-Priority -1)
-/usr/local/bin/ (hysteria, tun2socks)
-/etc/cron.d/vpn-watchdog-failsafe
-```
-
-## СТРУКТУРА ФАЙЛОВ — VPS
-
-```
-/opt/vpn/
-├── docker-compose.yml, .env
-├── nginx/ (conf.d/, mtls/, ssl/)
-├── 3x-ui/db/
-├── cloudflared/ (config.yml, tunnel credentials)
-├── hugo-site/ [опционально]
-├── scripts/vps-healthcheck.sh
-├── vpn-repo.git/ (зеркало GitHub)
-└── backups/
-
-/etc/sysctl.d/, /etc/ssh/sshd_config (Port 22 + 443)
-```
-
-## GITHUB-РЕПОЗИТОРИЙ
-
-```
-vpn-infra/
-├── setup.sh, install-home.sh, install-vps.sh
-├── deploy.sh, restore.sh
-├── home/ (docker-compose, telegram-bot/, watchdog/, dnsmasq/, systemd/, scripts/)
-├── vps/ (docker-compose, nginx/, prometheus/, cloudflared/, hugo-site/)
-├── installers/ (macos/, windows/)
-├── tests/ (smoke-тесты)
-├── migrations/
-├── .env.example, README.md
-└── docs/
-    ├── INSTALL.md, HARDWARE.md, ARCHITECTURE.md
-    ├── COMMANDS.md, FAQ.md, TROUBLESHOOTING.md
-    ├── SECURITY.md, PRIVACY.md
-    ├── UPDATE.md, DISASTER-RECOVERY.md
-    └── REQUIREMENTS.md (характеристики, провайдеры, формула upload, UPS)
-    Всё на русском, Mermaid-диаграммы.
-```
+Репозиторий: `setup.sh, install-home.sh, install-vps.sh, deploy.sh, restore.sh` + `home/`, `vps/`, `installers/`, `tests/`, `migrations/`, `docs/`.
 
 -----
 
 ## ИЗВЕСТНЫЕ ОГРАНИЧЕНИЯ
 
-- **Failover обрыв 5–10 сек**: kill switch защищает, но кратковременный обрыв заблокированных сайтов
-- **Ротация: обрыв панелей**: make-before-break ≈ 1–3 сек, панели переподключаются
-- **Telegram недоступен**: алерты в очередь, аварийный доступ через SSH
-- **WireGuard DNS Endpoint**: не перерезолвит; при DDNS + смене IP → обрыв ~25–60 сек
-- **DNS-кэш клиента**: после /vpn add → до 5 мин на протухание кэша
-- **CGNAT/Двойной NAT**: проект не работает, нужен реальный IP или bridge mode
-- **Private DNS (DoH/DoT)**: обходит dnsmasq, документировать отключение
-- **Upload канала**: бутылочное горлышко, формула max_clients ≈ upload÷5
-- **Самообучение**: только мелкие CIDR, AS-блоки — постоянные
-- **QR-код**: не влезает при >50 AllowedIPs, отправлять .conf файлом
-- **VPN за границей**: неоптимально, рекомендация отключить
-- **Новая блокировка вне крупных AS**: до 24ч через базы или моментально через /vpn add
-- **do-release-upgrade**: запрещено, обновление ОС через переустановку + restore.sh
-- **NAT timeout**: если VPN отваливается периодически → увеличить UDP NAT timeout на роутере
-- **VPS геолокация**: 23.95.252.178 (HostPapa/ColoCrossing, LA) геолоцируется Google как Beijing → google.com → google.cn → 404. Нужна смена VPS.
-- **xray/*.json — шаблоны**: `home/xray/config-*.json` содержат `${VAR}` плейсхолдеры. При деплое использовать `envsubst`, не rsync напрямую.
+- Failover обрыв 5–10 сек (kill switch защищает)
+- Ротация: обрыв панелей 1–3 сек
+- WireGuard DNS Endpoint не перерезолвит → обрыв ~25–60 сек при DDNS + смене IP
+- CGNAT/двойной NAT: не работает, нужен реальный IP
+- Private DNS (DoH/DoT): обходит dnsmasq
+- QR-код не влезает при >50 AllowedIPs → .conf файлом
+- do-release-upgrade запрещено → переустановка + restore.sh
+- xray/*.json — шаблоны с `${VAR}`, деплоить через envsubst
+- VPS 23.95.252.178 геолоцируется Google как Beijing → нужна смена VPS
 
 -----
 
-## ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ (.env.example)
+## ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ
 
-### Домашний сервер
-```bash
-# Сеть (автоопределение)
-HOME_SERVER_IP=
-GATEWAY_IP=
-NET_INTERFACE=
-HOME_SUBNET=
-
-# Telegram
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_ADMIN_CHAT_ID=
-
-# WireGuard
-WG_HOST=            # внешний IP или DDNS
-WG_AWG_PORT=51820
-WG_WG_PORT=51821
-WG_MTU=1320
-
-# VPS (основной)
-VPS_IP=
-VPS_SSH_PORT=443    # или 22
-VPS_TUNNEL_IP=10.177.2.2
-
-# Hysteria2
-HYSTERIA2_SERVER=
-HYSTERIA2_AUTH=
-HYSTERIA2_OBFS_PASSWORD=
-
-# Xray (REALITY)
-XRAY_SERVER=
-XRAY_UUID=
-XRAY_PUBLIC_KEY=
-XRAY_SOCKS_PORT=1080
-
-# Xray (gRPC)
-XRAY_GRPC_UUID=
-XRAY_GRPC_PUBLIC_KEY=
-XRAY_GRPC_SOCKS_PORT=1081
-
-# Cloudflare CDN
-CF_TUNNEL_TOKEN=
-
-# Watchdog
-WATCHDOG_API_TOKEN=
-
-# VPS SSH (доступен только через SOCKS5 прокси)
-VPS_SSH_PROXY=socks5://127.0.0.1:1081
-
-# DDNS (опционально)
-DDNS_PROVIDER=
-DDNS_DOMAIN=
-DDNS_TOKEN=
-
-# Домен (опционально)
-DOMAIN=
-CF_API_TOKEN=
-
-# Backup
-BACKUP_GPG_PASSPHRASE=
-BACKUP_VPS_HOST=
-BACKUP_VPS_USER=
-
-# Опции
-INSTALL_PORTAINER=false
-INSTALL_HOMEPAGE=false
-INSTALL_WG_EASY=false
-BANDWIDTH_LIMIT=
-DEVICE_LIMIT_PER_CLIENT=5
-```
-
-### VPS
-```bash
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_ADMIN_CHAT_ID=
-XRAY_PANEL_PASSWORD=
-MTLS_CA_PASSWORD=
-SSH_ADDITIONAL_PORT=443
-DOMAIN=
-CF_API_TOKEN=
-# Grafana/Prometheus — на домашнем сервере, не на VPS
-```
+См. `.env.example` в корне репозитория. Все секреты автогенерируются setup.sh.
 
 -----
 
 ## ТЕКУЩИЙ СТАТУС
 
-Проект работает в production. Все основные компоненты реализованы и развёрнуты.
+Проект работает в production. Все основные компоненты реализованы.
 
-**Серверы:**
-- Домашний сервер: 80.93.52.223 — AWG wg0, WG wg1, watchdog, telegram-bot, docker, мониторинг
-- VPS: 23.95.252.178 — 3x-ui (Xray), nginx, cloudflared, node-exporter
-- ⚠️ VPS геолоцируется Google как Beijing/China → нужна смена на Hetzner/Vultr/DigitalOcean
+- Домашний сервер: 80.93.52.223 — AWG, WG, watchdog, telegram-bot, docker, мониторинг
+- VPS: 23.95.252.178 — 3x-ui, nginx, cloudflared, node-exporter
+- ⚠️ VPS геолоцируется Google как Beijing → нужна смена на Hetzner/Vultr/DigitalOcean
 
-**Реализовано:**
-- ✅ 4 стека failover (cloudflare-cdn, reality-grpc, reality, hysteria2) + zapret DPI desync (отдельный инструмент)
-- ✅ Split tunneling, kill switch, nftables, dnsmasq
-- ✅ Watchdog: failover, ротация, все API endpoints
-- ✅ Telegram-бот: admin + client меню, invite, конфиги, алерты, /graph
-- ✅ Мониторинг: Prometheus + Grafana на домашнем сервере (http://10.177.1.1:3000)
-- ✅ deploy.sh, backup (GPG), restore.sh
-
-**Текущие задачи:** см. раздел TODO выше.
-
------
-
-*Промпт v4.1 — добавлен zapret (DPI desync), три категории трафика,
-мониторинг перенесён на домашний сервер, двухтабличная БД (clients+devices),
-KillMode=process watchdog, wg-tier2 отдельный интерфейс.*
+*Промпт v4.2 — оптимизация размера, TODO-спеки вынесены в docs/TODO-SPECS.md*
