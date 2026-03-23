@@ -563,28 +563,49 @@ bot_changed() {
     [[ "$current_hash" != "$image_hash" ]]
 }
 
+_git_has_prev() {
+    git -C "$REPO_DIR" rev-parse HEAD@{1} &>/dev/null
+}
+
 xray_changed() {
-    git -C "$REPO_DIR" diff HEAD@{1} HEAD -- \
-        home/xray/ \
-        2>/dev/null | grep -q "."
+    if _git_has_prev; then
+        git -C "$REPO_DIR" diff HEAD@{1} HEAD -- home/xray/ 2>/dev/null | grep -q "."
+    else
+        return 0  # первый деплой — считать всё изменённым
+    fi
 }
 
 vps_any_changed() {
-    git -C "$REPO_DIR" diff HEAD@{1} HEAD -- vps/ 2>/dev/null | grep -q "."
+    if _git_has_prev; then
+        git -C "$REPO_DIR" diff HEAD@{1} HEAD -- vps/ 2>/dev/null | grep -q "."
+    else
+        return 0
+    fi
 }
 
 vps_nginx_changed() {
-    git -C "$REPO_DIR" diff HEAD@{1} HEAD -- vps/nginx/ 2>/dev/null | grep -q "."
+    if _git_has_prev; then
+        git -C "$REPO_DIR" diff HEAD@{1} HEAD -- vps/nginx/ 2>/dev/null | grep -q "."
+    else
+        return 0
+    fi
 }
 
 vps_monitoring_changed() {
-    git -C "$REPO_DIR" diff HEAD@{1} HEAD -- \
-        vps/prometheus/ vps/alertmanager/ vps/grafana/ \
-        2>/dev/null | grep -q "."
+    if _git_has_prev; then
+        git -C "$REPO_DIR" diff HEAD@{1} HEAD -- \
+            vps/prometheus/ vps/alertmanager/ vps/grafana/ 2>/dev/null | grep -q "."
+    else
+        return 0
+    fi
 }
 
 vps_scripts_changed() {
-    git -C "$REPO_DIR" diff HEAD@{1} HEAD -- vps/scripts/ 2>/dev/null | grep -q "."
+    if _git_has_prev; then
+        git -C "$REPO_DIR" diff HEAD@{1} HEAD -- vps/scripts/ 2>/dev/null | grep -q "."
+    else
+        return 0
+    fi
 }
 
 # =============================================================================
@@ -661,7 +682,14 @@ do_deploy() {
     source "$REPO_DIR/.env" 2>/dev/null || true
     for tmpl in "$REPO_DIR/home/xray/"*.json; do
         name=$(basename "$tmpl")
-        envsubst < "$tmpl" > "$REPO_DIR/xray/$name"
+        result=$(envsubst < "$tmpl")
+        unresolved=$(echo "$result" | grep -oE '\$\{[A-Z_][A-Z0-9_]*\}' | sort -u | tr '\n' ' ')
+        if [[ -n "$unresolved" ]]; then
+            log_error "Шаблон $name содержит незамещённые переменные: $unresolved"
+            log_error "Проверьте .env — возможно отсутствуют ключи"
+            return 1
+        fi
+        echo "$result" > "$REPO_DIR/xray/$name"
     done
     log_ok "Xray конфиги обновлены (envsubst)"
 

@@ -1311,7 +1311,8 @@ else
         # telegram-bot/data монтируется в контейнер как /app/data.
         # Контейнер запускается от botuser (не root) — директория должна быть writable.
         mkdir -p /opt/vpn/telegram-bot/data
-        chmod 777 /opt/vpn/telegram-bot/data
+        chown -R 999:999 /opt/vpn/telegram-bot/data
+        chmod 750 /opt/vpn/telegram-bot/data
 
         # Перед docker-операциями временно используем публичный DNS:
         # resolv.conf уже указывает на 127.0.0.1 (dnsmasq), но Docker BuildKit

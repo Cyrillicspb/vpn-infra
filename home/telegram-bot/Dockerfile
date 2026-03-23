@@ -23,7 +23,7 @@ COPY . .
 RUN mkdir -p /app/data
 
 # Запуск от непривилегированного пользователя
-RUN useradd -r -s /sbin/nologin botuser \
+RUN useradd -r --uid 999 -s /sbin/nologin botuser \
     && chown -R botuser:botuser /app
 USER botuser
 
