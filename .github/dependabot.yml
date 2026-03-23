@@ -1,102 +1,28 @@
 version: 2
 updates:
-  # Docker образы — домашний сервер
+  # Docker base images — only security patches
   - package-ecosystem: "docker"
-    directory: "/"
+    directory: "/home/telegram-bot"
     schedule:
       interval: "weekly"
-      day: "monday"
-      time: "09:00"
-      timezone: "Europe/Moscow"
-    labels:
-      - "dependencies"
-      - "docker"
-    commit-message:
-      prefix: "docker(home)"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
+    ignore:
+      # Block major/minor upgrades, allow only patch
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
-  # Docker образы — VPS
   - package-ecosystem: "docker"
     directory: "/vps"
     schedule:
       interval: "weekly"
-      day: "monday"
-      time: "09:30"
-      timezone: "Europe/Moscow"
-    labels:
-      - "dependencies"
-      - "docker"
-      - "vps"
-    commit-message:
-      prefix: "docker(vps)"
-    open-pull-requests-limit: 5
-
-  # Docker образы — telegram-bot
-  - package-ecosystem: "docker"
-    directory: "/home/telegram-bot"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "10:00"
-      timezone: "Europe/Moscow"
-    labels:
-      - "dependencies"
-      - "docker"
-      - "bot"
-    commit-message:
-      prefix: "docker(bot)"
     open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
-  # Python зависимости — telegram-bot
-  - package-ecosystem: "pip"
-    directory: "/home/telegram-bot"
-    schedule:
-      interval: "weekly"
-      day: "tuesday"
-      time: "09:00"
-      timezone: "Europe/Moscow"
-    labels:
-      - "dependencies"
-      - "python"
-      - "bot"
-    commit-message:
-      prefix: "pip(bot)"
-    open-pull-requests-limit: 5
-    # Группировать мелкие обновления
-    groups:
-      aiogram:
-        patterns:
-          - "aiogram*"
-          - "aiohttp*"
-      dev-deps:
-        dependency-type: "development"
-
-  # Python зависимости — watchdog
-  - package-ecosystem: "pip"
-    directory: "/home/watchdog"
-    schedule:
-      interval: "weekly"
-      day: "tuesday"
-      time: "09:30"
-      timezone: "Europe/Moscow"
-    labels:
-      - "dependencies"
-      - "python"
-      - "watchdog"
-    commit-message:
-      prefix: "pip(watchdog)"
-    open-pull-requests-limit: 5
-
-  # GitHub Actions (если будут добавлены)
+  # GitHub Actions — keep CI up to date
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "monthly"
-      time: "10:00"
-      timezone: "Europe/Moscow"
-    labels:
-      - "dependencies"
-      - "github-actions"
-    commit-message:
-      prefix: "ci"
+      interval: "weekly"
     open-pull-requests-limit: 3
