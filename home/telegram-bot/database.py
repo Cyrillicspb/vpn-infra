@@ -10,6 +10,7 @@ database.py — SQLite база данных бота (WAL mode)
 """
 import asyncio
 import logging
+import os
 import secrets
 import sqlite3
 from datetime import datetime, timedelta
@@ -35,6 +36,7 @@ class Database:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
     # -----------------------------------------------------------------------
@@ -60,7 +62,11 @@ class Database:
     # Инициализация схемы
     # -----------------------------------------------------------------------
     async def init(self) -> None:
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        db_file = Path(self.db_path)
+        db_file.parent.mkdir(parents=True, exist_ok=True)
+        # Ensure restrictive permissions before first write
+        db_file.touch(exist_ok=True)
+        os.chmod(self.db_path, 0o600)
         async with self._lock:
             conn = self._conn()
             try:
@@ -139,8 +145,37 @@ class Database:
                     has_data = conn.execute("SELECT COUNT(*) FROM clients").fetchone()[0] > 0
                     if has_data:
                         # Данные есть — только удаляем колонку через пересоздание с сохранением данных
-                        conn.executescript("""
-                            CREATE TABLE clients_new (
+                        try:
+                            conn.executescript("""
+                                CREATE TABLE clients_new (
+                                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                                    chat_id       TEXT    NOT NULL UNIQUE,
+                                    username      TEXT,
+                                    first_name    TEXT,
+                                    is_admin      INTEGER NOT NULL DEFAULT 0,
+                                    is_disabled   INTEGER NOT NULL DEFAULT 0,
+                                    device_limit  INTEGER NOT NULL DEFAULT 5,
+                                    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+                                );
+                                INSERT INTO clients_new (id, chat_id, username, first_name, is_admin, is_disabled, device_limit, created_at)
+                                    SELECT id, chat_id, username, first_name,
+                                           COALESCE(is_admin, 0), COALESCE(is_disabled, 0),
+                                           COALESCE(device_limit, 5), COALESCE(created_at, datetime('now'))
+                                    FROM clients;
+                                DROP TABLE clients;
+                                ALTER TABLE clients_new RENAME TO clients;
+                                CREATE INDEX IF NOT EXISTS idx_clients_chat_id ON clients(chat_id);
+                            """)
+                            conn.commit()
+                        except Exception:
+                            conn.rollback()
+                            raise
+                    else:
+                        # Таблица пустая — просто пересоздаём
+                        try:
+                            conn.executescript("""
+                            DROP TABLE IF EXISTS clients;
+                            CREATE TABLE clients (
                                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                                 chat_id       TEXT    NOT NULL UNIQUE,
                                 username      TEXT,
@@ -150,33 +185,12 @@ class Database:
                                 device_limit  INTEGER NOT NULL DEFAULT 5,
                                 created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
                             );
-                            INSERT INTO clients_new (id, chat_id, username, first_name, is_admin, is_disabled, device_limit, created_at)
-                                SELECT id, chat_id, username, first_name,
-                                       COALESCE(is_admin, 0), COALESCE(is_disabled, 0),
-                                       COALESCE(device_limit, 5), COALESCE(created_at, datetime('now'))
-                                FROM clients;
-                            DROP TABLE clients;
-                            ALTER TABLE clients_new RENAME TO clients;
                             CREATE INDEX IF NOT EXISTS idx_clients_chat_id ON clients(chat_id);
                         """)
-                        conn.commit()
-                    else:
-                        # Таблица пустая — просто пересоздаём
-                        conn.executescript("""
-                        DROP TABLE IF EXISTS clients;
-                        CREATE TABLE clients (
-                            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                            chat_id       TEXT    NOT NULL UNIQUE,
-                            username      TEXT,
-                            first_name    TEXT,
-                            is_admin      INTEGER NOT NULL DEFAULT 0,
-                            is_disabled   INTEGER NOT NULL DEFAULT 0,
-                            device_limit  INTEGER NOT NULL DEFAULT 5,
-                            created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
-                        );
-                        CREATE INDEX IF NOT EXISTS idx_clients_chat_id ON clients(chat_id);
-                    """)
-                    conn.commit()
+                            conn.commit()
+                        except Exception:
+                            conn.rollback()
+                            raise
                     cols = {r[1] for r in conn.execute("PRAGMA table_info(clients)")}
                 if "first_name" not in cols:
                     conn.execute("ALTER TABLE clients ADD COLUMN first_name TEXT")
@@ -674,14 +688,14 @@ class Database:
         """Устройства, которым отправлен конфиг, но не подтверждено обновление (>hours назад)."""
         conn = self._conn()
         try:
-            rows = conn.execute(f"""
+            rows = conn.execute("""
                 SELECT d.*, c.chat_id
                 FROM devices d
                 JOIN clients c ON c.id = d.client_id
                 WHERE d.config_sent_at IS NOT NULL
-                  AND datetime(d.config_sent_at, '+{hours} hours') < datetime('now')
+                  AND datetime(d.config_sent_at, '+' || ? || ' hours') < datetime('now')
                   AND c.is_disabled = 0
-            """).fetchall()
+            """, (int(hours),)).fetchall()
             return [self._decrypt_device(dict(r)) for r in rows]
         finally:
             conn.close()
@@ -883,6 +897,7 @@ class Database:
                 backup_conn = sqlite3.connect(backup_path)
                 conn.backup(backup_conn)
                 backup_conn.close()
+                os.chmod(backup_path, 0o600)
                 logger.info(f"БД скопирована в {backup_path}")
             finally:
                 conn.close()
