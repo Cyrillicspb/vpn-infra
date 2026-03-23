@@ -197,6 +197,7 @@ async def on_startup(bot: Bot, dp: Dispatcher, db: Database, autodist: AutoDist)
     logger.info("Telegram-бот запускается...")
 
     await db.init()
+    await db.migrate_encrypt_keys()
 
     # Авторегистрация администратора и обновление имени из Telegram
     try:

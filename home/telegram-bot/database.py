@@ -16,6 +16,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from services.crypto import decrypt_key, encrypt_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,6 +36,25 @@ class Database:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
+
+    # -----------------------------------------------------------------------
+    # Crypto helpers
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def _decrypt_device(d: dict) -> dict:
+        """Расшифровать private_key в словаре устройства (если зашифрован)."""
+        if d.get("private_key"):
+            d["private_key"] = decrypt_key(d["private_key"])
+        return d
+
+    @staticmethod
+    def _decrypt_invite(d: dict) -> dict:
+        """Расшифровать awg_privkey/wg_privkey в словаре инвайта (если зашифрованы)."""
+        if d.get("awg_privkey"):
+            d["awg_privkey"] = decrypt_key(d["awg_privkey"])
+        if d.get("wg_privkey"):
+            d["wg_privkey"] = decrypt_key(d["wg_privkey"])
+        return d
 
     # -----------------------------------------------------------------------
     # Инициализация схемы
@@ -366,7 +387,9 @@ class Database:
                         awg_peer_id, wg_peer_id, awg_ip, wg_ip, awg_privkey, wg_privkey)
                        VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)""",
                     (code, str(created_by), expires_at,
-                     awg_peer_id, wg_peer_id, awg_ip, wg_ip, awg_privkey, wg_privkey),
+                     awg_peer_id, wg_peer_id, awg_ip, wg_ip,
+                     encrypt_key(awg_privkey) if awg_privkey else awg_privkey,
+                     encrypt_key(wg_privkey) if wg_privkey else wg_privkey),
                 )
                 conn.commit()
             finally:
@@ -381,7 +404,7 @@ class Database:
                 "SELECT * FROM invite_codes WHERE code = ? AND is_bootstrap = 1",
                 (code,)
             ).fetchone()
-            return dict(row) if row else None
+            return self._decrypt_invite(dict(row)) if row else None
         finally:
             conn.close()
 
@@ -395,7 +418,7 @@ class Database:
                   AND used_by IS NULL
                   AND datetime(expires_at) <= datetime('now')
             """).fetchall()
-            return [dict(r) for r in rows]
+            return [self._decrypt_invite(dict(r)) for r in rows]
         finally:
             conn.close()
 
@@ -470,7 +493,7 @@ class Database:
                 "SELECT * FROM devices WHERE client_id = ? ORDER BY created_at",
                 (client["id"],),
             ).fetchall()
-            return [dict(r) for r in rows]
+            return [self._decrypt_device(dict(r)) for r in rows]
         finally:
             conn.close()
 
@@ -493,7 +516,7 @@ class Database:
                 "SELECT * FROM devices WHERE client_id = ? AND device_name = ?",
                 (client["id"], device_name),
             ).fetchone()
-            return dict(row) if row else None
+            return self._decrypt_device(dict(row)) if row else None
         finally:
             conn.close()
 
@@ -503,7 +526,7 @@ class Database:
             row = conn.execute(
                 "SELECT * FROM devices WHERE id = ?", (device_id,)
             ).fetchone()
-            return dict(row) if row else None
+            return self._decrypt_device(dict(row)) if row else None
         finally:
             conn.close()
 
@@ -553,7 +576,7 @@ class Database:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     client["id"], device_name, protocol, 1 if is_router else 0,
-                    public_key, private_key,
+                    public_key, encrypt_key(private_key) if private_key else private_key,
                     ip_address, 1 if pending else 0,
                 ))
                 conn.commit()
@@ -580,7 +603,7 @@ class Database:
                        JOIN clients c ON c.id = d.client_id
                        WHERE d.id = ?""", (device_id,)
                 ).fetchone()
-                return dict(row) if row else None
+                return self._decrypt_device(dict(row)) if row else None
             finally:
                 conn.close()
 
@@ -599,7 +622,7 @@ class Database:
             try:
                 conn.execute(
                     "UPDATE devices SET private_key = ?, public_key = ? WHERE id = ?",
-                    (private_key, public_key, device_id),
+                    (encrypt_key(private_key) if private_key else private_key, public_key, device_id),
                 )
                 conn.commit()
             finally:
@@ -628,7 +651,7 @@ class Database:
                 WHERE d.pending_approval = 1
                 ORDER BY d.created_at
             """).fetchall()
-            return [dict(r) for r in rows]
+            return [self._decrypt_device(dict(r)) for r in rows]
         finally:
             conn.close()
 
@@ -643,7 +666,7 @@ class Database:
                 WHERE d.pending_approval = 0 AND c.is_disabled = 0
                 ORDER BY c.chat_id, d.device_name
             """).fetchall()
-            return [dict(r) for r in rows]
+            return [self._decrypt_device(dict(r)) for r in rows]
         finally:
             conn.close()
 
@@ -659,7 +682,7 @@ class Database:
                   AND datetime(d.config_sent_at, '+{hours} hours') < datetime('now')
                   AND c.is_disabled = 0
             """).fetchall()
-            return [dict(r) for r in rows]
+            return [self._decrypt_device(dict(r)) for r in rows]
         finally:
             conn.close()
 
@@ -777,6 +800,63 @@ class Database:
             return [{"subnet": r["subnet"]} for r in rows]
         finally:
             conn.close()
+
+    # -----------------------------------------------------------------------
+    # Encryption migration
+    # -----------------------------------------------------------------------
+    async def migrate_encrypt_keys(self) -> int:
+        """
+        Однократная миграция: зашифровать все незашифрованные приватные ключи в БД.
+        Идемпотентна — строки уже с префиксом 'enc:' пропускаются.
+        Возвращает количество зашифрованных строк.
+        """
+        _PREFIX = "enc:"
+        count = 0
+        async with self._lock:
+            conn = self._conn()
+            try:
+                # devices.private_key
+                rows = conn.execute(
+                    "SELECT id, private_key FROM devices WHERE private_key IS NOT NULL AND private_key != ''"
+                ).fetchall()
+                for row in rows:
+                    if not row["private_key"].startswith(_PREFIX):
+                        conn.execute(
+                            "UPDATE devices SET private_key = ? WHERE id = ?",
+                            (encrypt_key(row["private_key"]), row["id"]),
+                        )
+                        count += 1
+
+                # invite_codes.awg_privkey
+                rows = conn.execute(
+                    "SELECT code, awg_privkey FROM invite_codes WHERE awg_privkey IS NOT NULL AND awg_privkey != ''"
+                ).fetchall()
+                for row in rows:
+                    if not row["awg_privkey"].startswith(_PREFIX):
+                        conn.execute(
+                            "UPDATE invite_codes SET awg_privkey = ? WHERE code = ?",
+                            (encrypt_key(row["awg_privkey"]), row["code"]),
+                        )
+                        count += 1
+
+                # invite_codes.wg_privkey
+                rows = conn.execute(
+                    "SELECT code, wg_privkey FROM invite_codes WHERE wg_privkey IS NOT NULL AND wg_privkey != ''"
+                ).fetchall()
+                for row in rows:
+                    if not row["wg_privkey"].startswith(_PREFIX):
+                        conn.execute(
+                            "UPDATE invite_codes SET wg_privkey = ? WHERE code = ?",
+                            (encrypt_key(row["wg_privkey"]), row["code"]),
+                        )
+                        count += 1
+
+                conn.commit()
+                if count:
+                    logger.info("migrate_encrypt_keys: зашифровано %d записей", count)
+                return count
+            finally:
+                conn.close()
 
     # -----------------------------------------------------------------------
     # Lifecycle

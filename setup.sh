@@ -699,6 +699,10 @@ for a in d.get('assets',[]):
             XRAY_PANEL_PASSWORD=$(openssl rand -hex 16)
             env_set "XRAY_PANEL_PASSWORD" "$XRAY_PANEL_PASSWORD"
         }
+        [[ -z "${DB_ENCRYPTION_KEY:-}" ]] && {
+            DB_ENCRYPTION_KEY=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+            env_set "DB_ENCRYPTION_KEY" "$DB_ENCRYPTION_KEY"
+        }
 
         # Параметры с умолчаниями
         env_set "WG_AWG_PORT"             "${WG_AWG_PORT:-51820}"
