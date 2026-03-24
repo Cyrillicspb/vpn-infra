@@ -357,8 +357,10 @@ phase0() {
             ask DDNS_TOKEN "DDNS токен (для DuckDNS: UUID с сайта duckdns.org, напр. a1b2c3d4-...)" yes
             WG_HOST="${DDNS_DOMAIN}"
         else
-            WG_HOST="${EXTERNAL_IP:-}"
-            [[ -z "$WG_HOST" ]] && die "Не удалось определить внешний IP. Укажите DDNS или проверьте интернет."
+            # Gateway Mode: WG_HOST = IP роутера (передан TUI/введён вручную)
+            # Hosted Mode:  WG_HOST = внешний IP сервера
+            WG_HOST="${ROUTER_EXTERNAL_IP:-${EXTERNAL_IP:-}}"
+            [[ -z "$WG_HOST" ]] && die "Не удалось определить внешний IP. Укажите DDNS или ROUTER_EXTERNAL_IP."
         fi
 
         # ── CDN-стек (Cloudflare Workers) — опциональный ──────────────────────────
