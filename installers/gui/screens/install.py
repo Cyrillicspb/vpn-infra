@@ -207,10 +207,10 @@ class InstallScreen(Screen):
             self._running = False
             self._proc = None
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-run" and not event.button.disabled:
             self._running = False
-            self.call_after_refresh(self._run)
+            await self._run()
         elif event.button.id == "btn-done":
             from screens.done import DoneScreen
             self.app.push_screen(DoneScreen())
