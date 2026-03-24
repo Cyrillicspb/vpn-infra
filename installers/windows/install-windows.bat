@@ -1,5 +1,6 @@
-﻿@echo off
+@echo off
 chcp 65001 >nul 2>&1
+powershell -NoProfile -Command "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $null = [Console]::Write([char]27 + '[0m')" >nul 2>&1
 setlocal enabledelayedexpansion
 title VPN Infrastructure Setup
 
