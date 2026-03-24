@@ -677,7 +677,7 @@ else
     # Установить nmap если нет (не добавляем в шаг 10 — нужен только здесь)
     if ! command -v nmap &>/dev/null; then
         log_info "Устанавливаем nmap..."
-        apt-get install -y -qq nmap
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nmap
     fi
 
     # Тестируем через LAN IP (не loopback) — пакеты проходят через nftables INPUT
@@ -1461,7 +1461,7 @@ else
     # netcat-openbsd нужен для nc -X 5 (SOCKS5 ProxyCommand)
     if ! dpkg -l netcat-openbsd 2>/dev/null | grep -q "^ii"; then
         log_info "Установка netcat-openbsd..."
-        apt-get install -y -qq netcat-openbsd
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq netcat-openbsd
     fi
     log_ok "netcat-openbsd установлен"
 
