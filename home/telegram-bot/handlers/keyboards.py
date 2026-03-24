@@ -138,6 +138,9 @@ def admin_system_menu() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="💾 Бэкап",           callback_data="adm:backup"),
+            InlineKeyboardButton(text="🗂 Полный экспорт",  callback_data="adm:backup_export"),
+        ],
+        [
             InlineKeyboardButton(text="⬆️ Обновить Docker", callback_data="adm:update"),
         ],
         [

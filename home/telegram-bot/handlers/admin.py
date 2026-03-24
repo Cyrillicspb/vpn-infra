@@ -1832,6 +1832,20 @@ async def cb_adm_backup(cb: CallbackQuery, **kw):
         await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
 
 
+@router.callback_query(F.data == "adm:backup_export")
+async def cb_adm_backup_export(cb: CallbackQuery, **kw):
+    await cb.answer("Запускаю полный экспорт...")
+    try:
+        await _wc().backup_export()
+        await cb.message.answer(
+            "🗂 <b>Полный экспорт запущен</b>\n\nФайл придёт в этот чат (~30–60 сек).",
+            reply_markup=back_to_admin_menu(),
+            parse_mode="HTML",
+        )
+    except WatchdogError as e:
+        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
 # ---------------------------------------------------------------------------
 # Действия управления
 # ---------------------------------------------------------------------------

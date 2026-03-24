@@ -211,6 +211,10 @@ class WatchdogClient:
     async def backup(self) -> dict:
         return await self._post("/backup", timeout=30)
 
+    async def backup_export(self) -> dict:
+        """POST /backup/export — полный экспорт с mTLS CA."""
+        return await self._post("/backup/export")
+
     # -----------------------------------------------------------------------
     # Fail2ban
     # -----------------------------------------------------------------------

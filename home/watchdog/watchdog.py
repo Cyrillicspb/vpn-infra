@@ -2830,6 +2830,26 @@ async def post_backup(request: Request, bg: BackgroundTasks, _: bool = Depends(_
     return {"status": "started"}
 
 
+@app.post("/backup/export")
+@limiter.limit("1/minute")
+async def post_backup_export(request: Request, bg: BackgroundTasks, _: bool = Depends(_auth)):
+    """Запустить backup.sh --full-export в фоне."""
+    async def _run_export():
+        rc, out, err = await run_cmd(
+            ["/opt/vpn/scripts/backup.sh", "--full-export"],
+            timeout=180,
+        )
+        msg = (
+            "✓ Полный экспорт создан и отправлен"
+            if rc == 0
+            else f"✗ Ошибка экспорта (код {rc}): {err[:200]}"
+        )
+        tg.enqueue(msg)
+
+    bg.add_task(_run_export)
+    return {"status": "started", "message": "Full export запущен (~30–60 сек)"}
+
+
 # ---------------------------------------------------------------------------
 # mTLS renew
 # ---------------------------------------------------------------------------
