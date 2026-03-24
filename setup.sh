@@ -338,14 +338,17 @@ phase0() {
             if [[ -z "${LAN_SUBNET:-}" ]]; then
                 LAN_SUBNET="${HOME_SUBNET:-192.168.1.0/24}"
             fi
-            read -rp "  LAN-интерфейс [${LAN_IFACE}]: " _lan_iface_input
-            LAN_IFACE="${_lan_iface_input:-$LAN_IFACE}"
+            if [[ -z "${VPN_NONINTERACTIVE:-}" ]]; then
+                read -rp "  LAN-интерфейс [${LAN_IFACE}]: " _lan_iface_input
+                LAN_IFACE="${_lan_iface_input:-$LAN_IFACE}"
 
-            read -rp "  LAN-подсеть [${LAN_SUBNET}]: " _lan_subnet_input
-            LAN_SUBNET="${_lan_subnet_input:-$LAN_SUBNET}"
+                read -rp "  LAN-подсеть [${LAN_SUBNET}]: " _lan_subnet_input
+                LAN_SUBNET="${_lan_subnet_input:-$LAN_SUBNET}"
 
-            read -rp "  Внешний IP роутера [${EXTERNAL_IP:-}]: " _router_ip_input
-            ROUTER_EXTERNAL_IP="${_router_ip_input:-${EXTERNAL_IP:-}}"
+                read -rp "  Внешний IP роутера [${EXTERNAL_IP:-}]: " _router_ip_input
+                ROUTER_EXTERNAL_IP="${_router_ip_input:-${EXTERNAL_IP:-}}"
+            fi
+            # Non-interactive: LAN_IFACE/LAN_SUBNET/ROUTER_EXTERNAL_IP уже переданы через env
         fi
 
         echo ""
@@ -375,10 +378,12 @@ phase0() {
         echo -e "  ${YELLOW}Минусы:${NC} ~10 мин на настройку, чуть медленнее (доп. hop через CDN)."
         echo "  Используется как резервный — только если REALITY-стеки не работают."
         echo ""
-        read -rp "  Настроить CDN-стек? (y/N): " USE_CLOUDFLARE
+        if [[ -z "${VPN_NONINTERACTIVE:-}" ]]; then
+            read -rp "  Настроить CDN-стек? (y/N): " USE_CLOUDFLARE
+        fi
         USE_CLOUDFLARE="${USE_CLOUDFLARE:-n}"
 
-        if [[ "${USE_CLOUDFLARE,,}" == "y" ]]; then
+        if [[ "${USE_CLOUDFLARE,,}" == "y" ]] && [[ -z "${VPN_NONINTERACTIVE:-}" ]]; then
             echo ""
             echo -e "${CYAN}${BOLD}  Шаг A — Регистрация на Cloudflare${NC}"
             echo "  1. https://dash.cloudflare.com/sign-up"
@@ -393,32 +398,34 @@ phase0() {
         fi
 
         if [[ "${USE_CLOUDFLARE,,}" == "y" ]]; then
-            echo ""
-            echo -e "${CYAN}${BOLD}  Шаг B — Создание Cloudflare Worker${NC}"
-            echo "  1. dash.cloudflare.com → «Workers & Pages» → «Create» → «Create Worker»"
-            echo "  2. Дайте любое имя, нажмите «Deploy»"
-            echo "  3. Нажмите «Edit code», замените ВСЁ на:"
-            echo ""
-            echo -e "${YELLOW}────────────────────────────────────────────────────${NC}"
-            echo  "export default {"
-            echo  "  async fetch(request) {"
-            echo  "    const url = new URL(request.url);"
-            echo  "    const target = \`http://${VPS_IP}:8080\${url.pathname}\${url.search}\`;"
-            echo  "    const h = new Headers();"
-            echo  "    for (const [k,v] of request.headers)"
-            echo  "      if (k.toLowerCase() !== 'host') h.set(k,v);"
-            echo  "    h.set('Host','${VPS_IP}');"
-            echo  "    return fetch(target,{method:request.method,headers:h,body:request.body});"
-            echo  "  }"
-            echo  "}"
-            echo -e "${YELLOW}────────────────────────────────────────────────────${NC}"
-            echo ""
-            echo "  4. «Save & Deploy»"
-            echo "  5. Скопируйте URL вида: https://xxx-xxx.ACCOUNT.workers.dev"
-            echo ""
-            read -rp "  Вставьте URL Worker (например xxx.workers.dev): " CF_CDN_HOSTNAME
-            CF_CDN_HOSTNAME="${CF_CDN_HOSTNAME#https://}"
-            CF_CDN_HOSTNAME="${CF_CDN_HOSTNAME%/}"
+            if [[ -z "${VPN_NONINTERACTIVE:-}" ]]; then
+                echo ""
+                echo -e "${CYAN}${BOLD}  Шаг B — Создание Cloudflare Worker${NC}"
+                echo "  1. dash.cloudflare.com → «Workers & Pages» → «Create» → «Create Worker»"
+                echo "  2. Дайте любое имя, нажмите «Deploy»"
+                echo "  3. Нажмите «Edit code», замените ВСЁ на:"
+                echo ""
+                echo -e "${YELLOW}────────────────────────────────────────────────────${NC}"
+                echo  "export default {"
+                echo  "  async fetch(request) {"
+                echo  "    const url = new URL(request.url);"
+                echo  "    const target = \`http://${VPS_IP}:8080\${url.pathname}\${url.search}\`;"
+                echo  "    const h = new Headers();"
+                echo  "    for (const [k,v] of request.headers)"
+                echo  "      if (k.toLowerCase() !== 'host') h.set(k,v);"
+                echo  "    h.set('Host','${VPS_IP}');"
+                echo  "    return fetch(target,{method:request.method,headers:h,body:request.body});"
+                echo  "  }"
+                echo  "}"
+                echo -e "${YELLOW}────────────────────────────────────────────────────${NC}"
+                echo ""
+                echo "  4. «Save & Deploy»"
+                echo "  5. Скопируйте URL вида: https://xxx-xxx.ACCOUNT.workers.dev"
+                echo ""
+                read -rp "  Вставьте URL Worker (например xxx.workers.dev): " CF_CDN_HOSTNAME
+                CF_CDN_HOSTNAME="${CF_CDN_HOSTNAME#https://}"
+                CF_CDN_HOSTNAME="${CF_CDN_HOSTNAME%/}"
+            fi
             if [[ -z "$CF_CDN_HOSTNAME" ]]; then
                 log_warn "URL не введён — CDN-стек пропущен."
                 USE_CLOUDFLARE="n"
