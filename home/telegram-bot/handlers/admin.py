@@ -197,13 +197,20 @@ async def cmd_status(message: Message, state: FSMContext, **kw):
     try:
         s = await _wc().get_status()
         sys = s.get("system", {})
+        lan_str = ""
+        lan_clients = s.get("lan_clients")
+        if lan_clients is not None:
+            lan_ips = s.get("lan_client_ips", [])
+            ip_str = ", ".join(lan_ips[:5]) + ("..." if len(lan_ips) > 5 else "")
+            lan_str = f"\nLAN-клиентов: {lan_clients}" + (f" ({ip_str})" if ip_str else "")
         text = (
             f"*Статус системы*\n\n"
             f"Режим: {'⚠️ Деградированный' if s.get('degraded_mode') else '✅ Нормальный'}\n"
             f"Стек: `{s.get('active_stack')}`\n"
             f"IP: `{s.get('external_ip', 'N/A')}`\n"
             f"Uptime: {_uptime(s.get('uptime_seconds', 0))}\n"
-            f"Failover: {s.get('last_failover') or 'никогда'}\n\n"
+            f"Failover: {s.get('last_failover') or 'никогда'}"
+            f"{lan_str}\n\n"
             f"CPU: {sys.get('cpu_percent', '?')}%  "
             f"RAM: {sys.get('ram_percent', '?')}%  "
             f"Диск: {sys.get('disk_percent', '?')}%"
@@ -1505,6 +1512,12 @@ async def cb_adm_status(cb: CallbackQuery, **kw):
         cpu  = sys_info.get("cpu_percent", "?")
         ram  = sys_info.get("ram_percent", "?")
         disk = sys_info.get("disk_percent", "?")
+        lan_str = ""
+        lan_clients = s.get("lan_clients")
+        if lan_clients is not None:
+            lan_ips = s.get("lan_client_ips", [])
+            ip_str = ", ".join(lan_ips[:5]) + ("..." if len(lan_ips) > 5 else "")
+            lan_str = f"\nLAN-клиентов: <b>{lan_clients}</b>" + (f" ({ip_str})" if ip_str else "")
         text = (
             f"<b>Статус системы</b>\n\n"
             f"Режим: {mode}\n"
@@ -1513,7 +1526,8 @@ async def cb_adm_status(cb: CallbackQuery, **kw):
             f"IP: <code>{s.get('external_ip', 'N/A')}</code>\n"
             f"Uptime: {_uptime(s.get('uptime_seconds', 0))}\n"
             f"Failover: {failover}\n"
-            f"Ротация: {rotation}\n\n"
+            f"Ротация: {rotation}"
+            f"{lan_str}\n\n"
             f"CPU: <b>{cpu}%</b>  RAM: <b>{ram}%</b>  Диск: <b>{disk}%</b>"
         )
     except WatchdogError as e:

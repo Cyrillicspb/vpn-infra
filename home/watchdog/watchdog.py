@@ -930,6 +930,22 @@ async def check_external_ip() -> None:
     state.save()
     logger.info(f"Внешний IP: {old_ip} → {new_ip}")
 
+    # Gateway Mode: обновить nft set с IP роутера
+    if os.getenv("SERVER_MODE") == "gateway":
+        try:
+            await run_cmd(
+                ["nft", "flush", "set", "inet", "vpn", "router_external_ips"],
+                timeout=5,
+            )
+            await run_cmd(
+                ["nft", "add", "element", "inet", "vpn", "router_external_ips",
+                 "{", new_ip, "}"],
+                timeout=5,
+            )
+            logger.info(f"Gateway: router_external_ips обновлён → {new_ip}")
+        except Exception as e:
+            logger.warning(f"Gateway: не удалось обновить router_external_ips: {e}")
+
     if DDNS_PROVIDER:
         await _update_ddns(new_ip)
         alert(f"ℹ️ Внешний IP изменился: `{old_ip}` → `{new_ip}`\nDDNS обновлён.")
@@ -1133,6 +1149,14 @@ async def check_nftables_integrity() -> None:
             rc_dp, _, _ = await run_cmd(["nft", "list", "set", "inet", "vpn", "dpi_direct"], timeout=5)
             if rc_dp != 0:
                 issues.append("set dpi_direct отсутствует")
+
+    # Gateway Mode: дополнительные проверки
+    if os.getenv("SERVER_MODE") == "gateway":
+        rc_gw, out_gw, _ = await run_cmd(["nft", "list", "ruleset"], timeout=10)
+        if rc_gw == 0:
+            for check_item in ["prerouting_nat", "router_external_ips"]:
+                if check_item not in out_gw:
+                    issues.append(f"Gateway: {check_item} отсутствует в nftables")
 
     if not issues:
         logger.debug("check_nftables_integrity: OK")
@@ -1909,7 +1933,7 @@ class DpiToggleRequest(BaseModel):
 async def get_status(_: bool = Depends(_auth)):
     disk = psutil.disk_usage("/")
     ram  = psutil.virtual_memory()
-    return {
+    result: dict[str, Any] = {
         "status": "degraded" if state.degraded_mode else "ok",
         "active_stack": state.active_stack,
         "primary_stack": state.primary_stack,
@@ -1928,6 +1952,31 @@ async def get_status(_: bool = Depends(_auth)):
             "cpu_percent": psutil.cpu_percent(interval=0.5),
         },
     }
+
+    # Gateway Mode: добавляем счётчик LAN-клиентов из conntrack
+    server_mode = os.getenv("SERVER_MODE", "hosted")
+    lan_subnet = os.getenv("LAN_SUBNET", "")
+    home_server_ip = os.getenv("HOME_SERVER_IP", "")
+    if server_mode == "gateway" and lan_subnet:
+        try:
+            rc, out, _ = await run_cmd(
+                ["conntrack", "-L", "--output", "extended"],
+                timeout=10,
+            )
+            lan_ips: set[str] = set()
+            net_prefix = ".".join(lan_subnet.split(".")[:3])  # напр. "192.168.1"
+            for line in out.splitlines():
+                m = re.search(r"src=(\d+\.\d+\.\d+\.\d+)", line)
+                if m:
+                    ip = m.group(1)
+                    if ip.startswith(net_prefix) and ip != home_server_ip:
+                        lan_ips.add(ip)
+            result["lan_clients"] = len(lan_ips)
+            result["lan_client_ips"] = sorted(lan_ips)
+        except Exception:
+            pass
+
+    return result
 
 
 @app.get("/metrics")
@@ -1971,6 +2020,18 @@ async def get_metrics(_: bool = Depends(_auth)):
         f'vpn_cpu_percent {psutil.cpu_percent(interval=0.1)}',
         f'vpn_uptime_seconds {int((datetime.now() - state.started_at).total_seconds())}',
     ]
+
+    # Gateway Mode метрики
+    if os.getenv("SERVER_MODE") == "gateway":
+        lines.append("# HELP vpn_gateway_mode Gateway mode active")
+        lines.append("# TYPE vpn_gateway_mode gauge")
+        lines.append("vpn_gateway_mode 1")
+        # lan_clients берётся из /status (state не хранит — вычисляется по запросу)
+        lines.append("# HELP vpn_lan_clients_count LAN clients detected via conntrack")
+        lines.append("# TYPE vpn_lan_clients_count gauge")
+        lines.append("vpn_lan_clients_count 0")
+    else:
+        lines.append("vpn_gateway_mode 0")
 
     # Docker health per-container
     for container, healthy in state.docker_health.items():
