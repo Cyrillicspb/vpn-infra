@@ -74,8 +74,7 @@ ssh-keygen -R !SERVER_IP! >nul 2>&1
 :: ── Установка ключа на сервере ───────────────────────────────────────────────
 
 :: Проверяем, работает ли ключ уже
-ssh -n -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=5" ^
-    -o "BatchMode=yes" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "exit 0" >nul 2>&1
+ssh -n -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=5" -o "BatchMode=yes" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "exit 0" >nul 2>&1
 if !errorlevel! equ 0 (
     echo   [OK] Ключ уже установлен для !SERVER_USER!
     goto connected
@@ -84,9 +83,7 @@ if !errorlevel! equ 0 (
 :: Ключ не установлен — копируем через пароль
 echo   --> Копирование SSH ключа на сервер...
 echo   Введите пароль для !SERVER_USER!@!SERVER_IP! (один раз):
-type "!SSH_KEY!.pub" | ssh -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! ^
-    !SERVER_USER!@!SERVER_IP! ^
-    "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+type "!SSH_KEY!.pub" | ssh -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
 if !errorlevel! neq 0 (
     echo.
     echo   [FAIL] Не удалось скопировать ключ
@@ -98,8 +95,7 @@ if !errorlevel! neq 0 (
 echo   [OK] SSH ключ установлен
 
 :: Проверка входа по ключу
-ssh -n -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "BatchMode=yes" ^
-    -o "ConnectTimeout=10" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "exit 0" >nul 2>&1
+ssh -n -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "BatchMode=yes" -o "ConnectTimeout=10" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "exit 0" >nul 2>&1
 if !errorlevel! neq 0 (
     echo   [FAIL] Вход по ключу не работает
     pause
@@ -112,10 +108,7 @@ echo   [OK] Вход по ключу работает
 :: ── [3/5] Проверка подключения ───────────────────────────────────────────────
 echo.
 echo [3/5] Проверка подключения...
-ssh -n -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=10" ^
-    -o "BatchMode=yes" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! ^
-    "hostname && (lsb_release -d 2>/dev/null | cut -f2 || grep PRETTY /etc/os-release | cut -d= -f2 | tr -d '\"' || echo Ubuntu)" ^
-    >nul 2>&1
+ssh -n -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=10" -o "BatchMode=yes" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "hostname" >nul 2>&1
 if !errorlevel! neq 0 (
     echo   [FAIL] Подключение не удалось
     echo     Проверьте: IP !SERVER_IP!, пользователь !SERVER_USER!, порт !SSH_PORT!
@@ -148,24 +141,15 @@ if not exist "!REPO_ROOT!\install-home.sh" goto download_release
 if not exist "!REPO_ROOT!\home" goto download_release
 
 echo   --> Упаковка локального репозитория...
-tar -czf "%TEMP%\vpn-infra.tar.gz" ^
-    --exclude=".git" --exclude="*.pyc" --exclude="__pycache__" ^
-    --exclude="*/venv/*" --exclude="node_modules" ^
-    --exclude="*.log" --exclude=".env" ^
-    -C "!REPO_ROOT!" . >nul 2>&1
+tar -czf "%TEMP%\vpn-infra.tar.gz" --exclude=".git" --exclude="*.pyc" --exclude="__pycache__" --exclude="*/venv/*" --exclude="node_modules" --exclude="*.log" --exclude=".env" -C "!REPO_ROOT!" . >nul 2>&1
 if !errorlevel! neq 0 goto download_release
 
 echo   --> Загрузка архива на сервер...
-ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! ^
-    !SERVER_USER!@!SERVER_IP! ^
-    "sudo mkdir -p /opt/vpn && sudo chown !SERVER_USER!:!SERVER_USER! /opt/vpn"
-scp -i "!SSH_KEY!" -P !SSH_PORT! -o "StrictHostKeyChecking=accept-new" ^
-    "%TEMP%\vpn-infra.tar.gz" !SERVER_USER!@!SERVER_IP!:/tmp/vpn-infra.tar.gz
+ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "sudo mkdir -p /opt/vpn && sudo chown !SERVER_USER!:!SERVER_USER! /opt/vpn"
+scp -i "!SSH_KEY!" -P !SSH_PORT! -o "StrictHostKeyChecking=accept-new" "%TEMP%\vpn-infra.tar.gz" !SERVER_USER!@!SERVER_IP!:/tmp/vpn-infra.tar.gz
 if !errorlevel! neq 0 goto download_release
 
-ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! ^
-    !SERVER_USER!@!SERVER_IP! ^
-    "tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner 2>/dev/null; rm /tmp/vpn-infra.tar.gz"
+ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner 2>/dev/null; rm /tmp/vpn-infra.tar.gz"
 if !errorlevel! neq 0 goto download_release
 
 del "%TEMP%\vpn-infra.tar.gz" >nul 2>&1
@@ -175,10 +159,7 @@ goto check_tui
 
 :download_release
 echo   --> Скачивание последнего релиза с GitHub...
-ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" ^
-    -o "ServerAliveInterval=30" -p !SSH_PORT! ^
-    !SERVER_USER!@!SERVER_IP! ^
-    "RELEASE_URL=$(curl -sSfL --max-time 10 https://api.github.com/repos/Cyrillicspb/vpn-infra/releases/latest 2>/dev/null | python3 -c \"import sys,json; assets=[a for a in json.load(sys.stdin)['assets'] if a['name']=='vpn-infra.tar.gz']; print(assets[0]['browser_download_url'] if assets else '')\" 2>/dev/null) && [ -n \"$RELEASE_URL\" ] && curl -fsSL --max-time 120 \"$RELEASE_URL\" -o /tmp/vpn-infra.tar.gz && sudo mkdir -p /opt/vpn && sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner 2>/dev/null; rm -f /tmp/vpn-infra.tar.gz && echo OK || (echo FAILED; exit 1)"
+ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ServerAliveInterval=30" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "RELEASE_URL=$(curl -sSfL --max-time 10 https://api.github.com/repos/Cyrillicspb/vpn-infra/releases/latest 2>/dev/null | python3 -c \"import sys,json; assets=[a for a in json.load(sys.stdin)['assets'] if a['name']=='vpn-infra.tar.gz']; print(assets[0]['browser_download_url'] if assets else '')\" 2>/dev/null) && [ -n \"$RELEASE_URL\" ] && curl -fsSL --max-time 120 \"$RELEASE_URL\" -o /tmp/vpn-infra.tar.gz && sudo mkdir -p /opt/vpn && sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner 2>/dev/null; rm -f /tmp/vpn-infra.tar.gz && echo OK || (echo FAILED; exit 1)"
 if !errorlevel! neq 0 (
     echo   [FAIL] Не удалось скачать релиз
     echo     Проверьте интернет или загрузите вручную.
@@ -231,10 +212,7 @@ if "!USE_TUI!"=="1" (
     echo [>>] Запуск TUI-установщика...
     echo ==========================================
     echo.
-    ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" ^
-        -o "ServerAliveInterval=30" -o "ServerAliveCountMax=10" ^
-        -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! ^
-        "cd /opt/vpn && python3 installers/gui/installer.py"
+    ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ServerAliveInterval=30" -o "ServerAliveCountMax=10" -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! "cd /opt/vpn && python3 installers/gui/installer.py"
     set TUI_RC=!errorlevel!
     echo.
     if !TUI_RC! equ 0 (
@@ -258,10 +236,7 @@ echo [>>] Запуск setup.sh в tmux...
 echo ==========================================
 echo.
 
-ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" ^
-    -o "ServerAliveInterval=30" -o "ServerAliveCountMax=10" ^
-    -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! ^
-    "tmux new-session -A -s vpn-install 'sudo bash !SETUP_PATH!'"
+ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ServerAliveInterval=30" -o "ServerAliveCountMax=10" -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! "tmux new-session -A -s vpn-install 'sudo bash !SETUP_PATH!'"
 set RESULT=!errorlevel!
 
 echo.
