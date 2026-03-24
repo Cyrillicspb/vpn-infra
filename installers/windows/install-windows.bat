@@ -124,7 +124,7 @@ echo   [OK] Сервер доступен: !SERVER_USER!@!SERVER_IP!:!SSH_PORT!
 :: Настройка sudo без пароля (один раз — потребуется пароль пользователя)
 echo.
 echo   Настройка прав (потребуется пароль !SERVER_USER!):
-ssh -t -p !SSH_PORT! -i "!SSH_KEY!" !SERVER_USER!@!SERVER_IP! "sudo bash -c 'echo !SERVER_USER! ALL=(ALL) NOPASSWD:ALL > /etc/sudoers.d/vpn-installer && chmod 440 /etc/sudoers.d/vpn-installer'"
+ssh -t -p !SSH_PORT! -i "!SSH_KEY!" !SERVER_USER!@!SERVER_IP! "echo '!SERVER_USER! ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/vpn-installer > /dev/null && sudo chmod 440 /etc/sudoers.d/vpn-installer"
 if !errorlevel! neq 0 (
     echo   [WARN] Не удалось настроить sudo -- возможны запросы пароля
 ) else (

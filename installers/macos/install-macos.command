@@ -116,7 +116,7 @@ _ok "Сервер доступен: ${SERVER_USER}@${SERVER_IP}:${SSH_PORT}"
 echo ""
 _info "Настройка прав (потребуется пароль ${SERVER_USER}):"
 ssh -t "${SSH_OPTS[@]}" "${SERVER_USER}@${SERVER_IP}" \
-    "sudo bash -c 'echo \"${SERVER_USER} ALL=(ALL) NOPASSWD:ALL\" > /etc/sudoers.d/vpn-installer && chmod 440 /etc/sudoers.d/vpn-installer'" \
+    "echo '${SERVER_USER} ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/vpn-installer > /dev/null && sudo chmod 440 /etc/sudoers.d/vpn-installer" \
     && _ok "sudo настроен" || _warn "Не удалось настроить sudo -- возможны запросы пароля"
 
 # ── Подтверждение ─────────────────────────────────────────────────────────────
