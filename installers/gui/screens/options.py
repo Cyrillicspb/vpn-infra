@@ -35,7 +35,7 @@ class OptionsScreen(WizardScreen):
     {WIZARD_BASE_CSS}
     #opt-form {{
         width: 74;
-        margin: 1 auto;
+        margin: 1 2;
         padding: 1 2;
         border: round $primary;
     }}

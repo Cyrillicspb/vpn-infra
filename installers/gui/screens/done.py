@@ -17,7 +17,7 @@ class DoneScreen(WizardScreen):
     {WIZARD_BASE_CSS}
     #done-box {{
         width: 74;
-        margin: 1 auto;
+        margin: 1 2;
         padding: 1 2;
         border: round $success;
         background: $panel;

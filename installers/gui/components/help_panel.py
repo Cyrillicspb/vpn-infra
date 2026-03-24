@@ -15,7 +15,6 @@ class HelpPanel(ModalScreen):
     #help-box {
         width: 62;
         height: auto;
-        max-height: 80vh;
         border: round $accent;
         padding: 1 2;
         background: $panel;
@@ -26,7 +25,7 @@ class HelpPanel(ModalScreen):
         color: $accent;
     }
     #help-close {
-        width: 100%;
+        width: 1fr;
         margin-top: 1;
     }
     """

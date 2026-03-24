@@ -29,7 +29,7 @@ class ReviewScreen(WizardScreen):
     {WIZARD_BASE_CSS}
     #review-box {{
         width: 74;
-        margin: 1 auto;
+        margin: 1 2;
         padding: 1 2;
         border: round $primary;
         background: $panel;
