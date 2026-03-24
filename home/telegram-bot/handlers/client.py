@@ -108,8 +108,13 @@ def _wc() -> WatchdogClient:
     return WatchdogClient(config.watchdog_url, config.watchdog_token)
 
 
-def _is_admin(message: Message) -> bool:
-    return str(message.from_user.id) == str(config.admin_chat_id)
+async def _is_admin(message: Message, db: Database | None = None, **kw) -> bool:
+    uid = str(message.from_user.id)
+    if uid == str(config.admin_chat_id):
+        return True
+    if db is not None:
+        return await db.is_admin(uid)
+    return False
 
 
 async def _get_client(message: Message, **kw) -> dict | None:
@@ -885,7 +890,7 @@ async def cmd_report(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("status"), StateFilter("*"))
 async def cmd_status_client(message: Message, state: FSMContext, **kw):
-    if _is_admin(message):
+    if await _is_admin(message, db=kw.get("db")):
         return   # admin.py обработает
     await state.clear()
     client = await _get_client(message, **kw)
@@ -908,7 +913,7 @@ async def cmd_status_client(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("help"), StateFilter("*"))
 async def cmd_help(message: Message, state: FSMContext, **kw):
-    if _is_admin(message):
+    if await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     client = await _get_client(message, **kw)
@@ -946,7 +951,7 @@ async def btn_menu(message: Message, state: FSMContext, **kw):
     client = await db.get_client(str(message.from_user.id))
     if not client:
         return
-    if _is_admin(message):
+    if await _is_admin(message, db=kw.get("db")):
         from handlers.keyboards import admin_main_menu
         await message.answer("<b>Меню администратора</b>", reply_markup=admin_main_menu(), parse_mode="HTML")
     else:
@@ -958,7 +963,7 @@ async def btn_menu(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("menu"), StateFilter("*"))
 async def cmd_menu_client(message: Message, state: FSMContext, **kw):
-    if _is_admin(message):
+    if await _is_admin(message, db=kw.get("db")):
         return  # admin.py обработает
     await state.clear()
     client = await _get_client(message, **kw)
@@ -1280,7 +1285,7 @@ async def fsm_checksite_domain(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message()
 async def default_handler(message: Message, **kw):
-    if _is_admin(message):
+    if await _is_admin(message, db=kw.get("db")):
         return
     db: Database = kw.get("db")
     if not db:

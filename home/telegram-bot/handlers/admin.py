@@ -117,8 +117,25 @@ ALLOWED_SERVICES = {
 # ---------------------------------------------------------------------------
 # Проверка прав
 # ---------------------------------------------------------------------------
-def _is_admin(message: Message) -> bool:
+async def _is_admin(message: Message, db: Database | None = None, **kw) -> bool:
+    uid = str(message.from_user.id)
+    if uid == str(config.admin_chat_id):
+        return True
+    if db is not None:
+        return await db.is_admin(uid)
+    return False
+
+
+def _is_root(message: Message) -> bool:
     return str(message.from_user.id) == str(config.admin_chat_id)
+
+
+async def _is_admin_uid(uid: int, db: Database | None = None) -> bool:
+    if str(uid) == str(config.admin_chat_id):
+        return True
+    if db is not None:
+        return await db.is_admin(str(uid))
+    return False
 
 
 def _wc() -> WatchdogClient:
@@ -137,8 +154,8 @@ def _uptime(s: int) -> str:
     return " ".join(parts)
 
 
-async def _require_admin(message: Message) -> bool:
-    if not _is_admin(message):
+async def _require_admin(message: Message, db: Database | None = None, **kw) -> bool:
+    if not await _is_admin(message, db=db):
         return False
     return True
 
@@ -167,7 +184,7 @@ class AdminFSM(StatesGroup):
 # ---------------------------------------------------------------------------
 @router.message(Command("cancel"), StateFilter("*"))
 async def cmd_cancel_any(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     current = await state.get_state()
     await state.clear()
@@ -179,7 +196,7 @@ async def cmd_cancel_any(message: Message, state: FSMContext, **kw):
 
 @router.message(F.text == "📋 Меню", StateFilter("*"))
 async def reply_menu_any_state(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     await message.answer("📋 Меню", reply_markup=menu_reply_kb())
@@ -191,7 +208,7 @@ async def reply_menu_any_state(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("status"), StateFilter("*"))
 async def cmd_status(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     try:
@@ -225,7 +242,7 @@ async def cmd_status(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("tunnel"), StateFilter("*"))
 async def cmd_tunnel(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     try:
@@ -254,7 +271,7 @@ async def cmd_tunnel(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("ip"), StateFilter("*"))
 async def cmd_ip(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     try:
@@ -269,7 +286,7 @@ async def cmd_ip(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("docker"), StateFilter("*"))
 async def cmd_docker(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     try:
@@ -298,7 +315,7 @@ async def cmd_docker(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("speed"), StateFilter("*"))
 async def cmd_speed(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     try:
@@ -346,7 +363,7 @@ async def cmd_speed(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("logs"), StateFilter("*"))
 async def cmd_logs(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     args = message.text.split()
@@ -387,7 +404,7 @@ async def cmd_logs(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("graph"), StateFilter("*"))
 async def cmd_graph(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     args = message.text.split()
@@ -415,7 +432,7 @@ async def cmd_graph(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("assess"), StateFilter("*"))
 async def cmd_assess(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     try:
@@ -438,7 +455,7 @@ async def cmd_assess(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("switch"), StateFilter("*"))
 async def cmd_switch(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     args = message.text.split()
@@ -461,7 +478,7 @@ async def cmd_switch(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("restart"), StateFilter("*"))
 async def cmd_restart(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     args = message.text.split()
@@ -487,7 +504,7 @@ async def cmd_restart(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("upgrade"), StateFilter("*"))
 async def cmd_upgrade(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -524,7 +541,7 @@ async def cb_update_cancel(cb: CallbackQuery, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("deploy"), StateFilter("*"))
 async def cmd_deploy(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     try:
@@ -536,7 +553,7 @@ async def cmd_deploy(message: Message, state: FSMContext, **kw):
 
 @router.message(Command("rollback"), StateFilter("*"))
 async def cmd_rollback(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     try:
@@ -551,7 +568,7 @@ async def cmd_rollback(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("reboot"), StateFilter("*"))
 async def cmd_reboot(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -618,7 +635,7 @@ async def cb_update_skip(cb: CallbackQuery, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("invite"), StateFilter("*"))
 async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     db: Database = kw.get("db")
@@ -746,7 +763,7 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("clients"), StateFilter("*"))
 async def cmd_clients(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     db: Database = kw.get("db")
@@ -767,7 +784,7 @@ async def cmd_clients(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("client"), StateFilter("*"))
 async def cmd_client(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     db: Database = kw.get("db")
@@ -835,7 +852,7 @@ async def cmd_client(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("broadcast"), StateFilter("*"))
 async def cmd_broadcast(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     args = message.text.split(maxsplit=1)
@@ -862,7 +879,7 @@ async def cmd_broadcast(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("requests"), StateFilter("*"))
 async def cmd_requests(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     db: Database = kw.get("db")
@@ -903,7 +920,7 @@ async def cmd_requests(message: Message, state: FSMContext, **kw):
 
 @router.callback_query(F.data.startswith("dev_approve_"))
 async def cb_dev_approve(cb: CallbackQuery, **kw):
-    if str(cb.from_user.id) != str(config.admin_chat_id):
+    if not await _is_admin_uid(cb.from_user.id, kw.get("db")):
         await cb.answer("❌ Доступ запрещён", show_alert=True)
         return
     from handlers.requests import notify_device_approved, safe_edit
@@ -933,7 +950,7 @@ async def cb_dev_approve(cb: CallbackQuery, **kw):
 
 @router.callback_query(F.data.startswith("dev_reject_"))
 async def cb_dev_reject(cb: CallbackQuery, **kw):
-    if str(cb.from_user.id) != str(config.admin_chat_id):
+    if not await _is_admin_uid(cb.from_user.id, kw.get("db")):
         await cb.answer("❌ Доступ запрещён", show_alert=True)
         return
     from handlers.requests import notify_device_rejected, safe_edit
@@ -952,7 +969,7 @@ async def cb_dev_reject(cb: CallbackQuery, **kw):
 
 @router.callback_query(F.data.startswith("req_approve_"))
 async def cb_req_approve(cb: CallbackQuery, **kw):
-    if str(cb.from_user.id) != str(config.admin_chat_id):
+    if not await _is_admin_uid(cb.from_user.id, kw.get("db")):
         await cb.answer("❌ Доступ запрещён", show_alert=True)
         return
     from handlers.requests import notify_request_approved, safe_edit
@@ -977,7 +994,7 @@ async def cb_req_approve(cb: CallbackQuery, **kw):
 
 @router.callback_query(F.data.startswith("req_reject_"))
 async def cb_req_reject(cb: CallbackQuery, **kw):
-    if str(cb.from_user.id) != str(config.admin_chat_id):
+    if not await _is_admin_uid(cb.from_user.id, kw.get("db")):
         await cb.answer("❌ Доступ запрещён", show_alert=True)
         return
     from handlers.requests import notify_request_rejected, safe_edit
@@ -996,7 +1013,7 @@ async def cb_req_reject(cb: CallbackQuery, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("vpn"), StateFilter("*"))
 async def cmd_vpn(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     args = message.text.split()
@@ -1025,7 +1042,7 @@ async def cmd_vpn(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("direct"), StateFilter("*"))
 async def cmd_direct(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     args = message.text.split()
@@ -1051,7 +1068,7 @@ async def cmd_direct(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("list"), StateFilter("*"))
 async def cmd_list(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     args = message.text.split()
@@ -1077,7 +1094,7 @@ async def cmd_list(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("check"), StateFilter("*"))
 async def cmd_check(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     args = message.text.split()
@@ -1110,7 +1127,7 @@ async def cmd_check(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("routes"), StateFilter("*"))
 async def cmd_routes(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     args = message.text.split()
@@ -1132,7 +1149,7 @@ async def cmd_routes(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("vps"), StateFilter("*"))
 async def cmd_vps(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     args = message.text.split()
@@ -1174,7 +1191,7 @@ async def cmd_vps(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("migrate_vps"), StateFilter("*"))
 async def cmd_migrate_vps(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     args = message.text.split()
@@ -1219,7 +1236,7 @@ async def cb_migrate_cancel(cb: CallbackQuery, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("rotate_keys"), StateFilter("*"))
 async def cmd_rotate_keys(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     await message.answer(
@@ -1234,7 +1251,7 @@ async def cmd_rotate_keys(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("renew_cert"), StateFilter("*"))
 async def cmd_renew_cert(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     try:
@@ -1251,7 +1268,7 @@ async def cmd_renew_cert(message: Message, state: FSMContext, **kw):
 
 @router.message(Command("renew_ca"), StateFilter("*"))
 async def cmd_renew_ca(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     try:
@@ -1271,7 +1288,7 @@ async def cmd_renew_ca(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("diagnose"), StateFilter("*"))
 async def cmd_diagnose(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     args = message.text.split()
@@ -1299,7 +1316,7 @@ async def cmd_diagnose(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 @router.message(Command("menu"), StateFilter("*"))
 async def cmd_menu(message: Message, state: FSMContext, **kw):
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     await message.answer("📋 Меню", reply_markup=menu_reply_kb())
@@ -2974,7 +2991,7 @@ async def cmd_dpi(message: Message, state: FSMContext, **kw):
     /dpi remove <name>    — удалить
     /dpi toggle <name>    — вкл/выкл конкретный сервис
     """
-    if not _is_admin(message):
+    if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
 
