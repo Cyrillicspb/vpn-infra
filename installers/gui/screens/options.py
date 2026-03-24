@@ -200,8 +200,19 @@ class OptionsScreen(WizardScreen):
                 )
 
     def on_mount(self) -> None:
-        self._set_next_enabled(True)
+        self._validate()
         self._fill_worker_code()
+
+    def _validate(self) -> None:
+        state = self.app.state
+        ok = True
+        if state.use_ddns == "y" and not state.ddns_token:
+            ok = False
+        if state.use_ddns == "y" and not state.ddns_domain:
+            ok = False
+        if state.use_cloudflare == "y" and not state.cf_cdn_hostname:
+            ok = False
+        self._set_next_enabled(ok)
 
     def _fill_worker_code(self) -> None:
         try:
@@ -224,6 +235,7 @@ class OptionsScreen(WizardScreen):
             state.save()
         elif event.input.id == "ddns-token":
             state.ddns_token = val
+        self._validate()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-cf":
@@ -249,6 +261,7 @@ class OptionsScreen(WizardScreen):
         btn.label = "Да" if new_val == "y" else "Нет"
         btn.variant = "success" if new_val == "y" else "default"
         self.app.state.save()
+        self._validate()
 
     def _on_next(self) -> None:
         self.app.state.save()
