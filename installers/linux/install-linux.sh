@@ -145,13 +145,13 @@ if [[ -f "$REPO_ROOT/setup.sh" && -f "$REPO_ROOT/install-home.sh" && -d "$REPO_R
     scp -i "$SSH_KEY" -P "$SSH_PORT" -o "StrictHostKeyChecking=accept-new" \
         "$TMP_ARCHIVE" "${SERVER_USER}@${SERVER_IP}:/tmp/vpn-infra.tar.gz"
     ssh "${SSH_OPTS[@]}" "${SERVER_USER}@${SERVER_IP}" \
-        "tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner 2>/dev/null; rm /tmp/vpn-infra.tar.gz"
+        "tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner --overwrite --touch 2>/dev/null; rm /tmp/vpn-infra.tar.gz"
     rm -f "$TMP_ARCHIVE"
     _ok "Репозиторий загружен из локальной копии"
 else
     _info "Скачивание последнего релиза с GitHub..."
     if ssh "${SSH_OPTS[@]}" -o "ServerAliveInterval=30" "${SERVER_USER}@${SERVER_IP}" \
-        "curl -fsSL --max-time 120 -L https://github.com/Cyrillicspb/vpn-infra/releases/latest/download/vpn-infra.tar.gz -o /tmp/vpn-infra.tar.gz && sudo mkdir -p /opt/vpn && sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner; rm -f /tmp/vpn-infra.tar.gz"; then
+        "curl -fsSL --max-time 120 -L https://github.com/Cyrillicspb/vpn-infra/releases/latest/download/vpn-infra.tar.gz -o /tmp/vpn-infra.tar.gz && sudo mkdir -p /opt/vpn && sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner --overwrite --touch; rm -f /tmp/vpn-infra.tar.gz"; then
         _ok "Релиз скачан с GitHub"
     else
         _err "Не удалось скачать релиз"
