@@ -1,4 +1,4 @@
-"""Экран 5/8 — Дополнительные опции (Cloudflare CDN, DDNS)."""
+"""Экран 5/8 — Дополнительные опции (Cloudflare CDN, DDNS/DuckDNS)."""
 from __future__ import annotations
 
 from textual.app import ComposeResult
@@ -8,6 +8,17 @@ from textual.widgets import Button, Input, Label, Static
 from components.validated_input import ValidatedInput
 from components.wizard_screen import WIZARD_BASE_CSS, WizardScreen
 
+_DUCKDNS_SUFFIX = ".duckdns.org"
+
+_DUCKDNS_INSTRUCTIONS = (
+    "[bold]Как настроить DuckDNS:[/bold]\n"
+    "  1. Откройте [link=https://www.duckdns.org]duckdns.org[/link] в браузере\n"
+    "  2. Войдите через GitHub, Google или Reddit\n"
+    '  3. В поле "sub domain" введите имя → нажмите "add domain"\n'
+    "  4. Скопируйте [bold]token[/bold] (UUID вверху страницы)\n"
+    "  5. Введите имя субдомена и token ниже"
+)
+
 
 class OptionsScreen(WizardScreen):
     STEP_NUM = 5
@@ -16,19 +27,16 @@ class OptionsScreen(WizardScreen):
     HELP_TEXT = (
         "[bold]Cloudflare CDN[/bold]\n"
         "Stack 1 (наиболее надёжный): VLESS+WS\n"
-        "через Cloudflare. Трафик идёт через CDN\n"
-        "— практически не блокируется.\n\n"
-        "Требует:\n"
-        "  • Домен (платный, ~$10/год)\n"
-        "  • Аккаунт Cloudflare (бесплатно)\n"
-        "  • Домен делегирован на Cloudflare DNS\n\n"
-        "Без Cloudflare Stack 1 недоступен —\n"
-        "система использует Stack 2/3/4.\n\n"
-        "[bold]DDNS[/bold]\n"
-        "Динамическое обновление DNS при смене IP.\n"
-        "Нужен если у сервера нестабильный IP.\n"
-        "Рекомендуется: DuckDNS (бесплатно).\n\n"
-        "Обе опции можно включить позже вручную."
+        "через Cloudflare CDN.\n\n"
+        "Требует Cloudflare аккаунт и Worker.\n"
+        "Без него система использует Stack 2/3/4.\n\n"
+        "[bold]DDNS (DuckDNS)[/bold]\n"
+        "Нужен если у роутера динамический IP.\n"
+        "Бесплатно, без регистрации домена.\n\n"
+        "Создаёт субдомен вида:\n"
+        "  myserver.duckdns.org\n\n"
+        "Обе опции можно настроить позже вручную\n"
+        "через переменные в /opt/vpn/.env"
     )
 
     CSS = f"""
@@ -52,12 +60,30 @@ class OptionsScreen(WizardScreen):
         background: $panel;
     }}
     .opt-details.hidden {{ display: none; }}
+    .ddns-instructions {{
+        height: auto;
+        margin-bottom: 1;
+        color: $text;
+    }}
+    .subdomain-suffix {{
+        height: 3;
+        padding-top: 1;
+        padding-left: 1;
+        color: $text-muted;
+        width: 14;
+    }}
     """
 
     def _compose_content(self) -> ComposeResult:
         state = self.app.state
         cf_on = state.use_cloudflare == "y"
         ddns_on = state.use_ddns == "y"
+        # Для отображения вводим только субдомен без суффикса
+        ddns_subdomain = (
+            state.ddns_domain.removesuffix(_DUCKDNS_SUFFIX)
+            if state.ddns_domain
+            else ""
+        )
 
         with ScrollableContainer(id="wizard-content"):
             with Vertical(id="opt-form"):
@@ -73,7 +99,7 @@ class OptionsScreen(WizardScreen):
                         classes="toggle-btn",
                     )
                 yield Static(
-                    "Stack 1 (VLESS+WS). Нужен домен + Cloudflare аккаунт",
+                    "Stack 1 (VLESS+WS через Cloudflare CDN)",
                     classes="opt-hint",
                 )
                 with Vertical(
@@ -85,27 +111,12 @@ class OptionsScreen(WizardScreen):
                         input_id="cf-worker-url",
                         placeholder="https://worker.example.workers.dev",
                         value=state.cf_worker_url,
-                        hint="URL Cloudflare Worker для CDN-стека (опционально)",
-                    )
-                    yield ValidatedInput(
-                        "Домен",
-                        input_id="domain",
-                        placeholder="vpn.example.com",
-                        value=state.domain,
-                        hint="Домен для сертификата Let's Encrypt",
-                    )
-                    yield ValidatedInput(
-                        "Cloudflare API Token",
-                        input_id="cf-api-token",
-                        placeholder="",
-                        value=state.cf_api_token,
-                        hint="API токен Cloudflare для автообновления сертификата",
-                        password=True,
+                        hint="URL вашего Cloudflare Worker (опционально)",
                     )
 
-                # ── DDNS ──────────────────────────────────────────────────
+                # ── DDNS (DuckDNS) ────────────────────────────────────────
                 with Horizontal(classes="opt-row"):
-                    yield Label("DDNS:", classes="opt-label")
+                    yield Label("DDNS (DuckDNS):", classes="opt-label")
                     yield Button(
                         "Да" if ddns_on else "Нет",
                         id="btn-ddns",
@@ -113,33 +124,34 @@ class OptionsScreen(WizardScreen):
                         classes="toggle-btn",
                     )
                 yield Static(
-                    "Обновление DNS при смене IP. Нужен DuckDNS или аналог",
+                    "Нужен при динамическом IP роутера",
                     classes="opt-hint",
                 )
                 with Vertical(
                     id="ddns-details",
                     classes="opt-details" + ("" if ddns_on else " hidden"),
                 ):
-                    yield ValidatedInput(
-                        "DDNS провайдер",
-                        input_id="ddns-provider",
-                        placeholder="DuckDNS",
-                        value=state.ddns_provider,
-                        hint="DuckDNS, No-IP, Cloudflare (или пустое если статический IP)",
+                    yield Static(_DUCKDNS_INSTRUCTIONS, classes="ddns-instructions")
+                    # Субдомен: пользователь вводит только "myserver"
+                    # суффикс ".duckdns.org" добавляется автоматически
+                    with Horizontal(classes="vi-row"):
+                        yield Label("Субдомен:", classes="opt-label")
+                        yield Input(
+                            value=ddns_subdomain,
+                            placeholder="myserver",
+                            id="ddns-subdomain",
+                        )
+                        yield Static(".duckdns.org", classes="subdomain-suffix")
+                    yield Static(
+                        "Имя субдомена без .duckdns.org",
+                        classes="opt-hint",
                     )
                     yield ValidatedInput(
-                        "DDNS домен",
-                        input_id="ddns-domain",
-                        placeholder="myvpn.duckdns.org",
-                        value=state.ddns_domain,
-                        hint="Например: myvpn.duckdns.org",
-                    )
-                    yield ValidatedInput(
-                        "DDNS токен",
+                        "DuckDNS Token",
                         input_id="ddns-token",
-                        placeholder="",
+                        placeholder="a1b2c3d4-e5f6-...",
                         value=state.ddns_token,
-                        hint="API токен от DDNS провайдера",
+                        hint="UUID токен с сайта duckdns.org",
                         password=True,
                     )
 
@@ -153,17 +165,15 @@ class OptionsScreen(WizardScreen):
 
     def on_input_changed(self, event: Input.Changed) -> None:
         state = self.app.state
-        field_map = {
-            "cf-worker-url": "cf_worker_url",
-            "domain": "domain",
-            "cf-api-token": "cf_api_token",
-            "ddns-provider": "ddns_provider",
-            "ddns-domain": "ddns_domain",
-            "ddns-token": "ddns_token",
-        }
-        if event.input.id in field_map:
-            setattr(state, field_map[event.input.id], event.value.strip())
+        val = event.value.strip()
+        if event.input.id == "cf-worker-url":
+            state.cf_worker_url = val
             state.save()
+        elif event.input.id == "ddns-subdomain":
+            state.ddns_domain = (val + _DUCKDNS_SUFFIX) if val else ""
+            state.save()
+        elif event.input.id == "ddns-token":
+            state.ddns_token = val
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-cf":
