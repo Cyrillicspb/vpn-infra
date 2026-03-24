@@ -144,12 +144,14 @@ echo   --> Упаковка локального репозитория...
 tar -czf "%TEMP%\vpn-infra.tar.gz" --exclude=".git" --exclude="*.pyc" --exclude="__pycache__" --exclude="*/venv/*" --exclude="node_modules" --exclude="*.log" --exclude=".env" -C "!REPO_ROOT!" . >nul 2>&1
 if !errorlevel! neq 0 goto download_release
 
+echo   --> Создание директории на сервере...
+ssh -t -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "sudo mkdir -p /opt/vpn && sudo chown !SERVER_USER!:!SERVER_USER! /opt/vpn"
+
 echo   --> Загрузка архива на сервер...
-ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "sudo mkdir -p /opt/vpn && sudo chown !SERVER_USER!:!SERVER_USER! /opt/vpn"
 scp -i "!SSH_KEY!" -P !SSH_PORT! -o "StrictHostKeyChecking=accept-new" "%TEMP%\vpn-infra.tar.gz" !SERVER_USER!@!SERVER_IP!:/tmp/vpn-infra.tar.gz
 if !errorlevel! neq 0 goto download_release
 
-ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner 2>/dev/null; rm /tmp/vpn-infra.tar.gz"
+ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner; rm /tmp/vpn-infra.tar.gz"
 if !errorlevel! neq 0 goto download_release
 
 del "%TEMP%\vpn-infra.tar.gz" >nul 2>&1
@@ -159,10 +161,16 @@ goto check_tui
 
 :download_release
 echo   --> Скачивание последнего релиза с GitHub...
-ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ServerAliveInterval=30" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "RELEASE_URL=$(curl -sSfL --max-time 10 https://api.github.com/repos/Cyrillicspb/vpn-infra/releases/latest 2>/dev/null | python3 -c \"import sys,json; assets=[a for a in json.load(sys.stdin)['assets'] if a['name']=='vpn-infra.tar.gz']; print(assets[0]['browser_download_url'] if assets else '')\" 2>/dev/null) && [ -n \"$RELEASE_URL\" ] && curl -fsSL --max-time 120 \"$RELEASE_URL\" -o /tmp/vpn-infra.tar.gz && sudo mkdir -p /opt/vpn && sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner 2>/dev/null; rm -f /tmp/vpn-infra.tar.gz && echo OK || (echo FAILED; exit 1)"
+ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ServerAliveInterval=30" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "curl -fsSL --max-time 120 -L https://github.com/Cyrillicspb/vpn-infra/releases/latest/download/vpn-infra.tar.gz -o /tmp/vpn-infra.tar.gz"
 if !errorlevel! neq 0 (
     echo   [FAIL] Не удалось скачать релиз
     echo     Проверьте интернет или загрузите вручную.
+    pause
+    exit /b 1
+)
+ssh -t -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "sudo mkdir -p /opt/vpn && sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner; rm -f /tmp/vpn-infra.tar.gz"
+if !errorlevel! neq 0 (
+    echo   [FAIL] Не удалось распаковать релиз
     pause
     exit /b 1
 )
@@ -176,32 +184,29 @@ echo [5/5] Установка...
 
 set TUI_INSTALLER=/opt/vpn/installers/gui/installer.py
 set USE_TUI=0
-set PY_VER=0
+set PY_MAJ=0
+set PY_MIN=0
+set PY_VER=
 
-:: Проверяем Python 3.10+
+:: Проверяем Python 3.10+ (python3 --version выдаёт "Python X.Y.Z")
 echo   --> Проверка Python 3.10+ на сервере...
-for /f "tokens=* delims=" %%V in ('ssh -n -i "!SSH_KEY!" -o "BatchMode=yes" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=5" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "python3 -c \"import sys; v=sys.version_info; print(v.major*100+v.minor)\" 2>/dev/null || echo 0" 2^>nul') do set PY_VER=%%V
-if not defined PY_VER set PY_VER=0
-:: Strip spaces and take first 3 chars (guards against trailing CR/LF from SSH)
-set PY_VER=!PY_VER: =!
-set PY_VER=!PY_VER:~0,3!
+for /f "tokens=2" %%V in ('ssh -n -p !SSH_PORT! -i "!SSH_KEY!" -o "BatchMode=yes" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=5" !SERVER_USER!@!SERVER_IP! "python3 --version 2>&1" 2^>nul') do set PY_VER=%%V
+if not defined PY_VER set PY_VER=0.0.0
+for /f "tokens=1,2 delims=." %%A in ("!PY_VER!") do (set PY_MAJ=%%A & set PY_MIN=%%B)
+set /a PY_CMP=PY_MAJ*100+PY_MIN
 
-set /a PY_CMP=!PY_VER!+0
 if !PY_CMP! GEQ 310 (
     :: Проверяем наличие installer.py
     set FILE_CHK=no
-    for /f "tokens=* delims=" %%F in ('ssh -n -i "!SSH_KEY!" -o "BatchMode=yes" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=5" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "test -f !TUI_INSTALLER! && echo yes || echo no" 2^>nul') do set FILE_CHK=%%F
+    ssh -n -p !SSH_PORT! -i "!SSH_KEY!" -o "BatchMode=yes" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=5" !SERVER_USER!@!SERVER_IP! "test -f /opt/vpn/installers/gui/installer.py" >nul 2>&1
+    if !errorlevel! equ 0 set FILE_CHK=yes
     if "!FILE_CHK!"=="yes" (
         set USE_TUI=1
-        set /a PY_MAJ=!PY_CMP!/100
-        set /a PY_MIN=!PY_CMP!-!PY_MAJ!*100
         echo   [OK] Python !PY_MAJ!.!PY_MIN! -- TUI-установщик готов
     ) else (
         echo   [WARN] installer.py не найден -- консольный режим
     )
 ) else (
-    set /a PY_MAJ=!PY_CMP!/100
-    set /a PY_MIN=!PY_CMP!-!PY_MAJ!*100
     echo   [WARN] Python !PY_MAJ!.!PY_MIN! ^< 3.10 -- консольный режим
 )
 
