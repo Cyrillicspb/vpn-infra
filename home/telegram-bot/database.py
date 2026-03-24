@@ -229,6 +229,15 @@ class Database:
                 if "wg_privkey" not in inv_cols:
                     conn.execute("ALTER TABLE invite_codes ADD COLUMN wg_privkey TEXT")
                     conn.commit()
+                # Миграция: multi-admin поля
+                cl_cols = {r[1] for r in conn.execute("PRAGMA table_info(clients)")}
+                if "admin_added_by" not in cl_cols:
+                    conn.execute("ALTER TABLE clients ADD COLUMN admin_added_by TEXT")
+                    conn.commit()
+                inv_cols2 = {r[1] for r in conn.execute("PRAGMA table_info(invite_codes)")}
+                if "grants_admin" not in inv_cols2:
+                    conn.execute("ALTER TABLE invite_codes ADD COLUMN grants_admin INTEGER NOT NULL DEFAULT 0")
+                    conn.commit()
                 logger.info("БД инициализирована")
             finally:
                 conn.close()
@@ -296,10 +305,18 @@ class Database:
                 if not code_row:
                     raise ValueError("Неверный, использованный или истёкший код")
 
+                grants_admin = bool(code_row["grants_admin"]) if "grants_admin" in code_row.keys() else False
+                created_by = code_row["created_by"]
+
                 conn.execute(
                     "INSERT INTO clients (chat_id, username, first_name) VALUES (?, ?, ?)",
                     (str(chat_id), username, first_name),
                 )
+                if grants_admin:
+                    conn.execute(
+                        "UPDATE clients SET is_admin = 1, admin_added_by = ? WHERE chat_id = ?",
+                        (created_by, str(chat_id)),
+                    )
                 conn.execute("""
                     UPDATE invite_codes
                     SET used_by = ?, used_at = datetime('now')
@@ -313,6 +330,41 @@ class Database:
                 return dict(row)
             finally:
                 conn.close()
+
+    async def is_admin(self, chat_id: str) -> bool:
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT is_admin FROM clients WHERE chat_id = ? AND is_admin = 1",
+                (str(chat_id),),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
+    async def set_admin(self, chat_id: str, is_admin_flag: bool, added_by: str | None = None) -> bool:
+        async with self._lock:
+            conn = self._conn()
+            try:
+                cur = conn.execute(
+                    "UPDATE clients SET is_admin = ?, admin_added_by = ? WHERE chat_id = ?",
+                    (1 if is_admin_flag else 0, added_by, str(chat_id)),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    async def get_all_admins(self) -> list[dict]:
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT id, chat_id, username, first_name, is_admin, created_at, admin_added_by "
+                "FROM clients WHERE is_admin = 1 ORDER BY created_at"
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
 
     async def get_all_clients(self) -> list[dict]:
         conn = self._conn()
@@ -363,15 +415,15 @@ class Database:
     # -----------------------------------------------------------------------
     # Invite codes
     # -----------------------------------------------------------------------
-    async def create_invite_code(self, created_by: str, ttl_hours: int = 24) -> str:
+    async def create_invite_code(self, created_by: str, ttl_hours: int = 24, grants_admin: bool = False) -> str:
         code = secrets.token_urlsafe(16)
         expires_at = (datetime.now() + timedelta(hours=ttl_hours)).isoformat()
         async with self._lock:
             conn = self._conn()
             try:
                 conn.execute(
-                    "INSERT INTO invite_codes (code, created_by, expires_at) VALUES (?, ?, ?)",
-                    (code, str(created_by), expires_at),
+                    "INSERT INTO invite_codes (code, created_by, expires_at, grants_admin) VALUES (?, ?, ?, ?)",
+                    (code, str(created_by), expires_at, 1 if grants_admin else 0),
                 )
                 conn.commit()
             finally:
