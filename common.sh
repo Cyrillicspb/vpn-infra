@@ -50,12 +50,19 @@ step() {
     echo ""
     echo -e "${CYAN}${BOLD}━━━ Шаг ${STEP}/${TOTAL_STEPS}: $* ━━━${NC}"
     _progress_bar "$STEP" "$TOTAL_STEPS"
+    emit_progress "$*" "start"
+}
+
+# ── Машиночитаемый маркер прогресса (парсится TUI installer.py) ───────────────
+# Формат: ##PROGRESS:current:total:name:status
+emit_progress() {
+    printf '##PROGRESS:%d:%d:%s:%s\n' "${STEP}" "${TOTAL_STEPS}" "${1:-unknown}" "${2:-done}"
 }
 
 # ── Состояние шагов (.setup-state) ────────────────────────────────────────────
 is_done()    { grep -qxF "$1" "$STATE_FILE" 2>/dev/null; }
-step_done()  { echo "$1" >> "$STATE_FILE"; log_ok "Готово: $1"; }
-step_skip()  { ((STEP++)) || true; log_info "Пропуск (уже выполнено): $1"; }
+step_done()  { echo "$1" >> "$STATE_FILE"; log_ok "Готово: $1"; emit_progress "$1" "done"; }
+step_skip()  { ((STEP++)) || true; log_info "Пропуск (уже выполнено): $1"; emit_progress "$1" "skip"; }
 step_reset() { sed -i "/^$(printf '%s' "$1" | sed 's/[.[\*^$]/\\&/g')$/d" "$STATE_FILE" 2>/dev/null || true; }
 
 # ── Завершение с ошибкой ──────────────────────────────────────────────────────

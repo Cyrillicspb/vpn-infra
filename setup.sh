@@ -168,7 +168,12 @@ phase0() {
             echo "Проект не будет работать без реального (белого) IP."
             echo "Решения: попросите у провайдера белый IP или арендуйте дополнительный."
             echo ""
-            read -rp "  Продолжить установку несмотря на это? [y/N]: " _cont
+            if [[ -n "${VPN_NONINTERACTIVE:-}" ]]; then
+                log_warn "Non-interactive режим: продолжаем несмотря на CGNAT/NAT."
+                _cont="y"
+            else
+                read -rp "  Продолжить установку несмотря на это? [y/N]: " _cont
+            fi
             if [[ "${_cont,,}" != "y" ]]; then
                 die "Установка прервана пользователем. Устраните проблему CGNAT и повторите."
             fi
@@ -462,7 +467,9 @@ for a in d.get('assets',[]):
                 echo "  cat /tmp/c.pem /tmp/k.pem > /tmp/vpn-bootstrap.pem && rm /tmp/k.pem /tmp/c.pem"
                 echo -e "  socat OPENSSL-LISTEN:443,reuseaddr,fork,cert=/tmp/vpn-bootstrap.pem,verify=0 TCP:127.0.0.1:22 &${NC}"
                 echo ""
-                read -r -p "  Нажмите Enter когда команда выполнена на VPS..." _bs_dummy
+                if [[ -z "${VPN_NONINTERACTIVE:-}" ]]; then
+                    read -r -p "  Нажмите Enter когда команда выполнена на VPS..." _bs_dummy
+                fi
                 echo ""
 
                 log_info "Проверка socat bootstrap (порт 443 VPS)..."
