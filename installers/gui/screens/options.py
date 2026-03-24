@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, ScrollableContainer, Vertical
-from textual.widgets import Button, Input, Label, Static
+from textual.widgets import Button, Input, Label, RichLog, Static
 
 from components.validated_input import ValidatedInput
 from components.wizard_screen import WIZARD_BASE_CSS, WizardScreen
@@ -19,22 +19,12 @@ _DUCKDNS_INSTRUCTIONS = (
     "  5. Введите субдомен и token ниже"
 )
 
-_CF_INSTRUCTIONS_A = (
-    "[bold]Шаг A — Аккаунт Cloudflare[/bold]\n"
-    "  1. Откройте dash.cloudflare.com/sign-up\n"
-    "  2. Email + пароль → Create Account → подтвердите email\n"
-    "     Бесплатно, карта не нужна."
-)
-
-_CF_INSTRUCTIONS_B = (
-    "[bold]Шаг B — Создание Worker[/bold]\n"
-    "  1. dash.cloudflare.com →\n"
-    "     Workers & Pages → Create → Create Worker\n"
-    "  2. Дайте любое имя → Deploy\n"
-    "  3. Edit code → замените ВСЁ содержимое на код ниже\n"
-    "  4. Save & Deploy\n"
-    "  5. Скопируйте URL вида: xxx.workers.dev\n"
-    "     Введите его в поле ниже (без https://)"
+_CF_INSTRUCTIONS = (
+    "[bold]Настройка Cloudflare Worker:[/bold]\n"
+    "  1. dash.cloudflare.com/sign-up (бесплатно)\n"
+    "  2. Workers & Pages → Create → Create Worker\n"
+    "  3. Edit code → вставьте код ниже → Save & Deploy\n"
+    "  4. Скопируйте URL (xxx.workers.dev) → вставьте ниже"
 )
 
 
@@ -101,12 +91,11 @@ class OptionsScreen(WizardScreen):
         margin-bottom: 1;
         color: $text;
     }}
-    .worker-code {{
-        height: auto;
+    #worker-code {{
+        height: 8;
         margin: 1 0;
-        padding: 1 2;
+        border: round $success-darken-2;
         background: #0d1117;
-        color: $success;
     }}
     .ddns-instructions {{
         height: auto;
@@ -153,13 +142,11 @@ class OptionsScreen(WizardScreen):
                     id="cf-details",
                     classes="opt-details" + ("" if cf_on else " hidden"),
                 ):
-                    yield Static(_CF_INSTRUCTIONS_A, classes="cf-instructions")
-                    yield Static(_CF_INSTRUCTIONS_B, classes="cf-instructions")
-                    yield Static(
-                        _worker_code(state.vps_ip),
-                        id="cf-worker-code",
-                        classes="worker-code",
+                    yield Static(_CF_INSTRUCTIONS, classes="cf-instructions")
+                    code_log = RichLog(
+                        highlight=False, markup=False, wrap=False, id="worker-code"
                     )
+                    yield code_log
                     yield ValidatedInput(
                         "Worker hostname",
                         input_id="cf-cdn-hostname",
@@ -214,6 +201,15 @@ class OptionsScreen(WizardScreen):
 
     def on_mount(self) -> None:
         self._set_next_enabled(True)
+        self._fill_worker_code()
+
+    def _fill_worker_code(self) -> None:
+        try:
+            log = self.query_one("#worker-code", RichLog)
+            for line in _worker_code(self.app.state.vps_ip).splitlines():
+                log.write(line)
+        except Exception:
+            pass
 
     def on_input_changed(self, event: Input.Changed) -> None:
         state = self.app.state
