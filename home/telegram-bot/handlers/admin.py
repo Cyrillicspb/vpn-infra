@@ -631,6 +631,82 @@ async def cb_update_skip(cb: CallbackQuery, **kw):
 
 
 # ---------------------------------------------------------------------------
+# /admin list|invite|remove
+# ---------------------------------------------------------------------------
+@router.message(Command("admin"), StateFilter("*"))
+async def cmd_admin(message: Message, state: FSMContext, **kw):
+    if not await _is_admin(message, db=kw.get("db")):
+        return
+    await state.clear()
+    db: Database = kw.get("db")
+    args = message.text.split()
+    sub = args[1].lower() if len(args) > 1 else "list"
+
+    if sub == "list":
+        root_id = str(config.admin_chat_id)
+        try:
+            root_chat = await kw.get("bot").get_chat(int(root_id))
+            root_name = f"@{root_chat.username}" if root_chat.username else (root_chat.first_name or root_id)
+        except Exception:
+            root_name = root_id
+
+        extra_admins = await db.get_all_admins()
+        extra_admins = [a for a in extra_admins if str(a["chat_id"]) != root_id]
+
+        lines = ["*Администраторы*\n", f"👑 Root: {root_name} (ID: `{root_id}`)"]
+        if extra_admins:
+            lines.append("\nДополнительные:")
+            for a in extra_admins:
+                name = f"@{a['username']}" if a.get("username") else (a.get("first_name") or a["chat_id"])
+                added_by = a.get("admin_added_by") or "?"
+                date = (a.get("created_at") or "")[:10]
+                lines.append(f"• {name} — добавил `{added_by}` ({date})")
+        else:
+            lines.append("\n_Дополнительных администраторов нет_")
+        await message.answer("\n".join(lines))
+
+    elif sub == "invite":
+        if not _is_root(message):
+            await message.answer("❌ Только root-администратор может создавать admin-инвайты.")
+            return
+        code = await db.create_invite_code(str(message.from_user.id), grants_admin=True)
+        await message.answer(
+            f"*Admin\\-invite создан*\nКод: `{code}`\nДействителен: 24 часа",
+            parse_mode="MarkdownV2",
+        )
+
+    elif sub == "remove":
+        if not _is_root(message):
+            await message.answer("❌ Только root-администратор может снимать права администратора.")
+            return
+        if len(args) < 3:
+            await message.answer("Использование: `/admin remove <username_или_id>`")
+            return
+        target_name = args[2].lstrip("@")
+        target = await db.find_client_by_name(target_name)
+        if not target:
+            await message.answer("❌ Пользователь не найден.")
+            return
+        if str(target["chat_id"]) == str(config.admin_chat_id):
+            await message.answer("❌ Нельзя удалить root-администратора.")
+            return
+        if not target.get("is_admin"):
+            await message.answer("❌ Пользователь не является администратором.")
+            return
+        await db.set_admin(target["chat_id"], False, None)
+        name = f"@{target['username']}" if target.get("username") else target["chat_id"]
+        await message.answer(f"✅ {name} снят с должности администратора.")
+
+    else:
+        await message.answer(
+            "Использование:\n"
+            "`/admin list` — список администраторов\n"
+            "`/admin invite` — создать admin-инвайт (только root)\n"
+            "`/admin remove <username>` — снять права (только root)"
+        )
+
+
+# ---------------------------------------------------------------------------
 # /invite
 # ---------------------------------------------------------------------------
 @router.message(Command("invite"), StateFilter("*"))
@@ -2128,6 +2204,32 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
         f"2. Нажмите кнопку → откройте бота\n3. /start → введите код",
         reply_markup=kb)
     await cb.message.answer(f"<code>{code}</code>", parse_mode="HTML")
+
+
+@router.callback_query(F.data == "adm:admin_list")
+async def cb_adm_admin_list(cb: CallbackQuery, **kw):
+    await cb.answer()
+    db: Database = kw.get("db")
+    bot = kw.get("bot")
+    root_id = str(config.admin_chat_id)
+    try:
+        root_chat = await bot.get_chat(int(root_id))
+        root_name = f"@{root_chat.username}" if root_chat.username else (root_chat.first_name or root_id)
+    except Exception:
+        root_name = root_id
+    extra_admins = await db.get_all_admins()
+    extra_admins = [a for a in extra_admins if str(a["chat_id"]) != root_id]
+    lines = ["<b>Администраторы</b>\n", f"👑 Root: {root_name} (ID: <code>{root_id}</code>)"]
+    if extra_admins:
+        lines.append("\nДополнительные:")
+        for a in extra_admins:
+            name = f"@{a['username']}" if a.get("username") else (a.get("first_name") or a["chat_id"])
+            added_by = a.get("admin_added_by") or "?"
+            date = (a.get("created_at") or "")[:10]
+            lines.append(f"• {name} — добавил <code>{added_by}</code> ({date})")
+    else:
+        lines.append("\n<i>Дополнительных администраторов нет</i>")
+    await cb.message.answer("\n".join(lines), reply_markup=back_to_admin_menu(), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "adm:clients_list")

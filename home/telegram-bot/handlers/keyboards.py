@@ -333,6 +333,9 @@ def admin_clients_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🩺 Диагностика",          callback_data="adm:diagnose_menu"),
         ],
         [
+            InlineKeyboardButton(text="👥 Администраторы",       callback_data="adm:admin_list"),
+        ],
+        [
             InlineKeyboardButton(text="◀️ Назад", callback_data="adm:menu"),
         ],
     ])
