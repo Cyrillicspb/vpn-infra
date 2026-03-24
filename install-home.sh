@@ -1218,6 +1218,19 @@ EOF
 
     chmod 644 /etc/cron.d/vpn-routes /etc/cron.d/vpn-backup /etc/cron.d/vpn-dns-warmup
 
+    # Gateway Mode: обновление IP роутера в nft set (каждые 5 минут)
+    if [[ "${SERVER_MODE:-hosted}" == "gateway" ]]; then
+        cat > /etc/cron.d/vpn-router-ip << 'EOF'
+SHELL=/bin/bash
+# Gateway Mode: обновление внешнего IP роутера в nft set router_external_ips
+*/5 * * * * root bash /opt/vpn/scripts/update-router-ip.sh >> /var/log/vpn-router-ip.log 2>&1
+EOF
+        chmod 644 /etc/cron.d/vpn-router-ip
+        touch /var/log/vpn-router-ip.log
+        chmod 640 /var/log/vpn-router-ip.log
+        log_ok "Gateway Mode: cron для обновления IP роутера (каждые 5 минут)"
+    fi
+
     # Создание файлов логов
     for logf in vpn-routes vpn-backup vpn-dns-warmup; do
         touch "/var/log/${logf}.log"
