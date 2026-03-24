@@ -40,6 +40,10 @@ ask() {
         log_info "$var уже задан"
         return
     fi
+    # В non-interactive режиме (TUI) не читаем stdin — переменная остаётся пустой
+    if [[ -n "${VPN_NONINTERACTIVE:-}" ]]; then
+        return
+    fi
     local value=""
     if [[ "$secret" == "yes" ]]; then
         read -rsp "  $prompt: " value; echo
