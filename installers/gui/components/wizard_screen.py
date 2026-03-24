@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, ScrollableContainer
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Static
 
@@ -49,6 +49,8 @@ class WizardScreen(Screen):
     HELP_TEXT: str = ""
 
     BINDINGS = [
+        Binding("pagedown", "scroll_down", "PgDn", show=True),
+        Binding("pageup", "scroll_up", "PgUp", show=True),
         Binding("escape", "back", "Назад", show=True),
         Binding("question_mark", "help", "?", show=True),
     ]
@@ -61,7 +63,7 @@ class WizardScreen(Screen):
         )
         yield from self._compose_content()
         yield Static(
-            "↑↓ навигация | Tab → поле | Enter ✓ | ПКМ вставка | ? помощь",
+            "Tab → поле | PgDn/PgUp скролл | Enter ✓ | ? помощь",
             classes="keyboard-hints",
         )
         with Horizontal(id="wizard-btn-row"):
@@ -100,6 +102,18 @@ class WizardScreen(Screen):
         btn = self.query_one("#btn-next", Button)
         if not btn.disabled:
             self._on_next()
+
+    def action_scroll_down(self) -> None:
+        try:
+            self.query_one("#wizard-content", ScrollableContainer).scroll_page_down()
+        except Exception:
+            pass
+
+    def action_scroll_up(self) -> None:
+        try:
+            self.query_one("#wizard-content", ScrollableContainer).scroll_page_up()
+        except Exception:
+            pass
 
     def _on_next(self) -> None:
         """Переопределить для обработки кнопки «Далее»."""
