@@ -69,6 +69,7 @@ class OptionsScreen(WizardScreen):
         border: round $primary;
     }}
     .opt-row {{ height: 3; margin-bottom: 0; }}
+    .vi-row {{ height: 3; margin-bottom: 0; }}
     .opt-label {{ width: 28; padding-top: 1; color: $text-muted; }}
     .opt-hint {{ height: 1; color: $text-muted; margin-left: 28; margin-bottom: 1; }}
     .toggle-btn {{ width: 8; }}

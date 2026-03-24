@@ -1532,7 +1532,16 @@ EOF
         # Docker Compose
         if command -v docker &>/dev/null && [[ -f /opt/vpn/docker-compose.yml ]]; then
             log_info "Запуск Docker-контейнеров..."
-            docker compose -f /opt/vpn/docker-compose.yml up -d 2>/dev/null || true
+            docker compose -f /opt/vpn/docker-compose.yml up -d 2>&1 || true
+            sleep 5
+            for ct in telegram-bot xray-client xray-client-2; do
+                STATUS=$(docker inspect --format='{{.State.Status}}' "$ct" 2>/dev/null || echo "not_found")
+                if [[ "$STATUS" == "running" ]]; then
+                    log_ok "  ${ct}: запущен"
+                else
+                    log_warn "  ${ct}: ${STATUS} — проверьте 'docker compose logs ${ct}'"
+                fi
+            done
         fi
 
         sleep 10

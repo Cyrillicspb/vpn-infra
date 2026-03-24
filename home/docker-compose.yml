@@ -409,7 +409,7 @@ services:
       net.ipv4.ip_forward: "1"
     environment:
       WG_HOST: ${WG_HOST}
-      PASSWORD: ${WG_EASY_PASSWORD:?WG_EASY_PASSWORD must be set}
+      PASSWORD: ${WG_EASY_PASSWORD:-}
       WG_PORT: ${WG_AWG_PORT:-51820}
       WG_DEFAULT_ADDRESS: "10.177.1.x"
       WG_DEFAULT_DNS: "10.177.1.1"

@@ -559,17 +559,25 @@ else
         log_warn "Скопируйте файл VPS конфигурации и повторите шаг."
     else
         log_info "Загрузка Docker-образов на VPS..."
-        vps_exec_long "cd /opt/vpn && sudo docker compose pull --quiet 2>/dev/null || true"
+        vps_exec_long "cd /opt/vpn && sudo docker compose pull 2>&1 || true"
 
         log_info "Запуск контейнеров на VPS..."
-        vps_exec_long "cd /opt/vpn && sudo docker compose up -d --remove-orphans 2>/dev/null \
-            || sudo docker compose up -d 2>/dev/null || true"
+        vps_exec_long "cd /opt/vpn && sudo docker compose up -d --remove-orphans 2>&1 \
+            || sudo docker compose up -d 2>&1 || true"
 
         # Ожидание запуска 3x-ui
         sleep 15
         echo ""
         log_info "Статус контейнеров на VPS:"
-        vps_exec "cd /opt/vpn && sudo docker compose ps 2>/dev/null || true"
+        vps_exec "cd /opt/vpn && sudo docker compose ps --all 2>/dev/null || true"
+
+        # Проверяем что 3x-ui (критический сервис) реально запустился
+        XRAY_STATUS=$(vps_exec "sudo docker inspect --format='{{.State.Status}}' 3x-ui 2>/dev/null || echo 'not_found'")
+        if [[ "$XRAY_STATUS" != "running" ]]; then
+            log_warn "3x-ui не запущен (статус: ${XRAY_STATUS}). Вывод docker compose:"
+            vps_exec "cd /opt/vpn && sudo docker compose logs --tail=50 2>&1 || true"
+            die "Docker Compose на VPS не запустился. Исправьте ошибки выше и повторите."
+        fi
     fi
 
     # Проверяем, что iperf3 запустился (слушает только на tier-2 интерфейсе)

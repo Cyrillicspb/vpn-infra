@@ -2,6 +2,8 @@
 Description=VPN Watchdog — центральный агент управления
 After=network-online.target docker.service dnsmasq.service
 Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=300
 
 [Service]
 Type=notify
@@ -11,8 +13,6 @@ WorkingDirectory=/opt/vpn/watchdog
 ExecStart=/opt/vpn/watchdog/venv/bin/python watchdog.py
 Restart=always
 RestartSec=5
-StartLimitBurst=5
-StartLimitIntervalSec=300
 WatchdogSec=30
 KillMode=process
 
