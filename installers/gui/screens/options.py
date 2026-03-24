@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, ScrollableContainer, Vertical
-from textual.widgets import Button, Label, Static
+from textual.widgets import Button, Input, Label, Static
 
+from components.validated_input import ValidatedInput
 from components.wizard_screen import WIZARD_BASE_CSS, WizardScreen
 
 
@@ -43,18 +44,28 @@ class OptionsScreen(WizardScreen):
     .opt-label {{ width: 28; padding-top: 1; color: $text-muted; }}
     .opt-hint {{ height: 1; color: $text-muted; margin-left: 28; margin-bottom: 1; }}
     .toggle-btn {{ width: 8; }}
+    .opt-details {{
+        height: auto;
+        margin-top: 1;
+        padding: 1 2;
+        border: round $primary-darken-2;
+        background: $panel;
+    }}
+    .opt-details.hidden {{ display: none; }}
     """
 
     def _compose_content(self) -> ComposeResult:
         state = self.app.state
+        cf_on = state.use_cloudflare == "y"
+        ddns_on = state.use_ddns == "y"
+
         with ScrollableContainer(id="wizard-content"):
             with Vertical(id="opt-form"):
                 yield Static("[bold]Дополнительные опции:[/bold]\n")
 
-                # Cloudflare CDN
+                # ── Cloudflare CDN ────────────────────────────────────────
                 with Horizontal(classes="opt-row"):
                     yield Label("Cloudflare CDN:", classes="opt-label")
-                    cf_on = state.use_cloudflare == "y"
                     yield Button(
                         "Да" if cf_on else "Нет",
                         id="btn-cf",
@@ -65,11 +76,36 @@ class OptionsScreen(WizardScreen):
                     "Stack 1 (VLESS+WS). Нужен домен + Cloudflare аккаунт",
                     classes="opt-hint",
                 )
+                with Vertical(
+                    id="cf-details",
+                    classes="opt-details" + ("" if cf_on else " hidden"),
+                ):
+                    yield ValidatedInput(
+                        "Cloudflare Worker URL",
+                        input_id="cf-worker-url",
+                        placeholder="https://worker.example.workers.dev",
+                        value=state.cf_worker_url,
+                        hint="URL Cloudflare Worker для CDN-стека (опционально)",
+                    )
+                    yield ValidatedInput(
+                        "Домен",
+                        input_id="domain",
+                        placeholder="vpn.example.com",
+                        value=state.domain,
+                        hint="Домен для сертификата Let's Encrypt",
+                    )
+                    yield ValidatedInput(
+                        "Cloudflare API Token",
+                        input_id="cf-api-token",
+                        placeholder="",
+                        value=state.cf_api_token,
+                        hint="API токен Cloudflare для автообновления сертификата",
+                        password=True,
+                    )
 
-                # DDNS
+                # ── DDNS ──────────────────────────────────────────────────
                 with Horizontal(classes="opt-row"):
                     yield Label("DDNS:", classes="opt-label")
-                    ddns_on = state.use_ddns == "y"
                     yield Button(
                         "Да" if ddns_on else "Нет",
                         id="btn-ddns",
@@ -80,6 +116,32 @@ class OptionsScreen(WizardScreen):
                     "Обновление DNS при смене IP. Нужен DuckDNS или аналог",
                     classes="opt-hint",
                 )
+                with Vertical(
+                    id="ddns-details",
+                    classes="opt-details" + ("" if ddns_on else " hidden"),
+                ):
+                    yield ValidatedInput(
+                        "DDNS провайдер",
+                        input_id="ddns-provider",
+                        placeholder="DuckDNS",
+                        value=state.ddns_provider,
+                        hint="DuckDNS, No-IP, Cloudflare (или пустое если статический IP)",
+                    )
+                    yield ValidatedInput(
+                        "DDNS домен",
+                        input_id="ddns-domain",
+                        placeholder="myvpn.duckdns.org",
+                        value=state.ddns_domain,
+                        hint="Например: myvpn.duckdns.org",
+                    )
+                    yield ValidatedInput(
+                        "DDNS токен",
+                        input_id="ddns-token",
+                        placeholder="",
+                        value=state.ddns_token,
+                        hint="API токен от DDNS провайдера",
+                        password=True,
+                    )
 
                 yield Static(
                     "\n[dim]Все опции можно настроить позже вручную\n"
@@ -89,11 +151,33 @@ class OptionsScreen(WizardScreen):
     def on_mount(self) -> None:
         self._set_next_enabled(True)
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        state = self.app.state
+        field_map = {
+            "cf-worker-url": "cf_worker_url",
+            "domain": "domain",
+            "cf-api-token": "cf_api_token",
+            "ddns-provider": "ddns_provider",
+            "ddns-domain": "ddns_domain",
+            "ddns-token": "ddns_token",
+        }
+        if event.input.id in field_map:
+            setattr(state, field_map[event.input.id], event.value.strip())
+            state.save()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-cf":
             self._toggle("use_cloudflare", "btn-cf")
+            if self.app.state.use_cloudflare == "y":
+                self.query_one("#cf-details").remove_class("hidden")
+            else:
+                self.query_one("#cf-details").add_class("hidden")
         elif event.button.id == "btn-ddns":
             self._toggle("use_ddns", "btn-ddns")
+            if self.app.state.use_ddns == "y":
+                self.query_one("#ddns-details").remove_class("hidden")
+            else:
+                self.query_one("#ddns-details").add_class("hidden")
         else:
             super().on_button_pressed(event)
 

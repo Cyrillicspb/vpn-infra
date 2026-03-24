@@ -28,9 +28,17 @@ class InstallerState:
     # Options
     use_cloudflare: str = "n"
     use_ddns: str = "n"
+    # Cloudflare
+    cf_worker_url: str = ""
+    domain: str = ""
+    # DDNS
+    ddns_provider: str = ""
+    ddns_domain: str = ""
     # In-memory only (never saved to disk)
     vps_root_password: str = ""
     telegram_bot_token: str = ""
+    ddns_token: str = ""
+    cf_api_token: str = ""
     # Progress tracking
     current_step: int = 0
     setup_completed: bool = False
@@ -53,7 +61,7 @@ class InstallerState:
     def save(self) -> None:
         """Persist non-sensitive fields only (no passwords/tokens)."""
         data = asdict(self)
-        for secret in ("vps_root_password", "telegram_bot_token"):
+        for secret in ("vps_root_password", "telegram_bot_token", "ddns_token", "cf_api_token"):
             data.pop(secret, None)
         STATE_FILE.write_text(json.dumps(data, indent=2))
         STATE_FILE.chmod(0o600)
@@ -71,11 +79,21 @@ class InstallerState:
             env["TELEGRAM_BOT_TOKEN"] = self.telegram_bot_token
         if self.telegram_admin_chat_id:
             env["TELEGRAM_ADMIN_CHAT_ID"] = self.telegram_admin_chat_id
-        # Non-interactive mode: skip all raw read() prompts
         env["USE_CLOUDFLARE"] = self.use_cloudflare or "n"
         env["USE_DDNS"] = self.use_ddns or "n"
-        # Non-interactive mode: skip all raw read() prompts
         env["VPN_NONINTERACTIVE"] = "1"
+        if self.cf_worker_url:
+            env["CF_WORKER_URL"] = self.cf_worker_url
+        if self.domain:
+            env["DOMAIN"] = self.domain
+        if self.cf_api_token:
+            env["CF_API_TOKEN"] = self.cf_api_token
+        if self.ddns_provider:
+            env["DDNS_PROVIDER"] = self.ddns_provider
+        if self.ddns_domain:
+            env["DDNS_DOMAIN"] = self.ddns_domain
+        if self.ddns_token:
+            env["DDNS_TOKEN"] = self.ddns_token
         # Mode B: gateway behind router
         if self.server_mode == "B":
             env["SERVER_MODE"] = "gateway"

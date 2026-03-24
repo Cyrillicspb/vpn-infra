@@ -5,6 +5,7 @@ Layout: Header → step-bar (Шаг N/8) → content (1fr) → btn-row → Foote
 from __future__ import annotations
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Static
@@ -48,6 +49,16 @@ class WizardScreen(Screen):
     HELP_TITLE: str = "Помощь"
     HELP_TEXT: str = ""
 
+    BINDINGS = [
+        Binding("tab", "focus_next", "→", show=False),
+        Binding("shift+tab", "focus_previous", "←", show=False),
+        Binding("down", "focus_next", "↓", show=False),
+        Binding("up", "focus_previous", "↑", show=False),
+        Binding("enter", "submit", "ОК", show=False),
+        Binding("escape", "back", "Назад", show=True),
+        Binding("question_mark", "help", "?", show=True),
+    ]
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         yield Static(
@@ -56,7 +67,7 @@ class WizardScreen(Screen):
         )
         yield from self._compose_content()
         yield Static(
-            "Tab → поле  |  Shift+Tab ← назад  |  Enter ✓  |  Пробел ☐  |  ? помощь",
+            "↑↓ навигация | Tab → поле | Enter ✓ | ПКМ вставка | ? помощь",
             classes="keyboard-hints",
         )
         with Horizontal(id="wizard-btn-row"):
@@ -81,6 +92,19 @@ class WizardScreen(Screen):
             from components.help_panel import HelpPanel
             self.app.push_screen(HelpPanel(self.HELP_TITLE, self.HELP_TEXT))
         elif event.button.id == "btn-next" and not event.button.disabled:
+            self._on_next()
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+    def action_help(self) -> None:
+        if self.HELP_TEXT:
+            from components.help_panel import HelpPanel
+            self.app.push_screen(HelpPanel(self.HELP_TITLE, self.HELP_TEXT))
+
+    def action_submit(self) -> None:
+        btn = self.query_one("#btn-next", Button)
+        if not btn.disabled:
             self._on_next()
 
     def _on_next(self) -> None:
