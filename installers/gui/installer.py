@@ -26,20 +26,25 @@ def _bootstrap() -> None:
         import textual  # noqa: F401
     except ImportError:
         print("Установка зависимостей (textual)...", flush=True)
-        try:
-            subprocess.check_call(
-                [
-                    sys.executable, "-m", "pip", "install",
-                    TEXTUAL_REQ, "--quiet", "--break-system-packages",
-                ],
-                stdout=subprocess.DEVNULL,
-            )
-            print("Готово.", flush=True)
-        except subprocess.CalledProcessError:
+        # Убедиться что pip есть (на свежем Ubuntu 24.04 pip может отсутствовать)
+        subprocess.run(
+            [sys.executable, "-m", "ensurepip", "--default-pip"],
+            capture_output=True,
+        )
+        rc = subprocess.run(
+            [
+                sys.executable, "-m", "pip", "install",
+                TEXTUAL_REQ, "--quiet", "--break-system-packages",
+            ],
+            stdout=subprocess.DEVNULL,
+        )
+        if rc.returncode != 0:
             sys.exit(
-                "Не удалось установить textual. "
-                f"Выполните вручную: pip install '{TEXTUAL_REQ}'"
+                "Не удалось установить textual.\n"
+                "Выполните: sudo apt install python3-pip && "
+                f"sudo pip3 install textual --break-system-packages"
             )
+        print("Готово.", flush=True)
 
 
 _bootstrap()

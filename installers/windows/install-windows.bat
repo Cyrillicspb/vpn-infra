@@ -213,8 +213,8 @@ if !PY_CMP! GEQ 310 (
     ssh -n -p !SSH_PORT! -i "!SSH_KEY!" -o "BatchMode=yes" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=5" !SERVER_USER!@!SERVER_IP! "test -f /opt/vpn/installers/gui/installer.py" >nul 2>&1
     if !errorlevel! equ 0 (
         :: Устанавливаем textual если нет
-        echo   --> Установка textual на сервере...
-        ssh -p !SSH_PORT! -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "BatchMode=yes" !SERVER_USER!@!SERVER_IP! "sudo pip3 install textual --break-system-packages --quiet" >nul 2>&1
+        echo   --> Установка TUI-компонентов...
+        ssh -p !SSH_PORT! -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "BatchMode=yes" !SERVER_USER!@!SERVER_IP! "sudo apt-get install -y -qq python3-pip python3-venv 2>/dev/null; sudo pip3 install textual --break-system-packages --quiet" >nul 2>&1
         :: Проверяем что textual доступен
         ssh -n -p !SSH_PORT! -i "!SSH_KEY!" -o "BatchMode=yes" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=5" !SERVER_USER!@!SERVER_IP! "python3 -c 'import textual'" >nul 2>&1
         if !errorlevel! equ 0 (
