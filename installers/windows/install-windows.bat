@@ -182,13 +182,12 @@ echo   [OK] Релиз скачан с GitHub
 echo.
 echo [5/5] Установка...
 
-set TUI_INSTALLER=/opt/vpn/installers/gui/installer.py
 set USE_TUI=0
 set PY_MAJ=0
 set PY_MIN=0
 set PY_VER=
 
-:: Проверяем Python 3.10+ (python3 --version выдаёт "Python X.Y.Z")
+:: Проверяем Python 3.10+
 echo   --> Проверка Python 3.10+ на сервере...
 for /f "tokens=2" %%V in ('ssh -n -p !SSH_PORT! -i "!SSH_KEY!" -o "BatchMode=yes" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=5" !SERVER_USER!@!SERVER_IP! "python3 --version 2>&1" 2^>nul') do set PY_VER=%%V
 if not defined PY_VER set PY_VER=0.0.0
@@ -197,12 +196,19 @@ set /a PY_CMP=PY_MAJ*100+PY_MIN
 
 if !PY_CMP! GEQ 310 (
     :: Проверяем наличие installer.py
-    set FILE_CHK=no
     ssh -n -p !SSH_PORT! -i "!SSH_KEY!" -o "BatchMode=yes" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=5" !SERVER_USER!@!SERVER_IP! "test -f /opt/vpn/installers/gui/installer.py" >nul 2>&1
-    if !errorlevel! equ 0 set FILE_CHK=yes
-    if "!FILE_CHK!"=="yes" (
-        set USE_TUI=1
-        echo   [OK] Python !PY_MAJ!.!PY_MIN! -- TUI-установщик готов
+    if !errorlevel! equ 0 (
+        :: Устанавливаем textual если нет
+        echo   --> Установка textual на сервере...
+        ssh -p !SSH_PORT! -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "BatchMode=yes" !SERVER_USER!@!SERVER_IP! "sudo pip3 install textual --break-system-packages --quiet" >nul 2>&1
+        :: Проверяем что textual доступен
+        ssh -n -p !SSH_PORT! -i "!SSH_KEY!" -o "BatchMode=yes" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=5" !SERVER_USER!@!SERVER_IP! "python3 -c 'import textual'" >nul 2>&1
+        if !errorlevel! equ 0 (
+            set USE_TUI=1
+            echo   [OK] Python !PY_MAJ!.!PY_MIN! -- TUI-установщик готов
+        ) else (
+            echo   [WARN] textual недоступен -- консольный режим
+        )
     ) else (
         echo   [WARN] installer.py не найден -- консольный режим
     )
@@ -217,7 +223,7 @@ if "!USE_TUI!"=="1" (
     echo [>>] Запуск TUI-установщика...
     echo ==========================================
     echo.
-    ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ServerAliveInterval=30" -o "ServerAliveCountMax=10" -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! "cd /opt/vpn && python3 installers/gui/installer.py"
+    ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ServerAliveInterval=30" -o "ServerAliveCountMax=10" -p !SSH_PORT! -t !SERVER_USER!@!SERVER_IP! "cd /opt/vpn && sudo python3 installers/gui/installer.py"
     set TUI_RC=!errorlevel!
     echo.
     if !TUI_RC! equ 0 (
