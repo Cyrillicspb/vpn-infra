@@ -20,6 +20,14 @@ WIZARD_BASE_CSS = """
 #wizard-content {
     height: 1fr;
 }
+.keyboard-hints {
+    dock: bottom;
+    height: 1;
+    color: $text-muted;
+    background: $surface;
+    text-align: center;
+    padding: 0 1;
+}
 #wizard-btn-row {
     height: 3;
     padding: 0 2;
@@ -47,6 +55,10 @@ class WizardScreen(Screen):
             id="step-bar",
         )
         yield from self._compose_content()
+        yield Static(
+            "Tab → поле  |  Shift+Tab ← назад  |  Enter ✓  |  Пробел ☐  |  ? помощь",
+            classes="keyboard-hints",
+        )
         with Horizontal(id="wizard-btn-row"):
             yield Button("← Назад", id="btn-back")
             if self.HELP_TEXT:
