@@ -16,6 +16,7 @@ watchdog.py — Центральный агент управления VPN Infra
 
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -27,6 +28,7 @@ import subprocess
 import sys
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from secrets import compare_digest
@@ -87,6 +89,8 @@ CERT_WARN_CA_DAYS         = 30
 ROUTES_CACHE_ALERT_DAYS   = 3
 ALL_STACKS_DOWN_MINUTES   = 5
 TIER2_PROXY_PORT          = 1089  # Stable SOCKS5 port для tier-2 SSH туннеля
+HEALTH_SCORE_THRESHOLD    = int(os.getenv("HEALTH_SCORE_THRESHOLD", "70"))
+BACKUP_MAX_AGE_DAYS       = 3     # deep check: бэкап не старше N дней
 
 # ---------------------------------------------------------------------------
 # DPI bypass (zapret lane)
@@ -426,6 +430,18 @@ plugins = PluginManager()
 # ---------------------------------------------------------------------------
 # Watchdog State
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Health Check — data model
+# ---------------------------------------------------------------------------
+@dataclass
+class CheckResult:
+    name:   str
+    status: str          # "ok" | "warn" | "fail"
+    detail: str  = ""
+    weight: int  = 3     # 1=low, 3=medium, 5=high, 10=critical
+    tier:   str  = "quick"
+
+
 class WatchdogState:
     def __init__(self) -> None:
         self.active_stack: str = "cloudflare-cdn"
@@ -468,6 +484,21 @@ class WatchdogState:
         # ── DPI bypass (zapret lane) ─────────────────────────────────────────
         self.dpi_enabled: bool = False          # глобальный on/off
         self.dpi_services: list[dict] = []      # [{name, display, domains, enabled}]
+        # ── Health Check ─────────────────────────────────────────────────────
+        self.last_monitoring_tick: float = 0.0  # timestamp последнего тика мониторинга
+        self.wg0_up: bool = False               # wg0 интерфейс существует
+        self.wg1_up: bool = False               # wg1 интерфейс существует
+        self.cert_days: dict[str, int] = {}     # {label: days_remaining}
+        self.nftset_counts: dict[str, int] = {} # {set_name: element_count}
+        self.nftables_ok: bool = False          # True если check_nftables_integrity прошла
+        self.nftables_checked: bool = False     # True после первой проверки
+        self.nfqws_ok: Optional[bool] = None    # None=не проверялось, True/False по факту
+        self.last_heartbeat_ts: float = 0.0     # timestamp последнего успешного heartbeat
+        self.stacks_ok_count: int = 0           # количество рабочих стеков
+        self.stacks_checked: bool = False       # True после первой проверки стеков
+        self.health_score: float = 0.0          # последний расчитанный score
+        self.health_report: dict = {}           # полный last report
+        self.post_deploy_until: float = 0.0     # timestamp конца post-deploy watch
 
     @property
     def active_vps(self) -> Optional[dict]:
@@ -1061,6 +1092,7 @@ async def send_heartbeat() -> None:
                 json={"ts": datetime.now().isoformat()},
                 timeout=aiohttp.ClientTimeout(total=5),
             )
+        state.last_heartbeat_ts = time.time()
     except Exception:
         pass   # Не алертим здесь — это делает VPS-side скрипт
 
@@ -1125,12 +1157,14 @@ async def check_certs() -> None:
                     logger.warning(f"check_certs: не удалось распарсить дату '{date_str}' для {label}")
                     continue
                 days_left = (expiry - datetime.utcnow()).days
+                state.cert_days[label] = days_left
                 if days_left <= warn_days:
                     alert(
                         f"⚠️ Сертификат *{label}* истекает через *{days_left} дн.*\n"
                         f"Путь: `{path}`\nИспользуйте /renew-cert или /renew-ca"
                     )
             except Exception as exc:
+                state.cert_days[label] = -1
                 logger.warning(f"check_certs: ошибка проверки {label} ({path}): {exc}")
 
 
@@ -1202,8 +1236,12 @@ async def check_nftables_integrity() -> None:
 
     if not issues:
         logger.debug("check_nftables_integrity: OK")
+        state.nftables_ok = True
+        state.nftables_checked = True
         return
 
+    state.nftables_ok = False
+    state.nftables_checked = True
     details = "; ".join(issues)
     logger.warning(f"check_nftables_integrity: расхождения: {details}")
 
@@ -1241,6 +1279,407 @@ async def check_routes_cache_age() -> None:
         if mtime < threshold:
             age_days = (datetime.now() - mtime).days
             alert(f"⚠️ Кэш маршрутов `{cache_file.name}` устарел на *{age_days} дн.*\nИсточник недоступен?")
+
+
+# ---------------------------------------------------------------------------
+# Мониторинг: WireGuard интерфейсы (для quick health check)
+# ---------------------------------------------------------------------------
+async def check_wg_interfaces() -> None:
+    """Проверяет наличие wg0 / wg1 интерфейсов, обновляет state."""
+    rc0, _, _ = await run_cmd(["ip", "link", "show", "wg0"], timeout=5)
+    state.wg0_up = rc0 == 0
+    rc1, _, _ = await run_cmd(["ip", "link", "show", "wg1"], timeout=5)
+    state.wg1_up = rc1 == 0
+
+
+# ---------------------------------------------------------------------------
+# Мониторинг: количество элементов в nft sets (для standard health check)
+# ---------------------------------------------------------------------------
+async def check_nftset_counts() -> None:
+    """Считает элементы в blocked_static / blocked_dynamic / dpi_direct."""
+    for set_name in ("blocked_static", "blocked_dynamic", "dpi_direct"):
+        rc, out, _ = await run_cmd(
+            ["nft", "list", "set", "inet", "vpn", set_name], timeout=5
+        )
+        if rc != 0:
+            state.nftset_counts[set_name] = -1
+            continue
+        # Считаем запятые + 1 внутри { ... elements = { ... } }
+        import re as _re
+        m = _re.search(r'elements\s*=\s*\{([^}]*)\}', out, _re.DOTALL)
+        if m:
+            body = m.group(1).strip()
+            count = len(body.split(",")) if body else 0
+        else:
+            count = 0
+        state.nftset_counts[set_name] = count
+
+
+# ---------------------------------------------------------------------------
+# Мониторинг: nfqws реально обрабатывает пакеты (standard health check)
+# ---------------------------------------------------------------------------
+async def check_nfqws_counter() -> None:
+    """Читает /proc/net/netfilter/nfnetlink_queue — queue_total > 0 означает трафик."""
+    nfq_file = Path("/proc/net/netfilter/nfnetlink_queue")
+    if not nfq_file.exists():
+        state.nfqws_ok = False
+        return
+    try:
+        content = nfq_file.read_text()
+        # Формат: queue_num peer_portid queue_total ... (пробелы)
+        lines = [l for l in content.splitlines() if l.strip()]
+        if not lines:
+            state.nfqws_ok = False
+            return
+        # Берём первую активную очередь, поле 3 = queue_total (пакетов прошло)
+        for line in lines:
+            parts = line.split()
+            if len(parts) >= 3:
+                try:
+                    total = int(parts[2])
+                    state.nfqws_ok = total > 0
+                    return
+                except ValueError:
+                    pass
+        state.nfqws_ok = False
+    except Exception as exc:
+        logger.debug(f"check_nfqws_counter: {exc}")
+        state.nfqws_ok = False
+
+
+# ---------------------------------------------------------------------------
+# Health Check — check helper functions
+# ---------------------------------------------------------------------------
+async def _health_quick_checks() -> list[CheckResult]:
+    """Quick tier: читает state, минимум syscall."""
+    results: list[CheckResult] = []
+    now = time.time()
+
+    # 1. Event loop alive
+    loop_age = now - state.last_monitoring_tick if state.last_monitoring_tick > 0 else -1
+    if loop_age < 0:
+        results.append(CheckResult("watchdog_event_loop", "warn", "ещё не запущен", weight=10))
+    elif loop_age < 90:
+        results.append(CheckResult("watchdog_event_loop", "ok", f"tick {loop_age:.0f}s назад", weight=10))
+    else:
+        results.append(CheckResult("watchdog_event_loop", "fail", f"последний tick {loop_age:.0f}s назад", weight=10))
+
+    # 2. Tunnel up
+    if not state.degraded_mode and state.last_rtt > 0:
+        results.append(CheckResult("tunnel_up", "ok", f"RTT={state.last_rtt:.0f}ms", weight=10))
+    elif state.degraded_mode:
+        results.append(CheckResult("tunnel_up", "fail", "degraded mode активен", weight=10))
+    else:
+        results.append(CheckResult("tunnel_up", "warn", "RTT=0 (первый запуск?)", weight=10))
+
+    # 3. DNS
+    if state.dnsmasq_up == 1:
+        results.append(CheckResult("dns_responding", "ok", "dnsmasq отвечает", weight=5))
+    else:
+        results.append(CheckResult("dns_responding", "fail", "dnsmasq не отвечает", weight=5))
+
+    # 4. wg0
+    if state.wg0_up:
+        results.append(CheckResult("wg0_active", "ok", weight=5))
+    else:
+        results.append(CheckResult("wg0_active", "fail", "wg0 не найден", weight=5))
+
+    # 5. telegram-bot
+    bot = state.docker_health.get("telegram-bot")
+    if bot == 1:
+        results.append(CheckResult("telegram_bot", "ok", weight=5))
+    elif bot == 0:
+        results.append(CheckResult("telegram_bot", "fail", "контейнер exited/unhealthy", weight=5))
+    else:
+        results.append(CheckResult("telegram_bot", "warn", "статус ещё не проверялся", weight=5))
+
+    # 6. wg1
+    if state.wg1_up:
+        results.append(CheckResult("wg1_active", "ok", weight=3))
+    else:
+        results.append(CheckResult("wg1_active", "warn", "wg1 не найден (нет WG клиентов?)", weight=3))
+
+    # 7. xray-client (хотя бы один)
+    xray = [k for k in state.docker_health if "xray-client" in k]
+    xray_ok = sum(1 for c in xray if state.docker_health.get(c) == 1)
+    if xray and xray_ok > 0:
+        results.append(CheckResult("xray_client", "ok", f"{xray_ok}/{len(xray)} живы", weight=3))
+    elif xray:
+        results.append(CheckResult("xray_client", "fail", "все xray-client упали", weight=3))
+    else:
+        results.append(CheckResult("xray_client", "warn", "контейнеры не обнаружены", weight=3))
+
+    return results
+
+
+async def _health_standard_checks() -> list[CheckResult]:
+    """Standard tier: nftables, стеки, сертификаты, диск, heartbeat."""
+    results: list[CheckResult] = []
+
+    # 8–10. nft sets non-empty
+    for set_name, w in [("blocked_static", 5), ("blocked_dynamic", 3), ("dpi_direct", 3)]:
+        count = state.nftset_counts.get(set_name, -2)
+        if count > 0:
+            results.append(CheckResult(f"nft_{set_name}_nonempty", "ok", f"{count} элементов", weight=w, tier="standard"))
+        elif count == 0:
+            results.append(CheckResult(f"nft_{set_name}_nonempty", "warn", "set пустой — dns-warmup?", weight=w, tier="standard"))
+        else:
+            results.append(CheckResult(f"nft_{set_name}_nonempty", "warn", "ещё не проверялось", weight=w, tier="standard"))
+
+    # 11. Kill switch
+    if state.nftables_ok:
+        results.append(CheckResult("kill_switch_rules", "ok", weight=10, tier="standard"))
+    elif not state.nftables_checked:
+        results.append(CheckResult("kill_switch_rules", "warn", "ещё не проверялось", weight=10, tier="standard"))
+    else:
+        results.append(CheckResult("kill_switch_rules", "fail", "правила расходятся с эталоном", weight=10, tier="standard"))
+
+    # 12. nfqws
+    if state.nfqws_ok is True:
+        results.append(CheckResult("nfqws_processing", "ok", "nfqueue активен", weight=3, tier="standard"))
+    elif state.nfqws_ok is False:
+        results.append(CheckResult("nfqws_processing", "warn", "nfqueue counter=0 или очередь не создана", weight=3, tier="standard"))
+    else:
+        results.append(CheckResult("nfqws_processing", "warn", "ещё не проверялось", weight=3, tier="standard"))
+
+    # 13. Cert expiry
+    for label, days in state.cert_days.items():
+        w_days = CERT_WARN_CA_DAYS if label == "CA" else CERT_WARN_CLIENT_DAYS
+        if days > w_days:
+            results.append(CheckResult(f"cert_{label}_expiry", "ok", f"{days} дней", weight=5, tier="standard"))
+        elif days > 0:
+            results.append(CheckResult(f"cert_{label}_expiry", "warn", f"истекает через {days} дн.", weight=5, tier="standard"))
+        else:
+            results.append(CheckResult(f"cert_{label}_expiry", "fail", "просрочен или ошибка чтения", weight=5, tier="standard"))
+
+    # 14. VPS heartbeat
+    hb_age = time.time() - state.last_heartbeat_ts if state.last_heartbeat_ts > 0 else 99999
+    if hb_age < 120:
+        results.append(CheckResult("vps_reachable", "ok", f"heartbeat {hb_age:.0f}s назад", weight=5, tier="standard"))
+    elif hb_age < 300:
+        results.append(CheckResult("vps_reachable", "warn", f"heartbeat {hb_age:.0f}s назад", weight=5, tier="standard"))
+    else:
+        results.append(CheckResult("vps_reachable", "fail", f"нет heartbeat {hb_age:.0f}s", weight=5, tier="standard"))
+
+    # 15. Disk
+    try:
+        pct = psutil.disk_usage("/").percent
+        if pct < DISK_WARN_PCT:
+            results.append(CheckResult("disk_usage", "ok", f"{pct:.0f}%", weight=5, tier="standard"))
+        elif pct < DISK_AGGRESSIVE_PCT:
+            results.append(CheckResult("disk_usage", "warn", f"{pct:.0f}% (порог {DISK_WARN_PCT}%)", weight=5, tier="standard"))
+        else:
+            results.append(CheckResult("disk_usage", "fail", f"{pct:.0f}% КРИТИЧНО", weight=5, tier="standard"))
+    except Exception as exc:
+        results.append(CheckResult("disk_usage", "warn", str(exc)[:80], weight=5, tier="standard"))
+
+    # 16. Stacks testable
+    if state.stacks_ok_count > 0:
+        results.append(CheckResult("stacks_testable", "ok",
+                                   f"{state.stacks_ok_count} из {len(STACK_ORDER)} работают",
+                                   weight=5, tier="standard"))
+    elif state.stacks_checked:
+        results.append(CheckResult("stacks_testable", "fail", "все стеки недоступны", weight=5, tier="standard"))
+    else:
+        results.append(CheckResult("stacks_testable", "warn", "ещё не проверялось", weight=5, tier="standard"))
+
+    return results
+
+
+async def _hc_sqlite_integrity() -> CheckResult:
+    import sqlite3 as _sqlite3
+    if not BOT_DB_PATH.exists():
+        return CheckResult("sqlite_integrity", "warn", f"DB не найдена: {BOT_DB_PATH}", weight=3, tier="deep")
+    try:
+        loop = asyncio.get_event_loop()
+        def _check_sync() -> str:
+            with _sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=5) as conn:
+                row = conn.execute("PRAGMA integrity_check").fetchone()
+                return row[0] if row else "unknown"
+        result_str = await loop.run_in_executor(None, _check_sync)
+        if result_str == "ok":
+            return CheckResult("sqlite_integrity", "ok", weight=3, tier="deep")
+        return CheckResult("sqlite_integrity", "fail", result_str[:120], weight=3, tier="deep")
+    except Exception as exc:
+        return CheckResult("sqlite_integrity", "fail", str(exc)[:120], weight=3, tier="deep")
+
+
+async def _hc_backup_freshness() -> CheckResult:
+    backup_dir = Path("/opt/vpn/backups")
+    if not backup_dir.exists():
+        return CheckResult("backup_freshness", "warn", "директория /opt/vpn/backups не найдена", weight=3, tier="deep")
+    backups = sorted(
+        list(backup_dir.glob("*.tar.gz")) + list(backup_dir.glob("*.tar.xz")),
+        key=lambda p: p.stat().st_mtime, reverse=True,
+    )
+    if not backups:
+        return CheckResult("backup_freshness", "warn", "бэкапы не найдены", weight=3, tier="deep")
+    age_days = (time.time() - backups[0].stat().st_mtime) / 86400
+    if age_days < BACKUP_MAX_AGE_DAYS:
+        return CheckResult("backup_freshness", "ok", f"последний {age_days:.1f} дн. назад", weight=3, tier="deep")
+    return CheckResult("backup_freshness", "warn",
+                       f"последний {age_days:.1f} дн. назад (порог {BACKUP_MAX_AGE_DAYS} дн.)", weight=3, tier="deep")
+
+
+async def _hc_file_permissions() -> list[CheckResult]:
+    results: list[CheckResult] = []
+    checks = [
+        ("/opt/vpn/.env",                  0o600, "env_600"),
+        ("/opt/vpn",                       0o700, "opt_vpn_700"),
+        ("/opt/vpn/telegram-bot/data",     0o750, "bot_data_750"),
+    ]
+    for path_str, expected, check_name in checks:
+        p = Path(path_str)
+        if not p.exists():
+            results.append(CheckResult(f"perm_{check_name}", "warn", f"{path_str} не найден", weight=1, tier="deep"))
+            continue
+        actual = p.stat().st_mode & 0o777
+        if actual == expected:
+            results.append(CheckResult(f"perm_{check_name}", "ok", oct(actual), weight=1, tier="deep"))
+        else:
+            results.append(CheckResult(f"perm_{check_name}", "warn",
+                                       f"{oct(actual)} ожидалось {oct(expected)}", weight=1, tier="deep"))
+    return results
+
+
+def _hc_fernet_key() -> CheckResult:
+    key = os.getenv("DB_ENCRYPTION_KEY", "")
+    if not key:
+        return CheckResult("fernet_key_set", "warn", "DB_ENCRYPTION_KEY не задан в .env", weight=1, tier="deep")
+    # Fernet key: urlsafe-base64, 44 символа, заканчивается на =, декодируется в 32 байта
+    if len(key) == 44 and key.endswith("="):
+        try:
+            decoded = base64.urlsafe_b64decode(key)
+            if len(decoded) == 32:
+                return CheckResult("fernet_key_set", "ok", "формат корректен (32-byte base64url)", weight=1, tier="deep")
+        except Exception:
+            pass
+    return CheckResult("fernet_key_set", "warn", "неверный формат (ожидается 44-символьный base64url, =)", weight=1, tier="deep")
+
+
+async def _hc_vps_ssh() -> CheckResult:
+    if state.last_rtt <= 0:
+        return CheckResult("vps_ssh_audit", "warn", "tier-2 туннель не установлен, SSH пропущен", weight=3, tier="deep")
+    vps_tunnel_ip = VPS_TUNNEL_IP or "10.177.2.2"
+    ssh_key  = os.getenv("VPS_SSH_KEY", "/root/.ssh/vpn_id_ed25519")
+    ssh_user = os.getenv("BACKUP_VPS_USER", "sysadmin")
+    rc, out, _ = await run_cmd(
+        [
+            "ssh", "-i", ssh_key,
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "ConnectTimeout=8",
+            "-o", "BatchMode=yes",
+            f"{ssh_user}@{vps_tunnel_ip}",
+            "systemctl is-active 3x-ui && echo ok",
+        ],
+        timeout=15,
+    )
+    if rc == 0 and "ok" in out:
+        return CheckResult("vps_ssh_audit", "ok", "3x-ui активен на VPS", weight=3, tier="deep")
+    return CheckResult("vps_ssh_audit", "warn", f"SSH rc={rc} или 3x-ui неактивен", weight=3, tier="deep")
+
+
+async def _health_deep_checks() -> list[CheckResult]:
+    """Deep tier: SQLite, бэкап, права, fernet key, VPS SSH."""
+    results: list[CheckResult] = []
+    results.append(await _hc_sqlite_integrity())
+    results.append(await _hc_backup_freshness())
+    results.extend(await _hc_file_permissions())
+    results.append(_hc_fernet_key())
+    results.append(await _hc_vps_ssh())
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Health Check — HealthChecker класс
+# ---------------------------------------------------------------------------
+class HealthChecker:
+    """Агрегирует результаты проверок в единый score 0–100."""
+
+    def __init__(self) -> None:
+        self._report: dict = {
+            "score": 0.0, "status": "unknown", "checks": [],
+            "summary": {}, "tier": "none", "timestamp": "",
+            "post_deploy_watch": False,
+        }
+        self._alert_dedup_ts: float = 0.0
+
+    def get_cached(self) -> dict:
+        return self._report
+
+    def _compute(self, results: list[CheckResult], tier: str) -> dict:
+        total_w = sum(r.weight for r in results)
+        ok_w    = sum(r.weight for r in results if r.status == "ok")
+        score   = round(ok_w / total_w * 100, 1) if total_w else 100.0
+        if score >= 80:
+            status = "ok"
+        elif score >= 50:
+            status = "degraded"
+        else:
+            status = "critical"
+        return {
+            "score":  score,
+            "status": status,
+            "tier":   tier,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "summary": {
+                "ok":   sum(1 for r in results if r.status == "ok"),
+                "warn": sum(1 for r in results if r.status == "warn"),
+                "fail": sum(1 for r in results if r.status == "fail"),
+            },
+            "post_deploy_watch": time.time() < state.post_deploy_until,
+            "checks": [
+                {"name": r.name, "status": r.status, "detail": r.detail,
+                 "weight": r.weight, "tier": r.tier}
+                for r in results
+            ],
+        }
+
+    def _save(self, report: dict) -> None:
+        self._report = report
+        state.health_score = report["score"]
+        state.health_report = report
+
+    def _maybe_alert(self, report: dict) -> None:
+        now = time.time()
+        if report["score"] < HEALTH_SCORE_THRESHOLD:
+            if now - self._alert_dedup_ts > 1800:
+                failed = [c["name"] for c in report["checks"] if c["status"] == "fail"]
+                alert(
+                    f"⚠️ *Health Score: {report['score']:.0f}/100* ({report['status']})\n"
+                    f"Проблемы: {', '.join(failed[:5]) if failed else 'см. /health'}"
+                )
+                self._alert_dedup_ts = now
+        else:
+            self._alert_dedup_ts = 0.0  # сброс после восстановления
+
+    async def run_quick(self) -> dict:
+        results = await _health_quick_checks()
+        report  = self._compute(results, "quick")
+        self._save(report)
+        self._maybe_alert(report)
+        return report
+
+    async def run_standard(self) -> dict:
+        results = await _health_quick_checks()
+        results += await _health_standard_checks()
+        report  = self._compute(results, "standard")
+        self._save(report)
+        self._maybe_alert(report)
+        return report
+
+    async def run_deep(self) -> dict:
+        results = await _health_quick_checks()
+        results += await _health_standard_checks()
+        results += await _health_deep_checks()
+        report  = self._compute(results, "deep")
+        self._save(report)
+        self._maybe_alert(report)
+        return report
+
+
+# Singleton — создаётся при импорте, используется везде
+health_checker = HealthChecker()
 
 
 # ---------------------------------------------------------------------------
@@ -1439,6 +1878,11 @@ async def test_standby_tunnels() -> None:
             alert(f"⚠️ Standby стек *{name}* не прошёл проверку")
         else:
             logger.info(f"Standby {name}: OK ({mbps:.1f} Mbps)")
+
+    total = len([n for n in plugins.all_names()
+                 if not (plugins.get(n) or type("", (), {"meta": {}})()).meta.get("direct_mode")])
+    state.stacks_ok_count = total - len(failed)
+    state.stacks_checked = True
 
     if not failed:
         logger.info("Все standby туннели в норме")
@@ -1806,6 +2250,7 @@ async def monitoring_loop() -> None:
     last_conntrack = 0.0
     standby_checked_today = False
     zapret_probe_done_today = False
+    deep_check_done_today   = False
     last_standby_check_date = datetime.now().date()
     logger.info("monitoring_loop запущен")
 
@@ -1813,6 +2258,9 @@ async def monitoring_loop() -> None:
         try:
             now = time.time()
             tick += 1
+
+            # Обновляем timestamp каждого тика — для детектирования зависшего event loop
+            state.last_monitoring_tick = now
 
             # Каждые 30 сек: dnsmasq
             if tick % 3 == 0:
@@ -1827,6 +2275,7 @@ async def monitoring_loop() -> None:
             if tick % 30 == 0:
                 await check_external_ip()
                 await check_disk()
+                await check_wg_interfaces()
                 mbps = await speedtest_small()
                 logger.debug(f"Speedtest down (100KB): {mbps:.1f} Mbps")
                 up_mbps = await speedtest_upload()
@@ -1836,6 +2285,17 @@ async def monitoring_loop() -> None:
                     alert(f"⚠️ {vol_shaping}")
                 await check_blocked_sites()
                 await check_upload_utilization()
+                # Quick health check (5 мин)
+                asyncio.create_task(health_checker.run_quick(), name="health-quick")
+                # Post-deploy watch: немедленный алерт при любом FAIL
+                if state.post_deploy_until > 0 and now < state.post_deploy_until:
+                    _pdw_report = health_checker.get_cached()
+                    _pdw_fails = [c["name"] for c in _pdw_report.get("checks", []) if c["status"] == "fail"]
+                    if _pdw_fails:
+                        alert(
+                            f"🚨 *Post-deploy watch*: проблемы обнаружены\n"
+                            + "\n".join(f"• {f}" for f in _pdw_fails[:5])
+                        )
 
             # Каждые 10 мин: WG peers, контейнеры
             if tick % 60 == 0:
@@ -1861,13 +2321,23 @@ async def monitoring_loop() -> None:
                 last_full_assessment = now
                 await collect_conntrack_stats()
                 await check_nftables_integrity()
+                await check_nftset_counts()
+                await check_nfqws_counter()
+                # Standard health check (1 час)
+                asyncio.create_task(health_checker.run_standard(), name="health-standard")
 
-            # В 04:30 каждый день: проверка standby туннелей
+            # В 04:00: deep health check (ежесуточно)
             now_dt = datetime.now()
             if now_dt.date() != last_standby_check_date:
                 standby_checked_today = False
                 zapret_probe_done_today = False
+                deep_check_done_today   = False
                 last_standby_check_date = now_dt.date()
+            if not deep_check_done_today and now_dt.hour == 4 and now_dt.minute < 30:
+                asyncio.create_task(health_checker.run_deep(), name="health-deep")
+                deep_check_done_today = True
+
+            # В 04:30 каждый день: проверка standby туннелей
             if not standby_checked_today and now_dt.hour == 4 and now_dt.minute >= 30:
                 await test_standby_tunnels()
                 standby_checked_today = True
@@ -2091,7 +2561,21 @@ async def get_metrics(_: bool = Depends(_auth)):
         hs     = peer.get("last_handshake", 0)
         lines.append(f'vpn_peer_last_handshake{{interface="{iface}",pubkey="{pubkey[:24]}"}} {hs}')
 
+    # Health score
+    _hr = health_checker.get_cached()
+    lines += [
+        "# HELP vpn_health_score Overall VPN infrastructure health score (0-100)",
+        "# TYPE vpn_health_score gauge",
+        f'vpn_health_score{{tier="{_hr.get("tier", "none")}"}} {state.health_score}',
+    ]
+
     return Response(content="\n".join(lines), media_type="text/plain")
+
+
+@app.get("/health")
+async def get_health(_: bool = Depends(_auth)):
+    """Агрегированный health report со score 0–100."""
+    return health_checker.get_cached()
 
 
 @app.get("/peer/list")
@@ -2327,6 +2811,9 @@ async def _deploy_task(req: DeployRequest) -> None:
             alert(f"⚠️ Deploy завершён откатом к предыдущей версии")
         else:
             alert(f"✅ Deploy завершён успешно, версия `{ver}`")
+            # Запускаем post-deploy watch: усиленный мониторинг 15 мин
+            state.post_deploy_until = time.time() + 900
+            alert("🔍 *Post-deploy watch* активен — усиленный мониторинг 15 мин")
 
 
 @app.post("/rollback")
