@@ -1,136 +1,135 @@
 #!/usr/bin/env bash
 # VPN Infrastructure — Установщик для Linux
 # Запускается на машине пользователя (НЕ на домашнем сервере).
-# Подключается к домашнему серверу по SSH и запускает setup.sh.
+# Подключается к домашнему серверу по SSH и запускает установку.
 #
-# Использование:
-#   chmod +x install.sh && ./install.sh
-#
+# Использование: chmod +x install-linux.sh && ./install-linux.sh
 # Требования: bash, ssh, scp
 
 set -euo pipefail
 
+# ── Цвета ─────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; BOLD='\033[1m'; RESET='\033[0m'
 
+_ok()   { echo -e "${GREEN}  ✓ $*${RESET}"; }
+_info() { echo -e "${BLUE}  → $*${RESET}"; }
+_warn() { echo -e "${YELLOW}  ⚠ $*${RESET}"; }
+_err()  { echo -e "${RED}  ✗ $*${RESET}"; }
+_step() { echo -e "\n${BOLD}$*${RESET}"; }
+
 clear
-echo -e "${BOLD}╔════════════════════════════════════════╗${RESET}"
-echo -e "${BOLD}║     VPN Infrastructure — Установка     ║${RESET}"
-echo -e "${BOLD}╚════════════════════════════════════════╝${RESET}"
-echo ""
-echo -e "Этот скрипт подключится к вашему домашнему серверу"
-echo -e "и запустит автоматическую установку VPN-инфраструктуры."
+echo -e "${BOLD}╔══════════════════════════════════════════╗${RESET}"
+echo -e "${BOLD}║    VPN Infrastructure — Установка        ║${RESET}"
+echo -e "${BOLD}║    Linux → домашний сервер (Ubuntu)      ║${RESET}"
+echo -e "${BOLD}╚══════════════════════════════════════════╝${RESET}"
 echo ""
 
-# Проверка SSH
-if ! command -v ssh &>/dev/null; then
-    echo -e "${RED}Ошибка: ssh не найден${RESET}"
-    echo "Установите: sudo apt install openssh-client"
-    exit 1
-fi
+# ── [1/5] Проверка SSH ────────────────────────────────────────────────────────
+_step "[1/5] Проверка SSH..."
+for cmd in ssh scp; do
+    if ! command -v "$cmd" &>/dev/null; then
+        _err "$cmd не найден"
+        echo "    Установите: sudo apt install openssh-client"
+        exit 1
+    fi
+done
+_ok "SSH доступен"
 
-# Проверка/создание SSH ключа
+# ── [2/5] SSH-ключ ────────────────────────────────────────────────────────────
+_step "[2/5] SSH-ключ..."
 SSH_KEY="$HOME/.ssh/vpn_deploy_key"
 if [[ ! -f "$SSH_KEY" ]]; then
-    echo -e "${BLUE}Создание SSH ключа для деплоя...${RESET}"
-    ssh-keygen -t ed25519 -f "$SSH_KEY" -N "" -C "vpn-deploy-$(date +%Y%m%d)"
-    echo -e "${GREEN}SSH ключ создан: $SSH_KEY${RESET}"
+    _info "Создание SSH ключа..."
+    mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+    ssh-keygen -t ed25519 -f "$SSH_KEY" -N "" -C "vpn-deploy-$(date +%Y%m%d)" -q
+    _ok "Ключ создан: $SSH_KEY"
+else
+    _ok "Ключ существует: $SSH_KEY"
 fi
 
-echo -e "${BOLD}Введите данные вашего домашнего сервера:${RESET}"
-echo "(Ubuntu Server 24.04, уже установленный и подключённый к сети)"
+# ── Данные сервера ────────────────────────────────────────────────────────────
+echo ""
+echo -e "${BOLD}Введите адрес вашего Ubuntu-сервера:${RESET}"
 echo ""
 
 while true; do
-    read -rp "IP-адрес домашнего сервера (например: 192.168.1.100): " SERVER_IP
-    if [[ "$SERVER_IP" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-        break
-    fi
-    echo -e "${RED}Неверный IP-адрес. Попробуйте ещё раз.${RESET}"
+    read -rp "  IP-адрес сервера: " SERVER_IP
+    [[ "$SERVER_IP" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] && break
+    _err "Неверный формат IP. Пример: 192.168.1.100"
 done
 
-read -rp "Пользователь SSH [sysadmin]: " SERVER_USER
+read -rp "  Пользователь SSH [sysadmin]: " SERVER_USER
 SERVER_USER="${SERVER_USER:-sysadmin}"
 
-read -rp "SSH порт [22]: " SSH_PORT
+read -rp "  SSH порт [22]: " SSH_PORT
 SSH_PORT="${SSH_PORT:-22}"
 
+SSH_OPTS=(-i "$SSH_KEY" -o "StrictHostKeyChecking=accept-new" -p "$SSH_PORT")
+
 echo ""
-echo -e "${BLUE}Копирование SSH ключа на сервер...${RESET}"
-echo "(Потребуется ввести пароль от $SERVER_USER@$SERVER_IP)"
+_info "Копирование SSH ключа на сервер..."
+echo "  (Потребуется пароль от ${SERVER_USER}@${SERVER_IP})"
 echo ""
 
 if ssh-copy-id -i "${SSH_KEY}.pub" \
     -o "StrictHostKeyChecking=accept-new" \
     -p "$SSH_PORT" \
     "${SERVER_USER}@${SERVER_IP}" 2>/dev/null; then
-    echo -e "${GREEN}✓ SSH ключ скопирован${RESET}"
+    _ok "Ключ скопирован"
 else
-    echo -e "${YELLOW}Не удалось скопировать ключ автоматически.${RESET}"
-    echo "Добавьте ключ вручную на сервере:"
+    _warn "ssh-copy-id не сработал. Добавьте ключ вручную на сервере:"
     echo "  echo '$(cat "${SSH_KEY}.pub")' >> ~/.ssh/authorized_keys"
     echo ""
-    read -rp "Нажмите Enter когда ключ будет добавлен..."
+    read -rp "  Нажмите Enter когда ключ добавлен..."
 fi
 
-echo ""
-echo -e "${BLUE}Проверка подключения...${RESET}"
-if ! ssh -i "$SSH_KEY" \
-    -o "StrictHostKeyChecking=accept-new" \
-    -o "ConnectTimeout=10" \
-    -p "$SSH_PORT" \
+# ── [3/5] Проверка подключения ────────────────────────────────────────────────
+_step "[3/5] Проверка подключения..."
+if ! ssh "${SSH_OPTS[@]}" -o "ConnectTimeout=10" -o "BatchMode=yes" \
     "${SERVER_USER}@${SERVER_IP}" \
-    'echo "OK: $(hostname)"' 2>/dev/null; then
-    echo -e "${RED}Ошибка подключения к серверу.${RESET}"
-    echo "Проверьте IP, пользователя, порт и доступность SSH."
+    'echo "$(uname -n) / $(lsb_release -d 2>/dev/null | cut -f2 || grep PRETTY /etc/os-release | cut -d= -f2 | tr -d "\"" || echo Ubuntu)"' \
+    2>/dev/null; then
+    _err "Не удалось подключиться к ${SERVER_USER}@${SERVER_IP}:${SSH_PORT}"
+    echo "  Проверьте: IP, пользователь, порт, openssh-server на сервере"
     exit 1
 fi
-echo -e "${GREEN}✓ Подключение успешно${RESET}"
+_ok "Подключение к ${SERVER_USER}@${SERVER_IP}:${SSH_PORT}"
 
+# ── Подтверждение ─────────────────────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}Цель: ${SERVER_USER}@${SERVER_IP}:${SSH_PORT}${RESET}"
+echo -e "${YELLOW}  Установка займёт 20–40 минут. Не закрывайте терминал.${RESET}"
 echo ""
-echo -e "${YELLOW}Внимание: установка займёт 25–45 минут. Не закрывайте терминал.${RESET}"
-echo ""
-read -rp "Начать установку? [y/N]: " CONFIRM
-if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-    echo "Отменено."
-    exit 0
-fi
+read -rp "  Начать установку? [y/N]: " CONFIRM
+[[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo "  Отменено."; exit 0; }
 
-echo ""
-echo -e "${BOLD}Запуск установки...${RESET}"
-echo -e "${BLUE}══════════════════════════════════════════${RESET}"
-echo ""
+# ── [4/5] Загрузка репозитория ────────────────────────────────────────────────
+_step "[4/5] Загрузка репозитория..."
 
-# Загрузка репо на сервер: сначала tar архив из локального репозитория,
-# при отсутствии — скачать vpn-infra.tar.gz из последнего GitHub Release.
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SETUP_PATH="/opt/vpn/setup.sh"
 
 if [[ -f "$REPO_ROOT/setup.sh" && -f "$REPO_ROOT/install-home.sh" && -d "$REPO_ROOT/home" ]]; then
-    echo -e "${BLUE}Упаковка репозитория в архив...${RESET}"
+    _info "Упаковка локального репозитория..."
     TMP_ARCHIVE="$(mktemp /tmp/vpn-infra-XXXXXX.tar.gz)"
     tar -czf "$TMP_ARCHIVE" \
         --exclude='.git' --exclude='*.pyc' --exclude='__pycache__' \
         --exclude='*/venv/*' --exclude='node_modules' --exclude='*.log' \
         --exclude='.env' \
-        -C "$REPO_ROOT" .
-    echo -e "${BLUE}Загрузка архива на сервер...${RESET}"
-    ssh -i "$SSH_KEY" -o "StrictHostKeyChecking=accept-new" -p "$SSH_PORT" \
-        "${SERVER_USER}@${SERVER_IP}" \
+        -C "$REPO_ROOT" . 2>/dev/null
+    _info "Загрузка архива на сервер..."
+    ssh "${SSH_OPTS[@]}" "${SERVER_USER}@${SERVER_IP}" \
         "sudo mkdir -p /opt/vpn && sudo chown ${SERVER_USER}:${SERVER_USER} /opt/vpn"
     scp -i "$SSH_KEY" -P "$SSH_PORT" -o "StrictHostKeyChecking=accept-new" \
         "$TMP_ARCHIVE" "${SERVER_USER}@${SERVER_IP}:/tmp/vpn-infra.tar.gz"
-    ssh -i "$SSH_KEY" -o "StrictHostKeyChecking=accept-new" -p "$SSH_PORT" \
-        "${SERVER_USER}@${SERVER_IP}" \
+    ssh "${SSH_OPTS[@]}" "${SERVER_USER}@${SERVER_IP}" \
         "tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner 2>/dev/null; rm /tmp/vpn-infra.tar.gz"
     rm -f "$TMP_ARCHIVE"
-    echo -e "${GREEN}✓ Репозиторий загружен из локальной копии${RESET}"
+    _ok "Репозиторий загружен из локальной копии"
 else
-    echo -e "${BLUE}Скачивание последнего релиза на сервере...${RESET}"
-    ssh -i "$SSH_KEY" -o "StrictHostKeyChecking=accept-new" -o "ServerAliveInterval=30" \
-        -p "$SSH_PORT" "${SERVER_USER}@${SERVER_IP}" 'bash -s' << 'REMOTE_EOF'
+    _info "Скачивание последнего релиза с GitHub..."
+    if ssh "${SSH_OPTS[@]}" -o "ServerAliveInterval=30" \
+        "${SERVER_USER}@${SERVER_IP}" 'bash -s' << 'REMOTE_EOF'; then
 RELEASE_URL=$(curl -sSfL --max-time 10 \
     https://api.github.com/repos/Cyrillicspb/vpn-infra/releases/latest 2>/dev/null \
     | python3 -c "
@@ -138,49 +137,123 @@ import sys, json
 assets = [a for a in json.load(sys.stdin)['assets'] if a['name']=='vpn-infra.tar.gz']
 print(assets[0]['browser_download_url'] if assets else '')
 " 2>/dev/null)
-[ -z "$RELEASE_URL" ] && { echo "ERROR: GitHub Release не найден"; exit 1; }
+[ -z "$RELEASE_URL" ] && { echo "ERROR: GitHub Release not found"; exit 1; }
 curl -fsSL --max-time 120 "$RELEASE_URL" -o /tmp/vpn-infra.tar.gz
 sudo mkdir -p /opt/vpn
 sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner 2>/dev/null; true
-rm /tmp/vpn-infra.tar.gz
+rm -f /tmp/vpn-infra.tar.gz
 echo "OK"
 REMOTE_EOF
-    echo -e "${GREEN}✓ Последний релиз скачан с GitHub${RESET}"
+        _ok "Релиз скачан с GitHub"
+    else
+        _err "Не удалось скачать релиз"
+        echo "  Попробуйте вручную: scp vpn-infra.tar.gz ${SERVER_USER}@${SERVER_IP}:/tmp/"
+        exit 1
+    fi
+fi
+
+# ── [5/5] Установка ───────────────────────────────────────────────────────────
+_step "[5/5] Установка..."
+
+TUI_INSTALLER="/opt/vpn/installers/gui/installer.py"
+USE_TUI=0
+
+# Проверяем Python 3.10+
+_info "Проверка Python 3.10+ на сервере..."
+PY_VER=0
+PY_VER=$(ssh "${SSH_OPTS[@]}" -o "BatchMode=yes" -o "ConnectTimeout=5" \
+    "${SERVER_USER}@${SERVER_IP}" \
+    "python3 -c 'import sys; v=sys.version_info; print(v.major*100+v.minor)' 2>/dev/null || echo 0" \
+    2>/dev/null || echo 0)
+
+if [[ "$PY_VER" =~ ^[0-9]+$ ]] && [[ "$PY_VER" -ge 310 ]]; then
+    FILE_OK=$(ssh "${SSH_OPTS[@]}" -o "BatchMode=yes" -o "ConnectTimeout=5" \
+        "${SERVER_USER}@${SERVER_IP}" \
+        "test -f '$TUI_INSTALLER' && echo yes || echo no" 2>/dev/null || echo no)
+    if [[ "$FILE_OK" == "yes" ]]; then
+        USE_TUI=1
+        PY_DISPLAY=$(printf 'Python %d.%d' $((PY_VER/100)) $((PY_VER%100)))
+        _ok "$PY_DISPLAY — TUI-установщик готов"
+    else
+        _warn "installer.py не найден — откат на консольный режим"
+    fi
+else
+    PY_DISPLAY=$(printf 'Python %d.%d' $((PY_VER/100)) $((PY_VER%100)))
+    _warn "$PY_DISPLAY < 3.10 — используем консольный режим"
 fi
 
 echo ""
-echo -e "${BOLD}Запуск setup.sh на сервере...${RESET}"
 
+# ── Запуск TUI ────────────────────────────────────────────────────────────────
+if [[ $USE_TUI -eq 1 ]]; then
+    echo -e "${BOLD}▶ Запуск TUI-установщика...${RESET}"
+    echo -e "${BLUE}══════════════════════════════════════════${RESET}"
+    echo ""
+    TUI_RC=0
+    ssh -i "$SSH_KEY" \
+        -o "StrictHostKeyChecking=accept-new" \
+        -o "ServerAliveInterval=30" \
+        -o "ServerAliveCountMax=10" \
+        -p "$SSH_PORT" \
+        -t "${SERVER_USER}@${SERVER_IP}" \
+        "cd /opt/vpn && python3 installers/gui/installer.py" \
+        || TUI_RC=$?
+
+    echo ""
+
+    if [[ $TUI_RC -eq 0 ]]; then
+        echo -e "${BLUE}══════════════════════════════════════════${RESET}"
+        _ok "Готово!"
+        echo ""
+        echo "  Если установка завершена — следующие шаги:"
+        echo "    1. Port Forwarding: UDP 51820+51821 → ${SERVER_IP}"
+        echo "    2. Telegram: напишите /start вашему боту"
+        echo "    3. /adddevice — получите конфиг WireGuard/AWG"
+        echo ""
+        read -rp "  Нажмите Enter для выхода..."
+        exit 0
+    fi
+
+    _warn "TUI завершился с кодом $TUI_RC — откат на консольный режим..."
+    echo ""
+fi
+
+# ── Fallback: tmux + setup.sh ─────────────────────────────────────────────────
+echo -e "${BOLD}▶ Запуск setup.sh в tmux...${RESET}"
+echo -e "${BLUE}══════════════════════════════════════════${RESET}"
+echo ""
+
+RESULT=0
 ssh -i "$SSH_KEY" \
     -o "StrictHostKeyChecking=accept-new" \
     -o "ServerAliveInterval=30" \
     -o "ServerAliveCountMax=10" \
     -p "$SSH_PORT" \
     -t "${SERVER_USER}@${SERVER_IP}" \
-    "tmux new-session -A -s vpn-install 'sudo bash $SETUP_PATH'"
+    "tmux new-session -A -s vpn-install 'sudo bash $SETUP_PATH'" \
+    || RESULT=$?
 
-RESULT=$?
 echo ""
 echo -e "${BLUE}══════════════════════════════════════════${RESET}"
 
 if [[ $RESULT -eq 0 ]]; then
-    echo -e "${GREEN}${BOLD}✓ Установка завершена успешно!${RESET}"
+    _ok "Установка завершена успешно!"
     echo ""
-    echo "Следующие шаги:"
-    echo "  1. Настройте Port Forwarding на роутере:"
-    echo "     UDP 51820 → ${SERVER_IP}:51820 (AmneziaWG)"
-    echo "     UDP 51821 → ${SERVER_IP}:51821 (WireGuard)"
-    echo "  2. Откройте Telegram и напишите боту /start"
-    echo "  3. Получите конфиг через бот и импортируйте в WireGuard / AmneziaWG"
+    echo "  Следующие шаги:"
+    echo "    1. Port Forwarding на роутере:"
+    echo "       UDP 51820 → ${SERVER_IP}:51820  (AmneziaWG)"
+    echo "       UDP 51821 → ${SERVER_IP}:51821  (WireGuard)"
+    echo "    2. Telegram: напишите /start вашему боту"
+    echo "    3. /adddevice — получите конфиг"
 else
-    echo -e "${RED}${BOLD}✗ Установка завершилась с ошибкой (код $RESULT)${RESET}"
+    _err "Установка завершилась с ошибкой (код $RESULT)"
     echo ""
-    echo "Для диагностики:"
-    echo "  ssh -i $SSH_KEY -p $SSH_PORT ${SERVER_USER}@${SERVER_IP}"
-    echo "  cat /tmp/vpn-setup.log"
+    echo "  Диагностика:"
+    echo "    ssh -i $SSH_KEY -p $SSH_PORT ${SERVER_USER}@${SERVER_IP}"
+    echo "    cat /tmp/vpn-setup.log"
     echo ""
-    echo "Повторный запуск безопасен — выполненные шаги будут пропущены."
+    echo "  Повторный запуск безопасен — выполненные шаги пропустятся."
 fi
 
 echo ""
-read -rp "Нажмите Enter для выхода..."
+read -rp "  Нажмите Enter для выхода..."
