@@ -105,9 +105,11 @@ echo   [OK] Вход по ключу работает
 
 :connected
 
-:: ── [3/5] Проверка подключения ───────────────────────────────────────────────
+:: ── [3/5] Подготовка сервера ─────────────────────────────────────────────────
 echo.
-echo [3/5] Проверка подключения...
+echo [3/5] Подготовка сервера...
+
+:: Проверка подключения
 ssh -n -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=10" -o "BatchMode=yes" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "hostname" >nul 2>&1
 if !errorlevel! neq 0 (
     echo   [FAIL] Подключение не удалось
@@ -115,7 +117,17 @@ if !errorlevel! neq 0 (
     pause
     exit /b 1
 )
-echo   [OK] Подключено: !SERVER_USER!@!SERVER_IP!:!SSH_PORT!
+echo   [OK] Сервер доступен: !SERVER_USER!@!SERVER_IP!:!SSH_PORT!
+
+:: Настройка sudo без пароля (один раз — потребуется пароль пользователя)
+echo.
+echo   Настройка прав (потребуется пароль !SERVER_USER!):
+ssh -t -p !SSH_PORT! -i "!SSH_KEY!" !SERVER_USER!@!SERVER_IP! "sudo bash -c 'echo !SERVER_USER! ALL=(ALL) NOPASSWD:ALL > /etc/sudoers.d/vpn-installer && chmod 440 /etc/sudoers.d/vpn-installer'"
+if !errorlevel! neq 0 (
+    echo   [WARN] Не удалось настроить sudo -- возможны запросы пароля
+) else (
+    echo   [OK] sudo настроен
+)
 
 :: ── Подтверждение ─────────────────────────────────────────────────────────────
 echo.
@@ -145,7 +157,7 @@ tar -czf "%TEMP%\vpn-infra.tar.gz" --exclude=".git" --exclude="*.pyc" --exclude=
 if !errorlevel! neq 0 goto download_release
 
 echo   --> Создание директории на сервере...
-ssh -t -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "sudo mkdir -p /opt/vpn && sudo chown !SERVER_USER!:!SERVER_USER! /opt/vpn"
+ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "sudo mkdir -p /opt/vpn && sudo chown !SERVER_USER!:!SERVER_USER! /opt/vpn"
 
 echo   --> Загрузка архива на сервер...
 scp -i "!SSH_KEY!" -P !SSH_PORT! -o "StrictHostKeyChecking=accept-new" "%TEMP%\vpn-infra.tar.gz" !SERVER_USER!@!SERVER_IP!:/tmp/vpn-infra.tar.gz
@@ -168,7 +180,7 @@ if !errorlevel! neq 0 (
     pause
     exit /b 1
 )
-ssh -t -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "sudo mkdir -p /opt/vpn && sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner; rm -f /tmp/vpn-infra.tar.gz"
+ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "sudo mkdir -p /opt/vpn && sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner; rm -f /tmp/vpn-infra.tar.gz"
 if !errorlevel! neq 0 (
     echo   [FAIL] Не удалось распаковать релиз
     pause

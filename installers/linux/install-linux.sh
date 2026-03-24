@@ -84,17 +84,24 @@ else
     read -rp "  Нажмите Enter когда ключ добавлен..."
 fi
 
-# ── [3/5] Проверка подключения ────────────────────────────────────────────────
-_step "[3/5] Проверка подключения..."
+# ── [3/5] Подготовка сервера ──────────────────────────────────────────────────
+_step "[3/5] Подготовка сервера..."
+
+# Проверка подключения
 if ! ssh "${SSH_OPTS[@]}" -o "ConnectTimeout=10" -o "BatchMode=yes" \
-    "${SERVER_USER}@${SERVER_IP}" \
-    'echo "$(uname -n) / $(lsb_release -d 2>/dev/null | cut -f2 || grep PRETTY /etc/os-release | cut -d= -f2 | tr -d "\"" || echo Ubuntu)"' \
-    2>/dev/null; then
+    "${SERVER_USER}@${SERVER_IP}" "hostname" 2>/dev/null; then
     _err "Не удалось подключиться к ${SERVER_USER}@${SERVER_IP}:${SSH_PORT}"
     echo "  Проверьте: IP, пользователь, порт, openssh-server на сервере"
     exit 1
 fi
-_ok "Подключение к ${SERVER_USER}@${SERVER_IP}:${SSH_PORT}"
+_ok "Сервер доступен: ${SERVER_USER}@${SERVER_IP}:${SSH_PORT}"
+
+# Настройка sudo без пароля (потребуется пароль пользователя один раз)
+echo ""
+_info "Настройка прав (потребуется пароль ${SERVER_USER}):"
+ssh -t "${SSH_OPTS[@]}" "${SERVER_USER}@${SERVER_IP}" \
+    "sudo bash -c 'echo \"${SERVER_USER} ALL=(ALL) NOPASSWD:ALL\" > /etc/sudoers.d/vpn-installer && chmod 440 /etc/sudoers.d/vpn-installer'" \
+    && _ok "sudo настроен" || _warn "Не удалось настроить sudo -- возможны запросы пароля"
 
 # ── Подтверждение ─────────────────────────────────────────────────────────────
 echo ""
@@ -128,22 +135,8 @@ if [[ -f "$REPO_ROOT/setup.sh" && -f "$REPO_ROOT/install-home.sh" && -d "$REPO_R
     _ok "Репозиторий загружен из локальной копии"
 else
     _info "Скачивание последнего релиза с GitHub..."
-    if ssh "${SSH_OPTS[@]}" -o "ServerAliveInterval=30" \
-        "${SERVER_USER}@${SERVER_IP}" 'bash -s' << 'REMOTE_EOF'; then
-RELEASE_URL=$(curl -sSfL --max-time 10 \
-    https://api.github.com/repos/Cyrillicspb/vpn-infra/releases/latest 2>/dev/null \
-    | python3 -c "
-import sys, json
-assets = [a for a in json.load(sys.stdin)['assets'] if a['name']=='vpn-infra.tar.gz']
-print(assets[0]['browser_download_url'] if assets else '')
-" 2>/dev/null)
-[ -z "$RELEASE_URL" ] && { echo "ERROR: GitHub Release not found"; exit 1; }
-curl -fsSL --max-time 120 "$RELEASE_URL" -o /tmp/vpn-infra.tar.gz
-sudo mkdir -p /opt/vpn
-sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner 2>/dev/null; true
-rm -f /tmp/vpn-infra.tar.gz
-echo "OK"
-REMOTE_EOF
+    if ssh "${SSH_OPTS[@]}" -o "ServerAliveInterval=30" "${SERVER_USER}@${SERVER_IP}" \
+        "curl -fsSL --max-time 120 -L https://github.com/Cyrillicspb/vpn-infra/releases/latest/download/vpn-infra.tar.gz -o /tmp/vpn-infra.tar.gz && sudo mkdir -p /opt/vpn && sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner; rm -f /tmp/vpn-infra.tar.gz"; then
         _ok "Релиз скачан с GitHub"
     else
         _err "Не удалось скачать релиз"
@@ -171,9 +164,20 @@ if [[ "$PY_VER" =~ ^[0-9]+$ ]] && [[ "$PY_VER" -ge 310 ]]; then
         "${SERVER_USER}@${SERVER_IP}" \
         "test -f '$TUI_INSTALLER' && echo yes || echo no" 2>/dev/null || echo no)
     if [[ "$FILE_OK" == "yes" ]]; then
-        USE_TUI=1
-        PY_DISPLAY=$(printf 'Python %d.%d' $((PY_VER/100)) $((PY_VER%100)))
-        _ok "$PY_DISPLAY — TUI-установщик готов"
+        # Устанавливаем textual если нет
+        _info "Установка textual на сервере..."
+        ssh "${SSH_OPTS[@]}" -o "BatchMode=yes" "${SERVER_USER}@${SERVER_IP}" \
+            "sudo pip3 install textual --break-system-packages --quiet 2>/dev/null" || true
+        # Проверяем что textual доступен
+        if ssh "${SSH_OPTS[@]}" -o "BatchMode=yes" -o "ConnectTimeout=5" \
+            "${SERVER_USER}@${SERVER_IP}" \
+            "python3 -c 'import textual'" 2>/dev/null; then
+            USE_TUI=1
+            PY_DISPLAY=$(printf 'Python %d.%d' $((PY_VER/100)) $((PY_VER%100)))
+            _ok "$PY_DISPLAY — TUI-установщик готов"
+        else
+            _warn "textual недоступен — откат на консольный режим"
+        fi
     else
         _warn "installer.py не найден — откат на консольный режим"
     fi
@@ -196,7 +200,7 @@ if [[ $USE_TUI -eq 1 ]]; then
         -o "ServerAliveCountMax=10" \
         -p "$SSH_PORT" \
         -t "${SERVER_USER}@${SERVER_IP}" \
-        "cd /opt/vpn && python3 installers/gui/installer.py" \
+        "cd /opt/vpn && sudo python3 installers/gui/installer.py" \
         || TUI_RC=$?
 
     echo ""
