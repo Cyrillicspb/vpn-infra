@@ -23,6 +23,7 @@ class InstallerState:
     lan_iface: str = ""           # detected default interface
     lan_ip: str = ""              # detected LAN IP
     cgnat_detected: bool = False
+    router_external_ip: str = ""  # только для режима B: внешний IP роутера
     # Options
     use_cloudflare: str = "n"
     use_ddns: str = "n"
@@ -79,4 +80,6 @@ class InstallerState:
             env["SERVER_MODE"] = "gateway"
             if self.lan_iface:
                 env["LAN_IFACE"] = self.lan_iface
+            if self.router_external_ip:
+                env["ROUTER_EXTERNAL_IP"] = self.router_external_ip
         return env

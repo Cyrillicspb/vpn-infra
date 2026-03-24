@@ -5,7 +5,7 @@ import asyncio
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, ScrollableContainer, Vertical
-from textual.widgets import Button, RichLog, Static
+from textual.widgets import Button, Input, Label, RichLog, Static
 
 from components.wizard_screen import WIZARD_BASE_CSS, WizardScreen
 
@@ -47,6 +47,16 @@ class NetworkScreen(WizardScreen):
         width: 1fr;
         height: 5;
     }}
+    #gateway-row {{
+        height: auto;
+        margin: 0 2;
+        padding: 1 2;
+        border: round $warning;
+        background: $panel;
+    }}
+    #gateway-row.hidden {{
+        display: none;
+    }}
     #net-log {{
         height: 6;
         margin: 0 2 1 2;
@@ -58,6 +68,7 @@ class NetworkScreen(WizardScreen):
     def _compose_content(self) -> ComposeResult:
         state = self.app.state
         mode = state.server_mode
+        hidden_cls = "" if mode == "B" else "hidden"
         with ScrollableContainer(id="wizard-content"):
             with Vertical(id="net-info"):
                 yield Static("[bold]Детект сети:[/bold]\n")
@@ -74,6 +85,13 @@ class NetworkScreen(WizardScreen):
                     "[B] Сервер дома\n    за роутером",
                     id="btn-mode-b",
                     variant="success" if mode == "B" else "default",
+                )
+            with Vertical(id="gateway-row", classes=hidden_cls):
+                yield Label("Внешний IP роутера (для HAIRPIN NAT):")
+                yield Input(
+                    value=state.router_external_ip,
+                    placeholder="например: 1.2.3.4",
+                    id="input-router-ip",
                 )
             yield RichLog(highlight=False, markup=False, wrap=True, id="net-log")
 
@@ -129,17 +147,27 @@ class NetworkScreen(WizardScreen):
         except Exception:
             return False
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "input-router-ip":
+            self.app.state.router_external_ip = event.value.strip()
+            self.app.state.save()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        log = self.query_one("#net-log", RichLog)
         if event.button.id == "btn-mode-a":
             self.app.state.server_mode = "A"
             self.query_one("#btn-mode-a", Button).variant = "success"
             self.query_one("#btn-mode-b", Button).variant = "default"
+            self.query_one("#gateway-row").add_class("hidden")
             self.app.state.save()
         elif event.button.id == "btn-mode-b":
             self.app.state.server_mode = "B"
             self.query_one("#btn-mode-a", Button).variant = "default"
             self.query_one("#btn-mode-b", Button).variant = "success"
+            self.query_one("#gateway-row").remove_class("hidden")
             self.app.state.save()
+            log.write("ВНИМАНИЕ: Gateway Mode — сервер станет SPOF для LAN-сети")
+            log.write("  Настройте UPS и port forwarding на роутере (UDP 51820/51821)")
         else:
             super().on_button_pressed(event)
 
