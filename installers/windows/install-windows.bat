@@ -165,7 +165,7 @@ echo   --> Загрузка архива на сервер...
 scp -i "!SSH_KEY!" -P !SSH_PORT! -o "StrictHostKeyChecking=accept-new" "%TEMP%\vpn-infra.tar.gz" !SERVER_USER!@!SERVER_IP!:/tmp/vpn-infra.tar.gz
 if !errorlevel! neq 0 goto download_release
 
-ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner --overwrite --touch; rm /tmp/vpn-infra.tar.gz"
+ssh -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner --overwrite --touch; rm /tmp/vpn-infra.tar.gz"
 if !errorlevel! neq 0 goto download_release
 
 del "%TEMP%\vpn-infra.tar.gz" >nul 2>&1

@@ -145,7 +145,7 @@ if [[ -f "$REPO_ROOT/setup.sh" && -f "$REPO_ROOT/install-home.sh" && -d "$REPO_R
     scp -i "$SSH_KEY" -P "$SSH_PORT" -o "StrictHostKeyChecking=accept-new" \
         "$TMP_ARCHIVE" "${SERVER_USER}@${SERVER_IP}:/tmp/vpn-infra.tar.gz"
     ssh "${SSH_OPTS[@]}" "${SERVER_USER}@${SERVER_IP}" \
-        "tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner --overwrite --touch 2>/dev/null; rm /tmp/vpn-infra.tar.gz"
+        "sudo tar xzf /tmp/vpn-infra.tar.gz -C /opt/vpn --no-same-permissions --no-same-owner --overwrite --touch 2>/dev/null; rm /tmp/vpn-infra.tar.gz"
     rm -f "$TMP_ARCHIVE"
     _ok "Репозиторий загружен из локальной копии"
 else
