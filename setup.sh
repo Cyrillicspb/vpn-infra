@@ -14,6 +14,24 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$REPO_DIR/common.sh"
 
+# ── Import mode ───────────────────────────────────────────────────────────────
+IMPORT_MODE=false
+IMPORT_FILE=""
+IMPORT_DIR=""
+
+_setup_args=("$@")
+for _i in "${!_setup_args[@]}"; do
+    if [[ "${_setup_args[$_i]}" == "--from-export" ]]; then
+        IMPORT_MODE=true
+        _next=$(( _i + 1 ))
+        IMPORT_FILE="${_setup_args[$_next]:-}"
+    fi
+done
+if [[ "$IMPORT_MODE" == "true" ]]; then
+    [[ -z "$IMPORT_FILE" ]] && { echo "Ошибка: --from-export требует путь к файлу"; exit 1; }
+    [[ ! -f "$IMPORT_FILE" ]] && { echo "Ошибка: файл не найден: $IMPORT_FILE"; exit 1; }
+fi
+
 # ── Функции, уникальные для setup.sh ─────────────────────────────────────────
 
 ask() {
@@ -41,6 +59,57 @@ print_banner() {
     echo "║  Hybrid B+ Split Tunneling | 4 стека | AmneziaWG + WireGuard   ║"
     echo "╚══════════════════════════════════════════════════════════════════╝"
     echo ""
+}
+
+# ── Подготовка импорта ───────────────────────────────────────────────────────
+
+prepare_import() {
+    [[ "$IMPORT_MODE" != "true" ]] && return 0
+
+    log_info "=== Режим импорта из экспорта ==="
+    log_info "Файл: $IMPORT_FILE"
+
+    IMPORT_DIR=$(mktemp -d)
+
+    # GPG расшифровка
+    local passphrase=""
+    read -rsp "Пароль для расшифровки экспорта: " passphrase; echo
+
+    if ! echo "$passphrase" | gpg --batch --yes --passphrase-fd 0 \
+        -d "$IMPORT_FILE" 2>/dev/null | tar xz -C "$IMPORT_DIR" 2>/dev/null; then
+        die "Не удалось расшифровать архив"
+    fi
+
+    # Валидация
+    for f in ".env" "wireguard" "vpn_bot.db"; do
+        [[ ! -e "$IMPORT_DIR/$f" ]] && die "Архив неполный: отсутствует $f"
+    done
+
+    # Показать метаданные
+    if [[ -f "$IMPORT_DIR/metadata.json" ]]; then
+        log_info "Метаданные импорта:"
+        python3 -c "
+import json
+d = json.load(open('$IMPORT_DIR/metadata.json'))
+for k, v in d.items():
+    print(f'  {k}: {v}')
+" 2>/dev/null || true
+    fi
+
+    # Очистить шаги которые нужно переимпортировать
+    if [[ -f "$STATE_FILE" ]]; then
+        grep -v -E "^(step05_collect_inputs|step07_generate_secrets)$" \
+            "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE" || true
+    fi
+
+    # Скопировать .env из импорта
+    mkdir -p /opt/vpn
+    cp "$IMPORT_DIR/.env" /opt/vpn/.env
+    chmod 600 /opt/vpn/.env
+    # shellcheck disable=SC1091
+    source /opt/vpn/.env 2>/dev/null || true
+
+    log_ok "Импорт подготовлен. VPS_IP=${VPS_IP:-}, EXTERNAL_IP=${EXTERNAL_IP:-}"
 }
 
 # ── Фаза 0: Предусловия ──────────────────────────────────────────────────────
@@ -189,6 +258,13 @@ phase0() {
     if is_done "step05_collect_inputs"; then
         step_skip "step05_collect_inputs"
         [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
+    elif [[ "$IMPORT_MODE" == "true" ]]; then
+        step "Сбор конфигурационных параметров"
+        log_info "Import mode: параметры из .env"
+        log_info "  VPS_IP=${VPS_IP:-<не задан>}"
+        log_info "  TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:+●●●●●●●●}"
+        log_info "  TELEGRAM_ADMIN_CHAT_ID=${TELEGRAM_ADMIN_CHAT_ID:-<не задан>}"
+        step_done "step05_collect_inputs"
     else
         step "Сбор конфигурационных параметров"
 
@@ -343,6 +419,19 @@ phase0() {
         step "Настройка SSH-доступа к VPS и создание пользователя sysadmin"
 
         [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
+
+        if [[ "$IMPORT_MODE" == "true" ]]; then
+            log_info "Import mode: проверка SSH с существующим ключом..."
+            if [[ -f /root/.ssh/vpn_id_ed25519 ]] && \
+               ssh -i /root/.ssh/vpn_id_ed25519 -o BatchMode=yes -o ConnectTimeout=10 \
+                -p "${VPS_SSH_PORT:-22}" "sysadmin@${VPS_IP}" "exit 0" 2>/dev/null; then
+                log_ok "SSH ключ уже работает для sysadmin@${VPS_IP}"
+                step_done "step06_vps_ssh_bootstrap"
+            else
+                log_warn "SSH ключ не работает на VPS — выполняем стандартный bootstrap"
+                # Продолжаем стандартный bootstrap ниже
+            fi
+        fi
 
         # Генерация SSH-ключа если нет
         if [[ ! -f /root/.ssh/vpn_id_ed25519 ]]; then
@@ -613,6 +702,10 @@ for a in d.get('assets',[]):
     # Шаг 7 — Генерация секретов
     if is_done "step07_generate_secrets"; then
         step_skip "step07_generate_secrets"
+    elif [[ "$IMPORT_MODE" == "true" ]]; then
+        step "Генерация криптографических секретов"
+        log_info "Import mode: секреты из экспорта, генерация пропущена"
+        step_done "step07_generate_secrets"
     else
         step "Генерация криптографических секретов"
 
@@ -846,6 +939,16 @@ phase1() {
     fi
 
     STEP=8 bash "${REPO_DIR}/install-home.sh"
+
+    # Import mode: восстановление WireGuard конфигов из экспорта
+    if [[ "$IMPORT_MODE" == "true" && -n "${IMPORT_DIR:-}" && -d "${IMPORT_DIR}/wireguard" ]]; then
+        log_info "Import mode: восстановление WireGuard конфигов из экспорта..."
+        wg-quick down wg0 2>/dev/null || true
+        wg-quick down wg1 2>/dev/null || true
+        cp -r "${IMPORT_DIR}/wireguard/." /etc/wireguard/
+        chmod 600 /etc/wireguard/*.conf 2>/dev/null || true
+        log_ok "WireGuard конфиги восстановлены из экспорта"
+    fi
 
     # Claude Code — установка инструмента (Node.js + npm package)
     if [[ "${INSTALL_CLAUDE_CODE:-false}" == "true" ]]; then
@@ -1590,7 +1693,13 @@ main() {
     touch "$STATE_FILE"
     chmod 600 "$STATE_FILE"
 
+    # Cleanup IMPORT_DIR on exit
+    trap '[[ -n "${IMPORT_DIR:-}" ]] && rm -rf "$IMPORT_DIR"' EXIT
+
     print_banner
+
+    # Import mode: подготовить данные из архива
+    prepare_import
 
     phase0
     phase1
@@ -1599,6 +1708,38 @@ main() {
     phase3
     phase4
     phase5
+
+    # ── Финальный импорт данных (если --from-export) ──────────────────────────
+    if [[ "$IMPORT_MODE" == "true" ]]; then
+        log_info "=== Финальный импорт данных ==="
+
+        # Восстановить данные через restore.sh
+        RESTORE_SCRIPT="${REPO_DIR}/restore.sh"
+        if [[ -f "$RESTORE_SCRIPT" ]]; then
+            bash "$RESTORE_SCRIPT" --restore-data-only "$IMPORT_FILE" || \
+                log_warn "restore.sh --restore-data-only завершился с ошибкой"
+        fi
+
+        # Версионные миграции
+        EXPORT_VERSION=""
+        if [[ -n "${IMPORT_DIR:-}" && -f "$IMPORT_DIR/metadata.json" ]]; then
+            EXPORT_VERSION=$(python3 -c "
+import json
+d = json.load(open('$IMPORT_DIR/metadata.json'))
+print(d.get('vpn_version', ''))
+" 2>/dev/null || echo "")
+        fi
+        CURRENT_VERSION=$(cat /opt/vpn/version 2>/dev/null || echo "")
+        if [[ -n "$EXPORT_VERSION" && -n "$CURRENT_VERSION" && "$EXPORT_VERSION" != "$CURRENT_VERSION" ]]; then
+            log_info "Версии отличаются ($EXPORT_VERSION → $CURRENT_VERSION), запуск миграций..."
+            MIGRATIONS_SCRIPT="${REPO_DIR}/migrations/apply.sh"
+            if [[ -f "$MIGRATIONS_SCRIPT" ]]; then
+                bash "$MIGRATIONS_SCRIPT" || log_warn "Миграции завершились с ошибкой"
+            fi
+        fi
+
+        log_ok "Импорт завершён!"
+    fi
 
     # ── Финальная комплексная проверка + отчёт в Telegram ────────────────────
     echo ""
