@@ -96,10 +96,12 @@ for SITE in "${BLOCKED_SITES[@]}"; do
             (( SITE_PASS++ ))
             ;;
         "")
-            warn "[$SITE] нет ответа (timeout или сеть недоступна)"
+            warn "[$SITE] timeout"
+            (( SITE_FAIL++ ))
             ;;
         *)
             warn "[$SITE] HTTP $HTTP_CODE"
+            (( SITE_FAIL++ ))
             ;;
     esac
 done

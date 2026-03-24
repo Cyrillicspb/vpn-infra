@@ -6,6 +6,14 @@ set -uo pipefail
 ENV_FILE="/opt/vpn/.env"
 source "$ENV_FILE" 2>/dev/null || { echo "  [FAIL] $ENV_FILE не найден"; exit 1; }
 
+# Guard: XRAY_INBOUNDS может не быть определён в .env
+if [[ -n "${XRAY_INBOUNDS[*]+x}" ]]; then
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        warn "XRAY_INBOUNDS entry: $line (неожиданная переменная в .env)"
+    done <<< "${XRAY_INBOUNDS[@]}"
+fi
+
 PASS=0; FAIL=0; WARN=0
 TEST_NAME="KEY_CONSISTENCY"
 
@@ -19,7 +27,9 @@ echo "=== ${TEST_NAME} ==="
 WG0_CONF="/etc/wireguard/wg0.conf"
 if [[ -f "$WG0_CONF" ]]; then
     wg0_priv=$(awk '/^PrivateKey/{print $3; exit}' "$WG0_CONF" 2>/dev/null | tr -d '[:space:]')
-    if [[ -n "$wg0_priv" ]]; then
+    if [[ -z "$wg0_priv" ]]; then
+        warn "wg0.conf: PrivateKey пуст"
+    elif [[ -n "$wg0_priv" ]]; then
         wg0_derived_pub=$(echo "$wg0_priv" | wg pubkey 2>/dev/null | tr -d '[:space:]')
         env_pub="${AWG_SERVER_PUBLIC_KEY:-}"
         if [[ -z "$env_pub" ]]; then
@@ -42,7 +52,9 @@ fi
 WG1_CONF="/etc/wireguard/wg1.conf"
 if [[ -f "$WG1_CONF" ]]; then
     wg1_priv=$(awk '/^PrivateKey/{print $3; exit}' "$WG1_CONF" 2>/dev/null | tr -d '[:space:]')
-    if [[ -n "$wg1_priv" ]]; then
+    if [[ -z "$wg1_priv" ]]; then
+        warn "wg1.conf: PrivateKey пуст"
+    elif [[ -n "$wg1_priv" ]]; then
         wg1_derived_pub=$(echo "$wg1_priv" | wg pubkey 2>/dev/null | tr -d '[:space:]')
         env_pub="${WG_SERVER_PUBLIC_KEY:-}"
         if [[ -z "$env_pub" ]]; then
