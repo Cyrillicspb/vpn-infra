@@ -12,12 +12,48 @@ _DUCKDNS_SUFFIX = ".duckdns.org"
 
 _DUCKDNS_INSTRUCTIONS = (
     "[bold]Как настроить DuckDNS:[/bold]\n"
-    "  1. Откройте [link=https://www.duckdns.org]duckdns.org[/link] в браузере\n"
+    "  1. Откройте duckdns.org в браузере\n"
     "  2. Войдите через GitHub, Google или Reddit\n"
-    '  3. В поле "sub domain" введите имя → нажмите "add domain"\n'
+    '  3. В поле "sub domain" введите имя → "add domain"\n'
     "  4. Скопируйте [bold]token[/bold] (UUID вверху страницы)\n"
-    "  5. Введите имя субдомена и token ниже"
+    "  5. Введите субдомен и token ниже"
 )
+
+_CF_INSTRUCTIONS_A = (
+    "[bold]Шаг A — Аккаунт Cloudflare[/bold]\n"
+    "  1. Откройте dash.cloudflare.com/sign-up\n"
+    "  2. Email + пароль → Create Account → подтвердите email\n"
+    "     Бесплатно, карта не нужна."
+)
+
+_CF_INSTRUCTIONS_B = (
+    "[bold]Шаг B — Создание Worker[/bold]\n"
+    "  1. dash.cloudflare.com →\n"
+    "     Workers & Pages → Create → Create Worker\n"
+    "  2. Дайте любое имя → Deploy\n"
+    "  3. Edit code → замените ВСЁ содержимое на код ниже\n"
+    "  4. Save & Deploy\n"
+    "  5. Скопируйте URL вида: xxx.workers.dev\n"
+    "     Введите его в поле ниже (без https://)"
+)
+
+
+def _worker_code(vps_ip: str) -> str:
+    ip = vps_ip or "ВАШ_VPS_IP"
+    return (
+        "export default {\n"
+        "  async fetch(request) {\n"
+        "    const url = new URL(request.url);\n"
+        f'    const target = `http://{ip}:8080${{url.pathname}}${{url.search}}`;\n'
+        "    const h = new Headers();\n"
+        "    for (const [k,v] of request.headers)\n"
+        "      if (k.toLowerCase() !== 'host') h.set(k,v);\n"
+        f"    h.set('Host','{ip}');\n"
+        "    return fetch(target,{method:request.method,\n"
+        "      headers:h,body:request.body});\n"
+        "  }\n"
+        "}"
+    )
 
 
 class OptionsScreen(WizardScreen):
@@ -28,15 +64,15 @@ class OptionsScreen(WizardScreen):
         "[bold]Cloudflare CDN[/bold]\n"
         "Stack 1 (наиболее надёжный): VLESS+WS\n"
         "через Cloudflare CDN.\n\n"
-        "Требует Cloudflare аккаунт и Worker.\n"
-        "Без него система использует Stack 2/3/4.\n\n"
+        "Заблокировать = заблокировать весь CF.\n"
+        "Нужен только бесплатный аккаунт.\n"
+        "Без него используются Stack 2/3/4.\n\n"
         "[bold]DDNS (DuckDNS)[/bold]\n"
         "Нужен если у роутера динамический IP.\n"
-        "Бесплатно, без регистрации домена.\n\n"
-        "Создаёт субдомен вида:\n"
-        "  myserver.duckdns.org\n\n"
-        "Обе опции можно настроить позже вручную\n"
-        "через переменные в /opt/vpn/.env"
+        "Бесплатно, без покупки домена.\n\n"
+        "Создаёт субдомен: myserver.duckdns.org\n\n"
+        "Обе опции можно настроить позже через\n"
+        "/opt/vpn/.env"
     )
 
     CSS = f"""
@@ -60,6 +96,18 @@ class OptionsScreen(WizardScreen):
         background: $panel;
     }}
     .opt-details.hidden {{ display: none; }}
+    .cf-instructions {{
+        height: auto;
+        margin-bottom: 1;
+        color: $text;
+    }}
+    .worker-code {{
+        height: auto;
+        margin: 1 0;
+        padding: 1 2;
+        background: #0d1117;
+        color: $success;
+    }}
     .ddns-instructions {{
         height: auto;
         margin-bottom: 1;
@@ -78,7 +126,6 @@ class OptionsScreen(WizardScreen):
         state = self.app.state
         cf_on = state.use_cloudflare == "y"
         ddns_on = state.use_ddns == "y"
-        # Для отображения вводим только субдомен без суффикса
         ddns_subdomain = (
             state.ddns_domain.removesuffix(_DUCKDNS_SUFFIX)
             if state.ddns_domain
@@ -106,12 +153,19 @@ class OptionsScreen(WizardScreen):
                     id="cf-details",
                     classes="opt-details" + ("" if cf_on else " hidden"),
                 ):
+                    yield Static(_CF_INSTRUCTIONS_A, classes="cf-instructions")
+                    yield Static(_CF_INSTRUCTIONS_B, classes="cf-instructions")
+                    yield Static(
+                        _worker_code(state.vps_ip),
+                        id="cf-worker-code",
+                        classes="worker-code",
+                    )
                     yield ValidatedInput(
-                        "Cloudflare Worker URL",
-                        input_id="cf-worker-url",
-                        placeholder="https://worker.example.workers.dev",
-                        value=state.cf_worker_url,
-                        hint="URL вашего Cloudflare Worker (опционально)",
+                        "Worker hostname",
+                        input_id="cf-cdn-hostname",
+                        placeholder="xxx-xxx.account.workers.dev",
+                        value=state.cf_cdn_hostname,
+                        hint="Без https:// — только hostname",
                     )
 
                 # ── DDNS (DuckDNS) ────────────────────────────────────────
@@ -132,8 +186,6 @@ class OptionsScreen(WizardScreen):
                     classes="opt-details" + ("" if ddns_on else " hidden"),
                 ):
                     yield Static(_DUCKDNS_INSTRUCTIONS, classes="ddns-instructions")
-                    # Субдомен: пользователь вводит только "myserver"
-                    # суффикс ".duckdns.org" добавляется автоматически
                     with Horizontal(classes="vi-row"):
                         yield Label("Субдомен:", classes="opt-label")
                         yield Input(
@@ -143,7 +195,7 @@ class OptionsScreen(WizardScreen):
                         )
                         yield Static(".duckdns.org", classes="subdomain-suffix")
                     yield Static(
-                        "Имя субдомена без .duckdns.org",
+                        "Имя без .duckdns.org",
                         classes="opt-hint",
                     )
                     yield ValidatedInput(
@@ -166,8 +218,10 @@ class OptionsScreen(WizardScreen):
     def on_input_changed(self, event: Input.Changed) -> None:
         state = self.app.state
         val = event.value.strip()
-        if event.input.id == "cf-worker-url":
-            state.cf_worker_url = val
+        if event.input.id == "cf-cdn-hostname":
+            # убираем https:// если пользователь вставил полный URL
+            hostname = val.removeprefix("https://").removeprefix("http://").rstrip("/")
+            state.cf_cdn_hostname = hostname
             state.save()
         elif event.input.id == "ddns-subdomain":
             state.ddns_domain = (val + _DUCKDNS_SUFFIX) if val else ""

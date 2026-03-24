@@ -28,8 +28,8 @@ class InstallerState:
     # Options
     use_cloudflare: str = "n"
     use_ddns: str = "n"
-    # Cloudflare
-    cf_worker_url: str = ""
+    # Cloudflare CDN (hostname без https://, напр. xxx.workers.dev)
+    cf_cdn_hostname: str = ""
     # DDNS (DuckDNS only; ddns_domain хранит полный домен: xxx.duckdns.org)
     ddns_domain: str = ""
     # In-memory only (never saved to disk)
@@ -79,8 +79,8 @@ class InstallerState:
         env["USE_CLOUDFLARE"] = self.use_cloudflare or "n"
         env["USE_DDNS"] = self.use_ddns or "n"
         env["VPN_NONINTERACTIVE"] = "1"
-        if self.cf_worker_url:
-            env["CF_WORKER_URL"] = self.cf_worker_url
+        if self.cf_cdn_hostname:
+            env["CF_CDN_HOSTNAME"] = self.cf_cdn_hostname
         if self.ddns_domain:
             env["DDNS_DOMAIN"] = self.ddns_domain
             env["DDNS_PROVIDER"] = "duckdns"
