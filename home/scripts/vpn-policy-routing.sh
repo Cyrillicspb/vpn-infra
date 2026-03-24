@@ -162,6 +162,14 @@ setup_routing() {
         log "Rule: from $WG_SUBNET → table $TABLE_VPN (priority 200)"
     fi
 
+    # Gateway Mode: LAN-трафик через таблицу 100 (прямой выход, без VPN)
+    if [[ "${SERVER_MODE:-hosted}" == "gateway" && -n "${LAN_SUBNET:-}" ]]; then
+        if ! rule_exists "from $LAN_SUBNET lookup $TABLE_VPN"; then
+            ip rule add from "$LAN_SUBNET" lookup $TABLE_VPN priority 195
+            log "Rule: from $LAN_SUBNET → table $TABLE_VPN (priority 195, gateway mode)"
+        fi
+    fi
+
     # Защита от routing loop: VPS IP всегда через eth0
     ensure_vps_routes
 
@@ -210,6 +218,12 @@ teardown_routing() {
     ip rule del to $WG_SUBNET lookup main 2>/dev/null || true
     ip rule del from $AWG_SUBNET lookup $TABLE_VPN 2>/dev/null || true
     ip rule del from $WG_SUBNET lookup $TABLE_VPN 2>/dev/null || true
+
+    # Gateway Mode: удаляем LAN-правило
+    if [[ "${SERVER_MODE:-hosted}" == "gateway" && -n "${LAN_SUBNET:-}" ]]; then
+        ip rule del from "$LAN_SUBNET" lookup $TABLE_VPN priority 195 2>/dev/null || true
+        log "Rule: from $LAN_SUBNET → table $TABLE_VPN (priority 195) удалено"
+    fi
 
     # Очищаем routing tables
     ip route flush table $TABLE_DPI    2>/dev/null || true

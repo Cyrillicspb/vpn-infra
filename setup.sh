@@ -192,6 +192,11 @@ phase0() {
         NET_INTERFACE="$ETH_IFACE"
         export ETH_IFACE GATEWAY_IP HOME_SERVER_IP HOME_SUBNET EXTERNAL_IP NET_INTERFACE
 
+        # Gateway Mode defaults (могут быть переопределены в step05)
+        LAN_IFACE="${ETH_IFACE:-eth0}"
+        LAN_SUBNET="${HOME_SUBNET:-192.168.1.0/24}"
+        export LAN_IFACE LAN_SUBNET
+
         step_done "step03_network_detect"
     fi
 
@@ -310,6 +315,39 @@ phase0() {
             fi
         fi
 
+        # ── Выбор режима: A (хостинг) или B (дома за роутером) ───────────────────
+        echo ""
+        if [[ -z "${SERVER_MODE:-}" ]]; then
+            echo -e "${BOLD}  Режим установки:${NC}"
+            echo "  [A] Сервер на хостинге (VPS/dedic — публичный IP)"
+            echo "  [B] Сервер дома за роутером (HAIRPIN NAT, LAN-шлюз)"
+            read -rp "  Выберите [A/B, Enter=A]: " _mode_choice
+            case "${_mode_choice,,}" in
+                b) SERVER_MODE="gateway" ;;
+                *) SERVER_MODE="hosted" ;;
+            esac
+        fi
+
+        if [[ "$SERVER_MODE" == "gateway" ]]; then
+            echo ""
+            echo -e "${BOLD}  === Gateway Mode ===${NC}"
+            # LAN_IFACE определён в step03, но может быть не экспортирован при повторном запуске
+            if [[ -z "${LAN_IFACE:-}" ]]; then
+                LAN_IFACE="${ETH_IFACE:-eth0}"
+            fi
+            if [[ -z "${LAN_SUBNET:-}" ]]; then
+                LAN_SUBNET="${HOME_SUBNET:-192.168.1.0/24}"
+            fi
+            read -rp "  LAN-интерфейс [${LAN_IFACE}]: " _lan_iface_input
+            LAN_IFACE="${_lan_iface_input:-$LAN_IFACE}"
+
+            read -rp "  LAN-подсеть [${LAN_SUBNET}]: " _lan_subnet_input
+            LAN_SUBNET="${_lan_subnet_input:-$LAN_SUBNET}"
+
+            read -rp "  Внешний IP роутера [${EXTERNAL_IP:-}]: " _router_ip_input
+            ROUTER_EXTERNAL_IP="${_router_ip_input:-${EXTERNAL_IP:-}}"
+        fi
+
         echo ""
         echo -e "${BOLD}  Опциональные компоненты:${NC}"
         ask USE_DDNS "Настроить DDNS? (y/N)"
@@ -406,6 +444,12 @@ phase0() {
         env_set "HOME_SERVER_IP"         "${HOME_SERVER_IP:-}"
         env_set "HOME_SUBNET"            "${HOME_SUBNET:-}"
         env_set "EXTERNAL_IP"            "${EXTERNAL_IP:-}"
+        env_set "SERVER_MODE"            "${SERVER_MODE:-hosted}"
+        if [[ "${SERVER_MODE:-hosted}" == "gateway" ]]; then
+            env_set "LAN_IFACE"          "${LAN_IFACE}"
+            env_set "LAN_SUBNET"         "${LAN_SUBNET}"
+            env_set "ROUTER_EXTERNAL_IP" "${ROUTER_EXTERNAL_IP:-}"
+        fi
 
         chmod 600 "$ENV_FILE"
         step_done "step05_collect_inputs"
@@ -1626,6 +1670,22 @@ phase5() {
     echo ""
     echo -e "${RED}${BOLD}  ⚠  Без этих шагов VPN не будет работать для клиентов!${NC}"
     echo ""
+
+    if [[ "${SERVER_MODE:-hosted}" == "gateway" ]]; then
+        echo -e "${BOLD}━━━ GATEWAY MODE: Настройка роутера ━━━${NC}"
+        echo "   1. Port Forward на роутере:"
+        echo "      UDP 51820 → ${HOME_SERVER_IP:-<LAN-IP-сервера>}:51820  (AmneziaWG)"
+        echo "      UDP 51821 → ${HOME_SERVER_IP:-<LAN-IP-сервера>}:51821  (WireGuard)"
+        echo ""
+        echo "   2. Для LAN-устройств (Smart TV, консоли) — опционально:"
+        echo "      Default Gateway = ${HOME_SERVER_IP:-<LAN-IP-сервера>}"
+        echo "      DNS Server      = ${HOME_SERVER_IP:-<LAN-IP-сервера>}"
+        echo "      (через DHCP или вручную на каждом устройстве)"
+        echo ""
+        echo "   3. НЕ менять default gateway на самом роутере (петля!)"
+        echo "   4. Рекомендуется UPS — сервер станет SPOF для LAN"
+        echo ""
+    fi
 
     echo -e "${BOLD}━━━ ШАГ A: Проброс портов на роутере ━━━${NC}"
     echo "   Войдите в веб-панель роутера (обычно http://192.168.1.1)"

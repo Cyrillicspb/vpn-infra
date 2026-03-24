@@ -638,6 +638,25 @@ EOF
 
     chmod 644 /etc/nftables.conf /etc/nftables-blocked-static.conf
 
+    # Gateway Mode: переге╢нерировать конфиг с LAN-правилами
+    if [[ "${SERVER_MODE:-hosted}" == "gateway" ]]; then
+        log_info "Gateway Mode: генерация nftables конфига с LAN-правилами..."
+        GENERATE_NFT="/opt/vpn/scripts/generate-nftables.sh"
+        if [[ ! -f "$GENERATE_NFT" ]]; then
+            # Копируем из репозитория (step29 ещё не выполнен)
+            REPO_DIR_NFT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+            [[ -f "${REPO_DIR_NFT}/home/scripts/generate-nftables.sh" ]] && \
+                cp "${REPO_DIR_NFT}/home/scripts/generate-nftables.sh" "$GENERATE_NFT" && \
+                chmod +x "$GENERATE_NFT"
+        fi
+        if [[ -x "$GENERATE_NFT" ]]; then
+            bash "$GENERATE_NFT" || log_warn "generate-nftables.sh завершился с ошибкой — применён базовый конфиг"
+            log_ok "Gateway nftables применён"
+        else
+            log_warn "generate-nftables.sh не найден — применён базовый конфиг"
+        fi
+    fi
+
     systemctl enable nftables
     systemctl restart nftables \
         || log_warn "nftables restart завершился с ошибкой — проверьте конфиг: nft -c -f /etc/nftables.conf"
@@ -829,6 +848,17 @@ EOF
         VPS_TUN="${VPS_TUNNEL_IP:-10.177.2.2}"
         sed -i "s|10\.177\.2\.2|${VPS_TUN}|g" /etc/dnsmasq.d/*.conf 2>/dev/null || true
         log_ok "Конфиги dnsmasq.d скопированы из репозитория"
+    fi
+
+    # Gateway Mode: добавить прослушивание на LAN-интерфейсе
+    if [[ "${SERVER_MODE:-hosted}" == "gateway" && -n "${LAN_IFACE:-}" ]]; then
+        mkdir -p /etc/dnsmasq.d
+        cat > /etc/dnsmasq.d/gateway.conf << EOF
+# Gateway Mode: DNS для LAN-устройств
+# Генерируется автоматически из SERVER_MODE=gateway
+interface=${LAN_IFACE}
+EOF
+        log_ok "dnsmasq: Gateway mode — слушает на ${LAN_IFACE}"
     fi
 
     systemctl enable dnsmasq
