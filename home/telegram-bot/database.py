@@ -267,6 +267,10 @@ class Database:
                     "INSERT OR IGNORE INTO clients (chat_id, username, first_name, is_admin) VALUES (?, ?, ?, 1)",
                     (str(chat_id), username, first_name),
                 )
+                conn.execute(
+                    "UPDATE clients SET is_admin = 1 WHERE chat_id = ? AND is_admin = 0",
+                    (str(chat_id),),
+                )
                 conn.commit()
             finally:
                 conn.close()

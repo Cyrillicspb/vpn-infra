@@ -893,6 +893,9 @@ async def cmd_client(message: Message, state: FSMContext, **kw):
         await message.answer(f"✅ Клиент `{name}` включён.")
 
     elif action == "kick":
+        if str(chat_id) == str(config.admin_chat_id):
+            await message.answer("❌ Нельзя кикнуть root-администратора.")
+            return
         # Удалить все устройства и их WG-пиры
         devices = await db.get_devices(chat_id)
         wc = _wc()
@@ -903,6 +906,8 @@ async def cmd_client(message: Message, state: FSMContext, **kw):
                 except Exception:
                     pass
             await db.delete_device(d["id"])
+        if client.get("is_admin"):
+            await db.set_admin(chat_id, False, None)
         await db.set_client_disabled(chat_id, True)
         bot: "Bot" = kw.get("bot")
         try:
@@ -2849,8 +2854,12 @@ async def cb_adm_client_kick(cb: CallbackQuery, **kw):
 @router.callback_query(F.data.startswith("adm:cl_kick_ok:"))
 async def cb_adm_client_kick_ok(cb: CallbackQuery, **kw):
     chat_id = cb.data[len("adm:cl_kick_ok:"):]
+    if str(chat_id) == str(config.admin_chat_id):
+        await cb.answer("❌ Нельзя кикнуть root-администратора", show_alert=True)
+        return
     db: Database = kw.get("db")
     bot = kw.get("bot")
+    client = await db.get_client(chat_id)
     devices = await db.get_devices(chat_id)
     wc = _wc()
     for d in devices:
@@ -2860,6 +2869,8 @@ async def cb_adm_client_kick_ok(cb: CallbackQuery, **kw):
             except Exception:
                 pass
         await db.delete_device(d["id"])
+    if client and client.get("is_admin"):
+        await db.set_admin(chat_id, False, None)
     await db.set_client_disabled(chat_id, True)
     try:
         await bot.send_message(chat_id, "❌ Ваш доступ к VPN отозван.")
