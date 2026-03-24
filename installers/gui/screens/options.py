@@ -85,7 +85,7 @@ class OptionsScreen(WizardScreen):
         color: $text;
     }}
     #worker-code {{
-        height: 8;
+        height: 4;
         margin: 1 0;
         border: round $success-darken-2;
         background: #0d1117;
@@ -180,10 +180,6 @@ class OptionsScreen(WizardScreen):
                             id="ddns-subdomain",
                         )
                         yield Static(".duckdns.org", classes="subdomain-suffix")
-                    yield Static(
-                        "Имя без .duckdns.org",
-                        classes="opt-hint",
-                    )
                     yield ValidatedInput(
                         "DuckDNS Token",
                         input_id="ddns-token",

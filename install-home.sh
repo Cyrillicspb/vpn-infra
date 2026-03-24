@@ -681,13 +681,16 @@ else
     fi
 
     # Тестируем через LAN IP (не loopback) — пакеты проходят через nftables INPUT
-    [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
+    if [[ -f "$ENV_FILE" ]]; then
+        set -o allexport; source "$ENV_FILE" || true; set +o allexport
+    fi
     LAN_IP="${HOME_SERVER_IP:-}"
     if [[ -z "$LAN_IP" ]]; then
         LAN_IP=$(ip -4 addr show "${NET_INTERFACE:-eth0}" 2>/dev/null \
-            | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+            | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || true)
     fi
     LAN_IP="${LAN_IP:-127.0.0.1}"
+    log_info "LAN IP для сканирования: ${LAN_IP}"
 
     log_info "nmap TCP (top-100 портов) → $LAN_IP ..."
     # --open: только открытые; -oG: grepable; -T5: максимально быстро; timeout 20s
