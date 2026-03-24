@@ -48,10 +48,11 @@ DNSMASQ_CONF="/etc/dnsmasq.conf"
 [[ ! -f "$DNSMASQ_CONF" ]] && DNSMASQ_CONF="/opt/vpn/dnsmasq/dnsmasq.conf"
 if [[ -f "$DNSMASQ_CONF" ]]; then
     pass "Конфиг dnsmasq существует"
-    if grep -q "nftset=" "$DNSMASQ_CONF" 2>/dev/null; then
-        pass "nftset= директивы присутствуют в конфиге"
+    if grep -rqP 'nftset=/[^/]+/4#inet#[a-z_]+#(blocked_dynamic|dpi_direct)' /etc/dnsmasq.d/ 2>/dev/null || \
+       grep -qP 'nftset=/[^/]+/4#inet#[a-z_]+#(blocked_dynamic|dpi_direct)' "$DNSMASQ_CONF" 2>/dev/null; then
+        pass "dnsmasq nftset directives configured (correct format)"
     else
-        fail "nftset= директивы отсутствуют в dnsmasq.conf"
+        fail "nftset directives missing or invalid format in dnsmasq config"
     fi
 else
     fail "Конфиг $DNSMASQ_CONF не найден"
@@ -87,14 +88,10 @@ else
 fi
 
 # 9. dnsmasq НЕ логирует DNS-запросы (privacy)
-if grep -q "log-queries" "$DNSMASQ_CONF" 2>/dev/null; then
-    if grep -q "#log-queries" "$DNSMASQ_CONF" 2>/dev/null; then
-        pass "log-queries закомментирован (приватность соблюдена)"
-    else
-        warn "log-queries включён — DNS-запросы логируются (нарушение приватности)"
-    fi
+if ! grep -qE '^[[:space:]]*log-queries' "$DNSMASQ_CONF" 2>/dev/null; then
+    pass "dnsmasq: log-queries disabled (privacy)"
 else
-    pass "log-queries не установлен (приватность: DNS-запросы не логируются)"
+    warn "dnsmasq: log-queries enabled — DNS-запросы логируются (нарушение приватности)"
 fi
 
 echo ""

@@ -28,8 +28,9 @@ if nft list set inet vpn blocked_static &>/dev/null; then
     COUNT=$(nft list set inet vpn blocked_static 2>/dev/null | grep -c 'elements =' || \
             nft list set inet vpn blocked_static 2>/dev/null | grep -oP '\d+ elements' | grep -oP '\d+' || \
             echo "?")
-    ELEM_COUNT=$(nft list set inet vpn blocked_static 2>/dev/null | \
-                 grep -oP '(?<=\{)[^}]+' | tr ',' '\n' | wc -l 2>/dev/null || echo 0)
+    ELEM_COUNT=$(nft -j list set inet vpn blocked_static 2>/dev/null | \
+        python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('nftables',[{}])[-1].get('set',{}).get('elem',[])))" 2>/dev/null || \
+        nft list set inet vpn blocked_static 2>/dev/null | grep -cE '^\s+[0-9a-f.:]+' || echo 0)
     pass "nft set blocked_static существует (элементов: ~${ELEM_COUNT})"
     if (( ELEM_COUNT > 100 )); then
         pass "blocked_static содержит >100 записей (базы РКН загружены)"
@@ -63,13 +64,11 @@ else
     fail "ip rule: fwmark 0x1 → table 200 не найден"
 fi
 
-# 5. ip rule: DNS через VPN (1.1.1.1)
-if ip rule show 2>/dev/null | grep -qE "1.1.1.1.*(lookup 200|lookup marked)"; then
-    pass "ip rule: DNS 1.1.1.1 → table 200"
-elif ip rule show 2>/dev/null | grep -qE "8.8.8.8.*(lookup 200|lookup marked)"; then
-    pass "ip rule: DNS 8.8.8.8 → table 200"
+# 5. ip rule: DNS (1.1.1.1/8.8.8.8) НЕ должны быть в table 200 — ломает dnsmasq upstream
+if ! ip rule show 2>/dev/null | grep -qE "(1\.1\.1\.1|8\.8\.8\.8).*(lookup 200|lookup marked)"; then
+    pass "ip rule: DNS 1.1.1.1/8.8.8.8 NOT in table 200 (dnsmasq safe)"
 else
-    warn "ip rule для DNS через VPN не найден"
+    fail "ip rule: DNS servers in table 200 — breaks dnsmasq upstream"
 fi
 
 # 6. AWG subnet → table 100 (может называться "vpn")

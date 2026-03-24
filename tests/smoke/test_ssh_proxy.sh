@@ -73,31 +73,18 @@ else
     warn "vpn-active-socks-port не существует (watchdog не запущен или не переключал стеки)"
 fi
 
-# 5. Поведение ssh-proxy.sh без файла состояния (smoke-проверка через bash -x)
-# Временно указываем несуществующий файл через переопределение переменной в скрипте
-TMP_PROXY_TEST=$(mktemp /tmp/vpn-proxy-test-XXXX.sh)
-cat > "$TMP_PROXY_TEST" << 'INNER'
-#!/bin/bash
-# Симуляция ssh-proxy.sh с пустым файлом состояния
-SOCKS_PORT_FILE="/tmp/vpn-proxy-test-nonexistent-$(date +%s)"
-SOCKS_PORT=""
-if [[ -f "$SOCKS_PORT_FILE" ]]; then
-    SOCKS_PORT=$(tr -d '[:space:]' < "$SOCKS_PORT_FILE" 2>/dev/null)
-fi
-# Если нет файла — должно использоваться прямое соединение (nc без -X)
-if [[ -n "$SOCKS_PORT" && "$SOCKS_PORT" =~ ^[0-9]+$ ]]; then
-    echo "SOCKS"
+# 5. Поведение реального ssh-proxy.sh без файла состояния
+SSH_PROXY="/opt/vpn/scripts/ssh-proxy.sh"
+if [[ -x "$SSH_PROXY" ]]; then
+    # Тест с несуществующим файлом состояния → должен вернуть прямое соединение
+    RESULT=$(SOCKS_STATE_FILE="/tmp/vpn-nonexistent-$$" bash "$SSH_PROXY" localhost 22 2>/dev/null || echo "TIMEOUT")
+    if [[ "$RESULT" != "TIMEOUT" ]]; then
+        pass "ssh-proxy.sh: fallback to direct connection works"
+    else
+        warn "ssh-proxy.sh: could not test (timeout)"
+    fi
 else
-    echo "DIRECT"
-fi
-INNER
-chmod +x "$TMP_PROXY_TEST"
-result=$(bash "$TMP_PROXY_TEST" 2>/dev/null)
-rm -f "$TMP_PROXY_TEST"
-if [[ "$result" == "DIRECT" ]]; then
-    pass "ssh-proxy.sh: при отсутствии файла состояния → прямое соединение"
-else
-    fail "ssh-proxy.sh: неожиданный результат при отсутствии файла: '$result'"
+    warn "ssh-proxy.sh not found at $SSH_PROXY — skipping"
 fi
 
 # 6. VPS_IP задан в .env

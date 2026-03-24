@@ -112,22 +112,21 @@ elif (( SITE_FAIL > 0 )); then
     fail "Заблокированные сайты: все недоступны ($SITE_FAIL/${#BLOCKED_SITES[@]})"
 fi
 
-# 4. Внешний IP через VPN должен быть IP VPS, не домашний
-EXTERNAL_IP=$(curl -sf --max-time 10 https://icanhazip.com 2>/dev/null || \
-              curl -sf --max-time 10 https://api.ipify.org 2>/dev/null || true)
+# 4. Внешний IP через tun должен совпадать с VPS IP (split tunneling: проверяем через tun)
 VPS_IP="${VPS_IP:-}"
-
-if [[ -n "$EXTERNAL_IP" && -n "$VPS_IP" ]]; then
-    if [[ "$EXTERNAL_IP" == "$VPS_IP" ]]; then
-        pass "Внешний IP = VPS IP ($EXTERNAL_IP) — трафик идёт через VPN"
+if [[ -n "$ACTIVE_TUN" ]]; then
+    VPN_IP=$(curl -sf --max-time 10 --interface "$ACTIVE_TUN" https://icanhazip.com 2>/dev/null || true)
+    if [[ -n "$VPN_IP" && -n "$VPS_IP" && "$VPN_IP" == "$VPS_IP" ]]; then
+        pass "Внешний IP через tun = VPS IP ($VPN_IP)"
+    elif [[ -n "$VPN_IP" && -n "$VPS_IP" ]]; then
+        warn "Внешний IP через tun: $VPN_IP (ожидался VPS $VPS_IP)"
+    elif [[ -n "$VPN_IP" ]]; then
+        pass "Внешний IP через tun: $VPN_IP (VPS_IP не установлен для сравнения)"
     else
-        warn "Внешний IP ($EXTERNAL_IP) ≠ VPS IP ($VPS_IP) — возможно split tunneling"
-        pass "Split tunneling: прямые сайты идут через домашний IP (ожидаемо)"
+        warn "Не удалось получить внешний IP через tun ($ACTIVE_TUN)"
     fi
-elif [[ -n "$EXTERNAL_IP" ]]; then
-    pass "Внешний IP: $EXTERNAL_IP (VPS_IP не установлен для сравнения)"
 else
-    warn "Не удалось определить внешний IP"
+    warn "Нет активного tun — пропуск проверки внешнего IP"
 fi
 
 # 5. Прямой трафик НЕ идёт через VPN (split tunneling работает)
