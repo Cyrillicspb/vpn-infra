@@ -38,15 +38,22 @@ VPS_BACKUP_DIR="/opt/vpn/backups"
 SSH_KEY="/root/.ssh/vpn_id_ed25519"
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-BACKUP_NAME="vpn-backup-${TIMESTAMP}"
+if [[ "$FULL_EXPORT" == "true" ]]; then
+    BACKUP_NAME="vpn-export-${TIMESTAMP}"
+else
+    BACKUP_NAME="vpn-backup-${TIMESTAMP}"
+fi
 
 # ── Флаги ─────────────────────────────────────────────────────────────────────
 DRY_RUN=false
 NO_UPLOAD=false
+FULL_EXPORT=false
+HAS_MTLS=false
 for arg in "$@"; do
     case "$arg" in
-        --dry-run)   DRY_RUN=true ;;
-        --no-upload) NO_UPLOAD=true ;;
+        --dry-run)     DRY_RUN=true ;;
+        --no-upload)   NO_UPLOAD=true ;;
+        --full-export) FULL_EXPORT=true ;;
     esac
 done
 
@@ -196,23 +203,81 @@ if [[ -d /opt/vpn/watchdog/plugins ]]; then
     log_ok "watchdog plugins"
 fi
 
+# ── 9а. Watchdog state.json ───────────────────────────────────────────────────
+if [[ -f "/opt/vpn/watchdog/state.json" ]]; then
+    cp "/opt/vpn/watchdog/state.json" "$TMP_DIR/watchdog-state.json" 2>/dev/null || true
+    log_ok "watchdog state.json"
+fi
+
+# ── Full-export дополнительные данные ─────────────────────────────────────────
+if [[ "$FULL_EXPORT" == "true" ]]; then
+    log "Full export: дополнительные данные..."
+
+    # mTLS CA с VPS (graceful degradation)
+    if [[ -n "${VPS_IP:-}" && -n "${SSH_KEY:-}" ]]; then
+        log "Копирование mTLS CA с VPS ${VPS_IP}..."
+        mkdir -p "$TMP_DIR/mtls"
+        if scp -P "${VPS_SSH_PORT:-22}" \
+            -i "$SSH_KEY" \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=10 \
+            -o BatchMode=yes \
+            "sysadmin@${VPS_IP}:/opt/vpn/nginx/mtls/ca.key" \
+            "sysadmin@${VPS_IP}:/opt/vpn/nginx/mtls/ca.crt" \
+            "$TMP_DIR/mtls/" 2>/dev/null; then
+            HAS_MTLS=true
+            log_ok "mTLS CA скопирован"
+        else
+            log_warn "Не удалось скопировать mTLS CA с VPS (VPS недоступен?) — продолжаем без него"
+            rmdir "$TMP_DIR/mtls" 2>/dev/null || true
+        fi
+    else
+        log_warn "VPS_IP или SSH_KEY не заданы — mTLS CA пропущен"
+    fi
+
+    # DPI presets
+    if [[ -f "/etc/vpn/dpi-presets.json" ]]; then
+        cp "/etc/vpn/dpi-presets.json" "$TMP_DIR/dpi-presets.json" 2>/dev/null || true
+        log_ok "DPI presets скопированы"
+    fi
+
+    # Cloudflared credentials
+    if [[ -d "$HOME/.cloudflared" ]] && ls "$HOME/.cloudflared/"*.json &>/dev/null 2>&1; then
+        mkdir -p "$TMP_DIR/cloudflared"
+        cp "$HOME/.cloudflared/"*.json "$TMP_DIR/cloudflared/" 2>/dev/null || true
+        log_ok "Cloudflared credentials скопированы"
+    fi
+fi
+
 # ── 10. Метаданные бэкапа ─────────────────────────────────────────────────────
 log "Метаданные..."
 VPN_VERSION="$(cat /opt/vpn/version 2>/dev/null || echo 'unknown')"
 ACTIVE_TUN="$(cat /run/vpn-active-tun 2>/dev/null || echo 'none')"
 WG0_PEERS="$(wg show wg0 peers 2>/dev/null | wc -l || echo 0)"
 WG1_PEERS="$(wg show wg1 peers 2>/dev/null | wc -l || echo 0)"
+CLIENT_COUNT=0
+if [[ -f "$DB_PATH" ]]; then
+    CLIENT_COUNT="$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM clients" 2>/dev/null || echo 0)"
+fi
+EXPORT_TYPE="backup"
+[[ "$FULL_EXPORT" == "true" ]] && EXPORT_TYPE="full-export"
+HAS_MTLS_JSON="false"
+[[ "$HAS_MTLS" == "true" ]] && HAS_MTLS_JSON="true"
 
 cat > "$TMP_DIR/metadata.json" << EOF
 {
-  "timestamp":    "${TIMESTAMP}",
-  "hostname":     "$(hostname)",
-  "vpn_version":  "${VPN_VERSION}",
-  "kernel":       "$(uname -r)",
-  "active_tun":   "${ACTIVE_TUN}",
-  "wg0_peers":    ${WG0_PEERS},
-  "wg1_peers":    ${WG1_PEERS},
-  "created_at":   "$(date -Iseconds)"
+  "timestamp":      "${TIMESTAMP}",
+  "hostname":       "$(hostname)",
+  "vpn_version":    "${VPN_VERSION}",
+  "kernel":         "$(uname -r)",
+  "active_tun":     "${ACTIVE_TUN}",
+  "wg0_peers":      ${WG0_PEERS},
+  "wg1_peers":      ${WG1_PEERS},
+  "export_type":    "${EXPORT_TYPE}",
+  "client_count":   ${CLIENT_COUNT},
+  "has_mtls":       ${HAS_MTLS_JSON},
+  "home_server_ip": "${EXTERNAL_IP:-}",
+  "created_at":     "$(date -Iseconds)"
 }
 EOF
 log_ok "metadata.json"
