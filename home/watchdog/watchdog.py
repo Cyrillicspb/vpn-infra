@@ -262,12 +262,54 @@ class TelegramQueue:
 
 tg = TelegramQueue()
 
+_admin_chat_ids_cache: list[str] = []
+_admin_chat_ids_ts: float = 0.0
+_ADMIN_CACHE_TTL = 300.0  # 5 минут
+
+
+def _get_admin_chat_ids() -> list[str]:
+    global _admin_chat_ids_cache, _admin_chat_ids_ts
+    import time as _time
+    now = _time.monotonic()
+    if now - _admin_chat_ids_ts < _ADMIN_CACHE_TTL and _admin_chat_ids_cache:
+        return _admin_chat_ids_cache
+    ids: list[str] = []
+    if TELEGRAM_ADMIN_ID:
+        ids.append(str(TELEGRAM_ADMIN_ID))
+    if BOT_DB_PATH.exists():
+        try:
+            import sqlite3 as _sqlite3
+            with _sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=3) as conn:
+                rows = conn.execute(
+                    "SELECT chat_id FROM clients WHERE is_admin = 1"
+                ).fetchall()
+            for row in rows:
+                cid = str(row[0])
+                if cid not in ids:
+                    ids.append(cid)
+        except Exception as exc:
+            logger.warning(f"_get_admin_chat_ids: не удалось прочитать БД бота: {exc}")
+    _admin_chat_ids_cache = ids if ids else ([str(TELEGRAM_ADMIN_ID)] if TELEGRAM_ADMIN_ID else [])
+    _admin_chat_ids_ts = now
+    return _admin_chat_ids_cache
+
+
+def _reload_admin_cache() -> int:
+    global _admin_chat_ids_ts
+    _admin_chat_ids_ts = 0.0
+    return len(_get_admin_chat_ids())
+
 
 def alert(text: str, chat_id: str = "") -> None:
     """Добавить алерт в очередь Telegram."""
     logger.info(f"ALERT: {text[:120]}")
     ts = datetime.now().strftime("%d.%m %H:%M")
-    tg.enqueue(f"{text}\n\n🕐 {ts}", chat_id)
+    msg = f"{text}\n\n🕐 {ts}"
+    if chat_id:
+        tg.enqueue(msg, chat_id)
+    else:
+        for cid in _get_admin_chat_ids():
+            tg.enqueue(msg, cid)
 
 
 # ---------------------------------------------------------------------------
@@ -2325,6 +2367,25 @@ async def post_notify_clients(request: Request, req: NotifyClientsRequest, _: bo
     # telegram-bot обрабатывает рассылку сам — здесь только сохраняем сигнал
     alert(f"📢 Рассылка клиентам:\n{req.message}")
     return {"status": "queued", "message": req.message}
+
+
+class AdminNotifyRequest(BaseModel):
+    text: str
+    chat_id: str = ""
+
+
+@app.post("/admin-notify")
+@limiter.limit("10/second")
+async def post_admin_notify(request: Request, req: AdminNotifyRequest, _: bool = Depends(_auth)):
+    alert(req.text, req.chat_id)
+    return {"status": "queued"}
+
+
+@app.post("/admin-notify/reload")
+@limiter.limit("10/second")
+async def post_admin_notify_reload(request: Request, _: bool = Depends(_auth)):
+    count = _reload_admin_cache()
+    return {"status": "ok", "admin_count": count}
 
 
 
