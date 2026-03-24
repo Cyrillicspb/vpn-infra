@@ -63,6 +63,7 @@ class OptionsScreen(WizardScreen):
     {WIZARD_BASE_CSS}
     #opt-form {{
         width: 74;
+        height: auto;
         margin: 1 2;
         padding: 1 2;
         border: round $primary;
@@ -180,14 +181,15 @@ class OptionsScreen(WizardScreen):
                             id="ddns-subdomain",
                         )
                         yield Static(".duckdns.org", classes="subdomain-suffix")
-                    yield ValidatedInput(
-                        "DuckDNS Token",
-                        input_id="ddns-token",
-                        placeholder="a1b2c3d4-e5f6-...",
-                        value=state.ddns_token,
-                        hint="UUID токен с сайта duckdns.org",
-                        password=True,
-                    )
+                    with Horizontal(classes="opt-row"):
+                        yield Label("DuckDNS Token:", classes="opt-label")
+                        yield Input(
+                            value=state.ddns_token,
+                            placeholder="a1b2c3d4-e5f6-...",
+                            id="ddns-token",
+                            password=True,
+                        )
+                    yield Static("UUID токен с сайта duckdns.org", classes="opt-hint")
 
                 yield Static(
                     "\n[dim]Все опции можно настроить позже вручную\n"
