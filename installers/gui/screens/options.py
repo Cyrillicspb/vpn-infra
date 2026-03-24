@@ -10,23 +10,6 @@ from components.wizard_screen import WIZARD_BASE_CSS, WizardScreen
 
 _DUCKDNS_SUFFIX = ".duckdns.org"
 
-_DUCKDNS_INSTRUCTIONS = (
-    "[bold]Как настроить DuckDNS:[/bold]\n"
-    "  1. Откройте duckdns.org в браузере\n"
-    "  2. Войдите через GitHub, Google или Reddit\n"
-    '  3. В поле "sub domain" введите имя → "add domain"\n'
-    "  4. Скопируйте [bold]token[/bold] (UUID вверху страницы)\n"
-    "  5. Введите субдомен и token ниже"
-)
-
-_CF_INSTRUCTIONS = (
-    "[bold]Настройка Cloudflare Worker:[/bold]\n"
-    "  1. dash.cloudflare.com/sign-up (бесплатно)\n"
-    "  2. Workers & Pages → Create → Create Worker\n"
-    "  3. Edit code → вставьте код ниже → Save & Deploy\n"
-    "  4. Скопируйте URL (xxx.workers.dev) → вставьте ниже"
-)
-
 
 def _worker_code(vps_ip: str) -> str:
     ip = vps_ip or "ВАШ_VPS_IP"
@@ -57,10 +40,20 @@ class OptionsScreen(WizardScreen):
         "Заблокировать = заблокировать весь CF.\n"
         "Нужен только бесплатный аккаунт.\n"
         "Без него используются Stack 2/3/4.\n\n"
+        "[bold]Как настроить Cloudflare Worker:[/bold]\n"
+        "  1. dash.cloudflare.com/sign-up (бесплатно)\n"
+        "  2. Workers & Pages → Create → Create Worker\n"
+        "  3. Edit code → вставьте код ниже → Save & Deploy\n"
+        "  4. Скопируйте URL (xxx.workers.dev) → вставьте ниже\n\n"
         "[bold]DDNS (DuckDNS)[/bold]\n"
         "Нужен если у роутера динамический IP.\n"
         "Бесплатно, без покупки домена.\n\n"
-        "Создаёт субдомен: myserver.duckdns.org\n\n"
+        "[bold]Как настроить DuckDNS:[/bold]\n"
+        "  1. Откройте duckdns.org в браузере\n"
+        "  2. Войдите через GitHub, Google или Reddit\n"
+        '  3. В поле "sub domain" введите имя → "add domain"\n'
+        "  4. Скопируйте [bold]token[/bold] (UUID вверху страницы)\n"
+        "  5. Введите субдомен и token ниже\n\n"
         "Обе опции можно настроить позже через\n"
         "/opt/vpn/.env"
     )
@@ -142,7 +135,10 @@ class OptionsScreen(WizardScreen):
                     id="cf-details",
                     classes="opt-details" + ("" if cf_on else " hidden"),
                 ):
-                    yield Static(_CF_INSTRUCTIONS, classes="cf-instructions")
+                    yield Static(
+                        "[dim]Workers & Pages → Create Worker → Edit code → вставьте код → Save & Deploy (? для инструкций)[/dim]",
+                        classes="cf-instructions",
+                    )
                     code_log = RichLog(
                         highlight=False, markup=False, wrap=False, id="worker-code"
                     )
@@ -172,7 +168,10 @@ class OptionsScreen(WizardScreen):
                     id="ddns-details",
                     classes="opt-details" + ("" if ddns_on else " hidden"),
                 ):
-                    yield Static(_DUCKDNS_INSTRUCTIONS, classes="ddns-instructions")
+                    yield Static(
+                        "[dim]duckdns.org → войти → добавить субдомен → скопировать token (? для инструкций)[/dim]",
+                        classes="ddns-instructions",
+                    )
                     with Horizontal(classes="vi-row"):
                         yield Label("Субдомен:", classes="opt-label")
                         yield Input(
