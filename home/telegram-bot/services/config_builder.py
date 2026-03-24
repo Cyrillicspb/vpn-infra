@@ -289,6 +289,7 @@ TUNNEL_NAME="{name}"
 PROTOCOL="{protocol}"
 
 # Ручная установка AWG: https://github.com/amnezia-vpn/amneziawg-linux-kernel-module
+# Ручная установка WG:  https://www.wireguard.com/install/
 
 echo "============================================"
 echo " Установка VPN туннеля: $TUNNEL_NAME"
