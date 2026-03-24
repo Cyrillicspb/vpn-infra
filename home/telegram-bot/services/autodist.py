@@ -162,6 +162,27 @@ class AutoDist:
             caption=f"Конфигурация `{device['device_name']}`{caption_reason}",
         )
 
+        # Установщик — если у устройства сохранена desktop-платформа
+        platform = device.get("platform")
+        if platform in ("windows", "macos", "linux"):
+            import re as _re
+            from services.config_builder import build_installer, PLATFORM_SCRIPTS
+            safe_name = _re.sub(r'[^\w\-]', '_', device["device_name"])
+            installer = build_installer(
+                device_name=device["device_name"],
+                conf_text=conf_text,
+                platform=platform,
+                protocol=device.get("protocol", "awg"),
+            )
+            if installer:
+                ext = PLATFORM_SCRIPTS[platform]["ext"]
+                fname = f"install-vpn-{safe_name}.{ext}"
+                await self.bot.send_document(
+                    chat_id,
+                    document=BufferedInputFile(installer, filename=fname),
+                    caption="Обновлённый установщик",
+                )
+
         # Обновляем версию в БД
         await self.db.update_config_version(device["id"], version)
 

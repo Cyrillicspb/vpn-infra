@@ -1690,7 +1690,12 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
         _protocol = device.get("protocol", "awg")
         installer_bytes = build_installer(device["device_name"], conf_text, platform, protocol=_protocol)
 
-        # Инструкция перед скриптом
+        await cb.message.answer(
+            "⚠️ <b>Конфигурация содержит приватный ключ!</b> Не передавайте никому.",
+            parse_mode="HTML",
+        )
+
+        # Инструкция перед скриптом (отдельным сообщением)
         if platform == "windows":
             _install_hint = (
                 "⚠️ Сохраните файл и запустите от администратора (ПКМ → Запуск от администратора). "
@@ -1706,11 +1711,7 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
                 "Сохраните файл и выполните:\n"
                 "<code>chmod +x install-vpn-*.sh &amp;&amp; sudo ./install-vpn-*.sh</code>"
             )
-
-        await cb.message.answer(
-            "⚠️ <b>Конфигурация содержит приватный ключ!</b> Не передавайте никому.\n\n" + _install_hint,
-            parse_mode="HTML",
-        )
+        await cb.message.answer(_install_hint, parse_mode="HTML")
         _dated = f"{device['device_name']}_{date.today()}"
         await cb.message.answer_document(
             BufferedInputFile(conf_text.encode(), filename=f"{_dated}.conf"),
