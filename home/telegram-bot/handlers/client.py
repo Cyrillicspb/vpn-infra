@@ -1682,11 +1682,33 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
                     f"Если тоннель с таким именем уже есть в приложении — удалите старый и добавьте этот.",
         )
     else:
-        # windows / macos / linux — отправить .conf + installer script
-        from services.config_builder import build_installer
-        installer_bytes = build_installer(device["device_name"], conf_text, platform)
+        # windows / macos / linux — сохранить платформу, отправить .conf + installer script
+        await db.update_device_platform(device_id, platform)
+        from services.config_builder import build_installer, PLATFORM_SCRIPTS
+        import re as _re
+        _safe_name = _re.sub(r'[^\w\-]', '_', device["device_name"])
+        _protocol = device.get("protocol", "awg")
+        installer_bytes = build_installer(device["device_name"], conf_text, platform, protocol=_protocol)
+
+        # Инструкция перед скриптом
+        if platform == "windows":
+            _install_hint = (
+                "⚠️ Сохраните файл и запустите от администратора (ПКМ → Запуск от администратора). "
+                "Windows может показать предупреждение — нажмите «Подробнее» → «Выполнить»."
+            )
+        elif platform == "macos":
+            _install_hint = (
+                "⚠️ Сохраните файл. При первом запуске: правый клик → Открыть. "
+                "macOS покажет предупреждение о неизвестном разработчике — нажмите «Открыть»."
+            )
+        else:
+            _install_hint = (
+                "Сохраните файл и выполните:\n"
+                "<code>chmod +x install-vpn-*.sh &amp;&amp; sudo ./install-vpn-*.sh</code>"
+            )
+
         await cb.message.answer(
-            "⚠️ <b>Конфигурация содержит приватный ключ!</b> Не передавайте никому.",
+            "⚠️ <b>Конфигурация содержит приватный ключ!</b> Не передавайте никому.\n\n" + _install_hint,
             parse_mode="HTML",
         )
         _dated = f"{device['device_name']}_{date.today()}"
@@ -1695,12 +1717,11 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
             caption=f"Конфигурация `{device['device_name']}` · {date.today()}",
         )
         if installer_bytes:
-            from services.config_builder import PLATFORM_SCRIPTS
             ext = PLATFORM_SCRIPTS[platform]["ext"]
             label = PLATFORM_SCRIPTS[platform]["label"]
             await cb.message.answer_document(
-                BufferedInputFile(installer_bytes, filename=f"install-vpn-{device['device_name']}.{ext}"),
-                caption=f"Установщик для {label}\nЗапустите от имени администратора.",
+                BufferedInputFile(installer_bytes, filename=f"install-vpn-{_safe_name}.{ext}"),
+                caption=f"Установщик для {label}",
             )
 
     await db.update_config_version(device["id"], version)
@@ -1791,5 +1812,26 @@ async def _send_config(message: Message, db: Database, device: dict, kw: dict) -
         BufferedInputFile(conf_text.encode(), filename=_filename),
         caption=_caption,
     )
+
+    # Установщик — если у устройства сохранена desktop-платформа
+    _platform = device.get("platform")
+    if _platform in ("windows", "macos", "linux"):
+        from services.config_builder import build_installer, PLATFORM_SCRIPTS
+        import re as _re
+        _safe_name = _re.sub(r'[^\w\-]', '_', device["device_name"])
+        _protocol = device.get("protocol", "awg")
+        _installer = build_installer(device["device_name"], conf_text, _platform, protocol=_protocol)
+        if _installer:
+            _ext = PLATFORM_SCRIPTS[_platform]["ext"]
+            _label = PLATFORM_SCRIPTS[_platform]["label"]
+            _captions = {
+                "windows": "Запустите .bat от имени администратора (ПКМ → Запуск от администратора)",
+                "macos": "Дважды кликните .command. При первом запуске: ПКМ → Открыть",
+                "linux": "chmod +x install-vpn-*.sh && sudo ./install-vpn-*.sh",
+            }
+            await message.answer_document(
+                BufferedInputFile(_installer, filename=f"install-vpn-{_safe_name}.{_ext}"),
+                caption=f"Установщик для {_label}\n{_captions[_platform]}",
+            )
 
     await db.update_config_version(device["id"], version)

@@ -130,36 +130,94 @@ def _make_qr(content: str) -> Optional[bytes]:
         return None
 
 
+def _conf_to_bat_echo(conf_text: str) -> str:
+    """Конвертирует конфиг в серию bat echo-команд для встраивания в .bat файл."""
+    lines = []
+    for line in conf_text.splitlines():
+        line = line.replace("%", "%%").replace("^", "^^").replace("&", "^&")
+        line = line.replace("|", "^|").replace("<", "^<").replace(">", "^>")
+        if line.strip():
+            lines.append(f"echo {line}")
+        else:
+            lines.append("echo.")
+    return "\n".join(lines)
+
+
 PLATFORM_SCRIPTS: dict[str, dict] = {
     "windows": {
-        "ext": "ps1",
-        "label": "Windows (.ps1)",
+        "ext": "bat",
+        "label": "Windows (.bat)",
         "template": """\
-# AmneziaWG / WireGuard installer for Windows
-# Run as Administrator in PowerShell
+@echo off
+setlocal enabledelayedexpansion
+title VPN Setup - {name}
 
-$ErrorActionPreference = "Stop"
-$configContent = @'
-{conf}
-'@
+:: Проверка прав через fltmc
+fltmc >nul 2>&1 || (
+    powershell -Command "Start-Process cmd -ArgumentList '/c \"%~f0\"' -Verb RunAs"
+    exit /b
+)
 
-Write-Host "Installing WireGuard..." -ForegroundColor Cyan
-if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {{
-    Write-Host "winget not found. Download WireGuard from https://www.wireguard.com/install/" -ForegroundColor Red
-    exit 1
-}}
-winget install --id WireGuard.WireGuard -e --silent
+:: Ручная установка: https://github.com/amnezia-vpn/amnezia-client/releases/latest (AWG)
+::                   https://download.wireguard.com/windows-client/ (WG)
 
-$configDir = "$env:ProgramFiles\\WireGuard\\Data\\Configurations"
-New-Item -ItemType Directory -Force -Path $configDir | Out-Null
-$configPath = "$configDir\\{name}.conf"
-$configContent | Set-Content -Path $configPath -Encoding UTF8
-Write-Host "Config saved to $configPath" -ForegroundColor Green
+set PROTOCOL={protocol}
+set TUNNEL_NAME={name}
 
-# Install tunnel service
-& "$env:ProgramFiles\\WireGuard\\wireguard.exe" /installtunnelservice $configPath
-Write-Host "Tunnel service installed. VPN is starting..." -ForegroundColor Green
-Write-Host "Open WireGuard from the system tray to manage the connection." -ForegroundColor Cyan
+echo ============================================
+echo  Установка VPN туннеля: %TUNNEL_NAME%
+echo ============================================
+echo.
+
+set CONF_FILE=%TEMP%\\%TUNNEL_NAME%.conf
+(
+{conf_bat}
+) > "%CONF_FILE%"
+
+if "%PROTOCOL%"=="awg" (
+    echo [1/2] Установка AmneziaVPN...
+    where winget >nul 2>&1
+    if !errorlevel! equ 0 (
+        winget install --id AmneziaVPN.AmneziaVPN -e --silent --accept-source-agreements --accept-package-agreements 2>nul
+    )
+    if exist "%ProgramFiles%\\AmneziaVPN\\AmneziaVPN.exe" (
+        echo   OK: AmneziaVPN установлен
+    ) else (
+        echo   AmneziaVPN не найден через winget.
+        echo   Скачайте вручную: https://github.com/amnezia-vpn/amnezia-client/releases/latest
+        echo   После установки запустите этот скрипт ещё раз.
+        pause
+        exit /b 1
+    )
+    echo [2/2] Импорт конфига...
+    copy /Y "%CONF_FILE%" "%APPDATA%\\AmneziaVPN\\" >nul 2>&1 || echo   Откройте AmneziaVPN и импортируйте файл %CONF_FILE% вручную
+) else (
+    echo [1/2] Установка WireGuard...
+    where winget >nul 2>&1
+    if !errorlevel! equ 0 (
+        winget install --id WireGuard.WireGuard -e --silent --accept-source-agreements --accept-package-agreements 2>nul
+    )
+    if exist "%ProgramFiles%\\WireGuard\\wireguard.exe" (
+        echo   OK: WireGuard установлен
+    ) else (
+        echo   WireGuard не найден через winget.
+        echo   Скачайте вручную: https://download.wireguard.com/windows-client/
+        pause
+        exit /b 1
+    )
+    echo [2/2] Установка туннеля...
+    "%ProgramFiles%\\WireGuard\\wireguard.exe" /installtunnelservice "%CONF_FILE%"
+    if !errorlevel! equ 0 (
+        echo   OK: Туннель %TUNNEL_NAME% установлен и запущен
+    ) else (
+        echo   Импортируйте %CONF_FILE% вручную через интерфейс WireGuard
+    )
+)
+
+del "%CONF_FILE%" >nul 2>&1
+echo.
+echo Готово! Подключение: %TUNNEL_NAME%
+pause
 """,
     },
     "macos": {
@@ -167,26 +225,58 @@ Write-Host "Open WireGuard from the system tray to manage the connection." -Fore
         "label": "macOS (.command)",
         "template": """\
 #!/bin/bash
-# AmneziaWG / WireGuard installer for macOS
 set -e
+TUNNEL_NAME="{name}"
+PROTOCOL="{protocol}"
 
-CONFIG='{conf_escaped}'
-NAME="{name}"
+# Ручная установка: https://apps.apple.com/app/amneziavpn/id1600529900 (AWG)
+#                   https://apps.apple.com/app/wireguard/id1451685025 (WG)
 
-echo "Installing WireGuard via Homebrew..."
-if ! command -v brew &>/dev/null; then
-    echo "Homebrew not found. Install it from https://brew.sh"
-    exit 1
+echo "============================================"
+echo " Установка VPN туннеля: $TUNNEL_NAME"
+echo "============================================"
+echo
+
+xattr -d com.apple.quarantine "$0" 2>/dev/null || true
+
+CONF_FILE="/tmp/$TUNNEL_NAME.conf"
+cat > "$CONF_FILE" << 'WGCONF'
+{conf}
+WGCONF
+
+if [ "$PROTOCOL" = "awg" ]; then
+    echo "[1/2] Проверка AmneziaVPN..."
+    if ! [ -d "/Applications/AmneziaVPN.app" ]; then
+        echo "  AmneziaVPN не установлен."
+        echo "  Установите из App Store: https://apps.apple.com/app/amneziavpn/id1600529900"
+        echo "  Затем запустите этот скрипт ещё раз."
+        open "https://apps.apple.com/app/amneziavpn/id1600529900"
+        read -p "  Нажмите Enter после установки..."
+    fi
+    echo "[2/2] Импорт конфига..."
+    cp "$CONF_FILE" ~/Downloads/"$TUNNEL_NAME.conf"
+    echo "  Файл сохранён: ~/Downloads/$TUNNEL_NAME.conf"
+    echo "  Откройте AmneziaVPN -> Добавить туннель -> Из файла"
+    open ~/Downloads/
+else
+    echo "[1/2] Проверка WireGuard..."
+    if ! [ -d "/Applications/WireGuard.app" ]; then
+        echo "  WireGuard не установлен."
+        echo "  Установите из App Store: https://apps.apple.com/app/wireguard/id1451685025"
+        open "https://apps.apple.com/app/wireguard/id1451685025"
+        read -p "  Нажмите Enter после установки..."
+    fi
+    echo "[2/2] Импорт конфига..."
+    cp "$CONF_FILE" ~/Downloads/"$TUNNEL_NAME.conf"
+    echo "  Файл сохранён: ~/Downloads/$TUNNEL_NAME.conf"
+    echo "  Откройте WireGuard -> Добавить туннель -> Из файла"
+    open ~/Downloads/
 fi
-brew install wireguard-tools
 
-CONFIG_DIR="/usr/local/etc/wireguard"
-sudo mkdir -p "$CONFIG_DIR"
-echo "$CONFIG" | sudo tee "$CONFIG_DIR/$NAME.conf" > /dev/null
-sudo chmod 600 "$CONFIG_DIR/$NAME.conf"
-echo "Config saved. Starting VPN..."
-sudo wg-quick up "$NAME"
-echo "VPN started! To stop: sudo wg-quick down $NAME"
+rm -f "$CONF_FILE"
+echo
+echo "Готово! Откройте приложение и активируйте туннель $TUNNEL_NAME"
+read -p "Нажмите Enter для закрытия..."
 """,
     },
     "linux": {
@@ -194,50 +284,105 @@ echo "VPN started! To stop: sudo wg-quick down $NAME"
         "label": "Linux (.sh)",
         "template": """\
 #!/bin/bash
-# AmneziaWG / WireGuard installer for Linux
-set -e
+set -euo pipefail
+TUNNEL_NAME="{name}"
+PROTOCOL="{protocol}"
 
-CONFIG='{conf_escaped}'
-NAME="{name}"
+# Ручная установка AWG: https://github.com/amnezia-vpn/amneziawg-linux-kernel-module
 
-echo "Installing WireGuard..."
-if command -v apt-get &>/dev/null; then
-    sudo apt-get update -qq && sudo apt-get install -y wireguard
-elif command -v dnf &>/dev/null; then
-    sudo dnf install -y wireguard-tools
-elif command -v pacman &>/dev/null; then
-    sudo pacman -S --noconfirm wireguard-tools
-else
-    echo "Unknown package manager. Install wireguard-tools manually."
-    exit 1
+echo "============================================"
+echo " Установка VPN туннеля: $TUNNEL_NAME"
+echo "============================================"
+echo
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Запуск с sudo..."
+    exec sudo bash "$0" "$@"
 fi
 
-sudo mkdir -p /etc/wireguard
-echo "$CONFIG" | sudo tee "/etc/wireguard/$NAME.conf" > /dev/null
-sudo chmod 600 "/etc/wireguard/$NAME.conf"
-echo "Starting VPN..."
-sudo systemctl enable --now "wg-quick@$NAME"
-echo "VPN started! Status: sudo systemctl status wg-quick@$NAME"
+mkdir -p /etc/wireguard
+CONF_FILE="/etc/wireguard/$TUNNEL_NAME.conf"
+cat > "$CONF_FILE" << 'WGCONF'
+{conf}
+WGCONF
+chmod 600 "$CONF_FILE"
+
+PKG_MANAGER=""
+if command -v apt-get &>/dev/null; then PKG_MANAGER="apt"
+elif command -v dnf &>/dev/null; then PKG_MANAGER="dnf"
+elif command -v pacman &>/dev/null; then PKG_MANAGER="pacman"
+fi
+
+if [ "$PROTOCOL" = "awg" ]; then
+    echo "[1/3] Установка AmneziaWG..."
+    if ! command -v awg &>/dev/null; then
+        if [ "$PKG_MANAGER" = "apt" ]; then
+            apt-get install -y software-properties-common
+            add-apt-repository -y ppa:amnezia/ppa 2>/dev/null || true
+            apt-get update -qq
+            apt-get install -y amneziawg amneziawg-tools || {
+                echo "  PPA недоступен. Установите вручную:"
+                echo "  https://github.com/amnezia-vpn/amneziawg-linux-kernel-module"
+                exit 1
+            }
+        elif [ "$PKG_MANAGER" = "dnf" ]; then
+            dnf install -y amneziawg-tools 2>/dev/null || {
+                echo "  Установите вручную: https://github.com/amnezia-vpn/amneziawg-linux-kernel-module"
+                exit 1
+            }
+        else
+            echo "  Установите AmneziaWG вручную: https://github.com/amnezia-vpn/amneziawg-linux-kernel-module"
+            exit 1
+        fi
+    fi
+    echo "[2/3] Загрузка модуля ядра..."
+    modprobe amneziawg 2>/dev/null || true
+    echo "[3/3] Запуск туннеля..."
+    systemctl enable --now awg-quick@"$TUNNEL_NAME" 2>/dev/null \
+        || awg-quick up "$TUNNEL_NAME"
+else
+    echo "[1/3] Установка WireGuard..."
+    if ! command -v wg &>/dev/null; then
+        case "$PKG_MANAGER" in
+            apt)    apt-get install -y wireguard wireguard-tools ;;
+            dnf)    dnf install -y wireguard-tools ;;
+            pacman) pacman -S --noconfirm wireguard-tools ;;
+            *)      echo "Установите wireguard-tools вручную"; exit 1 ;;
+        esac
+    fi
+    echo "[2/3] (пропуск модуля)"
+    echo "[3/3] Запуск туннеля..."
+    systemctl enable --now wg-quick@"$TUNNEL_NAME" 2>/dev/null \
+        || wg-quick up "$TUNNEL_NAME"
+fi
+
+echo
+echo "Готово! Туннель $TUNNEL_NAME активен."
+echo "Статус: wg show $TUNNEL_NAME"
 """,
     },
 }
 
 
-def build_installer(device_name: str, conf_text: str, platform: str) -> Optional[bytes]:
+def build_installer(device_name: str, conf_text: str, platform: str, protocol: str = "awg") -> Optional[bytes]:
     """Сгенерировать скрипт-установщик с вшитым конфигом для указанной платформы."""
-    if not _DEVICE_NAME_RE.match(device_name):
-        raise ValueError(f"Invalid device name: {device_name!r}")
+    safe_name = re.sub(r'[^\w\-]', '_', device_name)
     info = PLATFORM_SCRIPTS.get(platform)
     if not info:
         return None
-    conf_escaped = conf_text.replace("'", "'\\''")  # для bash single-quote escape
-    # PowerShell: escape backtick and $ to prevent variable expansion inside here-string
-    ps_conf = conf_text.replace("`", "``").replace("$", "`$")
-    script = info["template"].format(
-        conf=ps_conf if platform == "windows" else conf_text,
-        conf_escaped=conf_escaped,
-        name=device_name,
-    )
+    if platform == "windows":
+        conf_bat = _conf_to_bat_echo(conf_text)
+        script = info["template"].format(
+            name=safe_name,
+            protocol=protocol,
+            conf_bat=conf_bat,
+        )
+    else:
+        script = info["template"].format(
+            name=safe_name,
+            protocol=protocol,
+            conf=conf_text,
+        )
     return script.encode("utf-8")
 
 

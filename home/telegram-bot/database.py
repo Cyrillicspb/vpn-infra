@@ -238,6 +238,11 @@ class Database:
                 if "grants_admin" not in inv_cols2:
                     conn.execute("ALTER TABLE invite_codes ADD COLUMN grants_admin INTEGER NOT NULL DEFAULT 0")
                     conn.commit()
+                # Миграция: платформа устройства
+                dev_cols2 = {r[1] for r in conn.execute("PRAGMA table_info(devices)")}
+                if "platform" not in dev_cols2:
+                    conn.execute("ALTER TABLE devices ADD COLUMN platform TEXT")
+                    conn.commit()
                 logger.info("БД инициализирована")
             finally:
                 conn.close()
@@ -693,6 +698,18 @@ class Database:
                 conn.execute(
                     "UPDATE devices SET private_key = ?, public_key = ? WHERE id = ?",
                     (encrypt_key(private_key) if private_key else private_key, public_key, device_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def update_device_platform(self, device_id: int, platform: str) -> None:
+        async with self._lock:
+            conn = self._conn()
+            try:
+                conn.execute(
+                    "UPDATE devices SET platform = ? WHERE id = ?",
+                    (platform, device_id),
                 )
                 conn.commit()
             finally:
