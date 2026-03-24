@@ -49,7 +49,7 @@ class RealityGrpcPlugin(BasePlugin):
             "/usr/local/bin/tun2socks",
             "-device", tun_name,
             "-proxy", f"socks5://127.0.0.1:{SOCKS_PORT}",
-            "-loglevel", "warning",
+            "-loglevel", "warn",
         ], pid_file=pf)
         if proc is None:
             return 1
