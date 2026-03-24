@@ -34,7 +34,7 @@ def _bootstrap() -> None:
         rc = subprocess.run(
             [
                 sys.executable, "-m", "pip", "install",
-                TEXTUAL_REQ, "--quiet", "--break-system-packages",
+                TEXTUAL_REQ, "--quiet", "--break-system-packages", "--ignore-installed",
             ],
             stdout=subprocess.DEVNULL,
         )

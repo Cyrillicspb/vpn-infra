@@ -182,7 +182,7 @@ if [[ "$PY_VER" =~ ^[0-9]+$ ]] && [[ "$PY_VER" -ge 310 ]]; then
         # Устанавливаем textual если нет
         _info "Установка TUI-компонентов..."
         ssh "${SSH_OPTS[@]}" -o "BatchMode=yes" "${SERVER_USER}@${SERVER_IP}" \
-            "sudo apt-get install -y -qq python3-pip python3-venv 2>/dev/null; sudo pip3 install textual --break-system-packages --quiet 2>/dev/null" || true
+            "sudo apt-get install -y -qq python3-pip python3-venv 2>/dev/null; sudo pip3 install textual --break-system-packages --ignore-installed --quiet 2>/dev/null" || true
         # Проверяем что textual доступен
         if ssh "${SSH_OPTS[@]}" -o "BatchMode=yes" -o "ConnectTimeout=5" \
             "${SERVER_USER}@${SERVER_IP}" \
