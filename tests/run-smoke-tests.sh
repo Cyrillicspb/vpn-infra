@@ -13,6 +13,12 @@ SMOKE_DIR="$SCRIPT_DIR/smoke"
 PASS=0; FAIL=0; WARN=0; SKIP=0
 FAILED_TESTS=()
 START_TIME=$(date +%s)
+RESULTS_TMP=$(mktemp /tmp/vpn-smoke-results-XXXXXX.log 2>/dev/null || echo /tmp/vpn-smoke-results-$$.log)
+
+_cleanup_tmp() {
+    rm -f "$RESULTS_TMP" 2>/dev/null
+}
+trap _cleanup_tmp EXIT
 
 # Параметры
 FILTER_TEST=""

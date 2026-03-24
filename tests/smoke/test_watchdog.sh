@@ -39,8 +39,8 @@ else
 fi
 
 # 4. GET /status отвечает
-AUTH_HEADER=""
-[[ -n "$TOKEN" ]] && AUTH_HEADER="-H Authorization: Bearer ${TOKEN}"
+AUTH_ARGS=()
+[[ -n "$TOKEN" ]] && AUTH_ARGS=(-H "Authorization: Bearer ${TOKEN}")
 
 if [[ -n "$TOKEN" ]]; then
     STATUS_JSON=$(curl -sf --max-time 10 \

@@ -50,6 +50,20 @@ else
     fail "blocked_dynamic НЕ проверяется в forward chain"
 fi
 
+# 5a. Level 2: nftables forward DROP для blocked_static
+if nft list chain inet vpn forward 2>/dev/null | grep -qE 'ip daddr @blocked_static.*drop'; then
+    pass "nftables forward: kill switch для blocked_static configured"
+else
+    fail "nftables forward: kill switch для blocked_static MISSING"
+fi
+
+# 5b. Level 2: nftables forward DROP для blocked_dynamic
+if nft list chain inet vpn forward 2>/dev/null | grep -qE 'ip daddr @blocked_dynamic.*drop'; then
+    pass "nftables forward: kill switch для blocked_dynamic configured"
+else
+    fail "nftables forward: kill switch для blocked_dynamic MISSING"
+fi
+
 # 6. Kill switch проверяется ПЕРЕД ct state established для VPN-трафика
 # Правильный порядок: kill switch → ct state established/related
 CHAIN_TEXT="$FORWARD_CHAIN"

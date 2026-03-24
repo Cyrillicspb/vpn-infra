@@ -49,8 +49,8 @@ fi
 # 4. VPS доступен через Tier-2 туннель
 VPS_TUN_IP="${VPS_TUNNEL_IP:-10.177.2.2}"
 if ping -c 2 -W 5 -q "$VPS_TUN_IP" &>/dev/null; then
-    RTT=$(ping -c 3 -W 5 "$VPS_TUN_IP" 2>/dev/null | tail -1 | grep -oP 'avg = \K[\d.]+' || \
-          ping -c 3 -W 5 "$VPS_TUN_IP" 2>/dev/null | tail -1 | awk -F'/' '{print $5}')
+    PING_OUT=$(ping -c 3 -W 5 "$VPS_TUN_IP" 2>/dev/null | tail -1)
+    RTT=$(echo "$PING_OUT" | grep -oP 'avg = \K[\d.]+' || echo "$PING_OUT" | awk -F'/' '{print $5}')
     pass "VPS $VPS_TUN_IP доступен через туннель (avg RTT: ${RTT:-?} ms)"
 else
     warn "VPS $VPS_TUN_IP недоступен (стек ещё не поднят или VPS выключен)"
@@ -106,6 +106,7 @@ if [[ -n "$WG0_PEERS" ]]; then
     while read -r pubkey ts; do
         [[ -z "$pubkey" || -z "$ts" ]] && continue
         [[ "$ts" == "0" ]] && continue  # ни разу не соединялся
+        [[ "$ts" =~ ^[0-9]+$ ]] || continue  # нечисловой timestamp
         age=$(( now - ts ))
         if (( age < 180 )); then
             (( fresh_count++ ))
