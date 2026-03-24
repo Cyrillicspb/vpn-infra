@@ -18,6 +18,14 @@ class InstallerState:
     vps_ssh_port: str = "22"
     # Telegram
     telegram_admin_chat_id: str = ""
+    # Network / mode
+    server_mode: str = "A"        # "A" = hosting, "B" = home behind router
+    lan_iface: str = ""           # detected default interface
+    lan_ip: str = ""              # detected LAN IP
+    cgnat_detected: bool = False
+    # Options
+    use_cloudflare: str = "n"
+    use_ddns: str = "n"
     # In-memory only (never saved to disk)
     vps_root_password: str = ""
     telegram_bot_token: str = ""
@@ -41,7 +49,7 @@ class InstallerState:
         return cls()
 
     def save(self) -> None:
-        """Persist non-sensitive fields only."""
+        """Persist non-sensitive fields only (no passwords/tokens)."""
         data = asdict(self)
         for secret in ("vps_root_password", "telegram_bot_token"):
             data.pop(secret, None)
@@ -62,8 +70,13 @@ class InstallerState:
         if self.telegram_admin_chat_id:
             env["TELEGRAM_ADMIN_CHAT_ID"] = self.telegram_admin_chat_id
         # Non-interactive mode: skip all raw read() prompts
+        env["USE_CLOUDFLARE"] = self.use_cloudflare or "n"
+        env["USE_DDNS"] = self.use_ddns or "n"
+        # Non-interactive mode: skip all raw read() prompts
         env["VPN_NONINTERACTIVE"] = "1"
-        # Disable optional components — no interactive prompts
-        env.setdefault("USE_CLOUDFLARE", "n")
-        env.setdefault("USE_DDNS", "n")
+        # Mode B: gateway behind router
+        if self.server_mode == "B":
+            env["SERVER_MODE"] = "gateway"
+            if self.lan_iface:
+                env["LAN_IFACE"] = self.lan_iface
         return env

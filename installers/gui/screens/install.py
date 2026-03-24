@@ -68,7 +68,7 @@ class InstallScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         yield Static(
-            "[bold]Шаг 3/3 — Установка[/bold]   [dim]Не закрывайте окно[/dim]",
+            "[bold]Шаг 7/8 — Установка[/bold]   [dim]Не закрывайте окно[/dim]",
             id="install-header-row",
         )
         yield Static("Готов к установке.", id="install-status")
@@ -212,7 +212,8 @@ class InstallScreen(Screen):
             self._running = False
             self.call_after_refresh(self._run)
         elif event.button.id == "btn-done":
-            self._show_next_steps()
+            from screens.done import DoneScreen
+            self.app.push_screen(DoneScreen())
 
     def _show_next_steps(self) -> None:
         log = self.query_one("#install-log", RichLog)

@@ -71,5 +71,5 @@ class WelcomeScreen(Screen):
             self._go_next()
 
     def _go_next(self) -> None:
-        from screens.configure import ConfigureScreen
-        self.app.push_screen(ConfigureScreen())
+        from screens.connection import ConnectionScreen
+        self.app.push_screen(ConnectionScreen())
