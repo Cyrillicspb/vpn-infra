@@ -327,6 +327,49 @@ restore_configs() {
         cp -r "$src/watchdog-plugins/." "$REPO_DIR/watchdog/plugins/"
         log_ok "watchdog plugins"
     fi
+
+    # ── Watchdog state ────────────────────────────────────────────────────────
+    if [[ -f "$src/watchdog-state.json" ]]; then
+        cp "$src/watchdog-state.json" /opt/vpn/watchdog/state.json
+        log_ok "Watchdog state восстановлен"
+    fi
+
+    # ── mTLS CA на VPS ────────────────────────────────────────────────────────
+    if [[ -d "$src/mtls" && -f "$src/mtls/ca.key" ]]; then
+        if [[ -n "${VPS_IP:-}" && -n "${SSH_KEY:-}" ]]; then
+            log_info "Восстановление mTLS CA на VPS ${VPS_IP}..."
+            local _ssh_port="${VPS_SSH_PORT:-22}"
+            if ssh -p "$_ssh_port" -i "$SSH_KEY" \
+                -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+                "sysadmin@${VPS_IP}" "mkdir -p /opt/vpn/nginx/mtls" 2>/dev/null && \
+               scp -P "$_ssh_port" -i "$SSH_KEY" \
+                -o StrictHostKeyChecking=no \
+                "$src/mtls/ca.key" "$src/mtls/ca.crt" \
+                "sysadmin@${VPS_IP}:/opt/vpn/nginx/mtls/" 2>/dev/null; then
+                ssh -p "$_ssh_port" -i "$SSH_KEY" \
+                    -o StrictHostKeyChecking=no \
+                    "sysadmin@${VPS_IP}" \
+                    "chmod 600 /opt/vpn/nginx/mtls/ca.key && docker restart nginx 2>/dev/null || true" 2>/dev/null || true
+                log_ok "mTLS CA восстановлен на VPS"
+            else
+                log_warn "Не удалось восстановить mTLS CA на VPS"
+            fi
+        fi
+    fi
+
+    # ── DPI presets ───────────────────────────────────────────────────────────
+    if [[ -f "$src/dpi-presets.json" ]]; then
+        mkdir -p /etc/vpn
+        cp "$src/dpi-presets.json" /etc/vpn/dpi-presets.json
+        log_ok "DPI presets восстановлены"
+    fi
+
+    # ── Cloudflared credentials ───────────────────────────────────────────────
+    if [[ -d "$src/cloudflared" ]]; then
+        mkdir -p "$HOME/.cloudflared"
+        cp "$src/cloudflared/"*.json "$HOME/.cloudflared/" 2>/dev/null || true
+        log_ok "Cloudflared credentials восстановлены"
+    fi
 }
 
 # =============================================================================
@@ -394,6 +437,189 @@ run_smoke_tests() {
 }
 
 # =============================================================================
+# Определение изменения IP
+# =============================================================================
+TRIGGER_NOTIFY_CLIENTS=false
+
+detect_ip_change() {
+    local src="${1:-$RESTORE_TMP}"
+    local meta="$src/metadata.json"
+    [[ -f "$meta" ]] || return 0
+
+    local backup_ip current_ip
+    backup_ip=$(python3 -c "
+import json, sys
+d = json.load(open('$meta'))
+print(d.get('home_server_ip', ''))
+" 2>/dev/null || echo "")
+
+    [[ -z "$backup_ip" ]] && return 0
+
+    current_ip=$(curl -sf --max-time 5 https://icanhazip.com 2>/dev/null || echo "")
+    [[ -z "$current_ip" ]] && return 0
+
+    if [[ "$backup_ip" != "$current_ip" ]]; then
+        log_warn "IP изменился: $backup_ip → $current_ip"
+        # Обновить EXTERNAL_IP в .env
+        if [[ -f "$ENV_FILE" ]]; then
+            sed -i "s/^EXTERNAL_IP=.*/EXTERNAL_IP=${current_ip}/" "$ENV_FILE"
+            log_ok "EXTERNAL_IP обновлён в .env"
+        fi
+        TRIGGER_NOTIFY_CLIENTS=true
+    else
+        log_ok "IP не изменился: $current_ip"
+    fi
+}
+
+# =============================================================================
+# Проверка экспортного архива
+# =============================================================================
+_check_export() {
+    local archive="$1"
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmp_dir'" EXIT
+
+    log_info "Проверка экспорта: $archive"
+
+    # GPG расшифровка
+    local passphrase=""
+    if [[ -n "${BACKUP_GPG_PASSPHRASE:-}" ]]; then
+        passphrase="$BACKUP_GPG_PASSPHRASE"
+    elif [[ -f "$ENV_FILE" ]]; then
+        passphrase=$(grep '^BACKUP_GPG_PASSPHRASE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"' || true)
+    fi
+    if [[ -z "$passphrase" ]]; then
+        read -rsp "Пароль для расшифровки: " passphrase; echo
+    fi
+
+    if ! echo "$passphrase" | gpg --batch --yes --passphrase-fd 0 \
+        -d "$archive" 2>/dev/null | tar xz -C "$tmp_dir" 2>/dev/null; then
+        die "Не удалось расшифровать/распаковать архив"
+    fi
+
+    # Проверка обязательных файлов
+    local ok=true
+    for f in ".env" "wireguard" "vpn_bot.db"; do
+        if [[ ! -e "$tmp_dir/$f" ]]; then
+            log_warn "Отсутствует обязательный компонент: $f"
+            ok=false
+        else
+            log_ok "Присутствует: $f"
+        fi
+    done
+
+    # Метаданные
+    if [[ -f "$tmp_dir/metadata.json" ]]; then
+        echo ""
+        log_info "Метаданные экспорта:"
+        python3 -c "
+import json, sys
+d = json.load(open('$tmp_dir/metadata.json'))
+for k, v in d.items():
+    print(f'  {k}: {v}')
+" 2>/dev/null || cat "$tmp_dir/metadata.json"
+    fi
+
+    # Опциональные компоненты
+    echo ""
+    log_info "Опциональные компоненты:"
+    for item in "mtls/ca.key:mTLS CA ключ" "watchdog-state.json:Watchdog state" "dpi-presets.json:DPI presets" "cloudflared:Cloudflared credentials"; do
+        local path="${item%%:*}" label="${item##*:}"
+        if [[ -e "$tmp_dir/$path" ]]; then
+            log_ok "$label — ПРИСУТСТВУЕТ"
+        else
+            log_warn "$label — отсутствует"
+        fi
+    done
+
+    echo ""
+    [[ "$ok" == "true" ]] && log_ok "Экспорт валиден" || log_warn "Экспорт неполный (см. выше)"
+}
+
+# =============================================================================
+# Восстановление только данных (без переустановки)
+# =============================================================================
+_restore_data_only() {
+    local archive="$1"
+
+    log_step "Восстановление данных из экспорта"
+    log_info "Файл: $archive"
+
+    # Загрузим .env для GPG пароля
+    [[ -f "$ENV_FILE" ]] && {
+        set -o allexport; source "$ENV_FILE"; set +o allexport
+    } || true
+
+    # Расшифровка
+    local archive_path; archive_path="$(decrypt_backup "$archive")"
+
+    # Распаковка
+    tar -xzf "$archive_path" -C "$RESTORE_TMP" 2>/dev/null || die "Ошибка распаковки"
+    log_ok "Распаковано: $(ls "$RESTORE_TMP" | wc -l) объектов"
+    local src="$RESTORE_TMP"
+
+    # SQLite БД бота
+    if [[ -f "$src/vpn_bot.db" ]]; then
+        local db_dir="$REPO_DIR/telegram-bot/data"
+        mkdir -p "$db_dir"
+        [[ -f "$db_dir/vpn_bot.db" ]] && \
+            cp "$db_dir/vpn_bot.db" "$db_dir/vpn_bot.db.pre-restore"
+        cp "$src/vpn_bot.db" "$db_dir/vpn_bot.db"
+        log_ok "SQLite БД бота восстановлена"
+    fi
+
+    # watchdog state
+    if [[ -f "$src/watchdog-state.json" ]]; then
+        cp "$src/watchdog-state.json" /opt/vpn/watchdog/state.json
+        log_ok "Watchdog state восстановлен"
+    fi
+
+    # mTLS CA на VPS
+    if [[ -d "$src/mtls" && -f "$src/mtls/ca.key" ]]; then
+        if [[ -n "${VPS_IP:-}" && -n "${SSH_KEY:-}" ]]; then
+            log_info "Восстановление mTLS CA на VPS ${VPS_IP}..."
+            local ssh_port="${VPS_SSH_PORT:-22}"
+            if ssh -p "$ssh_port" -i "$SSH_KEY" \
+                -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+                "sysadmin@${VPS_IP}" "mkdir -p /opt/vpn/nginx/mtls" 2>/dev/null && \
+               scp -P "$ssh_port" -i "$SSH_KEY" \
+                -o StrictHostKeyChecking=no \
+                "$src/mtls/ca.key" "$src/mtls/ca.crt" \
+                "sysadmin@${VPS_IP}:/opt/vpn/nginx/mtls/" 2>/dev/null; then
+                ssh -p "$ssh_port" -i "$SSH_KEY" \
+                    -o StrictHostKeyChecking=no \
+                    "sysadmin@${VPS_IP}" \
+                    "chmod 600 /opt/vpn/nginx/mtls/ca.key && docker restart nginx 2>/dev/null || true" 2>/dev/null || true
+                log_ok "mTLS CA восстановлен на VPS"
+            else
+                log_warn "Не удалось восстановить mTLS CA на VPS"
+            fi
+        fi
+    fi
+
+    # DPI presets
+    if [[ -f "$src/dpi-presets.json" ]]; then
+        mkdir -p /etc/vpn
+        cp "$src/dpi-presets.json" /etc/vpn/dpi-presets.json
+        log_ok "DPI presets восстановлены"
+    fi
+
+    # Cloudflared credentials
+    if [[ -d "$src/cloudflared" ]]; then
+        mkdir -p "$HOME/.cloudflared"
+        cp "$src/cloudflared/"*.json "$HOME/.cloudflared/" 2>/dev/null || true
+        log_ok "Cloudflared credentials восстановлены"
+    fi
+
+    # Определение изменения IP
+    detect_ip_change "$src"
+
+    log_ok "Восстановление данных завершено"
+}
+
+# =============================================================================
 # Main
 # =============================================================================
 main() {
@@ -415,8 +641,27 @@ main() {
             migrate_vps "$2"
             exit 0
             ;;
+        --check-export)
+            shift
+            ARCHIVE_FILE="${1:-}"
+            [[ -z "$ARCHIVE_FILE" ]] && die "--check-export требует путь к файлу"
+            [[ ! -f "$ARCHIVE_FILE" ]] && die "Файл не найден: $ARCHIVE_FILE"
+            [[ -f "$ENV_FILE" ]] && {
+                set -o allexport; source "$ENV_FILE"; set +o allexport
+            } || true
+            _check_export "$ARCHIVE_FILE"
+            exit 0
+            ;;
+        --restore-data-only)
+            shift
+            ARCHIVE_FILE="${1:-}"
+            [[ -z "$ARCHIVE_FILE" ]] && die "--restore-data-only требует путь к файлу"
+            [[ ! -f "$ARCHIVE_FILE" ]] && die "Файл не найден: $ARCHIVE_FILE"
+            _restore_data_only "$ARCHIVE_FILE"
+            exit 0
+            ;;
         "")
-            die "Укажите файл бэкапа или флаг:\n  bash restore.sh <backup.tar.gz.gpg>\n  bash restore.sh --list\n  bash restore.sh --migrate-vps <IP>"
+            die "Укажите файл бэкапа или флаг:\n  bash restore.sh <backup.tar.gz.gpg>\n  bash restore.sh --list\n  bash restore.sh --migrate-vps <IP>\n  bash restore.sh --check-export <file>\n  bash restore.sh --restore-data-only <file>"
             ;;
     esac
 
@@ -474,6 +719,18 @@ print(f'  Пиров:   AWG={d.get(\"wg0_peers\", 0)} WG={d.get(\"wg1_peers\", 0
 
     # Перезапускаем сервисы
     restart_services
+
+    # Определение изменения IP (после перезапуска)
+    detect_ip_change "$RESTORE_TMP"
+
+    # Рассылка обновлённых конфигов если IP изменился
+    if [[ "${TRIGGER_NOTIFY_CLIENTS:-false}" == "true" ]]; then
+        WATCHDOG_TOKEN=$(grep '^WATCHDOG_API_TOKEN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"' || true)
+        curl -sf -X POST "http://127.0.0.1:8080/notify-clients" \
+            -H "Authorization: Bearer ${WATCHDOG_TOKEN}" \
+            --max-time 10 2>/dev/null || true
+        log_info "Запрос на рассылку обновлённых конфигов отправлен"
+    fi
 
     # Smoke-тесты
     run_smoke_tests
