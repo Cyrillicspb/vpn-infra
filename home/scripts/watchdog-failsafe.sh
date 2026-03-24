@@ -46,10 +46,31 @@ send_alert() {
 
 # ── Проверка watchdog ─────────────────────────────────────────────────────────
 if systemctl is-active --quiet watchdog; then
-    # Watchdog активен — снимаем флаг алерта если он был
-    if [[ -f "$STATE_FILE" ]]; then
-        rm -f "$STATE_FILE"
-        send_alert "✅ *Watchdog восстановлен* — сервис снова активен."
+    # Процесс жив — дополнительно проверяем что HTTP API отвечает (event loop не завис)
+    WD_PORT="${WATCHDOG_PORT:-8080}"
+    WD_TOKEN="${WATCHDOG_API_TOKEN:-}"
+    AUTH_HEADER=""
+    if [[ -n "$WD_TOKEN" ]]; then
+        AUTH_HEADER="-H \"Authorization: Bearer ${WD_TOKEN}\""
+    fi
+    if ! curl -sf --max-time 5 ${AUTH_HEADER} "http://127.0.0.1:${WD_PORT}/status" > /dev/null 2>&1; then
+        # Процесс активен, но HTTP не отвечает → event loop завис
+        HUNG_FILE="/run/vpn-failsafe-hung"
+        NOW=$(date +%s)
+        LAST_HUNG=0
+        [[ -f "$HUNG_FILE" ]] && LAST_HUNG=$(cat "$HUNG_FILE" 2>/dev/null || echo 0)
+        if (( NOW - LAST_HUNG > 1800 )); then
+            echo "$NOW" > "$HUNG_FILE"
+            send_alert "⚠️ *Watchdog process alive but HTTP unresponsive* — event loop hung? Restarting..."
+            systemctl restart watchdog || true
+        fi
+    else
+        # HTTP отвечает — всё хорошо
+        rm -f "/run/vpn-failsafe-hung"
+        if [[ -f "$STATE_FILE" ]]; then
+            rm -f "$STATE_FILE"
+            send_alert "✅ *Watchdog восстановлен* — сервис снова активен."
+        fi
     fi
     exit 0
 fi

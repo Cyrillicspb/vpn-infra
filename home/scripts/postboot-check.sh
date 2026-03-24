@@ -65,4 +65,19 @@ if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_ADMIN_CHAT_ID:-}" ]]; then
 fi
 
 log "Проверка завершена: ${PASS} OK, ${FAIL} FAIL"
+
+# Дождаться watchdog и запросить /health (deep check через monitoring_loop)
+# Watchdog поднимается async, даём 90 сек
+WD_PORT="${WATCHDOG_PORT:-8080}"
+WD_TOKEN="${WATCHDOG_API_TOKEN:-}"
+for i in {1..9}; do
+    sleep 10
+    AUTH=""
+    [[ -n "$WD_TOKEN" ]] && AUTH="-H \"Authorization: Bearer ${WD_TOKEN}\""
+    if curl -sf --max-time 5 ${AUTH} "http://127.0.0.1:${WD_PORT}/status" > /dev/null 2>&1; then
+        log "Watchdog API доступен (попытка ${i})"
+        break
+    fi
+done
+
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
