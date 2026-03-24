@@ -23,6 +23,7 @@ class InstallerState:
     lan_iface: str = ""           # detected default interface
     lan_ip: str = ""              # detected LAN IP
     cgnat_detected: bool = False
+    external_ip: str = ""         # обнаруженный внешний IP (icanhazip.com)
     router_external_ip: str = ""  # только для режима B: внешний IP роутера
     # Options
     use_cloudflare: str = "n"

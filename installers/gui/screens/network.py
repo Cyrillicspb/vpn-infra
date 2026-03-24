@@ -122,6 +122,7 @@ class NetworkScreen(WizardScreen):
                 ext_ip = out.decode().strip()
                 cgnat = self._is_cgnat(ext_ip)
                 self.app.state.cgnat_detected = cgnat
+                self.app.state.external_ip = ext_ip
                 if cgnat:
                     self.query_one("#net-cgnat", Static).update(
                         f"  [red]⚠ CGNAT: {ext_ip} — белый IP не обнаружен[/red]"
@@ -138,6 +139,21 @@ class NetworkScreen(WizardScreen):
                 log.write("[WARN] Не удалось определить внешний IP")
         except Exception as e:
             log.write(f"[WARN] {e}")
+
+    async def _detect_external_ip(self) -> str:
+        """Получить внешний IP через curl."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "curl", "-sf", "--max-time", "5", "https://icanhazip.com",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode == 0:
+                return stdout.decode().strip()
+        except Exception:
+            pass
+        return ""
 
     @staticmethod
     def _is_cgnat(ip: str) -> bool:
@@ -168,8 +184,24 @@ class NetworkScreen(WizardScreen):
             self.app.state.save()
             log.write("ВНИМАНИЕ: Gateway Mode — сервер станет SPOF для LAN-сети")
             log.write("  Настройте UPS и port forwarding на роутере (UDP 51820/51821)")
+            self.run_worker(self._autofill_router_ip(), exclusive=False)
         else:
             super().on_button_pressed(event)
+
+    async def _autofill_router_ip(self) -> None:
+        """Автозаполнить поле IP роутера при выборе режима B."""
+        inp = self.query_one("#input-router-ip", Input)
+        if inp.value.strip():
+            return  # уже заполнено вручную
+        state = self.app.state
+        ip = state.external_ip or await self._detect_external_ip()
+        if ip and not self._is_cgnat(ip):
+            inp.value = ip
+            state.router_external_ip = ip
+            state.save()
+            self.query_one("#net-log", RichLog).write(
+                f"  → IP роутера подставлен автоматически: {ip}"
+            )
 
     def _on_next(self) -> None:
         from screens.vps import VpsScreen
