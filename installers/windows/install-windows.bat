@@ -28,7 +28,7 @@ if !errorlevel! neq 0 (
 )
 echo   [OK] SSH доступен
 
-:: ── [2/5] SSH-ключ ───────────────────────────────────────────────────────────
+:: ── [2/5] SSH-ключ и подключение ─────────────────────────────────────────────
 echo.
 echo [2/5] SSH-ключ...
 set SSH_KEY=%USERPROFILE%\.ssh\vpn_deploy_key
@@ -57,10 +57,6 @@ set /p SERVER_IP=  IP-адрес сервера:
 if "!SERVER_IP!"=="" goto input_ip
 echo.
 
-set SERVER_USER=
-set /p SERVER_USER=  Пользователь SSH [sysadmin]:
-if "!SERVER_USER!"=="" set SERVER_USER=sysadmin
-
 set SSH_PORT=
 set /p SSH_PORT=  SSH порт [22]:
 if "!SSH_PORT!"=="" set SSH_PORT=22
@@ -71,18 +67,32 @@ echo.
 ssh-keygen -R [!SERVER_IP!]:!SSH_PORT! >nul 2>&1
 ssh-keygen -R !SERVER_IP! >nul 2>&1
 
-:: ── Установка ключа на сервере ───────────────────────────────────────────────
+:: ── Автоопределение пользователя ─────────────────────────────────────────────
+echo   --> Определение пользователя...
+set SERVER_USER=
 
-:: Проверяем, работает ли ключ уже
-ssh -n -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=5" -o "BatchMode=yes" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "exit 0" >nul 2>&1
+:: 1. Пробуем sysadmin (setup.sh уже запускался)
+ssh -n -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=5" -o "BatchMode=yes" -p !SSH_PORT! sysadmin@!SERVER_IP! "exit 0" >nul 2>&1
 if !errorlevel! equ 0 (
-    echo   [OK] Ключ уже установлен для !SERVER_USER!
-    goto connected
+    set SERVER_USER=sysadmin
+    echo   [OK] Подключение как sysadmin
+    goto user_found
 )
 
-:: Ключ не установлен — копируем через пароль
-echo   --> Копирование SSH ключа на сервер...
-echo   Введите пароль для !SERVER_USER!@!SERVER_IP! (один раз):
+:: 2. Пробуем текущего Windows-пользователя
+ssh -n -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "ConnectTimeout=5" -o "BatchMode=yes" -p !SSH_PORT! !USERNAME!@!SERVER_IP! "exit 0" >nul 2>&1
+if !errorlevel! equ 0 (
+    set SERVER_USER=!USERNAME!
+    echo   [OK] Подключение как !USERNAME!
+    goto user_found
+)
+
+:: 3. Ключ не установлен — спрашиваем и копируем
+echo   Введите имя пользователя созданного при установке Ubuntu:
+set /p SERVER_USER=  Пользователь:
+if "!SERVER_USER!"=="" set SERVER_USER=sysadmin
+
+echo   --> Копирование SSH ключа на сервер (введите пароль):
 type "!SSH_KEY!.pub" | ssh -o "StrictHostKeyChecking=accept-new" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
 if !errorlevel! neq 0 (
     echo.
@@ -94,16 +104,8 @@ if !errorlevel! neq 0 (
 )
 echo   [OK] SSH ключ установлен
 
-:: Проверка входа по ключу
-ssh -n -i "!SSH_KEY!" -o "StrictHostKeyChecking=accept-new" -o "BatchMode=yes" -o "ConnectTimeout=10" -p !SSH_PORT! !SERVER_USER!@!SERVER_IP! "exit 0" >nul 2>&1
-if !errorlevel! neq 0 (
-    echo   [FAIL] Вход по ключу не работает
-    pause
-    exit /b 1
-)
-echo   [OK] Вход по ключу работает
-
-:connected
+:user_found
+echo   Пользователь: !SERVER_USER!
 
 :: ── [3/5] Подготовка сервера ─────────────────────────────────────────────────
 echo.

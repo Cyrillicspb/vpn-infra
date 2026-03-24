@@ -36,7 +36,7 @@ if ! command -v scp &>/dev/null; then
 fi
 _ok "SSH доступен"
 
-# ── [2/5] SSH-ключ ────────────────────────────────────────────────────────────
+# ── [2/5] SSH-ключ и подключение ──────────────────────────────────────────────
 _step "[2/5] SSH-ключ..."
 SSH_KEY="$HOME/.ssh/vpn_deploy_key"
 if [[ ! -f "$SSH_KEY" ]]; then
@@ -59,30 +59,45 @@ while true; do
     _err "Неверный формат IP. Пример: 192.168.1.100"
 done
 
-read -rp "  Пользователь SSH [sysadmin]: " SERVER_USER
-SERVER_USER="${SERVER_USER:-sysadmin}"
-
 read -rp "  SSH порт [22]: " SSH_PORT
 SSH_PORT="${SSH_PORT:-22}"
 
-echo ""
-_info "Копирование SSH ключа на сервер..."
-echo "  (Потребуется пароль от ${SERVER_USER}@${SERVER_IP})"
-echo ""
-
 SSH_OPTS=(-i "$SSH_KEY" -o "StrictHostKeyChecking=accept-new" -p "$SSH_PORT")
 
-if ssh-copy-id -i "${SSH_KEY}.pub" \
-    -o "StrictHostKeyChecking=accept-new" \
-    -p "$SSH_PORT" \
-    "${SERVER_USER}@${SERVER_IP}" 2>/dev/null; then
-    _ok "Ключ скопирован"
-else
-    _warn "ssh-copy-id не сработал. Добавьте ключ вручную на сервере:"
-    echo "  echo '$(cat "${SSH_KEY}.pub")' >> ~/.ssh/authorized_keys"
+echo ""
+
+# ── Автоопределение пользователя ──────────────────────────────────────────────
+_info "Определение пользователя..."
+SERVER_USER=""
+for try_user in sysadmin "$USER"; do
+    if ssh -n -i "$SSH_KEY" -o "StrictHostKeyChecking=accept-new" -o "BatchMode=yes" -o "ConnectTimeout=5" -p "$SSH_PORT" "${try_user}@${SERVER_IP}" "exit 0" 2>/dev/null; then
+        SERVER_USER="$try_user"
+        _ok "Подключение как $SERVER_USER"
+        break
+    fi
+done
+
+if [[ -z "$SERVER_USER" ]]; then
+    echo "  Ключ не установлен. Введите пользователя созданного при установке Ubuntu:"
+    read -rp "  Пользователь: " SERVER_USER
+    [[ -z "$SERVER_USER" ]] && SERVER_USER=sysadmin
+    _info "Копирование SSH ключа на сервер..."
+    echo "  (Потребуется пароль от ${SERVER_USER}@${SERVER_IP})"
     echo ""
-    read -rp "  Нажмите Enter когда ключ добавлен..."
+    if ssh-copy-id -i "${SSH_KEY}.pub" \
+        -o "StrictHostKeyChecking=accept-new" \
+        -p "$SSH_PORT" \
+        "${SERVER_USER}@${SERVER_IP}" 2>/dev/null; then
+        _ok "Ключ скопирован"
+    else
+        _warn "ssh-copy-id не сработал. Добавьте ключ вручную на сервере:"
+        echo "  echo '$(cat "${SSH_KEY}.pub")' >> ~/.ssh/authorized_keys"
+        echo ""
+        read -rp "  Нажмите Enter когда ключ добавлен..."
+    fi
 fi
+
+echo "  Пользователь: $SERVER_USER"
 
 # ── [3/5] Подготовка сервера ──────────────────────────────────────────────────
 _step "[3/5] Подготовка сервера..."
