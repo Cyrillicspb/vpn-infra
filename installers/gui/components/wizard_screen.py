@@ -22,10 +22,9 @@ WIZARD_BASE_CSS = """
     height: 1fr;
 }
 .keyboard-hints {
-    dock: bottom;
     height: 1;
     color: $text-muted;
-    background: $surface;
+    background: $panel;
     text-align: center;
     padding: 0 1;
 }
@@ -50,11 +49,6 @@ class WizardScreen(Screen):
     HELP_TEXT: str = ""
 
     BINDINGS = [
-        Binding("tab", "focus_next", "→", show=False),
-        Binding("shift+tab", "focus_previous", "←", show=False),
-        Binding("down", "focus_next", "↓", show=False),
-        Binding("up", "focus_previous", "↑", show=False),
-        Binding("enter", "submit", "ОК", show=False),
         Binding("escape", "back", "Назад", show=True),
         Binding("question_mark", "help", "?", show=True),
     ]

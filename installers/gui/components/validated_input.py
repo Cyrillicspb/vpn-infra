@@ -23,11 +23,8 @@ class ValidatedInput(Widget):
     }
     ValidatedInput .vi-hint {
         height: 1;
-        color: $text 70%;
+        color: $text;
         margin-left: 22;
-    }
-    ValidatedInput Input.-placeholder {
-        color: $text 50%;
     }
     ValidatedInput .vi-error {
         height: 1;
