@@ -287,7 +287,7 @@ else
         "max-size": "10m",
         "max-file": "3"
     },
-    "dns": ["8.8.8.8", "1.1.1.1"],
+    "dns": ["77.88.8.8", "77.88.8.1"],
     "ipv6": false
 }
 EOF
@@ -836,9 +836,9 @@ cache-size=2048
 # nftset=/<domain>/4#inet#vpn#blocked_dynamic
 # Файл: /etc/dnsmasq.d/vpn-nftset.conf
 
-# Публичные DNS как fallback
-server=1.1.1.1
-server=8.8.8.8
+# Яндекс DNS — работает из России напрямую (1.1.1.1/8.8.8.8 заблокированы ISP)
+server=77.88.8.8
+server=77.88.8.1
 EOF
     fi
 
@@ -866,9 +866,9 @@ EOF
 
     systemctl enable dnsmasq
     if ! systemctl restart dnsmasq 2>/dev/null; then
-        log_warn "dnsmasq не запустился — используем 8.8.8.8 как временный DNS"
+        log_warn "dnsmasq не запустился — используем Яндекс DNS как временный"
         # Обеспечить DNS на время установки (dnsmasq поднимется после wg-интерфейсов)
-        printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" > /etc/resolv.conf
+        printf "nameserver 77.88.8.8\nnameserver 77.88.8.1\n" > /etc/resolv.conf
         log_warn "dnsmasq не запустился — проверьте: journalctl -u dnsmasq"
     fi
 
@@ -1418,7 +1418,7 @@ else
         }
         trap _restore_resolv EXIT
         cp /etc/resolv.conf /etc/resolv.conf.docker-bak 2>/dev/null || true
-        printf "nameserver 8.8.8.8\nnameserver 1.1.1.1\n" > /etc/resolv.conf
+        printf "nameserver 77.88.8.8\nnameserver 77.88.8.1\n" > /etc/resolv.conf
 
         # Отключаем errexit+pipefail на время docker-операций,
         # чтобы сбой build/up не убил весь скрипт.
