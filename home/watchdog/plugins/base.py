@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import signal
+import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
@@ -76,13 +77,21 @@ class BasePlugin(ABC):
 
     async def start_process(
         self, cmd: list[str], pid_file: Optional[Path] = None
-    ) -> Optional[asyncio.subprocess.Process]:
-        """Запустить фоновый процесс с сохранением PID."""
+    ) -> Optional[subprocess.Popen]:
+        """Запустить фоновый процесс с сохранением PID.
+
+        Использует subprocess.Popen вместо asyncio.create_subprocess_exec,
+        чтобы предотвратить SIGKILL при GC объекта Process (CPython issue:
+        BaseSubprocessTransport.close() убивает дочерний процесс).
+        start_new_session=True изолирует процесс от SIGHUP родителя.
+        """
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
             )
             pf = pid_file or self.pid_file
             if pf and proc.pid:
