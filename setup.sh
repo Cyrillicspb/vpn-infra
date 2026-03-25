@@ -22,6 +22,20 @@ fi
 # shellcheck source=common.sh
 source "$REPO_DIR/common.sh"
 
+# ── TUI автозапуск (если запущен напрямую, не из TUI) ─────────────────────────
+if [[ -z "${VPN_NONINTERACTIVE:-}" ]] && [[ -z "${1:-}" || "${1:-}" != "--from-export" ]]; then
+    _TUI="$REPO_DIR/installers/gui/installer.py"
+    if [[ -f "$_TUI" ]] && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
+        # Установить textual если нужно (тихо)
+        python3 -c 'import textual' 2>/dev/null \
+            || python3 -m pip install 'textual>=0.47.0' --quiet --break-system-packages 2>/dev/null \
+            || true
+        if python3 -c 'import textual' 2>/dev/null; then
+            exec python3 "$_TUI"
+        fi
+    fi
+fi
+
 # ── Import mode ───────────────────────────────────────────────────────────────
 IMPORT_MODE=false
 IMPORT_FILE=""
