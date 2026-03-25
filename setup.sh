@@ -10,7 +10,16 @@ set -euo pipefail
 # ── Константы и общие функции ─────────────────────────────────────────────────
 
 STEP=0
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Поддержка запуска через pipe: curl ... | bash (BASH_SOURCE[0] пустой)
+if [[ -n "${BASH_SOURCE[0]:-}" ]] && [[ "${BASH_SOURCE[0]}" != "bash" ]]; then
+    REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+    # Запуск через pipe — скачиваем репозиторий во временную директорию
+    echo "ERROR: Запустите скрипт из файла, а не через pipe:" >&2
+    echo "  curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/setup.sh -o /tmp/setup.sh" >&2
+    echo "  sudo bash /tmp/setup.sh" >&2
+    exit 1
+fi
 # shellcheck source=common.sh
 source "$REPO_DIR/common.sh"
 
