@@ -24,9 +24,29 @@ source "$REPO_DIR/common.sh"
 
 # ── TUI автозапуск (если запущен напрямую, не из TUI) ─────────────────────────
 if [[ -z "${VPN_NONINTERACTIVE:-}" ]] && [[ "${1:-}" != "--from-export" ]]; then
-    _TUI="$REPO_DIR/installers/gui/installer.py"
-    if [[ -f "$_TUI" ]] && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
-        # Установить pip если отсутствует (как в внешних установщиках)
+    # installer.py может быть рядом со скриптом (репозиторий) или в /opt/vpn
+    _TUI=""
+    if [[ -f "$REPO_DIR/installers/gui/installer.py" ]]; then
+        _TUI="$REPO_DIR/installers/gui/installer.py"
+    elif [[ -f "/opt/vpn/installers/gui/installer.py" ]]; then
+        _TUI="/opt/vpn/installers/gui/installer.py"
+    else
+        # Нет репозитория рядом — скачать в /opt/vpn и перезапустить оттуда
+        echo "→ Загрузка репозитория в /opt/vpn..."
+        mkdir -p /opt/vpn
+        if curl -fsSL --max-time 120 -L \
+            "https://github.com/Cyrillicspb/vpn-infra/releases/latest/download/vpn-infra.tar.gz" \
+            -o /tmp/vpn-infra.tar.gz 2>/dev/null; then
+            tar -xzf /tmp/vpn-infra.tar.gz -C /opt/vpn \
+                --no-same-permissions --no-same-owner --overwrite 2>/dev/null
+            rm -f /tmp/vpn-infra.tar.gz
+            [[ -f "/opt/vpn/installers/gui/installer.py" ]] && \
+                _TUI="/opt/vpn/installers/gui/installer.py"
+        fi
+    fi
+
+    if [[ -n "$_TUI" ]] && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
+        # Установить pip если отсутствует
         if ! python3 -m pip --version &>/dev/null 2>&1; then
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pip python3-venv 2>/dev/null || true
         fi
