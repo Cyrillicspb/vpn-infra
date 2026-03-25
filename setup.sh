@@ -35,10 +35,10 @@ if [[ -z "${VPN_NONINTERACTIVE:-}" ]] && [[ "${1:-}" != "--from-export" ]]; then
         echo "→ Загрузка репозитория в /opt/vpn..."
         mkdir -p /opt/vpn
         if curl -fsSL --max-time 120 -L \
-            "https://github.com/Cyrillicspb/vpn-infra/releases/latest/download/vpn-infra.tar.gz" \
+            "https://github.com/Cyrillicspb/vpn-infra/archive/refs/heads/master.tar.gz" \
             -o /tmp/vpn-infra.tar.gz 2>/dev/null; then
             tar -xzf /tmp/vpn-infra.tar.gz -C /opt/vpn \
-                --no-same-permissions --no-same-owner --overwrite 2>/dev/null
+                --no-same-permissions --no-same-owner --overwrite --strip-components=1 2>/dev/null
             rm -f /tmp/vpn-infra.tar.gz
             [[ -f "/opt/vpn/installers/gui/installer.py" ]] && \
                 _TUI="/opt/vpn/installers/gui/installer.py"
