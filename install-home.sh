@@ -1120,6 +1120,27 @@ EOF
     step_done "step26_configure_fail2ban"
 fi
 
+# Gateway Mode: добавить домашнюю сеть в fail2ban ignoreip
+if [[ "${SERVER_MODE:-hosted}" == "gateway" && -n "${HOME_SUBNET:-}" ]]; then
+    F2B_JAIL=/etc/fail2ban/jail.local
+    if grep -q "ignoreip" "$F2B_JAIL" 2>/dev/null; then
+        # ignoreip уже есть — добавить HOME_SUBNET если его нет
+        if ! grep -q "$HOME_SUBNET" "$F2B_JAIL"; then
+            sed -i "s|^\(ignoreip\s*=.*\)|\1 $HOME_SUBNET|" "$F2B_JAIL"
+            log_ok "fail2ban: добавлена домашняя сеть $HOME_SUBNET в ignoreip"
+            systemctl restart fail2ban \
+                || log_warn "fail2ban не перезапустился после добавления ignoreip"
+        fi
+    else
+        # ignoreip нет — добавить в секцию [DEFAULT]
+        sed -i "/^\[DEFAULT\]/a ignoreip = 127.0.0.1/8 ::1 $HOME_SUBNET" "$F2B_JAIL"
+        log_ok "fail2ban: создан ignoreip с домашней сетью $HOME_SUBNET"
+        systemctl restart fail2ban \
+            || log_warn "fail2ban не перезапустился после добавления ignoreip"
+    fi
+    chmod 644 "$F2B_JAIL"
+fi
+
 # ── Шаг 27: Настройка logrotate + journald ───────────────────────────────────
 
 if is_done "step27_logrotate_journald"; then
