@@ -973,21 +973,23 @@ EOF
         cat > /etc/systemd/system/watchdog.service << 'EOF'
 [Unit]
 Description=VPN Watchdog Agent
-After=network.target docker.service dnsmasq.service
-Wants=docker.service
+After=network-online.target docker.service dnsmasq.service
+Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=300
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/vpn/watchdog
 EnvironmentFile=/opt/vpn/.env
 ExecStart=/opt/vpn/watchdog/venv/bin/python3 /opt/vpn/watchdog/watchdog.py
+# KillMode=process: не убивает tun2socks и nfqws при рестарте watchdog
+KillMode=process
 Restart=always
 RestartSec=5
-StartLimitBurst=5
-StartLimitIntervalSec=300
 WatchdogSec=30
-StandardOutput=journal
-StandardError=journal
+StandardOutput=null
+StandardError=append:/var/log/vpn-watchdog.log
 
 [Install]
 WantedBy=multi-user.target
