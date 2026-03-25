@@ -34,7 +34,7 @@
   │    nftables   kill switch + fwmark routing
   │    dnsmasq    split DNS + nftset blocked_dynamic
   │    watchdog   FastAPI :8080, управление стеками
-  │    wg-tier2   10.177.2.0/30 (туннель к VPS)
+  │    autossh-tier2  10.177.2.0/30 (SSH tun туннель к VPS)
   │
   │  Docker (172.20.0.0/24):
   │    telegram-bot      управление ботом

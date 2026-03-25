@@ -1541,7 +1541,7 @@ async def cb_adm_dashboard(cb: CallbackQuery, **kw):
                 1 for p in peers
                 if p.get("last_handshake", 0) > 0
                 and now_ts - p.get("last_handshake", 0) < 180
-                and p.get("interface", "") != "wg-tier2"
+                and p.get("interface", "") not in ("tun0", "tun1")
             )
         except WatchdogError:
             pass
@@ -1908,10 +1908,7 @@ async def cb_adm_stats(cb: CallbackQuery, **kw):
                 )
             else:
                 iface = p.get("interface", "")
-                if iface == "wg-tier2":
-                    system_peers.append(f"  🔗 Tier-2 VPS туннель ↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)}")
-                else:
-                    orphans.append(f"  <code>{pk[:20]}…</code> [{iface}] ↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)}")
+                orphans.append(f"  <code>{pk[:20]}…</code> [{iface}] ↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)}")
 
         if not client_traffic:
             text = "📊 <b>Статистика трафика</b>\n\nНет данных."

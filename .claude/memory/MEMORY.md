@@ -22,7 +22,7 @@
   - Трафик идёт через VPS 23.95.252.178
   - tun-grpc интерфейс поднят вручную, table marked маршрут активен
   - xray-client-2 (SOCKS5 :1081) → VPS:2083 splithttp+REALITY
-- **Tier-2 WireGuard туннель**: wg-tier2, 10.177.2.1 (home) ↔ 10.177.2.2 (VPS)
+- **Tier-2 SSH туннель**: autossh-tier2 (tun0), 10.177.2.1 (home) ↔ 10.177.2.2 (VPS)
 - **3x-ui на VPS**: инбаунды VLESS-XHTTP-microsoft (2087) + VLESS-XHTTP-jsdelivr (2083)
 
 ### Что не работает / не настроено
@@ -50,7 +50,7 @@
 ## Ключевые сетевые параметры
 - AWG клиенты: 10.177.1.0/24 (wg0), DNS: 10.177.1.1
 - WG клиенты: 10.177.3.0/24 (wg1), DNS: 10.177.3.1
-- Tier-2 туннель: 10.177.2.0/30 (home=.1, VPS=.2, интерфейс wg-tier2)
+- Tier-2 туннель: 10.177.2.0/30 (home=.1, VPS=.2, интерфейс tun0, сервис autossh-tier2)
 - Docker домашний: 172.20.0.0/24 (env var DOCKER_SUBNET)
 - AWG порт: 51820, WG порт: 51821
 - Watchdog API: 0.0.0.0:8080 (bearer token: в /opt/vpn/.env WATCHDOG_API_TOKEN)

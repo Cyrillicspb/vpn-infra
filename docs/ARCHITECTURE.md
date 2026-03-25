@@ -57,7 +57,7 @@ graph TD
         subgraph SYSTEMD["systemd-сервисы"]
             WG0[wg0 AWG\n10.177.1.0/24]
             WG1[wg1 WG\n10.177.3.0/24]
-            WT2[wg-tier2\n10.177.2.1]
+            WT2[autossh-tier2\ntun0 10.177.2.1]
             NFT[nftables\ntable inet vpn]
             DNSM[dnsmasq :53\nsplit DNS + nftset]
             WD[watchdog.py\nFastAPI :8080]
@@ -146,7 +146,7 @@ graph TD
 | Сегмент | Подсеть | Интерфейс | Описание |
 |---------|---------|-----------|----------|
 | AWG клиенты | `10.177.1.0/24` | wg0 | AmneziaWG, DNS: 10.177.1.1 |
-| Tier-2 туннель | `10.177.2.0/30` | wg-tier2 | дом (.1) ↔ VPS (.2) |
+| Tier-2 туннель | `10.177.2.0/30` | autossh-tier2 (SSH tun0) | дом (.1) ↔ VPS (.2) |
 | WG клиенты | `10.177.3.0/24` | wg1 | WireGuard, DNS: 10.177.3.1 |
 | Docker домашний | `172.20.0.0/24` | br-vpn | все контейнеры дома |
 | Docker VPS | `172.21.0.0/24` | br-vps | контейнеры VPS |

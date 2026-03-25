@@ -25,7 +25,7 @@ P12_LOCAL="/tmp/mtls-client-${DATE}.p12"
 
 # Проверка туннеля
 if ! ssh $SSH_OPTS "${VPS_USER}@${VPS_HOST}" "echo ok" &>/dev/null; then
-    echo "ERROR: VPS недоступен через туннель (10.177.2.2). Проверьте wg-tier2."
+    echo "ERROR: VPS недоступен через туннель (10.177.2.2). Проверьте autossh-tier2."
     exit 1
 fi
 
