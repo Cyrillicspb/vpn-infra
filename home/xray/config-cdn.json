@@ -27,7 +27,8 @@
                 "path": "/vpn-cdn",
                 "host": "${CF_CDN_HOSTNAME}",
                 "xPaddingBytes": "100-1000"
-            }
+            },
+            "sockopt": {"mark": 254}
         },
         "tag": "vless-xhttp-cdn-out"
     },

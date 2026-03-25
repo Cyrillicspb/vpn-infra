@@ -170,6 +170,8 @@ services:
     volumes:
       - ./xray/config-cdn.json:/etc/xray/config.json:ro
     network_mode: host
+    cap_add:
+      - NET_ADMIN
     deploy:
       resources:
         limits:
