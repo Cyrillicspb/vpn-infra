@@ -326,7 +326,9 @@ else
     step "Настройка fail2ban на VPS"
 
     vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fail2ban"
-    vps_exec "printf '[DEFAULT]\nbantime = 86400\nfindtime = 300\nmaxretry = 3\nbackend = systemd\n\n[sshd]\nenabled = true\nport = 22,8022\nfilter = sshd\nmode = aggressive\nmaxretry = 3\n' | \
+    # ignoreip: loopback + VPN subnets (static) + home server external IP
+    local F2B_IGNOREIP="127.0.0.1/8 ::1 10.177.0.0/16 ${EXTERNAL_IP}"
+    vps_exec "printf '[DEFAULT]\nbantime = 86400\nfindtime = 300\nmaxretry = 3\nbackend = systemd\nignoreip = ${F2B_IGNOREIP}\n\n[sshd]\nenabled = true\nport = 22,8022\nfilter = sshd\nmode = aggressive\nmaxretry = 3\n' | \
         sudo tee /etc/fail2ban/jail.local > /dev/null"
     vps_exec "sudo systemctl enable fail2ban && sudo systemctl restart fail2ban"
 
