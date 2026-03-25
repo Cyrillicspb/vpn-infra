@@ -76,6 +76,10 @@ class Hysteria2Plugin(BasePlugin):
 
     async def test(self) -> int:
         """Тест работоспособности стека через SOCKS5 с timeout."""
+        rc, _, _ = await self.run_cmd(["ip", "link", "show", TUN_IFACE])
+        if rc != 0:
+            print(json.dumps({"status": "fail", "throughput_mbps": 0, "reason": "tun down"}))
+            return 1
         rc, stdout, _ = await self.run_cmd(
             ["curl", "-s", "--max-time", "10",
              "--proxy", f"socks5://127.0.0.1:{SOCKS_PORT}",

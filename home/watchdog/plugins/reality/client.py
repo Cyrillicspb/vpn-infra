@@ -80,6 +80,10 @@ class RealityPlugin(BasePlugin):
 
     async def test(self) -> int:
         """Тест работоспособности стека."""
+        rc, _, _ = await self.run_cmd(["ip", "link", "show", TUN_IFACE])
+        if rc != 0:
+            print(json.dumps({"status": "fail", "throughput_mbps": 0, "reason": "tun down"}))
+            return 1
         start_time = time.time()
         rc, stdout, _ = await self.run_cmd(
             ["curl", "-s", "--max-time", "10",
