@@ -64,11 +64,12 @@ else
     fail "ip rule: fwmark 0x1 → table 200 не найден"
 fi
 
-# 5. ip rule: DNS (1.1.1.1/8.8.8.8) НЕ должны быть в table 200 — ломает dnsmasq upstream
-if ! ip rule show 2>/dev/null | grep -qE "(1\.1\.1\.1|8\.8\.8\.8).*(lookup 200|lookup marked)"; then
-    pass "ip rule: DNS 1.1.1.1/8.8.8.8 NOT in table 200 (dnsmasq safe)"
+# 5. ip rule: DNS upstream НЕ должны быть в table 200 — ломает dnsmasq upstream
+# Текущие upstream: 77.88.8.8/77.88.8.1 (Яндекс DNS). 1.1.1.1/8.8.8.8 заблокированы ISP.
+if ! ip rule show 2>/dev/null | grep -qE "(77\.88\.8\.[18]|1\.1\.1\.1|8\.8\.8\.8).*(lookup 200|lookup marked)"; then
+    pass "ip rule: DNS upstream (Yandex/CF/Google) NOT in table 200 (dnsmasq safe)"
 else
-    fail "ip rule: DNS servers in table 200 — breaks dnsmasq upstream"
+    fail "ip rule: DNS upstream servers in table 200 — breaks dnsmasq upstream"
 fi
 
 # 6. AWG subnet → table 100 (может называться "vpn")

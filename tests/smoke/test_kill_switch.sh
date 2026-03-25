@@ -150,8 +150,8 @@ fi
 # Берём IP из table 100 (должен идти напрямую)
 ETH_IFACE=$(ip route show default table main 2>/dev/null | grep -oP 'dev \K\S+' | head -1)
 if [[ -n "$ETH_IFACE" ]]; then
-    # 8.8.8.8 — Google DNS, не должен быть в blocked_static (незаблокированный)
-    TEST_IP="8.8.8.8"
+    # 77.88.8.8 — Яндекс DNS, не в CDN_SUBNETS/blocked_static → идёт напрямую
+    TEST_IP="77.88.8.8"
     route_direct=$(ip route get "$TEST_IP" from 10.177.1.1 2>/dev/null || true)
     if echo "$route_direct" | grep -q "dev $ETH_IFACE"; then
         pass "split tunneling: незаблокированный $TEST_IP → $ETH_IFACE (прямой выход)"
