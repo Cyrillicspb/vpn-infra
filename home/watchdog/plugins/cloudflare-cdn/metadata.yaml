@@ -1,8 +1,8 @@
 name: cloudflare-cdn
-display_name: "VLESS+WebSocket через Cloudflare Worker"
+display_name: "VLESS+XHTTP через Cloudflare Worker"
 resilience: 4          # highest resilience
 protocol: vless
-transport: ws
+transport: xhttp
 port: 443
 socks_port: 1082
 tun_name: tun-cf-cdn

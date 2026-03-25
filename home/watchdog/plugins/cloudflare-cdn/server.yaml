@@ -1,5 +1,5 @@
 # Cloudflare CDN стек — серверная сторона (VPS)
-# Xray WebSocket inbound + cloudflared tunnel наружу
+# Xray XHTTP (splithttp) inbound + cloudflared tunnel наружу
 
 # Xray inbound (в 3x-ui):
 xray_inbound:
@@ -12,9 +12,9 @@ xray_inbound:
         flow: ""
     decryption: none
   streamSettings:
-    network: ws
+    network: splithttp
     security: none
-    wsSettings:
+    splithttpSettings:
       path: "/vless"
 
 # cloudflared tunnel: трафик из CDN → 127.0.0.1:8080

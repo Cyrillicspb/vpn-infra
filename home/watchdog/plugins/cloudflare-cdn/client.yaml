@@ -1,5 +1,5 @@
 # Cloudflare CDN стек — клиентская сторона (Workers вариант)
-# Поток: tun2socks → xray-client-cdn (VLESS+WS+TLS) → CF Worker → VPS Xray WS :8080
+# Поток: tun2socks → xray-client-cdn (VLESS+XHTTP+TLS) → CF Worker → VPS Xray XHTTP :8080
 #
 # Требует в .env: CF_CDN_HOSTNAME, CF_CDN_UUID
 # config-cdn.json генерируется setup.sh и deploy.sh из этих переменных
