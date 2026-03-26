@@ -62,6 +62,17 @@ jobs:
           echo "$NOTES" >> "$GITHUB_OUTPUT"
           echo "$EOF" >> "$GITHUB_OUTPUT"
 
+      - name: Set up Python for wheel download
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build self-extracting installer
+        run: |
+          pip install --quiet pip --upgrade
+          bash installers/build-installer.sh --output install.sh
+          ls -lh install.sh
+
       - name: Create tag and release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -72,4 +83,5 @@ jobs:
           gh release create "v$NEXT" \
             --title "v$NEXT" \
             --notes "${{ steps.notes.outputs.notes }}" \
-            --latest
+            --latest \
+            install.sh
