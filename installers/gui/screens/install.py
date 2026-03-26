@@ -72,7 +72,7 @@ class InstallScreen(Screen):
             id="install-header-row",
         )
         yield Static("Готов к установке.", id="install-status")
-        yield ProgressBar(total=57, show_eta=False, id="install-progress")
+        yield ProgressBar(total=61, show_eta=False, id="install-progress")
         yield Static("", id="install-step")
         yield RichLog(
             highlight=False,
@@ -130,6 +130,8 @@ class InstallScreen(Screen):
         log.write(f"$ {' '.join(cmd[:2])} {SETUP_SH.name}")
         log.write("-" * 50)
 
+        last_step_name: str = ""
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -158,7 +160,7 @@ class InstallScreen(Screen):
                         step_lbl.update(f"  {icon} {name}")
                         status.update(f"Шаг {current}/{total}")
                     elif flag == "start":
-                        # Phase 4 smoke-тесты: нет step_done, только step/start
+                        last_step_name = name
                         status.update(f"Шаг {current}/{total}: {name[:55]}")
                         step_lbl.update(f"  ⟳ {name}")
                     continue
@@ -181,9 +183,11 @@ class InstallScreen(Screen):
                 log.write("Установка завершена!")
                 btn_done.disabled = False
             else:
-                status.update(f"[bold red]✗  Ошибка (код {rc})[/bold red]")
+                fail_info = f" на шаге: {last_step_name}" if last_step_name else ""
+                status.update(f"[bold red]✗  Ошибка (код {rc}){fail_info}[/bold red]")
+                step_lbl.update(f"  [red]✗ {last_step_name}[/red]" if last_step_name else "")
                 log.write("")
-                log.write(f"[ERR] setup.sh завершился с кодом {rc}")
+                log.write(f"[ERR] setup.sh завершился с кодом {rc}{fail_info}")
                 log.write("Повтор безопасен — выполненные шаги пропустятся.")
                 btn_run.label = "▶  Повторить"
                 btn_run.disabled = False

@@ -1037,6 +1037,7 @@ phase1() {
     fi
 
     STEP=8 bash "${REPO_DIR}/install-home.sh"
+    STEP=33  # install-home.sh заканчивается на STEP=33 (9..33 = 25 шагов)
 
     # Import mode: восстановление WireGuard конфигов из экспорта
     if [[ "$IMPORT_MODE" == "true" && -n "${IMPORT_DIR:-}" && -d "${IMPORT_DIR}/wireguard" ]]; then
@@ -1071,7 +1072,8 @@ phase2() {
         die "Файл install-vps.sh не найден в ${REPO_DIR}"
     fi
 
-    STEP=31 bash "${REPO_DIR}/install-vps.sh"
+    STEP=33 bash "${REPO_DIR}/install-vps.sh"
+    STEP=47  # install-vps.sh заканчивается на STEP=47 (34..47 = 14 шагов, включая step36b)
 }
 
 # ── Фаза 3: Связка ──────────────────────────────────────────────────────────
@@ -1818,7 +1820,7 @@ main() {
     phase0
     phase1
     phase2
-    STEP=44
+    STEP=47  # install-vps.sh (14 шагов от 33) заканчивается на STEP=47
     phase3
     phase4
     phase5

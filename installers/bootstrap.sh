@@ -58,5 +58,21 @@ ok "textual установлен"
 
 # ── Запуск TUI ────────────────────────────────────────────────────────────────
 echo ""
-info "Запуск установщика..."
+
+# Tmux-защита: если SSH обрывается, установка продолжается в фоне.
+# При переподключении: tmux attach -t vpn-install
+if [[ -z "${TMUX:-}" ]]; then
+    if ! command -v tmux &>/dev/null; then
+        info "Установка tmux..."
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tmux 2>/dev/null \
+            || { info "tmux недоступен — запуск без защиты от обрыва SSH"; exec python3 "$EXTRACT_DIR/installers/gui/installer.py"; }
+    fi
+    info "Запуск установщика в tmux (при обрыве SSH: tmux attach -t vpn-install)..."
+    echo ""
+    # bash в конце: не закрывать tmux окно при выходе из installer.py
+    exec tmux new-session -s vpn-install \
+        "python3 '$EXTRACT_DIR/installers/gui/installer.py'; echo ''; echo 'Установщик завершён. Нажмите Enter для выхода.'; read"
+fi
+
+info "Запуск установщика (уже в tmux)..."
 exec python3 "$EXTRACT_DIR/installers/gui/installer.py"

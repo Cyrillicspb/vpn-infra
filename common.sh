@@ -22,7 +22,7 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 # ── Константы ─────────────────────────────────────────────────────────────────
-TOTAL_STEPS=57
+TOTAL_STEPS=61
 STATE_FILE="/opt/vpn/.setup-state"
 ENV_FILE="/opt/vpn/.env"
 
@@ -32,24 +32,10 @@ log_ok()    { echo -e "${GREEN}[✓]${NC}   $*"; }
 log_warn()  { echo -e "${YELLOW}[!]${NC}   $*"; }
 log_error() { echo -e "${RED}[✗]${NC}   $*" >&2; }
 
-# ── Прогресс-бар ──────────────────────────────────────────────────────────────
-_progress_bar() {
-    local current="$1" total="$2" width=40
-    local pct=$(( current * 100 / total ))
-    local filled=$(( current * width / total ))
-    local empty=$(( width - filled ))
-    local bar=""
-    local i
-    for (( i=0; i<filled; i++ )); do bar+="█"; done
-    for (( i=0; i<empty;  i++ )); do bar+="░"; done
-    echo -e "    ${CYAN}[${bar}]${NC} ${BOLD}${pct}%${NC} (${current}/${total})"
-}
-
 step() {
     ((STEP++)) || true
     echo ""
     echo -e "${CYAN}${BOLD}━━━ Шаг ${STEP}/${TOTAL_STEPS}: $* ━━━${NC}"
-    _progress_bar "$STEP" "$TOTAL_STEPS"
     emit_progress "$*" "start"
 }
 

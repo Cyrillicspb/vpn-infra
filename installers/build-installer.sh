@@ -54,14 +54,22 @@ if [[ $WITH_WHEELS -eq 1 ]]; then
     echo "→ Загрузка wheel-пакетов textual..."
     WHEELS_DIR="$PAYLOAD_DIR/wheels"
     mkdir -p "$WHEELS_DIR"
-    if python3 -m pip download 'textual>=0.47.0' \
-        --dest "$WHEELS_DIR" \
-        --python-version 3.10 \
-        --only-binary=:all: \
-        --platform manylinux2014_x86_64 \
-        --quiet 2>/dev/null; then
-        WHEEL_COUNT=$(ls "$WHEELS_DIR"/*.whl 2>/dev/null | wc -l)
+    PIP_ARGS=(--dest "$WHEELS_DIR" --python-version 3.10
+              --only-binary=:all: --platform manylinux2014_x86_64 --quiet)
+    PACKAGES=(
+        'textual>=0.47.0'
+        'aiohttp==3.9.5' 'fastapi==0.111.0' 'uvicorn[standard]==0.29.0'
+        'pydantic==2.7.1' 'slowapi==0.1.9' 'psutil==5.9.8'
+        'PyYAML==6.0.1' 'aiofiles==23.2.1' 'aggregate6'
+    )
+    FAIL=0
+    for pkg in "${PACKAGES[@]}"; do
+        python3 -m pip download "$pkg" "${PIP_ARGS[@]}" 2>/dev/null || FAIL=1
+    done
+    WHEEL_COUNT=$(ls "$WHEELS_DIR"/*.whl 2>/dev/null | wc -l || echo 0)
+    if [[ $WHEEL_COUNT -gt 0 ]]; then
         echo "  ✓ Загружено $WHEEL_COUNT wheel-пакетов"
+        [[ $FAIL -eq 1 ]] && echo "  ⚠ Некоторые пакеты не скачались — будет онлайн-установка"
     else
         echo "  ⚠ Не удалось загрузить wheels — установка потребует интернет"
         rm -rf "$WHEELS_DIR"
