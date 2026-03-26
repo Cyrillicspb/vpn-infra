@@ -46,11 +46,11 @@ if ! python3 -c 'import textual' 2>/dev/null; then
     if [[ -d "$WHEELS_DIR" ]] && ls "$WHEELS_DIR"/*.whl &>/dev/null 2>&1; then
         info "Установка textual из локальных wheel (офлайн)..."
         pip3 install --no-index --find-links="$WHEELS_DIR" textual \
-            --break-system-packages --quiet \
+            --break-system-packages --ignore-installed --quiet \
             || { err "Не удалось установить textual из wheels"; exit 1; }
     else
         info "Установка textual из PyPI..."
-        pip3 install 'textual>=0.47.0' --break-system-packages --quiet \
+        pip3 install 'textual>=0.47.0' --break-system-packages --ignore-installed --quiet \
             || { err "Не удалось установить textual"; exit 1; }
     fi
 fi
