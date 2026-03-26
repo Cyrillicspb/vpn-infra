@@ -1445,11 +1445,14 @@ else
             log_warn "После подъёма VPN: cd /opt/vpn && docker compose build telegram-bot && docker compose up -d"
         fi
 
-        log_info "Загрузка Docker-образов..."
-        docker compose pull --ignore-buildable --quiet 2>/dev/null || true
+        log_info "Загрузка Docker-образов (макс. 90 сек)..."
+        # timeout: docker pull без VPN висит бесконечно → OOM → сеть умирает
+        timeout 90 docker compose pull --ignore-buildable --quiet 2>/dev/null || \
+            log_warn "docker compose pull не завершился за 90 сек — образы будут скачаны после подъёма VPN"
 
         log_info "Запуск контейнеров..."
-        docker compose up -d --no-build --remove-orphans 2>&1 | tee /tmp/docker-up.log
+        # --pull never: не пытаться качать отсутствующие образы (уже сделали выше)
+        docker compose up -d --no-build --pull never --remove-orphans 2>&1 | tee /tmp/docker-up.log
         _UP_EXIT=${PIPESTATUS[0]}
         [[ $_UP_EXIT -ne 0 ]] && log_warn "docker compose up завершился с ошибкой (код $_UP_EXIT)"
 
