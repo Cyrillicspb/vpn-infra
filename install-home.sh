@@ -1434,15 +1434,26 @@ else
         set +e; set +o pipefail
 
         # Проверяем доступность Docker Hub перед build (заблокирован в РФ без VPN)
-        if curl -sf --max-time 10 https://registry-1.docker.io/v2/ &>/dev/null \
-            || curl -sf --max-time 10 https://huecker.io/v2/ &>/dev/null; then
-            log_info "Сборка локальных Docker-образов (telegram-bot)..."
-            docker compose build telegram-bot 2>&1 | tee /tmp/docker-build.log
+        # BuildKit игнорирует registry-mirrors из daemon.json → передаём зеркало через BUILD ARG
+        _BASE_IMG="python:3.12-slim"
+        if curl -sf --max-time 10 https://huecker.io/v2/ &>/dev/null; then
+            _BASE_IMG="huecker.io/library/python:3.12-slim"
+            log_info "Используем зеркало huecker.io для сборки telegram-bot"
+        elif curl -sf --max-time 10 https://dockerhub.timeweb.cloud/v2/ &>/dev/null; then
+            _BASE_IMG="dockerhub.timeweb.cloud/library/python:3.12-slim"
+            log_info "Используем зеркало timeweb для сборки telegram-bot"
+        elif curl -sf --max-time 10 https://registry-1.docker.io/v2/ &>/dev/null; then
+            log_info "Docker Hub доступен напрямую"
+        else
+            log_warn "Docker Hub и зеркала недоступны — пропускаем build telegram-bot"
+            log_warn "После подъёма VPN: cd /opt/vpn && DOCKER_BASE_PYTHON=python:3.12-slim docker compose build telegram-bot && docker compose up -d"
+            _BASE_IMG=""
+        fi
+        if [[ -n "$_BASE_IMG" ]]; then
+            log_info "Сборка локальных Docker-образов (telegram-bot, base=$_BASE_IMG)..."
+            DOCKER_BASE_PYTHON="$_BASE_IMG" docker compose build telegram-bot 2>&1 | tee /tmp/docker-build.log
             _BUILD_EXIT=${PIPESTATUS[0]}
             [[ $_BUILD_EXIT -ne 0 ]] && log_warn "docker compose build завершился с ошибкой (код $_BUILD_EXIT) — запустите вручную после подъёма VPN"
-        else
-            log_warn "Docker Hub недоступен (заблокирован?) — пропускаем build telegram-bot"
-            log_warn "После подъёма VPN: cd /opt/vpn && docker compose build telegram-bot && docker compose up -d"
         fi
 
         log_info "Загрузка Docker-образов (макс. 90 сек)..."

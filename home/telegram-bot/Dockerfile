@@ -1,4 +1,5 @@
-FROM python:3.12-slim
+ARG BASE_IMAGE=python:3.12-slim
+FROM ${BASE_IMAGE}
 
 # Хэш последнего коммита home/telegram-bot/ — для надёжной детекции изменений в deploy.sh
 ARG GIT_HASH=unknown

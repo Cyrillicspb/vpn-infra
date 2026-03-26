@@ -79,6 +79,8 @@ services:
       context: ./telegram-bot
       dockerfile: Dockerfile
       network: host
+      args:
+        BASE_IMAGE: ${DOCKER_BASE_PYTHON:-python:3.12-slim}
     image: vpn-telegram-bot:latest
     container_name: telegram-bot
     restart: always
