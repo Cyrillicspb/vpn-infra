@@ -288,7 +288,12 @@ else
         "max-file": "3"
     },
     "dns": ["77.88.8.8", "77.88.8.1"],
-    "ipv6": false
+    "ipv6": false,
+    "registry-mirrors": [
+        "https://huecker.io",
+        "https://dockerhub.timeweb.cloud",
+        "https://mirror.gcr.io"
+    ]
 }
 EOF
 
@@ -1076,13 +1081,17 @@ else
     # Установка зависимостей
     if [[ -f "${WATCHDOG_DIR}/requirements.txt" ]]; then
         "${WATCHDOG_DIR}/venv/bin/pip" install -q --no-cache-dir \
-            -r "${WATCHDOG_DIR}/requirements.txt"
+            --timeout 60 --retries 2 \
+            -r "${WATCHDOG_DIR}/requirements.txt" \
+            || log_warn "pip install не завершился — watchdog может не запуститься, повторите позже"
         log_ok "Зависимости установлены из requirements.txt"
     else
         log_warn "requirements.txt не найден — устанавливаем базовые зависимости"
         "${WATCHDOG_DIR}/venv/bin/pip" install -q --no-cache-dir \
+            --timeout 60 --retries 2 \
             aiohttp fastapi uvicorn python-telegram-bot python-dotenv \
-            psutil requests
+            psutil requests \
+            || log_warn "pip install не завершился — watchdog может не запуститься"
     fi
 
     # Включение watchdog.service (запускается в phase3 после связки)
@@ -1424,21 +1433,25 @@ else
         # чтобы сбой build/up не убил весь скрипт.
         set +e; set +o pipefail
 
-        log_info "Сборка локальных Docker-образов (telegram-bot)..."
-        docker compose build telegram-bot 2>&1 | tee /tmp/docker-build.log
-        _BUILD_EXIT=${PIPESTATUS[0]}
-        [[ $_BUILD_EXIT -ne 0 ]] && log_warn "docker compose build завершился с ошибкой (код $_BUILD_EXIT)"
+        # Проверяем доступность Docker Hub перед build (заблокирован в РФ без VPN)
+        if curl -sf --max-time 10 https://registry-1.docker.io/v2/ &>/dev/null \
+            || curl -sf --max-time 10 https://huecker.io/v2/ &>/dev/null; then
+            log_info "Сборка локальных Docker-образов (telegram-bot)..."
+            docker compose build telegram-bot 2>&1 | tee /tmp/docker-build.log
+            _BUILD_EXIT=${PIPESTATUS[0]}
+            [[ $_BUILD_EXIT -ne 0 ]] && log_warn "docker compose build завершился с ошибкой (код $_BUILD_EXIT) — запустите вручную после подъёма VPN"
+        else
+            log_warn "Docker Hub недоступен (заблокирован?) — пропускаем build telegram-bot"
+            log_warn "После подъёма VPN: cd /opt/vpn && docker compose build telegram-bot && docker compose up -d"
+        fi
 
         log_info "Загрузка Docker-образов..."
         docker compose pull --ignore-buildable --quiet 2>/dev/null || true
 
         log_info "Запуск контейнеров..."
-        docker compose up -d --remove-orphans 2>&1 | tee /tmp/docker-up.log
+        docker compose up -d --no-build --remove-orphans 2>&1 | tee /tmp/docker-up.log
         _UP_EXIT=${PIPESTATUS[0]}
-        if [[ $_UP_EXIT -ne 0 ]]; then
-            log_warn "docker compose up завершился с ошибкой. Пробуем --no-build..."
-            docker compose up -d --no-build --remove-orphans 2>&1 || true
-        fi
+        [[ $_UP_EXIT -ne 0 ]] && log_warn "docker compose up завершился с ошибкой (код $_UP_EXIT)"
 
         set -e; set -o pipefail
 
