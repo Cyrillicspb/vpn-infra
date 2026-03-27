@@ -191,6 +191,12 @@ net.ipv4.conf.all.accept_source_route = 0
 net.ipv4.conf.default.accept_source_route = 0
 net.ipv4.conf.all.accept_redirects = 0
 net.ipv4.conf.default.accept_redirects = 0
+
+# Conntrack: дефолт Ubuntu ~65536 недостаточен при интенсивном docker pull.
+# При overflow ядро дропает входящие пакеты до nftables — SSH/ping пропадают.
+net.netfilter.nf_conntrack_max = 262144
+net.netfilter.nf_conntrack_tcp_timeout_established = 300
+net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30
 EOF
     sysctl --system 2>/dev/null || sysctl -p /etc/sysctl.d/99-vpn.conf 2>/dev/null || true
     log_ok "Параметры ядра настроены"
@@ -289,6 +295,7 @@ else
     },
     "dns": ["77.88.8.8", "77.88.8.1"],
     "ipv6": false,
+    "max-concurrent-downloads": 2,
     "registry-mirrors": [
         "https://huecker.io",
         "https://dockerhub.timeweb.cloud",
