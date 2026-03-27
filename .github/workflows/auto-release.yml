@@ -131,7 +131,4 @@ jobs:
             --notes "${{ steps.notes.outputs.notes }}" \
             --latest \
             install.sh \
-            vpn-infra.tar.gz \
-            installers/linux/install-linux.sh \
-            installers/macos/install-macos.command \
-            installers/windows/install-windows.bat
+            vpn-infra.tar.gz
