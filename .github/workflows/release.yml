@@ -1,105 +1,18 @@
 name: Release
 
+# Этот воркфлоу срабатывает только при ручном создании тега (git tag vX.Y.Z.W + git push --tags).
+# При обычных пушах в master релизы создаёт auto-release.yml.
+
 on:
   push:
     tags:
       - "v*"
 
 jobs:
-  release:
+  check:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Читать версию и changelog
-        id: meta
+      - name: Skip if tag was created by Auto Release
         run: |
-          VERSION=$(cat version)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-          # Извлечь секцию текущего релиза из CHANGELOG.md
-          awk "/^## \[v$VERSION\]/{found=1; next} found && /^## \[v/{exit} found{print}" CHANGELOG.md > release_notes.md
-          echo "Файл release_notes.md:"
-          cat release_notes.md
-
-      - name: Скачать бинарники для бандла
-        run: |
-          set -euo pipefail
-
-          # Автоопределение последних версий через GitHub API
-          HYSTERIA_FALLBACK="v2.7.1"
-          TUN2SOCKS_FALLBACK="v2.5.2"
-
-          HYSTERIA_VERSION=$(curl -sSfL --max-time 10 \
-            https://api.github.com/repos/apernet/hysteria/releases/latest \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'].replace('app/',''))" \
-            2>/dev/null) || HYSTERIA_VERSION="$HYSTERIA_FALLBACK"
-          [[ -z "$HYSTERIA_VERSION" ]] && HYSTERIA_VERSION="$HYSTERIA_FALLBACK"
-
-          TUN2SOCKS_VERSION=$(curl -sSfL --max-time 10 \
-            https://api.github.com/repos/xjasonlyu/tun2socks/releases/latest \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" \
-            2>/dev/null) || TUN2SOCKS_VERSION="$TUN2SOCKS_FALLBACK"
-          [[ -z "$TUN2SOCKS_VERSION" ]] && TUN2SOCKS_VERSION="$TUN2SOCKS_FALLBACK"
-
-          echo "hysteria2: ${HYSTERIA_VERSION}, tun2socks: ${TUN2SOCKS_VERSION}"
-          mkdir -p tools
-
-          echo "Загрузка hysteria2 ${HYSTERIA_VERSION}..."
-          curl -fsSL "https://github.com/apernet/hysteria/releases/download/app%2F${HYSTERIA_VERSION}/hysteria-linux-amd64" \
-            -o tools/hysteria2-linux-amd64
-          curl -fsSL "https://github.com/apernet/hysteria/releases/download/app%2F${HYSTERIA_VERSION}/hysteria-linux-arm64" \
-            -o tools/hysteria2-linux-arm64
-          chmod +x tools/hysteria2-linux-amd64 tools/hysteria2-linux-arm64
-
-          echo "Загрузка tun2socks ${TUN2SOCKS_VERSION}..."
-          curl -fsSL "https://github.com/xjasonlyu/tun2socks/releases/download/${TUN2SOCKS_VERSION}/tun2socks-linux-amd64.zip" \
-            -o /tmp/tun2socks-amd64.zip
-          curl -fsSL "https://github.com/xjasonlyu/tun2socks/releases/download/${TUN2SOCKS_VERSION}/tun2socks-linux-arm64.zip" \
-            -o /tmp/tun2socks-arm64.zip
-
-          # Распаковываем в отдельные директории, берём первый файл (имя бинарника не фиксировано)
-          mkdir -p /tmp/t2s-amd64 /tmp/t2s-arm64
-          unzip -qo /tmp/tun2socks-amd64.zip -d /tmp/t2s-amd64/
-          unzip -qo /tmp/tun2socks-arm64.zip -d /tmp/t2s-arm64/
-          cp "$(find /tmp/t2s-amd64/ -maxdepth 1 -type f | head -1)" tools/tun2socks-linux-amd64
-          cp "$(find /tmp/t2s-arm64/ -maxdepth 1 -type f | head -1)" tools/tun2socks-linux-arm64
-          chmod +x tools/tun2socks-linux-amd64 tools/tun2socks-linux-arm64
-
-          echo "Содержимое tools/:"
-          ls -lh tools/
-
-      - name: Собрать self-extracting install.sh (TUI)
-        run: |
-          bash installers/build-installer.sh --output install.sh
-          echo "Размер install.sh: $(du -sh install.sh | cut -f1)"
-
-      - name: Собрать архив репозитория
-        run: |
-          # Пишем в /tmp чтобы избежать "file changed as we read it"
-          tar -czf /tmp/vpn-infra.tar.gz \
-            --exclude='.git' \
-            --exclude='*.pyc' \
-            --exclude='__pycache__' \
-            --exclude='*/venv/*' \
-            --exclude='node_modules' \
-            --exclude='*.log' \
-            --exclude='.env' \
-            -C . .
-          mv /tmp/vpn-infra.tar.gz vpn-infra.tar.gz
-          echo "Размер архива: $(du -sh vpn-infra.tar.gz | cut -f1)"
-
-      - name: Создать GitHub Release с установщиками
-        uses: softprops/action-gh-release@v2
-        with:
-          name: "v${{ steps.meta.outputs.version }}"
-          body_path: release_notes.md
-          files: |
-            install.sh
-            installers/windows/install-windows.bat
-            installers/macos/install-macos.command
-            installers/linux/install-linux.sh
-            vpn-infra.tar.gz
+          echo "Tag push detected: ${{ github.ref }}"
+          echo "Auto Release создаёт релиз самостоятельно. Этот воркфлоу не делает дублирующих действий."
