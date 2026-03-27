@@ -24,7 +24,7 @@ services:
   # Только VPN-клиенты (10.177.1.0/24) могут подключиться, снаружи порт закрыт
   # Запуск: всегда (restart: always), не зависит от других сервисов
   nginx:
-    image: nginx:1.25.4-alpine
+    image: nginx:1.28-alpine
     container_name: nginx
     restart: always
     network_mode: host

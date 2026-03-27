@@ -1086,17 +1086,32 @@ else
     fi
 
     # Установка зависимостей
+    # PyPI заблокирован из РФ — пробуем зеркала по очереди.
+    _pip_install() {
+        local pip="${WATCHDOG_DIR}/venv/bin/pip"
+        local args=(-q --no-cache-dir --timeout 120 --retries 2 "$@")
+        local mirrors=(
+            "https://pypi.org/simple/"
+            "https://mirror.yandex.ru/mirrors/pypi/simple/"
+            "https://pypi.tuna.tsinghua.edu.cn/simple/"
+        )
+        for mirror in "${mirrors[@]}"; do
+            log_info "pip install через $mirror ..."
+            if "$pip" install "${args[@]}" --index-url "$mirror" 2>/dev/null; then
+                return 0
+            fi
+        done
+        log_warn "Все зеркала PyPI недоступны — пробуем без зеркала"
+        "$pip" install "${args[@]}" || return 1
+    }
+
     if [[ -f "${WATCHDOG_DIR}/requirements.txt" ]]; then
-        "${WATCHDOG_DIR}/venv/bin/pip" install -q --no-cache-dir \
-            --timeout 60 --retries 2 \
-            -r "${WATCHDOG_DIR}/requirements.txt" \
+        _pip_install -r "${WATCHDOG_DIR}/requirements.txt" \
             || log_warn "pip install не завершился — watchdog может не запуститься, повторите позже"
         log_ok "Зависимости установлены из requirements.txt"
     else
         log_warn "requirements.txt не найден — устанавливаем базовые зависимости"
-        "${WATCHDOG_DIR}/venv/bin/pip" install -q --no-cache-dir \
-            --timeout 60 --retries 2 \
-            aiohttp fastapi uvicorn python-telegram-bot python-dotenv \
+        _pip_install aiohttp fastapi uvicorn python-telegram-bot python-dotenv \
             psutil requests \
             || log_warn "pip install не завершился — watchdog может не запуститься"
     fi
