@@ -1425,53 +1425,89 @@ else
             cp /etc/resolv.conf.docker-bak /etc/resolv.conf 2>/dev/null \
                 || echo "nameserver 127.0.0.1" > /etc/resolv.conf
         }
-        trap _restore_resolv EXIT
         cp /etc/resolv.conf /etc/resolv.conf.docker-bak 2>/dev/null || true
         printf "nameserver 77.88.8.8\nnameserver 77.88.8.1\n" > /etc/resolv.conf
+        # FIX A: trap остаётся активным до явного вызова _restore_resolv в конце блока.
+        # trap - EXIT выполняется ПОСЛЕ восстановления, а не до.
+        trap '_restore_resolv' EXIT
+
+        # FIX B: br-vpn при первой установке — tun ещё не поднят.
+        # Временно разрешаем прямой выход для br-vpn, чтобы docker pull не завис.
+        # Правило удаляется перезагрузкой nftables в конце блока.
+        _nft_bypass_added=0
+        if nft list table inet vpn &>/dev/null 2>&1; then
+            nft add rule inet vpn forward iifname "br-vpn" accept 2>/dev/null && _nft_bypass_added=1 || true
+        fi
 
         # Отключаем errexit+pipefail на время docker-операций,
         # чтобы сбой build/up не убил весь скрипт.
         set +e; set +o pipefail
 
-        # Проверяем доступность Docker Hub перед build (заблокирован в РФ без VPN)
-        # BuildKit игнорирует registry-mirrors из daemon.json → передаём зеркало через BUILD ARG
-        _BASE_IMG="python:3.12-slim"
-        if curl -sf --max-time 10 https://huecker.io/v2/ &>/dev/null; then
+        # FIX C: проверка зеркала — реальный pull alpine вместо /v2/ ping.
+        # Это гарантирует что зеркало отдаёт образы, а не просто отвечает на API.
+        _test_mirror() {
+            local mirror="$1"
+            timeout 20 docker pull "${mirror}/library/alpine:latest" >/dev/null 2>&1
+            local rc=$?
+            docker rmi "${mirror}/library/alpine:latest" >/dev/null 2>&1 || true
+            return $rc
+        }
+
+        _BASE_IMG=""
+        log_info "Проверка доступности Docker-зеркал (pull alpine)..."
+        if _test_mirror "huecker.io"; then
             _BASE_IMG="huecker.io/library/python:3.12-slim"
             log_info "Используем зеркало huecker.io для сборки telegram-bot"
-        elif curl -sf --max-time 10 https://dockerhub.timeweb.cloud/v2/ &>/dev/null; then
+        elif _test_mirror "dockerhub.timeweb.cloud"; then
             _BASE_IMG="dockerhub.timeweb.cloud/library/python:3.12-slim"
             log_info "Используем зеркало timeweb для сборки telegram-bot"
-        elif curl -sf --max-time 10 https://registry-1.docker.io/v2/ &>/dev/null; then
+        elif timeout 20 docker pull alpine:latest >/dev/null 2>&1; then
+            docker rmi alpine:latest >/dev/null 2>&1 || true
+            _BASE_IMG="python:3.12-slim"
             log_info "Docker Hub доступен напрямую"
         else
             log_warn "Docker Hub и зеркала недоступны — пропускаем build telegram-bot"
-            log_warn "После подъёма VPN: cd /opt/vpn && DOCKER_BASE_PYTHON=python:3.12-slim docker compose build telegram-bot && docker compose up -d"
-            _BASE_IMG=""
+            log_warn "После подъёма VPN: cd /opt/vpn && docker compose build telegram-bot && docker compose up -d"
         fi
+
         if [[ -n "$_BASE_IMG" ]]; then
-            log_info "Сборка локальных Docker-образов (telegram-bot, base=$_BASE_IMG)..."
-            DOCKER_BASE_PYTHON="$_BASE_IMG" docker compose build telegram-bot 2>&1 | tee /tmp/docker-build.log
+            log_info "Сборка telegram-bot (base=$_BASE_IMG, макс. 300 сек)..."
+            # FIX C: таймаут на build — зеркало может зависнуть после успешного /v2/ ping
+            timeout 300 bash -c "DOCKER_BASE_PYTHON='$_BASE_IMG' docker compose build telegram-bot" \
+                2>&1 | tee /tmp/docker-build.log
             _BUILD_EXIT=${PIPESTATUS[0]}
-            [[ $_BUILD_EXIT -ne 0 ]] && log_warn "docker compose build завершился с ошибкой (код $_BUILD_EXIT) — запустите вручную после подъёма VPN"
+            if [[ $_BUILD_EXIT -ne 0 ]]; then
+                log_warn "docker compose build с зеркалом завершился с ошибкой (rc=$_BUILD_EXIT)"
+                # FIX C: fallback на python:3.12-slim без зеркала
+                if [[ "$_BASE_IMG" != "python:3.12-slim" ]]; then
+                    log_info "Fallback: пробуем build без зеркала (python:3.12-slim)..."
+                    timeout 300 bash -c "DOCKER_BASE_PYTHON='python:3.12-slim' docker compose build telegram-bot" \
+                        2>&1 | tee /tmp/docker-build-fallback.log
+                    _BUILD_EXIT=${PIPESTATUS[0]}
+                    [[ $_BUILD_EXIT -ne 0 ]] && log_warn "Fallback build тоже провалился (rc=$_BUILD_EXIT) — запустите вручную после подъёма VPN"
+                fi
+            fi
         fi
 
         log_info "Загрузка Docker-образов (макс. 90 сек)..."
-        # timeout: docker pull без VPN висит бесконечно → OOM → сеть умирает
         timeout 90 docker compose pull --ignore-buildable --quiet 2>/dev/null || \
             log_warn "docker compose pull не завершился за 90 сек — образы будут скачаны после подъёма VPN"
 
         log_info "Запуск контейнеров..."
-        # --pull never: не пытаться качать отсутствующие образы (уже сделали выше)
-        docker compose up -d --no-build --pull never --remove-orphans 2>&1 | tee /tmp/docker-up.log
+        timeout 120 docker compose up -d --no-build --pull never --remove-orphans 2>&1 | tee /tmp/docker-up.log
         _UP_EXIT=${PIPESTATUS[0]}
         [[ $_UP_EXIT -ne 0 ]] && log_warn "docker compose up завершился с ошибкой (код $_UP_EXIT)"
 
         set -e; set -o pipefail
 
-        # Восстанавливаем dnsmasq
-        trap - EXIT
+        # FIX A: сначала восстанавливаем resolv.conf, потом снимаем trap.
         _restore_resolv
+        trap - EXIT
+
+        # FIX B: убираем временный bypass — перезагружаем nftables из конфига.
+        if [[ $_nft_bypass_added -eq 1 ]]; then
+            systemctl reload nftables 2>/dev/null || nft -f /etc/nftables.conf 2>/dev/null || true
+        fi
 
         sleep 5
         echo ""
