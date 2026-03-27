@@ -242,7 +242,8 @@ table inet filter {
         ct state invalid drop
 
         # SSH основной порт + аварийный 8022 (DPI блокирует 22 и 443 при падении стеков)
-        tcp dport { 22, 8022 } ct state new limit rate 5/minute burst 10 packets accept
+        # burst 60 — installer делает 30-50 SSH-сессий подряд; 5/min слишком мало
+        tcp dport { 22, 8022 } ct state new limit rate 30/minute burst 60 packets accept
 
         # CDN-стек: Cloudflare Worker → VPS:8080 (VLESS+splithttp, защищён UUID)
         tcp dport 8080 ct state new limit rate 100/second burst 200 packets accept

@@ -119,6 +119,11 @@ class InstallScreen(Screen):
         btn_run.disabled = True
         btn_run.label = "Установка..."
 
+        # Сбрасываем прогресс-бар и статус перед (повторным) запуском
+        pbar.update(progress=0)
+        status.update("Запуск установки...")
+        step_lbl.update("")
+
         cmd = (
             ["bash", str(SETUP_SH)]
             if os.getuid() == 0
