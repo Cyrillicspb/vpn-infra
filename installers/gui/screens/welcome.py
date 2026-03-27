@@ -52,7 +52,11 @@ class WelcomeScreen(Screen):
                         "  • Ubuntu 24.04 LTS (этот сервер)\n"
                         "  • VPS: IP-адрес + root пароль\n"
                         "  • Telegram Bot Token (от @BotFather)\n"
-                        "  • Admin Chat ID (от @userinfobot)\n",
+                        "  • Admin Chat ID (от @userinfobot)\n"
+                        "\n"
+                        "[red]⚠  Proxmox VM:[/red] отключите Secure Boot перед установкой.\n"
+                        "   Модуль AmneziaWG (DKMS) не загрузится с включённым Secure Boot.\n"
+                        "   VM → Оборудование → BIOS → снять галку «Secure Boot»\n",
                         id="welcome-body",
                     )
                     yield Button(

@@ -255,6 +255,13 @@ section "10. DKMS — AmneziaWG модуль"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 KERNEL=$(uname -r)
+
+# Проверка Secure Boot — модуль amneziawg не загрузится если включён
+SB_STATE=$(mokutil --sb-state 2>/dev/null || echo "unknown")
+if echo "$SB_STATE" | grep -qi "SecureBoot enabled"; then
+    warn "Secure Boot" "ВКЛЮЧЁН — модуль amneziawg не загрузится. Отключите в настройках VM/BIOS: Proxmox VM → Оборудование → BIOS → снять Secure Boot"
+fi
+
 if dkms status 2>/dev/null | grep -qi "amneziawg"; then
     DKMS_STATUS=$(dkms status 2>/dev/null | grep -i amneziawg | head -1)
     if echo "$DKMS_STATUS" | grep -qi "installed"; then
