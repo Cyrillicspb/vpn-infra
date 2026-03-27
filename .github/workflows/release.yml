@@ -72,6 +72,11 @@ jobs:
           echo "Содержимое tools/:"
           ls -lh tools/
 
+      - name: Собрать self-extracting install.sh (TUI)
+        run: |
+          bash installers/build-installer.sh --output install.sh
+          echo "Размер install.sh: $(du -sh install.sh | cut -f1)"
+
       - name: Собрать архив репозитория
         run: |
           # Пишем в /tmp чтобы избежать "file changed as we read it"
@@ -93,6 +98,7 @@ jobs:
           name: "v${{ steps.meta.outputs.version }}"
           body_path: release_notes.md
           files: |
+            install.sh
             installers/windows/install-windows.bat
             installers/macos/install-macos.command
             installers/linux/install-linux.sh

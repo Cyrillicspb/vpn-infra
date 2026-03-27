@@ -342,7 +342,7 @@ VPS: `/opt/vpn/` — docker-compose, nginx/, 3x-ui/, cloudflared/, scripts/.
 
 Проект работает в production. Все основные компоненты реализованы.
 
-- Домашний сервер: 80.93.52.223 — AWG, WG, watchdog, telegram-bot, docker, мониторинг
+- Домашний сервер: 192.168.1.201 (VM на Proxmox), внешний IP 80.93.52.223 — AWG, WG, watchdog, telegram-bot, docker, мониторинг
 - VPS: 23.95.252.178 — 3x-ui, nginx, cloudflared, node-exporter
 - ⚠️ VPS геолоцируется Google как Beijing → нужна смена на Hetzner/Vultr/DigitalOcean
 
