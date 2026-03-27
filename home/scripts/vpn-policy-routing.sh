@@ -116,9 +116,10 @@ setup_routing() {
     ip route replace default via "$GATEWAY" dev "$ETH_IFACE" table $TABLE_VPN
     log "Table $TABLE_VPN: default via $GATEWAY dev $ETH_IFACE"
 
-    # Локальная сеть — напрямую
+    # Локальная сеть — напрямую (replace вместо add: идемпотентно при перезапуске)
     LOCAL_SUBNET="${HOME_SUBNET:-$(ip -4 addr show dev "$ETH_IFACE" | awk '/inet / {print $2}' | head -1 | cut -d'/' -f1 | sed 's/\.[0-9]*$/\.0/')/24}"
-    ip route add "$LOCAL_SUBNET" dev "$ETH_IFACE" table $TABLE_VPN 2>/dev/null || true
+    ip route replace "$LOCAL_SUBNET" dev "$ETH_IFACE" table $TABLE_VPN 2>/dev/null || true
+    log "Table $TABLE_VPN: $LOCAL_SUBNET dev $ETH_IFACE (прямой)"
 
     # --- Table 201: DPI-bypass (fwmark 0x2) → eth0 + zapret ---
 
@@ -163,10 +164,17 @@ setup_routing() {
     fi
 
     # Gateway Mode: LAN-трафик через таблицу 100 (прямой выход, без VPN)
+    # Прямой маршрут до LAN обязателен в table vpn — иначе ответы идут через роутер
+    # (hairpin), который их дропает, и входящий SSH/ping пропадает.
     if [[ "${SERVER_MODE:-hosted}" == "gateway" && -n "${LAN_SUBNET:-}" ]]; then
-        if ! rule_exists "from $LAN_SUBNET lookup $TABLE_VPN"; then
-            ip rule add from "$LAN_SUBNET" lookup $TABLE_VPN priority 195
-            log "Rule: from $LAN_SUBNET → table $TABLE_VPN (priority 195, gateway mode)"
+        # Нормализуем LAN_SUBNET до сетевого адреса (на случай если задан хост-IP)
+        LAN_NET=$(python3 -c "import ipaddress; print(str(ipaddress.ip_network('$LAN_SUBNET', strict=False)))" 2>/dev/null || echo "$LAN_SUBNET")
+        # Добавляем прямой маршрут до LAN в table vpn (без этого — hairpin через роутер)
+        ip route replace "$LAN_NET" dev "$ETH_IFACE" table $TABLE_VPN 2>/dev/null || true
+        log "Table $TABLE_VPN: $LAN_NET dev $ETH_IFACE (gateway mode LAN, прямой)"
+        if ! rule_exists "from $LAN_NET lookup $TABLE_VPN"; then
+            ip rule add from "$LAN_NET" lookup $TABLE_VPN priority 195
+            log "Rule: from $LAN_NET → table $TABLE_VPN (priority 195, gateway mode)"
         fi
     fi
 
@@ -221,8 +229,9 @@ teardown_routing() {
 
     # Gateway Mode: удаляем LAN-правило
     if [[ "${SERVER_MODE:-hosted}" == "gateway" && -n "${LAN_SUBNET:-}" ]]; then
-        ip rule del from "$LAN_SUBNET" lookup $TABLE_VPN priority 195 2>/dev/null || true
-        log "Rule: from $LAN_SUBNET → table $TABLE_VPN (priority 195) удалено"
+        LAN_NET=$(python3 -c "import ipaddress; print(str(ipaddress.ip_network('$LAN_SUBNET', strict=False)))" 2>/dev/null || echo "$LAN_SUBNET")
+        ip rule del from "$LAN_NET" lookup $TABLE_VPN priority 195 2>/dev/null || true
+        log "Rule: from $LAN_NET → table $TABLE_VPN (priority 195) удалено"
     fi
 
     # Очищаем routing tables
