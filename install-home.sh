@@ -297,8 +297,7 @@ else
     "ipv6": false,
     "max-concurrent-downloads": 2,
     "registry-mirrors": [
-        "https://dockerhub.timeweb.cloud",
-        "https://huecker.io"
+        "https://dockerhub.timeweb.cloud"
     ]
 }
 EOF
@@ -1497,15 +1496,11 @@ else
             log_warn "После подъёма VPN: cd /opt/vpn && docker compose build telegram-bot && docker compose up -d"
         fi
 
-        # Обновляем daemon.json: рабочее зеркало ставим первым — для compose pull всех образов.
-        # Без этого Docker пробует зеркала в порядке из daemon.json; первое зависшее = i/o timeout.
+        # Обновляем daemon.json: ТОЛЬКО рабочее зеркало.
+        # Несколько зеркал в списке опасны: если второе зависает на i/o timeout —
+        # Docker блокирует pull и прерывает все параллельные загрузки.
         if [[ -n "$_WORKING_MIRROR" ]]; then
-            log_info "Обновляем daemon.json: ${_WORKING_MIRROR} первым..."
-            # Строим список: рабочее первым, остальные следом (без дублей)
-            _OTHER_MIRRORS=""
-            for _m in dockerhub.timeweb.cloud huecker.io; do
-                [[ "$_m" != "$_WORKING_MIRROR" ]] && _OTHER_MIRRORS+="\"https://${_m}\","
-            done
+            log_info "Обновляем daemon.json: только ${_WORKING_MIRROR}..."
             cat > /etc/docker/daemon.json << EOF
 {
     "log-driver": "json-file",
@@ -1513,7 +1508,7 @@ else
     "dns": ["77.88.8.8", "77.88.8.1"],
     "ipv6": false,
     "max-concurrent-downloads": 2,
-    "registry-mirrors": ["https://${_WORKING_MIRROR}", ${_OTHER_MIRRORS%,}]
+    "registry-mirrors": ["https://${_WORKING_MIRROR}"]
 }
 EOF
             systemctl restart docker 2>/dev/null || true
@@ -1539,9 +1534,21 @@ EOF
             fi
         fi
 
-        log_info "Загрузка Docker-образов (макс. 300 сек)..."
-        timeout 300 docker compose pull --ignore-buildable 2>&1 | tee /tmp/docker-pull.log || \
-            log_warn "docker compose pull не завершился за 300 сек — попробуем запустить что скачалось"
+        # Pull по одному сервису — отказ одного не прерывает остальные.
+        log_info "Загрузка Docker-образов (по одному, макс. 120 сек на образ)..."
+        _pull_failed=0
+        while IFS= read -r _svc; do
+            [[ "$_svc" == "telegram-bot" ]] && continue  # собирается локально
+            log_info "  pull: $_svc ..."
+            if timeout 120 docker compose pull "$_svc" >> /tmp/docker-pull.log 2>&1; then
+                log_ok "  $_svc OK"
+            else
+                log_warn "  $_svc не скачался — пропускаем"
+                ((_pull_failed++)) || true
+            fi
+        done < <(docker compose config --services 2>/dev/null)
+        [[ $_pull_failed -gt 0 ]] && \
+            log_warn "$_pull_failed сервисов не скачались — запустятся после подъёма VPN"
 
         log_info "Запуск контейнеров..."
         # --pull missing: скачает образы которые не успели скачаться выше, пропустит уже скачанные
