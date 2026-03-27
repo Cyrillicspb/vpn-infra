@@ -1433,10 +1433,13 @@ else
 
         # FIX B: br-vpn при первой установке — tun ещё не поднят.
         # Временно разрешаем прямой выход для br-vpn, чтобы docker pull не завис.
-        # Правило удаляется перезагрузкой nftables в конце блока.
-        _nft_bypass_added=0
+        # Сохраняем handle правила для точечного удаления — НЕ делаем reload nftables,
+        # т.к. flush ruleset в nftables.conf при неудачном reload оставит систему без
+        # input/forward правил и убьёт входящий SSH.
+        _nft_bypass_handle=""
         if nft list table inet vpn &>/dev/null 2>&1; then
-            nft add rule inet vpn forward iifname "br-vpn" accept 2>/dev/null && _nft_bypass_added=1 || true
+            _nft_bypass_handle=$(nft -a add rule inet vpn forward iifname "br-vpn" accept 2>/dev/null \
+                | grep -oP 'handle \K[0-9]+' || true)
         fi
 
         # Отключаем errexit+pipefail на время docker-операций,
@@ -1504,9 +1507,9 @@ else
         _restore_resolv
         trap - EXIT
 
-        # FIX B: убираем временный bypass — перезагружаем nftables из конфига.
-        if [[ $_nft_bypass_added -eq 1 ]]; then
-            systemctl reload nftables 2>/dev/null || nft -f /etc/nftables.conf 2>/dev/null || true
+        # FIX B: точечно удаляем временное правило по handle — без flush ruleset.
+        if [[ -n "$_nft_bypass_handle" ]]; then
+            nft delete rule inet vpn forward handle "$_nft_bypass_handle" 2>/dev/null || true
         fi
 
         sleep 5
