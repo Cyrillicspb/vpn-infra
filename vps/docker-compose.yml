@@ -91,21 +91,19 @@ services:
     # entrypoint override: образ имеет ENTRYPOINT ["cloudflared","--no-autoupdate"],
     # Docker прибавляет command к entrypoint → "cloudflared sh -c ..." → ошибка.
     # Переопределяем entrypoint на sh чтобы command выполнялся как shell-скрипт.
+    # CF_TUNNEL_TOKEN не используется в конфигурации CDN через Workers (CF_CDN_HOSTNAME).
+    # Если токен не задан — контейнер остаётся Up (sleep infinity), не падает.
     entrypoint: ["/bin/sh"]
     command: >
       -c 'if [ -z "$$CF_TUNNEL_TOKEN" ]; then
-        echo "CF_TUNNEL_TOKEN not configured, cloudflared CDN stack disabled";
+        echo "CF_TUNNEL_TOKEN not set — cloudflared named tunnel disabled (CDN via Workers)";
         exec sleep infinity;
       fi;
       exec cloudflared --no-autoupdate tunnel run --token "$$CF_TUNNEL_TOKEN"'
     network_mode: host
     env_file: .env
     healthcheck:
-      test: ["CMD", "cloudflared", "tunnel", "info"]
-      interval: 60s
-      timeout: 15s
-      retries: 3
-      start_period: 30s
+      disable: true
     logging:
       driver: json-file
       options:
