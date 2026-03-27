@@ -46,10 +46,19 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ -f "$SSH_KEY" ]] || die "SSH-ключ ${SSH_KEY} не найден. Шаг 6 (setup.sh) не выполнен?"
 [[ -n "${VPS_IP:-}" ]]  || die "VPS_IP не задан в ${ENV_FILE}"
 
+# ControlMaster: все vps_exec/vps_copy мультиплексируются через одно TCP-соединение.
+# Это обходит SSH rate-limiting на nftables VPS (один new-connection вместо 30+).
+_SSH_CTL="/tmp/vpn-ssh-%r@%h:%p"
+_SSH_OPTS="-p ${VPS_SSH_PORT:-22} -i $SSH_KEY \
+    -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+    -o ControlMaster=auto -o ControlPath=${_SSH_CTL} -o ControlPersist=300"
+
+# Закрываем master-соединение при выходе
+trap 'ssh -O exit -o ControlPath="${_SSH_CTL}" "sysadmin@${VPS_IP}" 2>/dev/null || true' EXIT
+
 vps_exec() {
-    ssh -p "${VPS_SSH_PORT:-22}" -i "$SSH_KEY" \
-        -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
-        "sysadmin@${VPS_IP}" "$@"
+    # shellcheck disable=SC2086
+    ssh $_SSH_OPTS "sysadmin@${VPS_IP}" "$@"
 }
 
 # vps_exec_long — для долгих команд на VPS (apt-get, docker pull и т.п.)
@@ -62,7 +71,8 @@ vps_exec_long() {
     local log="/tmp/vps-cmd-$RANDOM.log"
     local done_file="${log}.done"
     local cmd="$*"
-    local _ssh="ssh -p ${VPS_SSH_PORT:-22} -i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=15 sysadmin@${VPS_IP}"
+    # shellcheck disable=SC2086
+    local _ssh="ssh $_SSH_OPTS sysadmin@${VPS_IP}"
 
     # Запустить в фоне — выживет при обрыве SSH
     $_ssh "nohup bash -c '$cmd > $log 2>&1; echo \$? > $done_file' >/dev/null 2>&1 &"
@@ -92,14 +102,13 @@ vps_exec_long() {
 }
 
 vps_copy() {
-    scp -P "${VPS_SSH_PORT:-22}" -i "$SSH_KEY" \
-        -o StrictHostKeyChecking=no "$@"
+    # shellcheck disable=SC2086
+    scp $_SSH_OPTS "$@"
 }
 
 vps_root_exec() {
-    ssh -p "${VPS_SSH_PORT:-22}" -i "$SSH_KEY" \
-        -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
-        "root@${VPS_IP}" "$@"
+    # shellcheck disable=SC2086
+    ssh $_SSH_OPTS "root@${VPS_IP}" "$@"
 }
 
 # ── Шаг 32: Проверка SSH-доступа к VPS ───────────────────────────────────────
@@ -242,8 +251,9 @@ table inet filter {
         ct state invalid drop
 
         # SSH основной порт + аварийный 8022 (DPI блокирует 22 и 443 при падении стеков)
-        # burst 60 — installer делает 30-50 SSH-сессий подряд; 5/min слишком мало
-        tcp dport { 22, 8022 } ct state new limit rate 30/minute burst 60 packets accept
+        # ControlMaster мультиплексирует установку в 1 TCP-соединение;
+        # burst 30 защищает от brute-force при re-connect и обрывах.
+        tcp dport { 22, 8022 } ct state new limit rate 10/minute burst 30 packets accept
 
         # CDN-стек: Cloudflare Worker → VPS:8080 (VLESS+splithttp, защищён UUID)
         tcp dport 8080 ct state new limit rate 100/second burst 200 packets accept
