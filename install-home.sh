@@ -297,9 +297,8 @@ else
     "ipv6": false,
     "max-concurrent-downloads": 2,
     "registry-mirrors": [
-        "https://huecker.io",
         "https://dockerhub.timeweb.cloud",
-        "https://mirror.gcr.io"
+        "https://huecker.io"
     ]
 }
 EOF
@@ -1479,13 +1478,16 @@ else
         }
 
         _BASE_IMG=""
+        _WORKING_MIRROR=""
         log_info "Проверка доступности Docker-зеркал (pull alpine)..."
-        if _test_mirror "huecker.io"; then
-            _BASE_IMG="huecker.io/library/python:3.12-slim"
-            log_info "Используем зеркало huecker.io для сборки telegram-bot"
-        elif _test_mirror "dockerhub.timeweb.cloud"; then
+        if _test_mirror "dockerhub.timeweb.cloud"; then
+            _WORKING_MIRROR="dockerhub.timeweb.cloud"
             _BASE_IMG="dockerhub.timeweb.cloud/library/python:3.12-slim"
             log_info "Используем зеркало timeweb для сборки telegram-bot"
+        elif _test_mirror "huecker.io"; then
+            _WORKING_MIRROR="huecker.io"
+            _BASE_IMG="huecker.io/library/python:3.12-slim"
+            log_info "Используем зеркало huecker.io для сборки telegram-bot"
         elif timeout 20 docker pull alpine:latest >/dev/null 2>&1; then
             docker rmi alpine:latest >/dev/null 2>&1 || true
             _BASE_IMG="python:3.12-slim"
@@ -1493,6 +1495,29 @@ else
         else
             log_warn "Docker Hub и зеркала недоступны — пропускаем build telegram-bot"
             log_warn "После подъёма VPN: cd /opt/vpn && docker compose build telegram-bot && docker compose up -d"
+        fi
+
+        # Обновляем daemon.json: рабочее зеркало ставим первым — для compose pull всех образов.
+        # Без этого Docker пробует зеркала в порядке из daemon.json; первое зависшее = i/o timeout.
+        if [[ -n "$_WORKING_MIRROR" ]]; then
+            log_info "Обновляем daemon.json: ${_WORKING_MIRROR} первым..."
+            # Строим список: рабочее первым, остальные следом (без дублей)
+            _OTHER_MIRRORS=""
+            for _m in dockerhub.timeweb.cloud huecker.io; do
+                [[ "$_m" != "$_WORKING_MIRROR" ]] && _OTHER_MIRRORS+="\"https://${_m}\","
+            done
+            cat > /etc/docker/daemon.json << EOF
+{
+    "log-driver": "json-file",
+    "log-opts": {"max-size": "10m", "max-file": "3"},
+    "dns": ["77.88.8.8", "77.88.8.1"],
+    "ipv6": false,
+    "max-concurrent-downloads": 2,
+    "registry-mirrors": ["https://${_WORKING_MIRROR}", ${_OTHER_MIRRORS%,}]
+}
+EOF
+            systemctl restart docker 2>/dev/null || true
+            sleep 3
         fi
 
         if [[ -n "$_BASE_IMG" ]]; then
@@ -1514,12 +1539,13 @@ else
             fi
         fi
 
-        log_info "Загрузка Docker-образов (макс. 90 сек)..."
-        timeout 90 docker compose pull --ignore-buildable --quiet 2>/dev/null || \
-            log_warn "docker compose pull не завершился за 90 сек — образы будут скачаны после подъёма VPN"
+        log_info "Загрузка Docker-образов (макс. 300 сек)..."
+        timeout 300 docker compose pull --ignore-buildable 2>&1 | tee /tmp/docker-pull.log || \
+            log_warn "docker compose pull не завершился за 300 сек — попробуем запустить что скачалось"
 
         log_info "Запуск контейнеров..."
-        timeout 120 docker compose up -d --no-build --pull never --remove-orphans 2>&1 | tee /tmp/docker-up.log
+        # --pull missing: скачает образы которые не успели скачаться выше, пропустит уже скачанные
+        timeout 300 docker compose up -d --no-build --pull missing --remove-orphans 2>&1 | tee /tmp/docker-up.log
         _UP_EXIT=${PIPESTATUS[0]}
         [[ $_UP_EXIT -ne 0 ]] && log_warn "docker compose up завершился с ошибкой (код $_UP_EXIT)"
 
