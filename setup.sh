@@ -1498,16 +1498,19 @@ CDNEOF
         # Перезагружаем .env — HYSTERIA2_CERT_HASH был добавлен в install-vps.sh
         [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
 
-        # TLS: self-signed cert — используем pinSHA256 если хеш известен
+        # TLS: self-signed cert — pinSHA256 заменяет CA-верификацию.
+        # insecure: true обязателен для self-signed: Go TLS проверяет CA до пина,
+        # поэтому без insecure: true — CRYPTO_ERROR certificate signed by unknown authority.
+        # Безопасность обеспечивается pinSHA256, а не CA-цепочкой.
         local _tls_section
         if [[ -n "${HYSTERIA2_CERT_HASH:-}" ]]; then
             _tls_section="tls:
-  insecure: false
+  insecure: true
   pinSHA256: ${HYSTERIA2_CERT_HASH}"
         else
             _tls_section="tls:
-  insecure: false"
-            log_warn "HYSTERIA2_CERT_HASH не задан — TLS включён без pin-верификации"
+  insecure: true"
+            log_warn "HYSTERIA2_CERT_HASH не задан — TLS без pin-верификации (небезопасно)"
         fi
 
         mkdir -p /etc/hysteria

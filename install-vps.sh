@@ -477,15 +477,21 @@ if is_done "step41_vps_hysteria2_config"; then
 else
     step "Генерация конфига Hysteria2-сервера и TLS-сертификата"
 
-    # Генерируем self-signed cert для Hysteria2 (TLS over QUIC)
+    # Генерируем self-signed cert для Hysteria2 (TLS over QUIC).
+    # Проверяем наличие — не пересоздаём если уже существует.
+    # Пересоздание сломало бы pinSHA256 в уже выданных клиентских конфигах.
     vps_exec "sudo mkdir -p /opt/vpn/hysteria2 && \
-        sudo openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
-            -keyout /opt/vpn/hysteria2/server.key \
-            -out /opt/vpn/hysteria2/server.crt \
-            -days 3650 -nodes \
-            -subj \"/CN=${VPS_IP}\" \
-            -addext \"subjectAltName=IP:${VPS_IP}\" 2>/dev/null && \
-        sudo chmod 600 /opt/vpn/hysteria2/server.key"
+        if [[ ! -f /opt/vpn/hysteria2/server.crt ]]; then \
+            sudo openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+                -keyout /opt/vpn/hysteria2/server.key \
+                -out /opt/vpn/hysteria2/server.crt \
+                -days 3650 -nodes \
+                -subj \"/CN=${VPS_IP}\" \
+                -addext \"subjectAltName=IP:${VPS_IP}\" 2>/dev/null && \
+            sudo chmod 600 /opt/vpn/hysteria2/server.key; \
+        else \
+            echo 'hysteria2 cert already exists — skipping generation'; \
+        fi"
 
     # Извлекаем SHA256-хеш публичного ключа cert — используется как pinSHA256 на клиенте
     HYSTERIA2_CERT_HASH=$(vps_exec "openssl x509 -in /opt/vpn/hysteria2/server.crt \
