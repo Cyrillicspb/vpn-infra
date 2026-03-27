@@ -1,20 +1,19 @@
-# Watchdog requirements — пинированные версии
-# Обновлять через: pip-compile requirements.in
+# Watchdog requirements
 
 # HTTP / API
-aiohttp==3.9.5
-fastapi==0.111.0
-uvicorn[standard]==0.29.0
-pydantic==2.7.1
+aiohttp>=3.9.5
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.7.1
 
 # Rate limiting для FastAPI
-slowapi==0.1.9
+slowapi>=0.1.9
 
 # Системный мониторинг
-psutil==5.9.8
+psutil>=5.9.8
 
 # YAML (плагины)
-PyYAML==6.0.1
+PyYAML>=6.0.1
 
 # Async file I/O (опционально, для записи конфигов)
-aiofiles==23.2.1
+aiofiles>=23.2.1
