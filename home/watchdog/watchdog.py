@@ -53,6 +53,7 @@ API_TOKEN            = os.getenv("WATCHDOG_API_TOKEN", "")
 API_PORT             = int(os.getenv("WATCHDOG_PORT", "8080"))
 TELEGRAM_BOT_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_ADMIN_ID    = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "")
+BOT_NOTIFY_URL       = os.getenv("BOT_NOTIFY_URL", "http://172.20.0.11:8090/notify")
 VPS_IP               = os.getenv("VPS_IP", "")
 VPS_TUNNEL_IP        = os.getenv("VPS_TUNNEL_IP", "10.177.2.2")
 GRAFANA_URL          = os.getenv("GRAFANA_URL", "http://172.20.0.32:3000")
@@ -235,6 +236,24 @@ class TelegramQueue:
         return text
 
     async def _deliver(self, text: str, chat_id: str) -> None:
+        # Preferred path: relay through the bot container, which already has
+        # working Telegram connectivity even when the host cannot reach Telegram.
+        if BOT_NOTIFY_URL and API_TOKEN:
+            for attempt in range(5):
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        resp = await session.post(
+                            BOT_NOTIFY_URL,
+                            json={"message": text, "target": str(chat_id)},
+                            headers={"Authorization": f"Bearer {API_TOKEN}"},
+                            timeout=aiohttp.ClientTimeout(total=10),
+                        )
+                        if resp.status == 200:
+                            return
+                except Exception as exc:
+                    logger.debug(f"Bot notify relay недоступен (попытка {attempt + 1}): {exc}")
+                await asyncio.sleep(min(30, 5 * (attempt + 1)))
+
         html_text = self._md_to_html(text)
         for attempt in range(5):
             try:
@@ -259,6 +278,7 @@ class TelegramQueue:
             except Exception as exc:
                 logger.debug(f"Telegram недоступен (попытка {attempt + 1}): {exc}")
             await asyncio.sleep(min(30, 5 * (attempt + 1)))
+        logger.warning("Не удалось доставить alert chat_id=%s ни через bot relay, ни напрямую в Telegram", chat_id)
 
     def stop(self) -> None:
         self._running = False

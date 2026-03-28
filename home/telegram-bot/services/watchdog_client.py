@@ -17,54 +17,51 @@ class WatchdogClient:
     def __init__(self, base_url: str, token: str = "") -> None:
         self._base_url = base_url.rstrip("/")
         self._token = token
-        self._session: Optional[aiohttp.ClientSession] = None
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            headers = {"Authorization": f"Bearer {self._token}"} if self._token else {}
-            self._session = aiohttp.ClientSession(
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=15),
-            )
-        return self._session
+    def _session_kwargs(self, timeout: int) -> dict[str, Any]:
+        headers = {"Authorization": f"Bearer {self._token}"} if self._token else {}
+        return {
+            "headers": headers,
+            "timeout": aiohttp.ClientTimeout(total=timeout),
+        }
 
     async def close(self) -> None:
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        # Backward-compatible no-op: requests use short-lived sessions.
+        return None
 
     async def _get(self, path: str, timeout: int = 15) -> Any:
-        session = await self._get_session()
         try:
-            async with session.get(
-                f"{self._base_url}{path}",
-                timeout=aiohttp.ClientTimeout(total=timeout),
-            ) as r:
-                if r.status == 200:
-                    ct = r.headers.get("Content-Type", "")
-                    if "json" in ct:
-                        return await r.json()
-                    return await r.read()
-                raise WatchdogError(f"HTTP {r.status}: {await r.text()}")
-        except aiohttp.ClientError as exc:
+            async with aiohttp.ClientSession(**self._session_kwargs(timeout)) as session:
+                async with session.get(f"{self._base_url}{path}") as r:
+                    if r.status == 200:
+                        ct = r.headers.get("Content-Type", "")
+                        if "json" in ct:
+                            return await r.json()
+                        return await r.read()
+                    raise WatchdogError(f"HTTP {r.status}: {await r.text()}")
+        except aiohttp.ClientError:
             raise WatchdogError("Watchdog недоступен") from None
 
     async def _post(self, path: str, data: Optional[dict] = None, timeout: int = 30) -> Any:
-        session = await self._get_session()
         try:
-            async with session.post(
-                f"{self._base_url}{path}",
-                json=data or {},
-                timeout=aiohttp.ClientTimeout(total=timeout),
-            ) as r:
-                if r.status in (200, 202):
-                    ct = r.headers.get("Content-Type", "")
-                    if "json" in ct:
-                        return await r.json()
-                    return await r.read()
-                raise WatchdogError(f"HTTP {r.status}: {await r.text()}")
-        except aiohttp.ClientError as exc:
+            async with aiohttp.ClientSession(**self._session_kwargs(timeout)) as session:
+                async with session.post(
+                    f"{self._base_url}{path}",
+                    json=data or {},
+                ) as r:
+                    if r.status in (200, 202):
+                        ct = r.headers.get("Content-Type", "")
+                        if "json" in ct:
+                            return await r.json()
+                        return await r.read()
+                    raise WatchdogError(f"HTTP {r.status}: {await r.text()}")
+        except aiohttp.ClientError:
             raise WatchdogError("Watchdog недоступен") from None
+
+    async def post(self, path: str, data: Optional[dict] = None, timeout: int = 30) -> Any:
+        """Public wrapper for ad-hoc POST endpoints used by admin handlers."""
+        path = path if path.startswith("/") else f"/{path}"
+        return await self._post(path, data, timeout)
 
     # -----------------------------------------------------------------------
     # Status / metrics

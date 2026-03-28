@@ -23,6 +23,7 @@ from typing import Any, Awaitable, Callable
 from aiogram import Bot, Dispatcher, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, Update
@@ -45,6 +46,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 FSM_TIMEOUT = config.fsm_timeout_minutes * 60   # 600 сек
+POLLING_RETRY_DELAY = int(os.getenv("POLLING_RETRY_DELAY", "10"))
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +310,17 @@ async def main() -> None:
         await bot.delete_webhook(drop_pending_updates=True)
     except Exception as e:
         logger.warning(f"delete_webhook не удался (сеть недоступна?): {e}")
-    await dp.start_polling(bot)
+    while True:
+        try:
+            await dp.start_polling(bot)
+            break
+        except TelegramNetworkError as e:
+            logger.warning(
+                "Polling не стартовал из-за ошибки сети Telegram: %s. Повтор через %s сек.",
+                e,
+                POLLING_RETRY_DELAY,
+            )
+            await asyncio.sleep(POLLING_RETRY_DELAY)
 
 
 if __name__ == "__main__":
