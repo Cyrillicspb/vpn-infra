@@ -336,6 +336,41 @@ phase0() {
         [[ -z "${VPS_SSH_PORT:-}" ]] && VPS_SSH_PORT="22"
         ask VPS_ROOT_PASSWORD "Пароль root на VPS (для первоначального подключения)" yes
 
+        # Проверяем пароль реальным SSH-соединением прямо на экране ввода.
+        # Позволяет убедиться в правильности credentials до начала установки.
+        if command -v sshpass &>/dev/null && [[ -n "${VPS_ROOT_PASSWORD:-}" ]]; then
+            while true; do
+                log_info "Проверка root@${VPS_IP}:${VPS_SSH_PORT}..."
+                if sshpass -p "${VPS_ROOT_PASSWORD}" ssh \
+                        -o StrictHostKeyChecking=no \
+                        -o ConnectTimeout=10 \
+                        -o PasswordAuthentication=yes \
+                        -o PubkeyAuthentication=no \
+                        -p "${VPS_SSH_PORT}" \
+                        "root@${VPS_IP}" "exit 0" 2>/dev/null; then
+                    log_ok "root@${VPS_IP} — авторизация успешна"
+                    break
+                else
+                    log_warn "Не удалось подключиться (неверный пароль, порт или SSH заблокирован)."
+                    echo ""
+                    echo "  [R] Ввести данные заново"
+                    echo "  [S] Пропустить проверку и продолжить"
+                    read -rp "  Выбор [R/S]: " _ssh_retry
+                    case "${_ssh_retry,,}" in
+                        s) log_warn "Проверка пропущена — убедитесь в правильности данных вручную"; break ;;
+                        *) # повтор ввода
+                            ask VPS_IP        "IP-адрес VPS"
+                            ask VPS_SSH_PORT  "SSH порт VPS (Enter = 22)"
+                            [[ -z "${VPS_SSH_PORT:-}" ]] && VPS_SSH_PORT="22"
+                            ask VPS_ROOT_PASSWORD "Пароль root на VPS" yes
+                            ;;
+                    esac
+                fi
+            done
+        else
+            log_info "sshpass недоступен — проверка пароля пропущена"
+        fi
+
         echo ""
         echo -e "${BOLD}  Введите данные Telegram-бота:${NC}"
         echo "  Получить токен: @BotFather → /newbot"
