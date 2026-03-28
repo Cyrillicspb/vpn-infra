@@ -1638,17 +1638,48 @@ if is_done "step32_install_zapret"; then
 else
     step "Установка zapret/nfqws (DPI bypass без туннеля)"
 
-    ZAPRET_INSTALL_SCRIPT="/opt/vpn/watchdog/plugins/zapret/install.sh"
-    if [[ -f "$ZAPRET_INSTALL_SCRIPT" ]]; then
+    ZAPRET_INSTALL_SCRIPT=""
+    for _candidate in \
+        /opt/vpn/watchdog/plugins/zapret/install.sh \
+        /opt/vpn/home/watchdog/plugins/zapret/install.sh \
+        /opt/vpn/watchdog-src/plugins/zapret/install.sh; do
+        if [[ -f "$_candidate" ]]; then
+            ZAPRET_INSTALL_SCRIPT="$_candidate"
+            break
+        fi
+    done
+
+    if [[ -n "$ZAPRET_INSTALL_SCRIPT" ]]; then
         if bash "$ZAPRET_INSTALL_SCRIPT"; then
-            log_ok "zapret/nfqws установлен успешно"
+            :
         else
             log_warn "zapret/nfqws установить не удалось — DPI bypass без туннеля будет недоступен"
             log_warn "Запустите вручную позже: bash $ZAPRET_INSTALL_SCRIPT"
         fi
     else
-        log_warn "install.sh для zapret не найден: $ZAPRET_INSTALL_SCRIPT"
-        log_warn "Убедитесь что шаг 25 (watchdog venv) завершён"
+        log_warn "install.sh для zapret не найден — пробуем bundled nfqws напрямую"
+        _zapret_arch="$(uname -m)"
+        case "$_zapret_arch" in
+            x86_64) _zapret_arch="x86_64" ;;
+            aarch64) _zapret_arch="aarch64" ;;
+        esac
+        for _bin in \
+            "/opt/vpn/watchdog/plugins/zapret/bin/nfqws-${_zapret_arch}" \
+            "/opt/vpn/home/watchdog/plugins/zapret/bin/nfqws-${_zapret_arch}"; do
+            if [[ -f "$_bin" ]]; then
+                install -D -m 755 "$_bin" /usr/local/bin/nfqws
+                modprobe nfnetlink_queue 2>/dev/null || true
+                echo "nfnetlink_queue" >> /etc/modules-load.d/zapret.conf 2>/dev/null || true
+                log_ok "bundled nfqws установлен напрямую из ${_bin}"
+                break
+            fi
+        done
+    fi
+
+    if [[ -x /usr/local/bin/nfqws ]]; then
+        log_ok "zapret/nfqws установлен успешно"
+    else
+        log_warn "zapret/nfqws не установлен — /usr/local/bin/nfqws отсутствует"
     fi
 
     step_done "step32_install_zapret"

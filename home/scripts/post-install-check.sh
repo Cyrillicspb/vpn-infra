@@ -219,6 +219,7 @@ section "7. Watchdog API"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 WATCHDOG_TOKEN="${WATCHDOG_API_TOKEN:-}"
+WATCHDOG_STATUS_JSON=""
 if [[ -n "$WATCHDOG_TOKEN" ]]; then
     check "watchdog /status" \
         "curl -sf --max-time 5 -H 'Authorization: Bearer ${WATCHDOG_TOKEN}' http://127.0.0.1:8080/status" \
@@ -226,8 +227,50 @@ if [[ -n "$WATCHDOG_TOKEN" ]]; then
     check "watchdog /metrics" \
         "curl -sf --max-time 5 -H 'Authorization: Bearer ${WATCHDOG_TOKEN}' http://127.0.0.1:8080/metrics" \
         ""
+    WATCHDOG_STATUS_JSON=$(curl -sf --max-time 5 -H "Authorization: Bearer ${WATCHDOG_TOKEN}" \
+        http://127.0.0.1:8080/status 2>/dev/null || echo "")
 else
     warn "watchdog API" "WATCHDOG_API_TOKEN не задан"
+fi
+
+ACTIVE_STACK=""
+if [[ -n "$WATCHDOG_STATUS_JSON" ]]; then
+    ACTIVE_STACK=$(echo "$WATCHDOG_STATUS_JSON" | python3 -c \
+        "import sys,json; d=json.load(sys.stdin); print(d.get('active_stack',''))" 2>/dev/null || true)
+fi
+
+ACTIVE_SOCKS_PORT=""
+case "$ACTIVE_STACK" in
+    reality-xhttp) ACTIVE_SOCKS_PORT="1081" ;;
+    cloudflare-cdn) ACTIVE_SOCKS_PORT="1082" ;;
+    hysteria2) ACTIVE_SOCKS_PORT="1083" ;;
+esac
+
+if [[ -n "$ACTIVE_SOCKS_PORT" ]]; then
+    check "Активный SOCKS5 :${ACTIVE_SOCKS_PORT}" \
+        "curl -sf --max-time 10 --socks5 127.0.0.1:${ACTIVE_SOCKS_PORT} https://registry-1.docker.io/v2/ >/dev/null" \
+        "watchdog поднял стек ${ACTIVE_STACK}, но активный SOCKS5 не работает"
+fi
+
+if ip route show table 200 2>/dev/null | grep -q "^unreachable default"; then
+    fail "table 200" "default route = unreachable (watchdog не поднял рабочий tun)"
+else
+    ok "table 200"
+fi
+
+if [[ -f /run/vpn-active-tun ]]; then
+    ACTIVE_TUN="$(cat /run/vpn-active-tun 2>/dev/null || true)"
+    if [[ -n "$ACTIVE_TUN" ]] && ip route show table 200 2>/dev/null | grep -q "dev ${ACTIVE_TUN}"; then
+        ok "vpn-active-tun (${ACTIVE_TUN})"
+    else
+        fail "vpn-active-tun" "${ACTIVE_TUN:-пусто} не совпадает с table 200"
+    fi
+fi
+
+if [[ -x /usr/local/bin/nfqws ]]; then
+    ok "zapret/nfqws binary"
+else
+    fail "zapret/nfqws binary" "/usr/local/bin/nfqws отсутствует"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
