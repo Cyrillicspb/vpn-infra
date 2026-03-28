@@ -6,7 +6,7 @@
 #
 # Логика:
 #   1. Проверить — мониторинг уже установлен? → exit 0
-#   2. Проверить — VPN работает (SOCKS5 :1080)? → иначе exit 0 (попробуем позже)
+#   2. Проверить — VPN работает (активный SOCKS5 watchdog) → иначе exit 0
 #   3. Настроить Docker HTTP proxy через xray SOCKS5
 #   4. Если telegram-bot не собран/не запущен — собрать и запустить его
 #   5. Pull образов мониторинга по одному
@@ -24,6 +24,34 @@ PROXY_CONF="/etc/systemd/system/docker.service.d/http-proxy.conf"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 
+get_active_socks_port() {
+    python3 - <<'PY'
+import json
+from pathlib import Path
+
+state_path = Path("/opt/vpn/watchdog/state.json")
+mapping = {
+    "reality-xhttp": 1081,
+    "cloudflare-cdn": 1082,
+    "hysteria2": 1083,
+}
+
+if state_path.exists():
+    try:
+        state = json.loads(state_path.read_text())
+        stack = state.get("active_stack", "")
+        if stack in mapping:
+            print(mapping[stack])
+            raise SystemExit(0)
+    except Exception:
+        pass
+
+for port in (1083, 1081, 1082):
+    print(port)
+    raise SystemExit(0)
+PY
+}
+
 # ── 1. Уже установлен? ────────────────────────────────────────────────────────
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^prometheus$"; then
     log "Мониторинг уже работает — выход"
@@ -33,9 +61,10 @@ if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^prometheus$"; then
 fi
 
 # ── 2. VPN готов? ─────────────────────────────────────────────────────────────
-if ! curl -sf --max-time 10 --socks5 127.0.0.1:1080 \
+SOCKS_PORT="$(get_active_socks_port)"
+if ! curl -sf --max-time 10 --socks5 "127.0.0.1:${SOCKS_PORT}" \
         https://registry-1.docker.io/v2/ >/dev/null 2>&1; then
-    log "VPN-стек (:1080) не готов — попробуем позже"
+    log "VPN-стек (:${SOCKS_PORT}) не готов — попробуем позже"
     exit 0
 fi
 
@@ -71,13 +100,14 @@ if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^telegram-bot$"; the
 fi
 
 # ── 4. Docker proxy через xray SOCKS5 ─────────────────────────────────────────
-if [[ ! -f "$PROXY_CONF" ]]; then
-    log "Настройка Docker HTTP proxy → socks5://127.0.0.1:1080"
+_desired_proxy="socks5://127.0.0.1:${SOCKS_PORT}"
+if [[ ! -f "$PROXY_CONF" ]] || ! grep -q "${_desired_proxy}" "$PROXY_CONF" 2>/dev/null; then
+    log "Настройка Docker HTTP proxy → ${_desired_proxy}"
     mkdir -p /etc/systemd/system/docker.service.d
-    cat > "$PROXY_CONF" << 'EOF'
+    cat > "$PROXY_CONF" << EOF
 [Service]
-Environment="HTTP_PROXY=socks5://127.0.0.1:1080"
-Environment="HTTPS_PROXY=socks5://127.0.0.1:1080"
+Environment="HTTP_PROXY=${_desired_proxy}"
+Environment="HTTPS_PROXY=${_desired_proxy}"
 Environment="NO_PROXY=localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
 EOF
     systemctl daemon-reload

@@ -279,8 +279,8 @@ if [[ -n "$VPS_IP" && -f "$SSH_KEY" ]]; then
             if echo "$VPS_CONTAINERS" | grep -q "^cloudflared:Up"; then
                 ok "VPS docker: cloudflared"
             else
-                STATUS=$(echo "$VPS_CONTAINERS" | grep "^cloudflared:" | cut -d: -f2 || echo "не найден")
-                fail "VPS docker: cloudflared" "${STATUS:-не найден}"
+                log_info "VPS docker: cloudflared — optional для Workers CDN, контейнер не обязателен"
+                REPORT_LINES+=("ℹ️ VPS cloudflared: optional (Workers CDN)")
             fi
         else
             log_info "VPS docker: cloudflared — не обязателен (CDN-ветка не включена)"

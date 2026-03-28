@@ -73,7 +73,15 @@ LOG_FILE     = "/var/log/vpn-watchdog.log"
 
 # Порядок по устойчивости (индекс 0 = самый устойчивый)
 # zapret исключён: прямой обход DPI без VPS, работает параллельно (direct_mode=true)
-STACK_ORDER = ["cloudflare-cdn", "reality-xhttp", "hysteria2"]
+def _cloudflare_cdn_enabled() -> bool:
+    return os.getenv("USE_CLOUDFLARE", "n").lower() == "y" and bool(os.getenv("CF_CDN_HOSTNAME", "").strip())
+
+
+STACK_ORDER = ["hysteria2", "reality-xhttp"]
+if _cloudflare_cdn_enabled():
+    STACK_ORDER.insert(0, "cloudflare-cdn")
+
+DEFAULT_STACK = STACK_ORDER[0]
 
 # Пороги мониторинга
 RTT_DEGRADATION_FACTOR   = 3.0   # RTT > 3× baseline → деградация
@@ -476,8 +484,8 @@ class CheckResult:
 
 class WatchdogState:
     def __init__(self) -> None:
-        self.active_stack: str = "cloudflare-cdn"
-        self.primary_stack: str = "cloudflare-cdn"
+        self.active_stack: str = DEFAULT_STACK
+        self.primary_stack: str = DEFAULT_STACK
         # RTT sliding window (10-секундные отсчёты, 7 дней)
         self.rtt_baseline: dict[str, deque] = {s: deque(maxlen=RTT_BASELINE_WINDOW) for s in STACK_ORDER}
         # Throughput baseline (Mbps, последние 50 измерений)
@@ -575,8 +583,8 @@ class WatchdogState:
         try:
             if STATE_FILE.exists():
                 data = json.loads(STATE_FILE.read_text())
-                self.active_stack   = data.get("active_stack", "cloudflare-cdn")
-                self.primary_stack  = data.get("primary_stack", "cloudflare-cdn")
+                self.active_stack   = data.get("active_stack", DEFAULT_STACK)
+                self.primary_stack  = data.get("primary_stack", DEFAULT_STACK)
                 self.external_ip    = data.get("external_ip", "")
                 self.vps_list       = data.get("vps_list", [])
                 self.active_vps_idx = data.get("active_vps_idx", 0)
@@ -585,6 +593,17 @@ class WatchdogState:
                 self.dpi_enabled    = data.get("dpi_enabled", False)
                 self.dpi_services   = data.get("dpi_services", [])
                 self.rotation_log   = data.get("rotation_log", [])
+                if self.active_stack not in STACK_ORDER:
+                    self.active_stack = DEFAULT_STACK
+                    self.is_first_run = True
+                if self.primary_stack not in STACK_ORDER:
+                    self.primary_stack = DEFAULT_STACK
+                    self.is_first_run = True
+                if self.active_stack == "cloudflare-cdn" and not _cloudflare_cdn_enabled():
+                    self.active_stack = DEFAULT_STACK
+                    self.primary_stack = DEFAULT_STACK
+                    self.degraded_mode = False
+                    self.is_first_run = True
                 logger.info(f"Состояние загружено: стек={self.active_stack}, dpi={self.dpi_enabled}")
         except Exception as exc:
             logger.error(f"Не удалось загрузить состояние: {exc}")
@@ -2117,7 +2136,7 @@ async def _failover_impl(reason: str) -> None:
             if not plugin or plugin.meta.get("direct_mode"):
                 continue
             logger.info(f"Тест кандидата: {candidate}")
-            ok, mbps = await plugin.test(timeout=10)
+            ok, mbps = await _test_stack_runtime(plugin, candidate, timeout=10)
             if ok:
                 await _do_switch(candidate, reason)
                 return
@@ -2186,26 +2205,28 @@ async def _first_run_assessment() -> None:
     logger.info("Первый запуск: оценка всех стеков...")
     alert("🔍 Первый запуск: тестирование стеков...")
 
-    # Стартуем с CDN (гарантированно работает)
-    cdn = plugins.get("cloudflare-cdn")
-    if cdn:
-        await cdn.start()
-        await run_cmd(["ip", "route", "replace", "default", "dev", "tun-cloudflare-cdn", "table", "200"])
+    # Поднимаем стек по умолчанию, затем оцениваем остальные честным runtime-test.
+    starter = plugins.get(DEFAULT_STACK)
+    if starter and not starter.meta.get("direct_mode"):
+        await starter.start()
+        await _set_marked_route_for_stack(DEFAULT_STACK)
+        state.active_stack = DEFAULT_STACK
+        state.primary_stack = DEFAULT_STACK
 
     best_stack: Optional[str] = None
     best_mbps = 0.0
 
-    for name in plugins.all_names():
+    for name in STACK_ORDER:
         plugin = plugins.get(name)
         if not plugin or plugin.meta.get("direct_mode"):
             continue
-        ok, mbps = await plugin.test(timeout=10)
+        ok, mbps = await _test_stack_runtime(plugin, name, timeout=10)
         logger.info(f"Оценка {name}: {'OK' if ok else 'FAIL'} {mbps:.1f} Mbps")
         if ok and mbps > best_mbps:
             best_mbps = mbps
             best_stack = name
 
-    if best_stack and best_stack != "cloudflare-cdn":
+    if best_stack and best_stack != state.active_stack:
         await _do_switch(best_stack, "first_run_best")
 
     state.is_first_run = False
@@ -2224,11 +2245,11 @@ async def _full_reassessment() -> None:
         best_stack: Optional[str] = None
         best_mbps = 0.0
 
-        for name in plugins.all_names():
+        for name in STACK_ORDER:
             plugin = plugins.get(name)
             if not plugin or plugin.meta.get("direct_mode"):
                 continue
-            ok, mbps = await plugin.test(timeout=10)
+            ok, mbps = await _test_stack_runtime(plugin, name, timeout=10)
             logger.info(f"Переоценка {name}: {'OK' if ok else 'FAIL'} {mbps:.1f} Mbps")
             if ok and mbps > best_mbps:
                 best_mbps = mbps

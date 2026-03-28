@@ -1071,6 +1071,28 @@ else
         log_info "venv уже существует"
     fi
 
+    # Сбрасываем stale state после переустановки, чтобы watchdog не стартовал
+    # с несуществующим стеком от предыдущего прогона.
+    _default_watchdog_stack="hysteria2"
+    if [[ "${USE_CLOUDFLARE:-n}" == "y" && -n "${CF_CDN_HOSTNAME:-}" ]]; then
+        _default_watchdog_stack="cloudflare-cdn"
+    fi
+    if [[ -f "${WATCHDOG_DIR}/state.json" ]]; then
+        python3 - <<PY
+import json
+from pathlib import Path
+
+state_path = Path("${WATCHDOG_DIR}/state.json")
+data = json.loads(state_path.read_text())
+data["active_stack"] = "${_default_watchdog_stack}"
+data["primary_stack"] = "${_default_watchdog_stack}"
+data["degraded_mode"] = False
+data["is_first_run"] = True
+state_path.write_text(json.dumps(data, indent=2))
+PY
+        log_ok "watchdog state.json нормализован (${_default_watchdog_stack}, first_run=true)"
+    fi
+
     # Установка зависимостей
     # Предпочитаем локальный wheelhouse. Сеть используем только как fallback.
     _pip_install() {
@@ -1686,15 +1708,10 @@ else
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^prometheus$"; then
         log_ok "Мониторинг уже работает — пропускаем"
     elif [[ -x /opt/vpn/scripts/docker-phase2.sh ]]; then
-        log_info "Проверяем VPN-стек (:1080)..."
-        if curl -sf --max-time 10 --socks5 127.0.0.1:1080 \
-                https://registry-1.docker.io/v2/ >/dev/null 2>&1; then
-            log_info "VPN готов — запускаем фазу 2..."
-            bash /opt/vpn/scripts/docker-phase2.sh || true
-        else
-            log_info "VPN-стек ещё не готов — мониторинг установится автоматически"
-            log_info "  Cron docker-phase2.sh: каждые 15 мин (/etc/cron.d/vpn-docker-phase2)"
-        fi
+        log_info "Запускаем docker-phase2.sh (скрипт сам проверит активный VPN-стек)..."
+        bash /opt/vpn/scripts/docker-phase2.sh || true
+        log_info "Если VPN ещё не готов — cron повторит попытку автоматически"
+        log_info "  Cron docker-phase2.sh: каждые 15 мин (/etc/cron.d/vpn-docker-phase2)"
     else
         log_warn "docker-phase2.sh не найден — мониторинг установите вручную после поднятия VPN:"
         log_warn "  bash /opt/vpn/scripts/docker-phase2.sh"

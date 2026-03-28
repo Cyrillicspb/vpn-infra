@@ -171,6 +171,9 @@ else
     info "br-vpn не существует — пропускаем"
 fi
 
+info "Удаляем watchdog state..."
+rm -f /opt/vpn/watchdog/state.json 2>/dev/null || true
+
 set -e
 
 # ── 6. dnsmasq — остановить, сбросить resolv.conf ────────────────────────────
