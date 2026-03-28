@@ -1396,6 +1396,7 @@ else
     COMPOSE_FILE="/opt/vpn/docker-compose.yml"
     REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     SAVED_IMAGES_DIR="/opt/vpn/docker-images"
+    _telegram_bot_ready=0
 
     # Копируем docker-compose.yml из home/ если его нет в корне /opt/vpn/
     if [[ ! -f "$COMPOSE_FILE" ]]; then
@@ -1566,12 +1567,25 @@ EOF
             fi
         fi
 
+        if docker image inspect vpn-telegram-bot:latest >/dev/null 2>&1; then
+            _telegram_bot_ready=1
+        else
+            log_warn "Локальный образ telegram-bot отсутствует — пропускаем его запуск на фазе 1"
+            log_warn "Повторная сборка и запуск будут выполнены docker-phase2.sh после поднятия VPN"
+        fi
+
         # ── Запуск фазы 1 (без профиля monitoring) ────────────────────────────────
         # Мониторинг-контейнеры имеют profiles: [monitoring] и не запускаются здесь.
         # docker-phase2.sh (cron каждые 15 мин) поднимет их после старта VPN-стека.
         log_info "Запуск контейнеров фазы 1..."
-        timeout 300 docker compose up -d --no-build --pull missing --remove-orphans \
-            2>&1 | tee /tmp/docker-up.log
+        if [[ $_telegram_bot_ready -eq 1 ]]; then
+            timeout 300 docker compose up -d --no-build --pull missing --remove-orphans \
+                2>&1 | tee /tmp/docker-up.log
+        else
+            timeout 300 docker compose up -d --no-build --pull missing --remove-orphans \
+                socket-proxy xray-client xray-client-2 xray-client-cdn nginx \
+                2>&1 | tee /tmp/docker-up.log
+        fi
         _UP_EXIT=${PIPESTATUS[0]}
         [[ $_UP_EXIT -ne 0 ]] && log_warn "docker compose up завершился с ошибкой (код $_UP_EXIT)"
 

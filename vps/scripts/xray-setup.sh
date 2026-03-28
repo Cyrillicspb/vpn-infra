@@ -42,19 +42,47 @@ log()  { echo "[$(date '+%H:%M:%S')] XRAY-SETUP: $*"; }
 ok()   { echo "[$(date '+%H:%M:%S')] XRAY-SETUP: OK $*"; }
 err()  { echo "[$(date '+%H:%M:%S')] XRAY-SETUP: ERROR $*" >&2; }
 
+wait_xui_ready() {
+    local attempts="${1:-24}"
+    local sleep_s="${2:-5}"
+    local i
+    for i in $(seq 1 "$attempts"); do
+        if curl -sf --max-time 5 "${XUI_HOST}/" > /dev/null 2>&1; then
+            return 0
+        fi
+        sleep "$sleep_s"
+    done
+    return 1
+}
+
+reset_xui_db_fresh() {
+    local db_dir="/opt/vpn/3x-ui/db"
+    local stamp
+    stamp="$(date +%Y%m%d-%H%M%S)"
+
+    log "Пересоздаём panel DB 3x-ui для чистого старта..."
+
+    docker stop 3x-ui > /dev/null 2>&1 || true
+    mkdir -p "$db_dir"
+
+    for path in "$db_dir"/x-ui.db "$db_dir"/x-ui.db-shm "$db_dir"/x-ui.db-wal; do
+        [[ -e "$path" ]] || continue
+        mv "$path" "${path}.bak.${stamp}"
+    done
+
+    docker start 3x-ui > /dev/null 2>&1 || return 1
+    wait_xui_ready 24 5 || return 1
+    return 0
+}
+
 # ── Ожидание готовности 3x-ui ─────────────────────────────────────────────────
 log "Ожидание 3x-ui (до 120 сек)..."
-for i in $(seq 1 24); do
-    if curl -sf --max-time 5 "${XUI_HOST}/" > /dev/null 2>&1; then
-        ok "3x-ui готов (попытка ${i})"
-        break
-    fi
-    if [[ $i -eq 24 ]]; then
-        err "3x-ui недоступен после 120 сек"
-        exit 1
-    fi
-    sleep 5
-done
+if wait_xui_ready 24 5; then
+    ok "3x-ui готов"
+else
+    err "3x-ui недоступен после 120 сек"
+    exit 1
+fi
 
 # ── Авторизация ───────────────────────────────────────────────────────────────
 log "Авторизация в 3x-ui..."
@@ -107,12 +135,7 @@ else
         if docker exec 3x-ui /app/x-ui setting -username admin -password admin 2>/dev/null; then
             ok "x-ui credentials сброшены к admin/admin"
             docker restart 3x-ui 2>/dev/null || true
-            sleep 5
-            # Ждём готовности после рестарта
-            for i in $(seq 1 12); do
-                curl -sf --max-time 5 "${XUI_HOST}/" > /dev/null 2>&1 && break
-                sleep 5
-            done
+            wait_xui_ready 12 5 || true
             LOGIN_RESULT=$(do_login "admin" "admin")
             if echo "$LOGIN_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('success') else 1)" 2>/dev/null; then
                 ok "Авторизован с admin/admin после сброса — меняем пароль на из .env..."
@@ -139,12 +162,77 @@ else
             else
                 err "Авторизация не удалась даже после сброса через x-ui CLI"
                 err "Проверьте вручную: docker exec 3x-ui /app/x-ui setting -username admin -password admin"
-                exit 1
+                log "Пробуем аварийное восстановление: пересоздать panel DB 3x-ui..."
+                if reset_xui_db_fresh; then
+                    ok "Panel DB 3x-ui пересоздана"
+                    LOGIN_RESULT=$(do_login "admin" "admin")
+                    if echo "$LOGIN_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('success') else 1)" 2>/dev/null; then
+                        ok "Авторизован с admin/admin после пересоздания DB — меняем пароль на из .env..."
+                        CHANGE_RESULT=$(curl -sf --max-time 10 \
+                            -c "$COOKIE_FILE" \
+                            -b "$COOKIE_FILE" \
+                            -X POST "${XUI_HOST}/panel/setting/updateUser" \
+                            -H "Content-Type: application/x-www-form-urlencoded" \
+                            --data-urlencode "oldUsername=admin" \
+                            --data-urlencode "oldPassword=admin" \
+                            --data-urlencode "newUsername=${XUI_USER}" \
+                            --data-urlencode "newPassword=${XUI_PASS}" \
+                            2>/dev/null || echo '{"success":false}')
+                        if echo "$CHANGE_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('success') else 1)" 2>/dev/null; then
+                            ok "Пароль 3x-ui изменён"
+                            LOGIN_RESULT=$(do_login "$XUI_USER" "$XUI_PASS")
+                            echo "$LOGIN_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('success') else 1)" 2>/dev/null \
+                                || { err "Не удалось авторизоваться после смены пароля"; exit 1; }
+                            ok "Повторная авторизация успешна"
+                        else
+                            log "Смена пароля не удалась — продолжаем с admin/admin"
+                            XUI_PASS="admin"; XUI_USER="admin"
+                        fi
+                    else
+                        err "Авторизация не удалась даже после пересоздания panel DB"
+                        exit 1
+                    fi
+                else
+                    err "Пересоздать panel DB 3x-ui не удалось"
+                    exit 1
+                fi
             fi
         else
             err "Ошибка авторизации и сброс через x-ui CLI недоступен"
-            err "Проверьте XRAY_PANEL_PASSWORD в .env или выполните: sudo bash dev/reset-vps.sh"
-            exit 1
+            log "Пробуем аварийное восстановление: пересоздать panel DB 3x-ui..."
+            if reset_xui_db_fresh; then
+                ok "Panel DB 3x-ui пересоздана"
+                LOGIN_RESULT=$(do_login "admin" "admin")
+                if echo "$LOGIN_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('success') else 1)" 2>/dev/null; then
+                    ok "Авторизован с admin/admin после пересоздания DB — меняем пароль на из .env..."
+                    CHANGE_RESULT=$(curl -sf --max-time 10 \
+                        -c "$COOKIE_FILE" \
+                        -b "$COOKIE_FILE" \
+                        -X POST "${XUI_HOST}/panel/setting/updateUser" \
+                        -H "Content-Type: application/x-www-form-urlencoded" \
+                        --data-urlencode "oldUsername=admin" \
+                        --data-urlencode "oldPassword=admin" \
+                        --data-urlencode "newUsername=${XUI_USER}" \
+                        --data-urlencode "newPassword=${XUI_PASS}" \
+                        2>/dev/null || echo '{"success":false}')
+                    if echo "$CHANGE_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('success') else 1)" 2>/dev/null; then
+                        ok "Пароль 3x-ui изменён"
+                        LOGIN_RESULT=$(do_login "$XUI_USER" "$XUI_PASS")
+                        echo "$LOGIN_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('success') else 1)" 2>/dev/null \
+                            || { err "Не удалось авторизоваться после смены пароля"; exit 1; }
+                        ok "Повторная авторизация успешна"
+                    else
+                        log "Смена пароля не удалась — продолжаем с admin/admin"
+                        XUI_PASS="admin"; XUI_USER="admin"
+                    fi
+                else
+                    err "Авторизация не удалась даже после пересоздания panel DB"
+                    exit 1
+                fi
+            else
+                err "Проверьте XRAY_PANEL_PASSWORD в .env или выполните: sudo bash dev/reset-vps.sh"
+                exit 1
+            fi
         fi
     fi
 fi

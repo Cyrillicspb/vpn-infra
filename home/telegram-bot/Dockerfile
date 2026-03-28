@@ -14,9 +14,14 @@ RUN apt-get update -qq && apt-get install -y -qq \
     && rm -rf /var/lib/apt/lists/*
 
 # Python зависимости
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt --timeout 120 --index-url https://pypi.tuna.tsinghua.edu.cn/simple/ --trusted-host pypi.tuna.tsinghua.edu.cn || \
-    pip install --no-cache-dir -r requirements.txt --timeout 120
+COPY requirements.txt ./
+COPY wheels/ ./wheels/
+RUN if find /app/wheels -maxdepth 1 -type f -name '*.whl' | grep -q .; then \
+        pip install --no-cache-dir --no-index --find-links /app/wheels -r requirements.txt; \
+    else \
+        pip install --no-cache-dir -r requirements.txt --timeout 120 --index-url https://pypi.tuna.tsinghua.edu.cn/simple/ --trusted-host pypi.tuna.tsinghua.edu.cn || \
+        pip install --no-cache-dir -r requirements.txt --timeout 120; \
+    fi
 
 # Код приложения
 COPY . .

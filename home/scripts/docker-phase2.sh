@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# docker-phase2.sh — доустановка мониторинга после поднятия VPN
+# docker-phase2.sh — повторная сборка telegram-bot и доустановка мониторинга
 #
 # Запускается из cron каждые 15 минут (пока мониторинг не установлен).
 # Идемпотентен: если prometheus уже работает — выходит сразу.
@@ -8,9 +8,10 @@
 #   1. Проверить — мониторинг уже установлен? → exit 0
 #   2. Проверить — VPN работает (SOCKS5 :1080)? → иначе exit 0 (попробуем позже)
 #   3. Настроить Docker HTTP proxy через xray SOCKS5
-#   4. Pull образов мониторинга по одному
-#   5. docker compose --profile monitoring up -d
-#   6. Убрать cron-задание если всё успешно
+#   4. Если telegram-bot не собран/не запущен — собрать и запустить его
+#   5. Pull образов мониторинга по одному
+#   6. docker compose --profile monitoring up -d
+#   7. Убрать cron-задание если всё успешно
 
 set -uo pipefail
 
@@ -40,7 +41,24 @@ fi
 
 log "=== Фаза 2: установка мониторинга ==="
 
-# ── 3. Docker proxy через xray SOCKS5 ─────────────────────────────────────────
+# ── 3.5. Повторная сборка telegram-bot после поднятия VPN ───────────────────
+cd /opt/vpn
+
+if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^telegram-bot$"; then
+    log "telegram-bot не запущен — пробуем собрать и поднять повторно"
+    if docker compose build telegram-bot >> "$LOG" 2>&1; then
+        log "telegram-bot собран"
+        if docker compose up -d --no-build telegram-bot >> "$LOG" 2>&1; then
+            log "telegram-bot запущен"
+        else
+            log "WARN: telegram-bot не запустился после успешной сборки"
+        fi
+    else
+        log "WARN: повторная сборка telegram-bot не удалась"
+    fi
+fi
+
+# ── 4. Docker proxy через xray SOCKS5 ─────────────────────────────────────────
 if [[ ! -f "$PROXY_CONF" ]]; then
     log "Настройка Docker HTTP proxy → socks5://127.0.0.1:1080"
     mkdir -p /etc/systemd/system/docker.service.d
@@ -56,7 +74,7 @@ EOF
     log "Docker proxy настроен и docker перезапущен"
 fi
 
-# ── 4. Pull образов мониторинга ───────────────────────────────────────────────
+# ── 5. Pull образов мониторинга ───────────────────────────────────────────────
 MONITORING_IMAGES=(
     "prom/prometheus:latest"
     "prom/alertmanager:latest"
@@ -76,7 +94,7 @@ for img in "${MONITORING_IMAGES[@]}"; do
     fi
 done
 
-# ── 5. Запуск мониторинга ─────────────────────────────────────────────────────
+# ── 6. Запуск мониторинга ─────────────────────────────────────────────────────
 if [[ ! -f "$COMPOSE_FILE" ]]; then
     log "WARN: docker-compose.yml не найден в /opt/vpn/"
     exit 1
@@ -91,7 +109,7 @@ else
     log "WARN: docker compose up завершился с ошибкой"
 fi
 
-# ── 6. Проверка результата ────────────────────────────────────────────────────
+# ── 7. Проверка результата ────────────────────────────────────────────────────
 sleep 10
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^prometheus$"; then
     log "=== Мониторинг установлен успешно ==="
