@@ -15,7 +15,8 @@ RUN apt-get update -qq && apt-get install -y -qq \
 
 # Python зависимости
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt --timeout 120 --index-url https://pypi.tuna.tsinghua.edu.cn/simple/ --trusted-host pypi.tuna.tsinghua.edu.cn || \
+    pip install --no-cache-dir -r requirements.txt --timeout 120
 
 # Код приложения
 COPY . .
