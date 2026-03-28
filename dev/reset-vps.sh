@@ -68,8 +68,8 @@ info "Удаляем authorized_keys..."
 rm -f /root/.ssh/authorized_keys
 rm -f /home/sysadmin/.ssh/authorized_keys 2>/dev/null || true
 
-info "Перезапускаем sshd..."
-systemctl restart sshd && ok "sshd перезапущен" || warn "sshd restart завершился с ошибкой"
+info "Перезапускаем ssh..."
+systemctl restart ssh && ok "ssh перезапущен" || warn "ssh restart завершился с ошибкой"
 
 set -e
 
