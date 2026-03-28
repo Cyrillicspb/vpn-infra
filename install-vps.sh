@@ -53,6 +53,12 @@ _SSH_OPTS="-p ${VPS_SSH_PORT:-22} -i $SSH_KEY \
     -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
     -o ControlMaster=auto -o ControlPath=${_SSH_CTL} -o ControlPersist=300"
 
+# scp использует -P (заглавная) для порта, а не -p как ssh.
+# ControlMaster/ControlPath оставляем — scp умеет переиспользовать мастер-соединение.
+_SCP_OPTS="-P ${VPS_SSH_PORT:-22} -i $SSH_KEY \
+    -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+    -o ControlMaster=auto -o ControlPath=${_SSH_CTL} -o ControlPersist=300"
+
 # Закрываем master-соединение при выходе
 trap 'ssh -O exit -o ControlPath="${_SSH_CTL}" "sysadmin@${VPS_IP}" 2>/dev/null || true' EXIT
 
@@ -107,7 +113,7 @@ vps_exec_long() {
 
 vps_copy() {
     # shellcheck disable=SC2086
-    scp $_SSH_OPTS "$@"
+    scp $_SCP_OPTS "$@"
 }
 
 vps_root_exec() {
