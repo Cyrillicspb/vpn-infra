@@ -549,6 +549,15 @@ log:
 HYEOF"
 
     log_ok "Hysteria2 server.yaml и TLS cert сгенерированы"
+
+    # Рестарт hysteria2 если уже запущен — иначе подхватит старый конфиг из памяти
+    if vps_exec "sudo docker inspect --format='{{.State.Status}}' hysteria2 2>/dev/null" \
+            2>/dev/null | grep -q "running"; then
+        log_info "hysteria2 уже запущен — рестарт для применения нового server.yaml..."
+        vps_exec "sudo docker restart hysteria2 2>/dev/null || true"
+        log_ok "hysteria2 перезапущен"
+    fi
+
     step_done "step41_vps_hysteria2_config"
 fi
 
