@@ -78,6 +78,7 @@ load_env() {
 
 # ── SSH к VPS ─────────────────────────────────────────────────────────────────
 SSH_PROXY_CMD="/opt/vpn/scripts/ssh-proxy.sh"
+GITHUB_REPO_URL_DEFAULT="https://github.com/Cyrillicspb/vpn-infra.git"
 
 # vps_exec — быстрые read-only команды (echo, cat, docker ps, etc.)
 # Обрыв соединения при переключении стека не критичен — легко повторить.
@@ -138,6 +139,60 @@ vps_tmux_exec() {
 
     [[ -n "$output" ]] && echo "$output"
     return "${rc_val:-1}"
+}
+
+ensure_git_repo() {
+    if [[ -d "$REPO_DIR/.git" ]]; then
+        return 0
+    fi
+
+    log_warn "/opt/vpn/.git отсутствует — восстанавливаем git metadata"
+
+    local tmp_clone
+    tmp_clone="$(mktemp -d /tmp/vpn-repo-bootstrap.XXXXXX)"
+    local cloned=false
+    local github_url="${GITHUB_REPO_URL:-$GITHUB_REPO_URL_DEFAULT}"
+
+    if [[ -n "${VPS_IP:-}" ]]; then
+        local ssh_port="${VPS_SSH_PORT:-22}"
+        local vps_mirror="ssh://sysadmin@${VPS_IP}:${ssh_port}/opt/vpn/vpn-repo.git"
+        local proxy_cmd=""
+        [[ -x "$SSH_PROXY_CMD" ]] && proxy_cmd="-o ProxyCommand='$SSH_PROXY_CMD %h %p'"
+        if GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes ${proxy_cmd}" \
+           git clone --no-checkout "$vps_mirror" "$tmp_clone" >/dev/null 2>&1; then
+            log_info "git metadata восстановлена из VPS-зеркала"
+            cloned=true
+        else
+            log_warn "VPS-зеркало недоступно для bootstrap .git"
+        fi
+    fi
+
+    if [[ "$cloned" == false ]]; then
+        if git clone --no-checkout "$github_url" "$tmp_clone" >/dev/null 2>&1; then
+            log_info "git metadata восстановлена из GitHub"
+            cloned=true
+        else
+            rm -rf "$tmp_clone"
+            log_error "Не удалось восстановить .git ни из VPS-зеркала, ни из GitHub"
+            return 1
+        fi
+    fi
+
+    rm -rf "$REPO_DIR/.git"
+    mv "$tmp_clone/.git" "$REPO_DIR/.git"
+    rm -rf "$tmp_clone"
+
+    # Синхронизируем index с уже существующим рабочим деревом /opt/vpn.
+    # .env и другие игнорируемые runtime-файлы reset --hard не затрагивает.
+    git -C "$REPO_DIR" reset --hard HEAD >/dev/null 2>&1 || true
+
+    if git -C "$REPO_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        log_ok "git metadata в /opt/vpn восстановлена"
+        return 0
+    fi
+
+    log_error "После bootstrap /opt/vpn всё ещё не распознаётся как git repo"
+    return 1
 }
 
 # =============================================================================
@@ -269,6 +324,7 @@ rollback() {
 # =============================================================================
 git_pull() {
     log_step "Получение обновлений"
+    ensure_git_repo || return 1
 
     # Настраиваем remote vps-mirror если не настроен
     # Используем публичный VPS_IP + ssh-proxy.sh (SOCKS5 через активный стек)
@@ -286,7 +342,7 @@ git_pull() {
 
         # Сначала из VPS-зеркала через ssh-proxy.sh (SOCKS5 активного стека)
         local proxy_cmd=""
-        [[ -x "$SSH_PROXY_CMD" ]] && proxy_cmd="-o ProxyCommand=${SSH_PROXY_CMD} %h %p"
+        [[ -x "$SSH_PROXY_CMD" ]] && proxy_cmd="-o ProxyCommand='$SSH_PROXY_CMD %h %p'"
         if GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes ${proxy_cmd}" \
            git -C "$REPO_DIR" fetch --tags vps-mirror 2>/dev/null; then
             log_info "Получено из VPS-зеркала"
@@ -789,6 +845,7 @@ json.dump(cfg, open('$REPO_DIR/xray/config-cdn.json', 'w'), indent=4)
 # Проверка обновлений (--check): уведомить если есть новая версия
 # =============================================================================
 check_updates() {
+    ensure_git_repo || return 1
     local current_ver; current_ver="$(cat "$REPO_DIR/version" 2>/dev/null | tr -d '[:space:]' || echo 'unknown')"
     log_info "Текущая версия: ${current_ver}"
 
@@ -800,7 +857,9 @@ check_updates() {
     # Получить последний тег vX.Y.Z из удалённого репозитория (не применять локально)
     local remote_ver=""
     if [[ -n "${VPS_IP:-}" ]]; then
-        remote_ver="$(GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes" \
+        local proxy_cmd=""
+        [[ -x "$SSH_PROXY_CMD" ]] && proxy_cmd="-o ProxyCommand='$SSH_PROXY_CMD %h %p'"
+        remote_ver="$(GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes ${proxy_cmd}" \
             git -C "$REPO_DIR" ls-remote --tags vps-mirror 'refs/tags/v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null \
             | awk '{print $2}' | sed 's|refs/tags/||' | grep -v '\^{}' | sort -V | tail -1)" || true
     fi

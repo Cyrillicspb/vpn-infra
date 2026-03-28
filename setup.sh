@@ -1011,7 +1011,7 @@ for a in d.get('assets',[]):
 
         # Копирование файлов из репозитория
         if command -v rsync &>/dev/null; then
-            rsync -a --exclude='.git' --exclude='.deploy-snapshot' \
+            rsync -a --exclude='.deploy-snapshot' \
                 "${REPO_DIR}/" /opt/vpn/ 2>/dev/null || true
         else
             cp -r "${REPO_DIR}/." /opt/vpn/ 2>/dev/null || true
