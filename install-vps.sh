@@ -622,6 +622,23 @@ else
     step_done "step42_vps_docker_compose"
 fi
 
+# ── VPS reconciliation: сброс 3x-ui credentials перед настройкой inbounds ────
+# При повторной установке 3x-ui на VPS может работать с паролем от прошлой
+# установки. Сбрасываем к admin/admin — xray-setup.sh затем изменит на .env.
+
+if ! is_done "step43_vps_3xui_inbounds"; then
+    log_info "Проверка 3x-ui credentials (reconciliation перед настройкой inbounds)..."
+    _3XUI_RUNNING=$(vps_exec "sudo docker inspect --format='{{.State.Status}}' 3x-ui 2>/dev/null || echo not_found")
+    if [[ "$_3XUI_RUNNING" == "running" ]]; then
+        log_info "3x-ui запущен — сброс credentials к дефолтным для идемпотентности..."
+        vps_exec "sudo docker exec 3x-ui /app/x-ui setting -username admin -password admin 2>/dev/null || true"
+        vps_exec "sudo docker restart 3x-ui 2>/dev/null || true; sleep 8"
+        log_ok "3x-ui credentials сброшены к admin/admin"
+    else
+        log_info "3x-ui не запущен — reconciliation не нужен"
+    fi
+fi
+
 # ── Шаг 43: Настройка инбаундов 3x-ui через API ─────────────────────────────
 
 if is_done "step43_vps_3xui_inbounds"; then

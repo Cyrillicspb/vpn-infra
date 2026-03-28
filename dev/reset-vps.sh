@@ -122,6 +122,14 @@ set +e
 
 COMPOSE_FILE=/opt/vpn/docker-compose.yml
 if [[ -f "$COMPOSE_FILE" ]]; then
+    # Сбрасываем 3x-ui credentials ДО остановки контейнеров
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^3x-ui$'; then
+        info "Сброс 3x-ui credentials к admin/admin..."
+        docker exec 3x-ui /app/x-ui setting -username admin -password admin 2>/dev/null \
+            && ok "3x-ui credentials сброшены" \
+            || warn "Сброс 3x-ui credentials завершился с ошибкой — пропускаем"
+    fi
+
     info "Останавливаем docker compose..."
     docker compose -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null && ok "docker compose down" || warn "docker compose down завершился с ошибкой"
 else
