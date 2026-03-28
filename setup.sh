@@ -1263,11 +1263,11 @@ UNITEOF
 
     [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
 
-    # Шаг 46b — Синхронизация ключей Xray REALITY (shortId + publicKey) из VPS
+    # Шаг 46b — Синхронизация ключей Xray REALITY и Hysteria2 pin hash из VPS
     if is_done "step46b_sync_xray_keys"; then
         step_skip "step46b_sync_xray_keys"
     else
-        step "Синхронизация ключей Xray REALITY из VPS в .env"
+        step "Синхронизация ключей Xray REALITY и Hysteria2 из VPS в .env"
         log_info "xray-setup.sh генерирует shortIds случайно — читаем из VPS 3x-ui DB"
         log_info "Деривируем publicKey из privateKey через xray x25519"
 
@@ -1357,6 +1357,21 @@ PYEOF
             fi
         else
             log_warn "XRAY_GRPC_PRIVATE_KEY не задан — пропускаем деривацию XRAY_GRPC_PUBLIC_KEY"
+        fi
+
+        # Hysteria2 использует self-signed cert на VPS + pinSHA256 на клиенте.
+        # При перевыпуске server.crt pin в /opt/vpn/.env обязан обновиться, иначе
+        # клиент падает с "no certificate matches the pinned hash".
+        H2_CERT_HASH=$(vps_exec "openssl x509 -in /opt/vpn/hysteria2/server.crt \
+            -pubkey -noout 2>/dev/null \
+            | openssl pkey -pubin -outform DER 2>/dev/null \
+            | openssl dgst -sha256 -binary 2>/dev/null \
+            | base64" 2>/dev/null || echo "")
+        if [[ -n "$H2_CERT_HASH" ]]; then
+            env_set "HYSTERIA2_CERT_HASH" "$H2_CERT_HASH"
+            log_ok "HYSTERIA2_CERT_HASH синхронизирован из VPS cert"
+        else
+            log_warn "Не удалось прочитать HYSTERIA2_CERT_HASH с VPS — проверьте /opt/vpn/hysteria2/server.crt"
         fi
 
         step_done "step46b_sync_xray_keys"

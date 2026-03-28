@@ -1957,6 +1957,55 @@ def _write_vpn_state_files(stack_name: str) -> None:
             logger.warning(f"Не удалось записать {path}: {e}")
 
 
+async def _set_marked_route_for_stack(stack_name: str) -> bool:
+    """Установить маршрут table marked для указанного стека.
+    Возвращает True если маршрут установлен, False если стек не готов.
+    """
+    plugin = plugins.get(stack_name)
+    if not plugin:
+        logger.warning(f"_set_marked_route_for_stack: плагин {stack_name} не найден")
+        return False
+
+    if plugin.meta.get("direct_mode"):
+        gw = GATEWAY_IP
+        eth = NET_INTERFACE
+        cmd = (
+            ["ip", "route", "replace", "default", "via", gw, "dev", eth, "table", "marked"]
+            if gw else
+            ["ip", "route", "replace", "default", "dev", eth, "table", "marked"]
+        )
+        rc, _, err = await run_cmd(cmd, timeout=5)
+        if rc != 0:
+            logger.warning(f"Не удалось установить direct route для {stack_name}: {err}")
+            return False
+        return True
+
+    tun_name = plugin.meta.get("tun_name", f"tun-{stack_name}")
+    rc, _, _ = await run_cmd(["ip", "link", "show", tun_name], timeout=3)
+    if rc != 0:
+        logger.warning(f"tun интерфейс {tun_name} отсутствует — table marked не обновлена")
+        return False
+
+    rc, _, err = await run_cmd(
+        ["ip", "route", "replace", "default", "dev", tun_name, "table", "marked"],
+        timeout=5,
+    )
+    if rc != 0:
+        logger.warning(f"Не удалось установить маршрут table marked → {tun_name}: {err}")
+        return False
+    return True
+
+
+async def _set_marked_route_unreachable() -> None:
+    """Fail-closed: если активный стек не поднялся, blocked-трафик не должен уходить в stale tun."""
+    await run_cmd(["ip", "route", "replace", "unreachable", "default", "table", "marked"], timeout=5)
+    try:
+        Path("/run/vpn-active-tun").unlink(missing_ok=True)
+    except Exception as exc:
+        logger.debug(f"Не удалось удалить /run/vpn-active-tun: {exc}")
+    logger.warning("table marked переведена в unreachable — активный tun отсутствует")
+
+
 async def _do_switch(new_stack: str, reason: str) -> bool:
     """
     Make-before-break переключение стека.
@@ -1981,27 +2030,11 @@ async def _do_switch(new_stack: str, reason: str) -> bool:
         return False
 
     # 2. Атомарно переключаем маршрут table marked
-    if plugin.meta.get("direct_mode"):
-        # direct_mode (zapret): трафик через eth0 с nfqueue, без tun
-        gw = GATEWAY_IP
-        eth = NET_INTERFACE
-        if gw:
-            await run_cmd(
-                ["ip", "route", "replace", "default", "via", gw, "dev", eth, "table", "marked"],
-                timeout=5,
-            )
-        else:
-            await run_cmd(
-                ["ip", "route", "replace", "default", "dev", eth, "table", "marked"],
-                timeout=5,
-            )
-    else:
-        # Обычный режим: маршрут через tun интерфейс
-        tun_name = plugin.meta.get("tun_name", f"tun-{new_stack}")
-        await run_cmd(
-            ["ip", "route", "replace", "default", "dev", tun_name, "table", "marked"],
-            timeout=5,
-        )
+    if not await _set_marked_route_for_stack(new_stack):
+        logger.error(f"Не удалось переключить table marked на стек {new_stack}")
+        await plugin.stop()
+        alert(f"⚠️ Failover на *{new_stack}* не удался: маршрут не установлен")
+        return False
 
     # 3. Останавливаем старый стек
     old_plugin = plugins.get(old_stack)
@@ -3737,11 +3770,13 @@ async def on_startup() -> None:
         # (tun ещё нет), поэтому необходимо восстановить маршрут независимо
         # от того, поднимали ли мы tun сами или он уже существовал.
         if active_plugin:
-            await run_cmd(
-                ["ip", "route", "replace", "default", "dev", tun_name, "table", "marked"],
-                timeout=5,
-            )
-            logger.info(f"Маршрут table marked → {tun_name} установлен")
+            if await _set_marked_route_for_stack(state.active_stack):
+                logger.info(f"Маршрут table marked восстановлен для стека {state.active_stack}")
+            else:
+                await _set_marked_route_unreachable()
+                active_plugin = None
+        else:
+            await _set_marked_route_unreachable()
 
     # Всегда запускать zapret (DPI bypass, независимо от активного VPN-стека)
     # Activate только если dpi_enabled — иначе просто крутится в режиме standby
