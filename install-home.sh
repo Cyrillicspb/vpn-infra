@@ -1053,6 +1053,8 @@ else
             cp "${src}/watchdog.py" "${WATCHDOG_DIR}/watchdog.py"
             [[ -f "${src}/requirements.txt" ]] && \
                 cp "${src}/requirements.txt" "${WATCHDOG_DIR}/requirements.txt"
+            [[ -d "${src}/wheels" ]] && \
+                mkdir -p "${WATCHDOG_DIR}/wheels" && cp -r "${src}/wheels/." "${WATCHDOG_DIR}/wheels/"
             [[ -d "${src}/plugins" ]] && \
                 cp -r "${src}/plugins/." "${WATCHDOG_DIR}/plugins/"
             log_ok "watchdog.py скопирован из ${src}"
@@ -1070,9 +1072,16 @@ else
     fi
 
     # Установка зависимостей
-    # PyPI заблокирован из РФ — пробуем зеркала по очереди.
+    # Предпочитаем локальный wheelhouse. Сеть используем только как fallback.
     _pip_install() {
         local pip="${WATCHDOG_DIR}/venv/bin/pip"
+        local wheel_dir="${WATCHDOG_DIR}/wheels"
+        if find "$wheel_dir" -maxdepth 1 -type f -name '*.whl' 2>/dev/null | grep -q .; then
+            log_info "pip install из локального wheelhouse (${wheel_dir}) ..."
+            "$pip" install -q --no-cache-dir --no-index --find-links "$wheel_dir" "$@" && return 0
+            log_warn "Локальный wheelhouse неполон — пробуем зеркала"
+        fi
+
         local args=(-q --no-cache-dir --timeout 120 --retries 2 "$@")
         local mirrors=(
             "https://pypi.org/simple/"
