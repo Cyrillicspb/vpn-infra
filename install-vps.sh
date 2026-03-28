@@ -56,6 +56,10 @@ _SSH_OPTS="-p ${VPS_SSH_PORT:-22} -i $SSH_KEY \
 # Закрываем master-соединение при выходе
 trap 'ssh -O exit -o ControlPath="${_SSH_CTL}" "sysadmin@${VPS_IP}" 2>/dev/null || true' EXIT
 
+# Ожидание освобождения dpkg lock (unattended-upgrades, cloud-init и др.)
+# Подставляется перед каждым apt-get вызовом на VPS.
+_APT_WAIT='while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done'
+
 vps_exec() {
     # shellcheck disable=SC2086
     ssh $_SSH_OPTS "sysadmin@${VPS_IP}" "$@"
@@ -147,10 +151,10 @@ if is_done "step33_vps_update_packages"; then
 else
     step "Обновление системных пакетов на VPS"
 
-    vps_exec_long "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
+    vps_exec_long "${_APT_WAIT} && sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
         sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq"
 
-    vps_exec_long "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    vps_exec_long "${_APT_WAIT} && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
         curl wget git jq wireguard-tools openssl gnupg2 ca-certificates \
         python3 python3-pip net-tools mosh"
 
@@ -194,8 +198,8 @@ else
             echo \"deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
             https://download.docker.com/linux/ubuntu \${VERSION_CODENAME} stable\" \
             | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null && \
-            sudo apt-get update -qq"
-        vps_exec_long "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            ${_APT_WAIT} && sudo apt-get update -qq"
+        vps_exec_long "${_APT_WAIT} && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             docker-ce docker-ce-cli containerd.io docker-compose-plugin" \
             || die "Не удалось установить Docker на VPS"
         vps_exec "sudo systemctl enable docker && sudo systemctl start docker"
@@ -231,7 +235,7 @@ else
     log_info "Rate limiting: TCP/UDP 443 — 200/сек, burst 500 (защита Xray + Hysteria2)"
     log_info "Открытые порты: 22 (SSH), 443 (Xray/Hysteria2), 8022 (SSH аварийный)"
 
-    vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables"
+    vps_exec "${_APT_WAIT} && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables"
 
     vps_exec "cat << 'NFTEOF' | sudo tee /etc/nftables-vps.conf > /dev/null
 #!/usr/sbin/nft -f
@@ -311,7 +315,7 @@ else
     log_info "Домашний сервер форвардит DNS заблокированных доменов на 10.177.2.2:53."
     log_info "Устанавливаем dnsmasq на VPS — слушает на tun0, форвардит в 1.1.1.1/8.8.8.8."
 
-    vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dnsmasq"
+    vps_exec "${_APT_WAIT} && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dnsmasq"
 
     vps_exec "cat << 'DNSEOF' | sudo tee /etc/dnsmasq.d/vpn-tier2.conf > /dev/null
 # DNS-форвардер для Tier-2 туннеля
@@ -336,7 +340,7 @@ if is_done "step37_vps_fail2ban"; then
 else
     step "Настройка fail2ban на VPS"
 
-    vps_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fail2ban"
+    vps_exec "${_APT_WAIT} && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fail2ban"
     # ignoreip: loopback + VPN subnets (static) + home server external IP
     F2B_IGNOREIP="127.0.0.1/8 ::1 10.177.0.0/16 ${EXTERNAL_IP}"
     vps_exec "printf '[DEFAULT]\nbantime = 86400\nfindtime = 300\nmaxretry = 3\nbackend = systemd\nignoreip = ${F2B_IGNOREIP}\n\n[sshd]\nenabled = true\nport = 22,8022\nfilter = sshd\nmode = aggressive\nmaxretry = 3\n' | \
