@@ -41,6 +41,18 @@ fi
 
 log "=== Фаза 2: установка мониторинга ==="
 
+if [[ -f /opt/vpn/scripts/docker-load-cache.sh ]]; then
+    log "Загрузка локального Docker image cache перед pull..."
+    if bash /opt/vpn/scripts/docker-load-cache.sh \
+            --dir /opt/vpn/docker-images \
+            --label "Monitoring Docker image cache" \
+            --allow-empty >> "$LOG" 2>&1; then
+        log "Локальный image cache обработан"
+    else
+        log "WARN: локальный image cache загрузился не полностью"
+    fi
+fi
+
 # ── 3.5. Повторная сборка telegram-bot после поднятия VPN ───────────────────
 cd /opt/vpn
 

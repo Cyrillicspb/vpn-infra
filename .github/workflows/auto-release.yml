@@ -119,6 +119,32 @@ jobs:
           mv /tmp/vpn-infra.tar.gz vpn-infra.tar.gz
           echo "Размер архива: $(du -sh vpn-infra.tar.gz | cut -f1)"
 
+      - name: Build Docker image bundles
+        run: |
+          set -euo pipefail
+          source scripts/docker-image-groups.sh
+
+          mkdir -p docker-images
+          mapfile -t ALL_IMAGES < <(docker_image_group_names all)
+          for img in "${ALL_IMAGES[@]}"; do
+            fname="$(docker_image_to_archive_name "$img")"
+            echo "Pull: $img"
+            docker pull "$img"
+            echo "Save: docker-images/${fname}"
+            docker save "$img" | gzip > "docker-images/${fname}"
+            ls -lh "docker-images/${fname}"
+          done
+
+          while IFS= read -r group; do
+            archive="$(docker_image_bundle_asset_name "$group")"
+            members=()
+            while IFS= read -r img; do
+              members+=("docker-images/$(docker_image_to_archive_name "$img")")
+            done < <(docker_image_group_names "$group")
+            tar -czf "$archive" "${members[@]}"
+            echo "Bundle ${archive}: $(du -sh "$archive" | cut -f1)"
+          done < <(docker_image_bundle_groups)
+
       - name: Create tag and release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -131,4 +157,7 @@ jobs:
             --notes "${{ steps.notes.outputs.notes }}" \
             --latest \
             install.sh \
-            vpn-infra.tar.gz
+            vpn-infra.tar.gz \
+            docker-images.tar.gz \
+            docker-images-monitoring.tar.gz \
+            docker-images-vps.tar.gz

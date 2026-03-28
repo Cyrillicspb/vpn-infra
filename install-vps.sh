@@ -601,6 +601,29 @@ else
         log_info "Рендер standalone конфига reality-xhttp..."
         vps_exec "bash /opt/vpn/scripts/render-reality-xhttp-config.sh"
 
+        if [[ -f "${REPO_DIR}/scripts/docker-image-groups.sh" ]]; then
+            # shellcheck source=scripts/docker-image-groups.sh
+            source "${REPO_DIR}/scripts/docker-image-groups.sh"
+            mapfile -t _vps_cache_images < <(docker_image_group_names vps-core)
+            _copied_cache=0
+            vps_exec "mkdir -p /opt/vpn/docker-images"
+            for _img in "${_vps_cache_images[@]}"; do
+                _archive_name=$(docker_image_to_archive_name "$_img")
+                if [[ -f "/opt/vpn/docker-images/${_archive_name}" ]]; then
+                    log_info "Копируем Docker cache на VPS: ${_archive_name}"
+                    vps_copy "/opt/vpn/docker-images/${_archive_name}" \
+                        "sysadmin@${VPS_IP}:/opt/vpn/docker-images/${_archive_name}"
+                    ((_copied_cache++)) || true
+                fi
+            done
+            if [[ "$_copied_cache" -gt 0 ]]; then
+                log_info "Загрузка ${_copied_cache} локальных Docker-образов на VPS..."
+                vps_exec "bash /opt/vpn/scripts/docker-load-cache.sh \
+                    --dir /opt/vpn/docker-images \
+                    --label 'VPS Docker image cache' --allow-empty"
+            fi
+        fi
+
         log_info "Загрузка Docker-образов на VPS..."
         vps_exec_long "cd /opt/vpn && sudo docker compose pull 2>&1 || true"
 

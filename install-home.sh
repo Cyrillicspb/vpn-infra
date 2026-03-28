@@ -1449,12 +1449,13 @@ else
 
         if [[ "$_img_count" -gt 0 ]]; then
             log_info "Загрузка ${_img_count} Docker-образов из локального кэша (${SAVED_IMAGES_DIR})..."
-            for _img_tar in "${SAVED_IMAGES_DIR}"/*.tar.gz; do
-                log_info "  docker load: $(basename "$_img_tar")"
-                gunzip -c "$_img_tar" | docker load 2>&1 \
-                    || log_warn "  Не удалось загрузить $(basename "$_img_tar")"
-            done
-            log_ok "Образы загружены из кэша — зеркала не нужны"
+            if bash /opt/vpn/scripts/docker-load-cache.sh \
+                    --dir "$SAVED_IMAGES_DIR" \
+                    --label "Локальный Docker image cache" 2>&1; then
+                log_ok "Образы загружены из кэша — зеркала не нужны"
+            else
+                log_warn "Часть локального Docker image cache не загрузилась"
+            fi
             _BASE_IMG="python:3.12-slim"  # уже загружен через docker load
         else
             # ── ФАЗА 1б: fallback — зеркала (VPN ещё не поднят) ─────────────────

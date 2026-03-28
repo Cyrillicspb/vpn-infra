@@ -6,8 +6,8 @@
 #
 # Что делает:
 #   1. Клонирует репозиторий в /opt/vpn (git или tar-fallback из Releases)
-#   2. Скачивает docker-images.tar.gz из GitHub Releases (образы фазы 1)
-#   3. Распаковывает образы в /opt/vpn/docker-images/
+#   2. Скачивает docker-images*.tar.gz из GitHub Releases
+#   3. Распаковывает локальный image cache в /opt/vpn/docker-images/
 #   4. Запускает setup.sh (TUI или консольный режим)
 #
 # Идемпотентен: повторный запуск не сломает уже установленное.
@@ -96,40 +96,60 @@ if ! $_repo_ok; then
     fi
 fi
 
-chmod +x "${OPT_VPN}/setup.sh" "${OPT_VPN}/install-home.sh" 2>/dev/null || true
+chmod +x "${OPT_VPN}/setup.sh" "${OPT_VPN}/install-home.sh" \
+    "${OPT_VPN}/scripts/docker-load-cache.sh" "${OPT_VPN}/dev/save-docker-images.sh" 2>/dev/null || true
 
-# ── 3. Docker-образы фазы 1 из GitHub Releases ───────────────────────────────
-# Образы нужны для поднятия VPN без доступа к Docker Hub:
-#   python:3.12-slim, teddysun/xray, tecnativa/docker-socket-proxy, nginx:stable-alpine
-#
-# Если образы уже распакованы — пропускаем.
+# ── 3. Docker-образы из GitHub Releases ───────────────────────────────────────
+# Основной архив: docker-images.tar.gz (home phase 1).
+# Дополнительные архивы monitoring/VPS скачиваются opportunistically.
 _img_count=$(ls "${DOCKER_IMAGES_DIR}"/*.tar.gz 2>/dev/null | wc -l || echo 0)
 if [[ "$_img_count" -gt 0 ]]; then
     ok "Docker-образы уже есть: ${_img_count} файлов в ${DOCKER_IMAGES_DIR}"
 else
-    info "Поиск docker-images.tar.gz в GitHub Releases..."
-    _docker_url=$(curl -sf --max-time 20 "$RELEASE_API" 2>/dev/null \
-        | grep -o '"browser_download_url": *"[^"]*docker-images\.tar\.gz"' \
-        | grep -o 'https://[^"]*' | head -1 || true)
+    _bundle_assets=(docker-images.tar.gz docker-images-monitoring.tar.gz docker-images-vps.tar.gz)
+    if [[ -f "${OPT_VPN}/scripts/docker-image-groups.sh" ]]; then
+        # shellcheck source=scripts/docker-image-groups.sh
+        source "${OPT_VPN}/scripts/docker-image-groups.sh"
+        mapfile -t _bundle_assets < <(
+            while IFS= read -r _group; do
+                docker_image_bundle_asset_name "$_group"
+            done < <(docker_image_bundle_groups)
+        )
+    fi
 
-    if [[ -n "$_docker_url" ]]; then
-        info "Скачиваем docker-images.tar.gz (это может занять несколько минут)..."
-        if curl -fsSL --max-time 600 -L "$_docker_url" \
-                -o /tmp/docker-images.tar.gz 2>/dev/null; then
-            mkdir -p "$DOCKER_IMAGES_DIR"
-            tar xzf /tmp/docker-images.tar.gz -C "$DOCKER_IMAGES_DIR" \
-                --no-same-permissions --no-same-owner --overwrite 2>/dev/null || true
-            rm -f /tmp/docker-images.tar.gz
-            _img_count=$(ls "${DOCKER_IMAGES_DIR}"/*.tar.gz 2>/dev/null | wc -l || echo 0)
-            ok "Docker-образы фазы 1 готовы: ${_img_count} файлов"
-        else
-            warn "Не удалось скачать docker-images.tar.gz"
-            warn "Образы будут скачаны через зеркала при установке (шаг 31)"
+    info "Поиск архивов Docker-образов в GitHub Releases..."
+    _release_json=$(curl -sf --max-time 20 "$RELEASE_API" 2>/dev/null || true)
+    mkdir -p "$DOCKER_IMAGES_DIR"
+    _downloaded=0
+
+    for _asset in "${_bundle_assets[@]}"; do
+        _docker_url=$(printf '%s' "$_release_json" \
+            | grep -o "\"browser_download_url\": *\"[^\"]*${_asset}\"" \
+            | grep -o 'https://[^"]*' | head -1 || true)
+
+        if [[ -z "$_docker_url" ]]; then
+            warn "${_asset} не найден в релизе"
+            continue
         fi
+
+        info "Скачиваем ${_asset}..."
+        if curl -fsSL --max-time 900 -L "$_docker_url" -o "/tmp/${_asset}" 2>/dev/null; then
+            tar xzf "/tmp/${_asset}" -C "$DOCKER_IMAGES_DIR" \
+                --no-same-permissions --no-same-owner --overwrite 2>/dev/null || true
+            rm -f "/tmp/${_asset}"
+            ((_downloaded++)) || true
+        else
+            warn "Не удалось скачать ${_asset}"
+        fi
+    done
+
+    _img_count=$(ls "${DOCKER_IMAGES_DIR}"/*.tar.gz 2>/dev/null | wc -l || echo 0)
+    if [[ "$_downloaded" -gt 0 && "$_img_count" -gt 0 ]]; then
+        ok "Docker-образы готовы: ${_img_count} файлов"
     else
-        warn "docker-images.tar.gz не найден в релизе"
-        warn "Сгенерируйте: bash dev/save-docker-images.sh (нужен доступ к Docker Hub)"
-        warn "Образы будут скачаны через зеркала при установке (шаг 31)"
+        warn "Локальный Docker image cache не скачан"
+        warn "Сгенерируйте и загрузите архивы: bash dev/save-docker-images.sh"
+        warn "Образы будут скачаны через зеркала/registry во время установки"
     fi
 fi
 
