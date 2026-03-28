@@ -548,16 +548,24 @@ phase0() {
         PROXY_CMD=""
         NFQWS_BOOTSTRAP_STARTED=false
 
+        # Проверка реального SSH-соединения (не просто открытого порта).
+        # ssh-keyscan выполняет полное SSH-рукопожатие и получает host key —
+        # подтверждает что на порту именно SSH, а не произвольный TCP-сервис.
+        _ssh_reachable() {
+            local _ip="$1" _port="$2"
+            timeout 10 ssh-keyscan -p "$_port" -T 8 "$_ip" 2>/dev/null | grep -q "."
+        }
+
         # Попытка 1: порт 22 напрямую
         log_info "Попытка 1/4: SSH напрямую порт 22..."
-        if timeout 10 bash -c ">/dev/tcp/${VPS_IP}/22" 2>/dev/null; then
+        if _ssh_reachable "${VPS_IP}" 22; then
             SSH_PORT="22"; BOOTSTRAP_METHOD="direct"
-            log_ok "VPS доступен на порту 22"
+            log_ok "VPS доступен на порту 22 (SSH подтверждён)"
 
         # Попытка 2: порт 443 напрямую (SSH уже настроен на 443 при повторном запуске)
-        elif timeout 10 bash -c ">/dev/tcp/${VPS_IP}/443" 2>/dev/null; then
+        elif _ssh_reachable "${VPS_IP}" 443; then
             SSH_PORT="443"; BOOTSTRAP_METHOD="direct"
-            log_ok "VPS доступен на порту 443"
+            log_ok "VPS доступен на порту 443 (SSH подтверждён)"
 
         else
             # Попытка 3: DPI bypass через nfqws
@@ -617,12 +625,12 @@ for a in d.get('assets',[]):
                     --dpi-desync=fakedsplit --dpi-desync-autottl=2 \
                     2>/dev/null && NFQWS_BOOTSTRAP_STARTED=true || true
                 sleep 2
-                if timeout 10 bash -c ">/dev/tcp/${VPS_IP}/22" 2>/dev/null; then
+                if _ssh_reachable "${VPS_IP}" 22; then
                     SSH_PORT="22"; BOOTSTRAP_METHOD="nfqws"
-                    log_ok "VPS доступен через nfqws на порту 22"
-                elif timeout 10 bash -c ">/dev/tcp/${VPS_IP}/443" 2>/dev/null; then
+                    log_ok "VPS доступен через nfqws на порту 22 (SSH подтверждён)"
+                elif _ssh_reachable "${VPS_IP}" 443; then
                     SSH_PORT="443"; BOOTSTRAP_METHOD="nfqws"
-                    log_ok "VPS доступен через nfqws на порту 443"
+                    log_ok "VPS доступен через nfqws на порту 443 (SSH подтверждён)"
                 else
                     log_warn "nfqws не помог — переходим к socat bootstrap"
                 fi
