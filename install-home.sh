@@ -1462,6 +1462,16 @@ else
                 | grep -oP 'handle \K[0-9]+' || true)
         fi
 
+        # FIX B2: output chain — Docker daemon (не контейнер) тоже проходит через
+        # output hook. Если IP зеркала попал в blocked_static (Cloudflare CDN и др.
+        # из баз РКН) → fwmark 0x1 → table 200 → default dev tun → tun нет → drop.
+        # insert rule добавляет accept В НАЧАЛО цепочки — до fwmark-правил.
+        _nft_output_bypass_handle=""
+        if nft list table inet vpn &>/dev/null 2>&1; then
+            _nft_output_bypass_handle=$(nft -a insert rule inet vpn output accept 2>/dev/null \
+                | grep -oP 'handle \K[0-9]+' || true)
+        fi
+
         # Отключаем errexit+pipefail на время docker-операций,
         # чтобы сбой build/up не убил весь скрипт.
         set +e; set +o pipefail
@@ -1562,9 +1572,12 @@ EOF
         _restore_resolv
         trap - EXIT
 
-        # FIX B: точечно удаляем временное правило по handle — без flush ruleset.
+        # FIX B: точечно удаляем временные правила по handle — без flush ruleset.
         if [[ -n "$_nft_bypass_handle" ]]; then
             nft delete rule inet vpn forward handle "$_nft_bypass_handle" 2>/dev/null || true
+        fi
+        if [[ -n "$_nft_output_bypass_handle" ]]; then
+            nft delete rule inet vpn output handle "$_nft_output_bypass_handle" 2>/dev/null || true
         fi
 
         sleep 5
