@@ -1,11 +1,8 @@
 # cloudflared config — VPS (серверная сторона CDN-стека)
 # =============================================================================
-# Режим запуска: cloudflared tunnel run --token $CF_TUNNEL_TOKEN
-#
-# При использовании --token:
-#   - Туннель создан в Cloudflare Dashboard
-#   - Ingress-правила задаются В DASHBOARD (не здесь)
-#   - Этот файл используется для метрик и дополнительных опций
+# CDN-стек использует Cloudflare Workers (CF_CDN_HOSTNAME) как relay.
+# cloudflared tunnel на VPS НЕ требуется — Workers проксируют трафик
+# напрямую к Xray WS inbound (localhost:8080).
 #
 # Архитектура CDN-стека:
 #   Cloudflare CDN

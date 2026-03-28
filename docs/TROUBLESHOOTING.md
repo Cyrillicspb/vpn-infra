@@ -16,5 +16,40 @@
 - Watchdog мёртв / не запускается
 - Ошибки установки (setup.sh)
 - Проблемы с VPS
+- Полный сброс VPS к чистому состоянию
 - Конфликт с офисным VPN / split tunneling
 - DKMS / AmneziaWG после обновления ядра
+
+---
+
+## Полный сброс VPS к чистому состоянию
+
+Используется когда установка сломалась и нужно начать заново без переустановки ОС через хостер.
+
+**Что делает скрипт:**
+- SSH: включает вход по паролю и root login, убирает `authorized_keys`
+- nftables: сбрасывает к policy accept (все порты открыты)
+- Docker: останавливает контейнеры, удаляет образы (`docker system prune -af`)
+- fail2ban: разбанивает все IP, удаляет кастомные jail
+- Systemd: останавливает и удаляет vpn-infra сервисы
+- Cron: удаляет задания vpn-infra
+- Setup state: удаляет `.setup-state` и `.env.bak`
+- `/opt/vpn`: предлагает удалить (опционально, с подтверждением)
+
+**НЕ трогает:** Docker engine, сетевые настройки ОС, пароль root.
+
+### Запуск
+
+Если GitHub доступен (с домашнего сервера через SSH):
+
+```bash
+ssh sysadmin@<VPS_IP> "curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/dev/reset-vps.sh | sudo bash"
+```
+
+Если GitHub заблокирован — скрипт уже скопирован на VPS во время установки:
+
+```bash
+ssh sysadmin@<VPS_IP> "sudo bash /opt/vpn/dev/reset-vps.sh"
+```
+
+После сброса — повторный запуск `setup.sh` с домашнего сервера. VPS-шаги выполнятся заново.

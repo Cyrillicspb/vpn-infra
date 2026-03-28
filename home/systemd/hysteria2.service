@@ -9,6 +9,8 @@ Before=watchdog.service
 [Service]
 Type=simple
 User=root
+# Не стартовать если конфиг ещё не создан (генерируется в phase3/step48 после VPS-установки)
+ConditionPathExists=/etc/hysteria/config.yaml
 ExecStart=/usr/local/bin/hysteria client --config /etc/hysteria/config.yaml --log-level warn
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure

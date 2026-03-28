@@ -1,6 +1,5 @@
 # cloudflared config — домашний сервер
-# Туннель от домашнего сервера к Cloudflare CDN
-# CF_TUNNEL_TOKEN устанавливается через переменную окружения
+# Туннель от домашнего сервера к Cloudflare CDN (использует CF_TUNNEL_ID + credentials)
 
 tunnel: ${CF_TUNNEL_ID}
 credentials-file: /etc/cloudflared/credentials.json

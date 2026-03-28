@@ -82,26 +82,16 @@ services:
         max-file: "3"
 
   # ── Cloudflared (CDN-стек, серверная сторона) ─────────────────────────────────
-  # Создаёт Cloudflare Tunnel → проксирует к Xray localhost
-  # network_mode: host — тоннель к localhost Xray
+  # CDN через Cloudflare Workers (CF_CDN_HOSTNAME) — cloudflared tunnel не нужен.
+  # Контейнер присутствует в compose для совместимости, работает в режиме sleep.
   cloudflared:
     image: cloudflare/cloudflared:2024.5.0
     container_name: cloudflared
-    restart: on-failure
-    # entrypoint override: образ имеет ENTRYPOINT ["cloudflared","--no-autoupdate"],
-    # Docker прибавляет command к entrypoint → "cloudflared sh -c ..." → ошибка.
-    # Переопределяем entrypoint на sh чтобы command выполнялся как shell-скрипт.
-    # CF_TUNNEL_TOKEN не используется в конфигурации CDN через Workers (CF_CDN_HOSTNAME).
-    # Если токен не задан — контейнер остаётся Up (sleep infinity), не падает.
+    restart: unless-stopped
+    # entrypoint override: CDN через Workers не требует cloudflared на VPS.
     entrypoint: ["/bin/sh"]
-    command: >
-      -c 'if [ -z "$$CF_TUNNEL_TOKEN" ]; then
-        echo "CF_TUNNEL_TOKEN not set — cloudflared named tunnel disabled (CDN via Workers)";
-        exec sleep infinity;
-      fi;
-      exec cloudflared --no-autoupdate tunnel run --token "$$CF_TUNNEL_TOKEN"'
+    command: ["-c", "exec sleep infinity"]
     network_mode: host
-    env_file: .env
     healthcheck:
       disable: true
     logging:

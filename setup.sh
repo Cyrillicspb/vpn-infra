@@ -491,7 +491,7 @@ phase0() {
         env_set "DDNS_DOMAIN"            "${DDNS_DOMAIN:-}"
         env_set "DDNS_TOKEN"             "${DDNS_TOKEN:-}"
         env_set "USE_CLOUDFLARE"         "${USE_CLOUDFLARE:-n}"
-        env_set "CF_TUNNEL_TOKEN"        "${CF_TUNNEL_TOKEN:-}"
+
         env_set "CF_CDN_HOSTNAME"    "${CF_CDN_HOSTNAME:-}"
         env_set "NET_INTERFACE"          "${NET_INTERFACE:-${ETH_IFACE:-eth0}}"
         env_set "GATEWAY_IP"             "${GATEWAY_IP:-}"
@@ -1554,6 +1554,9 @@ EOF
         step "Запуск VPN-сервисов"
 
         systemctl daemon-reload 2>/dev/null || true
+
+        # Включаем hysteria2 в автозапуск — конфиг уже создан в step48
+        systemctl enable hysteria2 2>/dev/null || true
 
         # Запуск в правильном порядке (согласно CLAUDE.md)
         for svc in nftables vpn-sets-restore dnsmasq hysteria2 watchdog; do
