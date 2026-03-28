@@ -894,11 +894,27 @@ async def check_wg_peers() -> None:
     state.cached_peers = peers
 
 
+# Контейнеры фазы 1 — критичны, алерт если exited/unhealthy
+CRITICAL_CONTAINERS = frozenset(
+    ["telegram-bot", "socket-proxy", "nginx", "xray-client", "xray-client-2", "xray-client-cdn"]
+)
+# Контейнеры фазы 2 (мониторинг) — опциональны:
+# алерт только если контейнер СУЩЕСТВУЕТ но нездоров; отсутствие — норма
+OPTIONAL_CONTAINERS = frozenset(
+    ["prometheus", "alertmanager", "grafana", "grafana-renderer", "node-exporter"]
+)
+
+
 # ---------------------------------------------------------------------------
 # Мониторинг: Docker контейнеры
 # ---------------------------------------------------------------------------
 async def check_containers() -> None:
-    """Проверка exited/unhealthy контейнеров. Обновляет state.docker_health."""
+    """Проверка exited/unhealthy контейнеров. Обновляет state.docker_health.
+
+    Критичные (фаза 1): алерт при любом нездоровом состоянии.
+    Опциональные (фаза 2, мониторинг): алерт только если контейнер есть но нездоров.
+    Отсутствие опциональных — норма (мониторинг устанавливается после поднятия VPN).
+    """
     rc, out, _ = await run_cmd(
         ["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}"], timeout=15
     )
@@ -912,7 +928,16 @@ async def check_containers() -> None:
             healthy = 0 if ("Exited" in status or "unhealthy" in status.lower()) else 1
             new_health[name] = healthy
             if healthy == 0:
-                alert(f"🚨 Контейнер *{name}*: `{status}`")
+                if name in CRITICAL_CONTAINERS:
+                    alert(f"🚨 Контейнер *{name}*: `{status}`")
+                elif name in OPTIONAL_CONTAINERS:
+                    # Существует но нездоров — алертим
+                    alert(f"⚠️ Мониторинг *{name}*: `{status}`")
+                # Неизвестные контейнеры — не алертим
+    # Опциональные которых нет вообще: weight=0, не влияют на health score
+    for name in OPTIONAL_CONTAINERS:
+        if name not in new_health:
+            new_health[name] = -1  # -1 = not present (skip, не fail)
     state.docker_health = new_health
 
 

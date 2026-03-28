@@ -43,6 +43,21 @@ check "nft blocked_static" "nft list set inet vpn blocked_static"
 check "DKMS awg" "dkms status | grep -q 'amneziawg'"
 check "telegram-bot" "docker inspect --format '{{.State.Running}}' telegram-bot | grep -q true"
 
+# Мониторинг (фаза 2) — опционален при загрузке, не влияет на FAIL-счётчик
+if docker inspect prometheus &>/dev/null 2>&1; then
+    if docker inspect --format '{{.State.Running}}' prometheus 2>/dev/null | grep -q true; then
+        log "OK: мониторинг (prometheus running)"
+        PASS=$((PASS+1))
+        REPORT+="✅ Мониторинг (prometheus)\n"
+    else
+        log "WARN: prometheus существует но не running"
+        REPORT+="⚠️ Мониторинг (prometheus не running)\n"
+    fi
+else
+    log "INFO: мониторинг не установлен (фаза 2 — установится после поднятия VPN)"
+    REPORT+="ℹ️ Мониторинг: установится после VPN\n"
+fi
+
 # Проверка DKMS после обновления ядра
 CURRENT_KERNEL=$(uname -r)
 log "Ядро: $CURRENT_KERNEL"

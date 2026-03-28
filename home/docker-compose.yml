@@ -194,10 +194,13 @@ services:
   # ── Prometheus — сбор метрик ─────────────────────────────────────────────────
   # Scrape: home node-exporter (host.docker.internal:9100), VPS (10.177.2.2:9100),
   #         watchdog (host.docker.internal:8080), alertmanager (alertmanager:9093)
+  # Profile "monitoring": устанавливается в фазе 2 (после поднятия VPN-стека)
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
     restart: always
+    profiles:
+      - monitoring
     user: "65534:65534"
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -234,6 +237,8 @@ services:
     image: prom/alertmanager:latest
     container_name: alertmanager
     restart: always
+    profiles:
+      - monitoring
     user: "65534:65534"
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -271,6 +276,8 @@ services:
     image: grafana/grafana:latest
     container_name: grafana
     restart: always
+    profiles:
+      - monitoring
     user: "472:472"
     environment:
       GF_SECURITY_ADMIN_USER: admin
@@ -312,6 +319,8 @@ services:
     image: grafana/grafana-image-renderer:latest
     container_name: grafana-renderer
     restart: always
+    profiles:
+      - monitoring
     environment:
       ENABLE_METRICS: "true"
       HTTP_HOST: "0.0.0.0"
@@ -330,6 +339,8 @@ services:
     image: prom/node-exporter:latest
     container_name: node-exporter
     restart: always
+    profiles:
+      - monitoring
     command:
       - "--path.rootfs=/host"
       - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"

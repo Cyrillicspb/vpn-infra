@@ -60,6 +60,10 @@ desktop.ini
 *.swo
 *~
 
+# Docker-образы фазы 1 (генерируются dev/save-docker-images.sh, хранятся в GitHub Releases)
+docker-images/
+docker-images.tar.gz
+
 # Временные файлы
 *.tmp
 *.bak

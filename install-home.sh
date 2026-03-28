@@ -1320,6 +1320,16 @@ EOF
         fi
     fi
 
+    # Доустановка мониторинга (фаза 2): каждые 15 мин пока prometheus не запустится
+    # docker-phase2.sh сам удалит это задание после успешной установки
+    cat > /etc/cron.d/vpn-docker-phase2 << 'EOF'
+# Фаза 2: мониторинг скачивается после поднятия VPN (скрипт идемпотентен)
+*/15 * * * * root bash /opt/vpn/scripts/docker-phase2.sh >/dev/null 2>&1
+EOF
+    touch /var/log/vpn-docker-phase2.log
+    chmod 640 /var/log/vpn-docker-phase2.log
+    log_ok "Cron фазы 2 (мониторинг): /etc/cron.d/vpn-docker-phase2"
+
     log_ok "Cron-задания настроены"
     step_done "step29_configure_cron"
 fi
@@ -1377,14 +1387,15 @@ fi
 if is_done "step31_docker_compose_home"; then
     step_skip "step31_docker_compose_home"
 else
-    step "Запуск Docker Compose (домашний сервер)"
-    log_info "Запускаем: telegram-bot, xray-client (:1080), xray-client-2 (:1081),"
-    log_info "           cloudflared (CDN-стек), socket-proxy, node-exporter"
+    step "Запуск Docker Compose — фаза 1 (VPN-контейнеры)"
+    log_info "Фаза 1: telegram-bot, xray-client*, socket-proxy, nginx"
+    log_info "Фаза 2 (мониторинг): после поднятия VPN — автоматически через cron"
 
     set -o allexport; source "$ENV_FILE"; set +o allexport
 
     COMPOSE_FILE="/opt/vpn/docker-compose.yml"
     REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    SAVED_IMAGES_DIR="/opt/vpn/docker-images"
 
     # Копируем docker-compose.yml из home/ если его нет в корне /opt/vpn/
     if [[ ! -f "$COMPOSE_FILE" ]]; then
@@ -1394,11 +1405,7 @@ else
         fi
     fi
 
-    # Копируем поддиректории из home/ которые нужны docker-compose.yml:
-    # telegram-bot/ (Dockerfile + исходники), prometheus/, grafana/,
-    # alertmanager/, nginx/
-    # Проверяем по наличию ключевого файла, а не директории —
-    # директория могла быть создана раньше (пустой или частичной).
+    # Копируем поддиректории из home/ которые нужны docker-compose.yml
     declare -A subdir_key=(
         [telegram-bot]="Dockerfile"
         [prometheus]="prometheus.yml"
@@ -1416,6 +1423,7 @@ else
             log_ok "${subdir}/ скопирован из home/"
         fi
     done
+
     if [[ ! -f "$COMPOSE_FILE" ]]; then
         log_warn "docker-compose.yml не найден в /opt/vpn/"
         log_warn "Docker-контейнеры будут запущены позже."
@@ -1423,95 +1431,93 @@ else
         cd /opt/vpn
 
         # Создаём placeholder-файлы для xray конфигов ДО docker compose up.
-        # Без этого Docker монтирует несуществующие пути как директории,
-        # что ломает шаг 47 (cat > config-reality.json: Is a directory).
+        # Без этого Docker монтирует несуществующие пути как директории.
         mkdir -p /opt/vpn/xray
         for _xray_cfg in config-reality.json config-grpc.json config-cdn.json; do
             [[ ! -e "/opt/vpn/xray/${_xray_cfg}" ]] && echo '{}' > "/opt/vpn/xray/${_xray_cfg}"
         done
 
-        # telegram-bot/data монтируется в контейнер как /app/data.
-        # Контейнер запускается от botuser (не root) — директория должна быть writable.
+        # telegram-bot/data монтируется в контейнер как /app/data (от botuser uid=999)
         mkdir -p /opt/vpn/telegram-bot/data
         chown -R 999:999 /opt/vpn/telegram-bot/data
         chmod 750 /opt/vpn/telegram-bot/data
 
-        # Перед docker-операциями временно используем публичный DNS:
-        # resolv.conf уже указывает на 127.0.0.1 (dnsmasq), но Docker BuildKit
-        # читает resolv.conf напрямую — и VPN ещё не поднят, поэтому dnsmasq
-        # возвращает SERVFAIL для docker.io. Daemon.json(8.8.8.8) помогает
-        # только контейнерам, но не самому BuildKit.
-        _restore_resolv() {
-            cp /etc/resolv.conf.docker-bak /etc/resolv.conf 2>/dev/null \
-                || echo "nameserver 127.0.0.1" > /etc/resolv.conf
-        }
-        cp /etc/resolv.conf /etc/resolv.conf.docker-bak 2>/dev/null || true
-        printf "nameserver 77.88.8.8\nnameserver 77.88.8.1\n" > /etc/resolv.conf
-        # FIX A: trap остаётся активным до явного вызова _restore_resolv в конце блока.
-        # trap - EXIT выполняется ПОСЛЕ восстановления, а не до.
-        trap '_restore_resolv' EXIT
-
-        # FIX B: br-vpn при первой установке — tun ещё не поднят.
-        # Временно разрешаем прямой выход для br-vpn, чтобы docker pull не завис.
-        # Сохраняем handle правила для точечного удаления — НЕ делаем reload nftables,
-        # т.к. flush ruleset в nftables.conf при неудачном reload оставит систему без
-        # input/forward правил и убьёт входящий SSH.
-        _nft_bypass_handle=""
-        if nft list table inet vpn &>/dev/null 2>&1; then
-            _nft_bypass_handle=$(nft -a add rule inet vpn forward iifname "br-vpn" accept 2>/dev/null \
-                | grep -oP 'handle \K[0-9]+' || true)
-        fi
-
-        # FIX B2: output chain — Docker daemon (не контейнер) тоже проходит через
-        # output hook. Если IP зеркала попал в blocked_static (Cloudflare CDN и др.
-        # из баз РКН) → fwmark 0x1 → table 200 → default dev tun → tun нет → drop.
-        # insert rule добавляет accept В НАЧАЛО цепочки — до fwmark-правил.
-        _nft_output_bypass_handle=""
-        if nft list table inet vpn &>/dev/null 2>&1; then
-            _nft_output_bypass_handle=$(nft -a insert rule inet vpn output accept 2>/dev/null \
-                | grep -oP 'handle \K[0-9]+' || true)
-        fi
-
-        # Отключаем errexit+pipefail на время docker-операций,
-        # чтобы сбой build/up не убил весь скрипт.
+        # Отключаем errexit+pipefail на время docker-операций
         set +e; set +o pipefail
 
-        # FIX C: проверка зеркала — реальный pull alpine вместо /v2/ ping.
-        # Это гарантирует что зеркало отдаёт образы, а не просто отвечает на API.
-        _test_mirror() {
-            local mirror="$1"
-            timeout 20 docker pull "${mirror}/library/alpine:latest" >/dev/null 2>&1
-            local rc=$?
-            docker rmi "${mirror}/library/alpine:latest" >/dev/null 2>&1 || true
-            return $rc
-        }
-
+        # ── ФАЗА 1а: загрузка pre-saved образов (install.sh скачал из Releases) ──
+        # Если образы есть — docker load быстрее и надёжнее чем зеркала.
+        # Если нет — fallback на зеркала (старое поведение).
         _BASE_IMG=""
-        _WORKING_MIRROR=""
-        log_info "Проверка доступности Docker-зеркал (pull alpine)..."
-        if _test_mirror "dockerhub.timeweb.cloud"; then
-            _WORKING_MIRROR="dockerhub.timeweb.cloud"
-            _BASE_IMG="dockerhub.timeweb.cloud/library/python:3.12-slim"
-            log_info "Используем зеркало timeweb для сборки telegram-bot"
-        elif _test_mirror "huecker.io"; then
-            _WORKING_MIRROR="huecker.io"
-            _BASE_IMG="huecker.io/library/python:3.12-slim"
-            log_info "Используем зеркало huecker.io для сборки telegram-bot"
-        elif timeout 20 docker pull alpine:latest >/dev/null 2>&1; then
-            docker rmi alpine:latest >/dev/null 2>&1 || true
-            _BASE_IMG="python:3.12-slim"
-            log_info "Docker Hub доступен напрямую"
-        else
-            log_warn "Docker Hub и зеркала недоступны — пропускаем build telegram-bot"
-            log_warn "После подъёма VPN: cd /opt/vpn && docker compose build telegram-bot && docker compose up -d"
-        fi
+        _img_count=$(ls "${SAVED_IMAGES_DIR}"/*.tar.gz 2>/dev/null | wc -l || echo 0)
 
-        # Обновляем daemon.json: ТОЛЬКО рабочее зеркало.
-        # Несколько зеркал в списке опасны: если второе зависает на i/o timeout —
-        # Docker блокирует pull и прерывает все параллельные загрузки.
-        if [[ -n "$_WORKING_MIRROR" ]]; then
-            log_info "Обновляем daemon.json: только ${_WORKING_MIRROR}..."
-            cat > /etc/docker/daemon.json << EOF
+        if [[ "$_img_count" -gt 0 ]]; then
+            log_info "Загрузка ${_img_count} Docker-образов из локального кэша (${SAVED_IMAGES_DIR})..."
+            for _img_tar in "${SAVED_IMAGES_DIR}"/*.tar.gz; do
+                log_info "  docker load: $(basename "$_img_tar")"
+                gunzip -c "$_img_tar" | docker load 2>&1 \
+                    || log_warn "  Не удалось загрузить $(basename "$_img_tar")"
+            done
+            log_ok "Образы загружены из кэша — зеркала не нужны"
+            _BASE_IMG="python:3.12-slim"  # уже загружен через docker load
+        else
+            # ── ФАЗА 1б: fallback — зеркала (VPN ещё не поднят) ─────────────────
+            log_info "Локальный кэш образов не найден — пробуем Docker-зеркала..."
+            log_info "Подсказка: запустите install.sh вместо setup.sh для автозагрузки образов"
+
+            # Временный DNS (BuildKit читает resolv.conf напрямую, dnsmasq ещё не работает)
+            _restore_resolv() {
+                cp /etc/resolv.conf.docker-bak /etc/resolv.conf 2>/dev/null \
+                    || echo "nameserver 127.0.0.1" > /etc/resolv.conf
+            }
+            cp /etc/resolv.conf /etc/resolv.conf.docker-bak 2>/dev/null || true
+            printf "nameserver 77.88.8.8\nnameserver 77.88.8.1\n" > /etc/resolv.conf
+            trap '_restore_resolv' EXIT
+
+            # FIX B: br-vpn forward bypass (kill switch не должен дропать контейнеры)
+            _nft_bypass_handle=""
+            if nft list table inet vpn &>/dev/null 2>&1; then
+                _nft_bypass_handle=$(nft -a add rule inet vpn forward iifname "br-vpn" accept 2>/dev/null \
+                    | grep -oP 'handle \K[0-9]+' || true)
+            fi
+
+            # FIX B2: output chain bypass (Docker daemon → зеркала через output hook)
+            _nft_output_bypass_handle=""
+            if nft list table inet vpn &>/dev/null 2>&1; then
+                _nft_output_bypass_handle=$(nft -a insert rule inet vpn output accept 2>/dev/null \
+                    | grep -oP 'handle \K[0-9]+' || true)
+            fi
+
+            # Проверка зеркала — реальный pull alpine, не /v2/ ping
+            _test_mirror() {
+                local mirror="$1"
+                timeout 20 docker pull "${mirror}/library/alpine:latest" >/dev/null 2>&1
+                local rc=$?
+                docker rmi "${mirror}/library/alpine:latest" >/dev/null 2>&1 || true
+                return $rc
+            }
+
+            _WORKING_MIRROR=""
+            if _test_mirror "dockerhub.timeweb.cloud"; then
+                _WORKING_MIRROR="dockerhub.timeweb.cloud"
+                _BASE_IMG="dockerhub.timeweb.cloud/library/python:3.12-slim"
+                log_info "Зеркало: timeweb"
+            elif _test_mirror "huecker.io"; then
+                _WORKING_MIRROR="huecker.io"
+                _BASE_IMG="huecker.io/library/python:3.12-slim"
+                log_info "Зеркало: huecker.io"
+            elif timeout 20 docker pull alpine:latest >/dev/null 2>&1; then
+                docker rmi alpine:latest >/dev/null 2>&1 || true
+                _BASE_IMG="python:3.12-slim"
+                log_info "Docker Hub доступен напрямую"
+            else
+                log_warn "Docker Hub и зеркала недоступны — build telegram-bot пропущен"
+                log_warn "Мониторинг и бот установятся автоматически после поднятия VPN (~15 мин)"
+            fi
+
+            # Обновляем daemon.json — только рабочее зеркало
+            if [[ -n "$_WORKING_MIRROR" ]]; then
+                cat > /etc/docker/daemon.json << EOF
 {
     "log-driver": "json-file",
     "log-opts": {"max-size": "10m", "max-file": "3"},
@@ -1521,69 +1527,73 @@ else
     "registry-mirrors": ["https://${_WORKING_MIRROR}"]
 }
 EOF
-            systemctl restart docker 2>/dev/null || true
-            sleep 3
+                systemctl restart docker 2>/dev/null || true
+                sleep 3
+            fi
+
+            # Pull только фазы 1 (без мониторинга — те в профиле monitoring)
+            log_info "Pull образов фазы 1 (по одному, макс. 120 сек)..."
+            _pull_failed=0
+            PHASE1_SERVICES=(nginx socket-proxy xray-client xray-client-2 xray-client-cdn)
+            for _svc in "${PHASE1_SERVICES[@]}"; do
+                log_info "  pull: $_svc ..."
+                if timeout 120 docker compose pull "$_svc" >> /tmp/docker-pull.log 2>&1; then
+                    log_ok "  $_svc OK"
+                else
+                    log_warn "  $_svc не скачался"
+                    ((_pull_failed++)) || true
+                fi
+            done
+            [[ $_pull_failed -gt 0 ]] && \
+                log_warn "${_pull_failed} образов не скачались — запустятся позже"
         fi
 
+        # ── Build telegram-bot (python:3.12-slim уже в docker load или зеркале) ──
         if [[ -n "$_BASE_IMG" ]]; then
             log_info "Сборка telegram-bot (base=$_BASE_IMG, макс. 300 сек)..."
-            # FIX C: таймаут на build — зеркало может зависнуть после успешного /v2/ ping
             timeout 300 bash -c "DOCKER_BASE_PYTHON='$_BASE_IMG' docker compose build telegram-bot" \
                 2>&1 | tee /tmp/docker-build.log
             _BUILD_EXIT=${PIPESTATUS[0]}
             if [[ $_BUILD_EXIT -ne 0 ]]; then
-                log_warn "docker compose build с зеркалом завершился с ошибкой (rc=$_BUILD_EXIT)"
-                # FIX C: fallback на python:3.12-slim без зеркала
+                log_warn "docker compose build завершился с ошибкой (rc=$_BUILD_EXIT)"
                 if [[ "$_BASE_IMG" != "python:3.12-slim" ]]; then
-                    log_info "Fallback: пробуем build без зеркала (python:3.12-slim)..."
+                    log_info "Fallback build без зеркала..."
                     timeout 300 bash -c "DOCKER_BASE_PYTHON='python:3.12-slim' docker compose build telegram-bot" \
                         2>&1 | tee /tmp/docker-build-fallback.log
                     _BUILD_EXIT=${PIPESTATUS[0]}
-                    [[ $_BUILD_EXIT -ne 0 ]] && log_warn "Fallback build тоже провалился (rc=$_BUILD_EXIT) — запустите вручную после подъёма VPN"
+                    [[ $_BUILD_EXIT -ne 0 ]] && log_warn "Fallback build провалился — запустите вручную после подъёма VPN"
                 fi
             fi
         fi
 
-        # Pull по одному сервису — отказ одного не прерывает остальные.
-        log_info "Загрузка Docker-образов (по одному, макс. 120 сек на образ)..."
-        _pull_failed=0
-        while IFS= read -r _svc; do
-            [[ "$_svc" == "telegram-bot" ]] && continue  # собирается локально
-            log_info "  pull: $_svc ..."
-            if timeout 120 docker compose pull "$_svc" >> /tmp/docker-pull.log 2>&1; then
-                log_ok "  $_svc OK"
-            else
-                log_warn "  $_svc не скачался — пропускаем"
-                ((_pull_failed++)) || true
-            fi
-        done < <(docker compose config --services 2>/dev/null)
-        [[ $_pull_failed -gt 0 ]] && \
-            log_warn "$_pull_failed сервисов не скачались — запустятся после подъёма VPN"
-
-        log_info "Запуск контейнеров..."
-        # --pull missing: скачает образы которые не успели скачаться выше, пропустит уже скачанные
-        timeout 300 docker compose up -d --no-build --pull missing --remove-orphans 2>&1 | tee /tmp/docker-up.log
+        # ── Запуск фазы 1 (без профиля monitoring) ────────────────────────────────
+        # Мониторинг-контейнеры имеют profiles: [monitoring] и не запускаются здесь.
+        # docker-phase2.sh (cron каждые 15 мин) поднимет их после старта VPN-стека.
+        log_info "Запуск контейнеров фазы 1..."
+        timeout 300 docker compose up -d --no-build --pull missing --remove-orphans \
+            2>&1 | tee /tmp/docker-up.log
         _UP_EXIT=${PIPESTATUS[0]}
         [[ $_UP_EXIT -ne 0 ]] && log_warn "docker compose up завершился с ошибкой (код $_UP_EXIT)"
 
         set -e; set -o pipefail
 
-        # FIX A: сначала восстанавливаем resolv.conf, потом снимаем trap.
-        _restore_resolv
-        trap - EXIT
-
-        # FIX B: точечно удаляем временные правила по handle — без flush ruleset.
-        if [[ -n "$_nft_bypass_handle" ]]; then
+        # Восстановление: resolv.conf и nftables bypass (только если fallback-путь)
+        if declare -f _restore_resolv &>/dev/null; then
+            _restore_resolv
+            trap - EXIT
+        fi
+        if [[ -n "${_nft_bypass_handle:-}" ]]; then
             nft delete rule inet vpn forward handle "$_nft_bypass_handle" 2>/dev/null || true
         fi
-        if [[ -n "$_nft_output_bypass_handle" ]]; then
+        if [[ -n "${_nft_output_bypass_handle:-}" ]]; then
             nft delete rule inet vpn output handle "$_nft_output_bypass_handle" 2>/dev/null || true
         fi
 
         sleep 5
         echo ""
-        log_info "Статус Docker-контейнеров:"
+        log_info "Статус Docker-контейнеров (фаза 1):"
         docker compose ps 2>/dev/null || true
+        log_info "Мониторинг: установится автоматически после поднятия VPN (~15 мин)"
     fi
 
     log_ok "Фаза 1 (домашний сервер) завершена"
@@ -1652,4 +1662,33 @@ else
     fi
 
     step_done "step33_ssh_proxy"
+fi
+
+# ── Шаг 34: Попытка фазы 2 (мониторинг) если VPN уже работает ───────────────
+# Актуально при повторном запуске install-home.sh когда VPN уже поднят.
+# При первой установке VPN ещё не настроен → docker-phase2.sh (cron) сделает это позже.
+
+if is_done "step34_docker_phase2_attempt"; then
+    step_skip "step34_docker_phase2_attempt"
+else
+    step "Попытка фазы 2: мониторинг через VPN (если VPN готов)"
+
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^prometheus$"; then
+        log_ok "Мониторинг уже работает — пропускаем"
+    elif [[ -x /opt/vpn/scripts/docker-phase2.sh ]]; then
+        log_info "Проверяем VPN-стек (:1080)..."
+        if curl -sf --max-time 10 --socks5 127.0.0.1:1080 \
+                https://registry-1.docker.io/v2/ >/dev/null 2>&1; then
+            log_info "VPN готов — запускаем фазу 2..."
+            bash /opt/vpn/scripts/docker-phase2.sh || true
+        else
+            log_info "VPN-стек ещё не готов — мониторинг установится автоматически"
+            log_info "  Cron docker-phase2.sh: каждые 15 мин (/etc/cron.d/vpn-docker-phase2)"
+        fi
+    else
+        log_warn "docker-phase2.sh не найден — мониторинг установите вручную после поднятия VPN:"
+        log_warn "  bash /opt/vpn/scripts/docker-phase2.sh"
+    fi
+
+    step_done "step34_docker_phase2_attempt"
 fi

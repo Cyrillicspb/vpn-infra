@@ -12,17 +12,25 @@ warn() { echo "  [WARN] $1"; (( WARN++ )); }
 
 echo "=== ${TEST_NAME} ==="
 
-# Обязательные контейнеры
+# Обязательные контейнеры (фаза 1 — нужны для VPN)
 REQUIRED_CONTAINERS=(
     "telegram-bot"
     "xray-client"
     "socket-proxy"
 )
 
-# Желательные контейнеры
+# Желательные контейнеры фазы 1
 OPTIONAL_CONTAINERS=(
     "xray-client-2"
     "cloudflared"
+    "nginx"
+)
+
+# Мониторинг (фаза 2) — устанавливается после поднятия VPN, отсутствие = норма
+MONITORING_CONTAINERS=(
+    "prometheus"
+    "grafana"
+    "alertmanager"
     "node-exporter"
 )
 
@@ -89,6 +97,25 @@ for CONTAINER in telegram-bot xray-client; do
             ;;
     esac
 done
+
+# 4b. Мониторинг (фаза 2) — warn если нет, не fail
+MONITORING_INSTALLED=false
+if docker inspect prometheus &>/dev/null 2>&1; then
+    MONITORING_INSTALLED=true
+fi
+
+if $MONITORING_INSTALLED; then
+    for CONTAINER in "${MONITORING_CONTAINERS[@]}"; do
+        STATE=$(docker inspect --format '{{.State.Status}}' "$CONTAINER" 2>/dev/null || echo "missing")
+        case "$STATE" in
+            running)  pass "Мониторинг $CONTAINER: running" ;;
+            missing)  warn "Мониторинг $CONTAINER: не найден" ;;
+            *)        warn "Мониторинг $CONTAINER: $STATE" ;;
+        esac
+    done
+else
+    warn "Мониторинг (фаза 2) не установлен — будет установлен автоматически после поднятия VPN"
+fi
 
 # 5. Нет контейнеров в состоянии restart loop
 RESTARTING=$(docker ps --filter "status=restarting" --format "{{.Names}}" 2>/dev/null || true)
