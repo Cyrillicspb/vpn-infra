@@ -24,6 +24,15 @@ PROXY_CONF="/etc/systemd/system/docker.service.d/http-proxy.conf"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 
+active_socks_works() {
+    local port="$1"
+    local code=""
+    code="$(curl -sS --max-time 10 --socks5 "127.0.0.1:${port}" \
+        -o /dev/null -w "%{http_code}" \
+        https://registry-1.docker.io/v2/ 2>/dev/null || true)"
+    [[ "$code" =~ ^(200|204|301|302|401)$ ]]
+}
+
 get_active_socks_port() {
     python3 - <<'PY'
 import json
@@ -62,8 +71,7 @@ fi
 
 # ── 2. VPN готов? ─────────────────────────────────────────────────────────────
 SOCKS_PORT="$(get_active_socks_port)"
-if ! curl -sf --max-time 10 --socks5 "127.0.0.1:${SOCKS_PORT}" \
-        https://registry-1.docker.io/v2/ >/dev/null 2>&1; then
+if ! active_socks_works "${SOCKS_PORT}"; then
     log "VPN-стек (:${SOCKS_PORT}) не готов — попробуем позже"
     exit 0
 fi

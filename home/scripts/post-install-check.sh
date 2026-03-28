@@ -82,13 +82,64 @@ check_warn() {
 
 send_telegram() {
     local text="$1"
+    local notify_url="${BOT_NOTIFY_URL:-http://172.20.0.11:8090/notify}"
     [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_ADMIN_CHAT_ID:-}" ]] && return 0
+
+    # Предпочитаем notify relay через telegram-bot контейнер:
+    # хостовый direct egress до Telegram может быть закрыт политикой маршрутизации,
+    # тогда сам бот всё равно остаётся рабочим.
+    if [[ -n "${WATCHDOG_API_TOKEN:-}" ]] && curl -sf --max-time 10 \
+        -H "Authorization: Bearer ${WATCHDOG_API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "$(python3 - "$text" <<'PY'
+import json, sys
+print(json.dumps({"message": sys.argv[1], "target": "admin"}))
+PY
+)" \
+        "${notify_url}" > /dev/null 2>&1; then
+        return 0
+    fi
+
     curl -sf --max-time 15 \
         "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
         -d "chat_id=${TELEGRAM_ADMIN_CHAT_ID}" \
         --data-urlencode "text=${text}" \
         -d "parse_mode=Markdown" \
         > /dev/null 2>&1
+}
+
+active_socks_works() {
+    local port="$1"
+    local code=""
+    code="$(curl -sS --max-time 10 --socks5 "127.0.0.1:${port}" \
+        -o /dev/null -w "%{http_code}" \
+        https://registry-1.docker.io/v2/ 2>/dev/null || true)"
+    [[ "$code" =~ ^(200|204|301|302|401)$ ]]
+}
+
+telegram_getme_json() {
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "telegram-bot"; then
+        docker exec -i telegram-bot python - <<'PY' 2>/dev/null || true
+import os
+import sys
+import urllib.error
+import urllib.request
+
+url = f"https://api.telegram.org/bot{os.getenv('TELEGRAM_BOT_TOKEN', '')}/getMe"
+try:
+    with urllib.request.urlopen(url, timeout=15) as resp:
+        sys.stdout.write(resp.read().decode())
+except urllib.error.HTTPError as exc:
+    if exc.fp is not None:
+        sys.stdout.write(exc.fp.read().decode())
+except Exception:
+    pass
+PY
+        return 0
+    fi
+
+    curl -sS --max-time 15 \
+        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" 2>/dev/null || true
 }
 
 # ── СТАРТ ─────────────────────────────────────────────────────────────────────
@@ -248,7 +299,7 @@ esac
 
 if [[ -n "$ACTIVE_SOCKS_PORT" ]]; then
     check "Активный SOCKS5 :${ACTIVE_SOCKS_PORT}" \
-        "curl -sf --max-time 10 --socks5 127.0.0.1:${ACTIVE_SOCKS_PORT} https://registry-1.docker.io/v2/ >/dev/null" \
+        "active_socks_works ${ACTIVE_SOCKS_PORT}" \
         "watchdog поднял стек ${ACTIVE_STACK}, но активный SOCKS5 не работает"
 fi
 
@@ -318,17 +369,6 @@ if [[ -n "$VPS_IP" && -f "$SSH_KEY" ]]; then
             fi
         done
 
-        if [[ "${USE_CLOUDFLARE:-n}" == "y" && -n "${CF_CDN_HOSTNAME:-}" ]]; then
-            if echo "$VPS_CONTAINERS" | grep -q "^cloudflared:Up"; then
-                ok "VPS docker: cloudflared"
-            else
-                log_info "VPS docker: cloudflared — optional для Workers CDN, контейнер не обязателен"
-                REPORT_LINES+=("ℹ️ VPS cloudflared: optional (Workers CDN)")
-            fi
-        else
-            log_info "VPS docker: cloudflared — не обязателен (CDN-ветка не включена)"
-            REPORT_LINES+=("ℹ️ VPS cloudflared: не требуется")
-        fi
     else
         warn "VPS docker контейнеры" "не удалось получить список"
     fi
@@ -383,14 +423,13 @@ section "12. Telegram бот"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]]; then
-    BOT_INFO=$(curl -sf --max-time 10 \
-        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" 2>/dev/null || echo "")
+    BOT_INFO="$(telegram_getme_json)"
     if echo "$BOT_INFO" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
         BOT_NAME=$(echo "$BOT_INFO" | python3 -c \
             "import sys,json; d=json.load(sys.stdin); print(d['result'].get('username','?'))" 2>/dev/null)
         ok "Telegram API (@${BOT_NAME})"
     else
-        fail "Telegram API" "токен невалиден или API недоступен"
+        fail "Telegram API" "бот не может выполнить getMe (невалидный токен или нет egress из container)"
     fi
 else
     fail "Telegram API" "TELEGRAM_BOT_TOKEN не задан"
