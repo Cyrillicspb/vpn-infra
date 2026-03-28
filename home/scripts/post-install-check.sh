@@ -88,7 +88,7 @@ send_telegram() {
         -d "chat_id=${TELEGRAM_ADMIN_CHAT_ID}" \
         --data-urlencode "text=${text}" \
         -d "parse_mode=Markdown" \
-        > /dev/null 2>&1 || true
+        > /dev/null 2>&1
 }
 
 # ── СТАРТ ─────────────────────────────────────────────────────────────────────
@@ -115,7 +115,13 @@ check "hysteria2"         "systemctl is-active hysteria2"            "journalctl
 check "vpn-sets-restore"  "systemctl is-active vpn-sets-restore || systemctl is-failed vpn-sets-restore | grep -v failed" \
                           "systemctl status vpn-sets-restore"
 check_warn "vpn-routes"   "systemctl is-active vpn-routes"           "нужен tier-2 туннель"
-check_warn "autossh-vpn"  "systemctl is-active autossh-vpn"          "нужен tier-2 туннель"
+if systemctl list-unit-files autossh-tier2.service >/dev/null 2>&1; then
+    check_warn "autossh-tier2" "systemctl is-active autossh-tier2" "нужен tier-2 туннель"
+elif systemctl list-unit-files autossh-vpn.service >/dev/null 2>&1; then
+    check_warn "autossh-vpn" "systemctl is-active autossh-vpn" "fallback SOCKS tunnel не поднят"
+else
+    warn "autossh" "юнит не найден"
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 section "2. WireGuard интерфейсы"
@@ -229,10 +235,15 @@ fi
 section "8. Мониторинг"
 # ═══════════════════════════════════════════════════════════════════════════════
 
-check "Prometheus :9090"    "curl -sf --max-time 5 http://172.20.0.30:9090/-/healthy"   "docker logs prometheus"
-check "Grafana :3000"       "curl -sf --max-time 5 http://172.20.0.32:3000/api/health"  "docker logs grafana"
-check "Alertmanager :9093"  "curl -sf --max-time 5 http://172.20.0.31:9093/-/healthy"   "docker logs alertmanager"
-check "node-exporter :9100" "curl -sf --max-time 5 http://127.0.0.1:9100/metrics"       "docker logs node-exporter"
+if $_monitoring_installed; then
+    check "Prometheus :9090"    "curl -sf --max-time 5 http://172.20.0.30:9090/-/healthy"   "docker logs prometheus"
+    check "Grafana :3000"       "curl -sf --max-time 5 http://172.20.0.32:3000/api/health"  "docker logs grafana"
+    check "Alertmanager :9093"  "curl -sf --max-time 5 http://172.20.0.31:9093/-/healthy"   "docker logs alertmanager"
+    check "node-exporter :9100" "curl -sf --max-time 5 http://127.0.0.1:9100/metrics"       "docker logs node-exporter"
+else
+    log_info "Мониторинг ещё не поднят — проверки секции 8 пропущены"
+    REPORT_LINES+=("ℹ️ Секция 8: мониторинг пропущен до завершения docker-phase2")
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 section "9. VPS подключение"
@@ -256,7 +267,7 @@ if [[ -n "$VPS_IP" && -f "$SSH_KEY" ]]; then
         "sudo docker ps --format '{{.Names}}:{{.Status}}' 2>/dev/null" 2>/dev/null || echo "")
 
     if [[ -n "$VPS_CONTAINERS" ]]; then
-        for cname in 3x-ui hysteria2 cloudflared node-exporter; do
+        for cname in 3x-ui hysteria2 node-exporter; do
             if echo "$VPS_CONTAINERS" | grep -q "^${cname}:Up"; then
                 ok "VPS docker: $cname"
             else
@@ -264,6 +275,18 @@ if [[ -n "$VPS_IP" && -f "$SSH_KEY" ]]; then
                 fail "VPS docker: $cname" "${STATUS:-не найден}"
             fi
         done
+
+        if [[ "${USE_CLOUDFLARE:-n}" == "y" && -n "${CF_CDN_HOSTNAME:-}" ]]; then
+            if echo "$VPS_CONTAINERS" | grep -q "^cloudflared:Up"; then
+                ok "VPS docker: cloudflared"
+            else
+                STATUS=$(echo "$VPS_CONTAINERS" | grep "^cloudflared:" | cut -d: -f2 || echo "не найден")
+                fail "VPS docker: cloudflared" "${STATUS:-не найден}"
+            fi
+        else
+            log_info "VPS docker: cloudflared — не обязателен (CDN-ветка не включена)"
+            REPORT_LINES+=("ℹ️ VPS cloudflared: не требуется")
+        fi
     else
         warn "VPS docker контейнеры" "не удалось получить список"
     fi
@@ -365,8 +388,11 @@ TELEGRAM_TEXT=$(printf '%s\n' "${REPORT_LINES[@]}")
 
 if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_ADMIN_CHAT_ID:-}" ]]; then
     log_info "Отправка отчёта в Telegram..."
-    send_telegram "$TELEGRAM_TEXT"
-    log_ok "Отчёт отправлен администратору"
+    if send_telegram "$TELEGRAM_TEXT"; then
+        log_ok "Отчёт отправлен администратору"
+    else
+        log_warn "Отчёт в Telegram не отправлен"
+    fi
 else
     log_warn "TELEGRAM_BOT_TOKEN или TELEGRAM_ADMIN_CHAT_ID не заданы — отчёт не отправлен"
     echo ""
