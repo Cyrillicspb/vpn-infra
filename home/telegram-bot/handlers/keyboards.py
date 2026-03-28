@@ -174,8 +174,7 @@ def admin_manage_menu() -> InlineKeyboardMarkup:
 def admin_switch_menu(active_stack: str = "") -> InlineKeyboardMarkup:
     stacks = [
         ("☁️ Cloudflare CDN", "cloudflare-cdn"),
-        ("🔒 REALITY + gRPC",  "reality-grpc"),
-        ("🔒 REALITY",         "reality"),
+        ("🔒 REALITY + XHTTP", "reality-xhttp"),
         ("⚡ Hysteria2",        "hysteria2"),
     ]
     rows = []
@@ -215,8 +214,7 @@ def admin_logs_menu() -> InlineKeyboardMarkup:
         ("watchdog",      "watchdog"),
         ("dnsmasq",       "dnsmasq"),
         ("hysteria2",     "hysteria2"),
-        ("xray-client",   "xray-client"),
-        ("xray-client-2", "xray-client-2"),
+        ("xray-client-xhttp", "xray-client-xhttp"),
         ("cloudflared",   "cloudflared"),
         ("node-exporter", "node-exporter"),
     ]

@@ -4,7 +4,7 @@ watchdog.py — Центральный агент управления VPN Infra
 
 Отвечает за:
   - Единый decision loop: адаптивный failover + ротация (взаимоисключающие)
-  - Plugin-архитектуру стеков (hysteria2 / reality / reality-grpc / cloudflare-cdn)
+  - Plugin-архитектуру стеков (hysteria2 / reality-xhttp / cloudflare-cdn)
   - HTTP API для telegram-bot (FastAPI, rate limiting, bearer token)
   - Комплексный мониторинг: ping, speedtest, WG peers, контейнеры, диск, DNS,
     mTLS сертификаты, DKMS, upload utilization, heartbeat на VPS
@@ -73,7 +73,7 @@ LOG_FILE     = "/var/log/vpn-watchdog.log"
 
 # Порядок по устойчивости (индекс 0 = самый устойчивый)
 # zapret исключён: прямой обход DPI без VPS, работает параллельно (direct_mode=true)
-STACK_ORDER = ["cloudflare-cdn", "reality-grpc", "reality", "hysteria2"]
+STACK_ORDER = ["cloudflare-cdn", "reality-xhttp", "hysteria2"]
 
 # Пороги мониторинга
 RTT_DEGRADATION_FACTOR   = 3.0   # RTT > 3× baseline → деградация
@@ -442,6 +442,18 @@ class PluginManager:
              "resilience": p.resilience}
             for p in sorted(self._plugins.values(), key=lambda p: p.resilience, reverse=True)
         ]
+
+
+async def _test_stack_runtime(plugin: Plugin, name: str, timeout: int = 10) -> tuple[bool, float]:
+    """Проверяет стек, поднимая standby-плагины временно для честного smoke-test."""
+    transient_start = name != state.active_stack
+    if transient_start and not await plugin.start():
+        return False, 0.0
+    try:
+        return await plugin.test(timeout=timeout)
+    finally:
+        if transient_start:
+            await plugin.stop()
 
 
 plugins = PluginManager()
@@ -916,7 +928,7 @@ async def check_wg_peers() -> None:
 
 # Контейнеры фазы 1 — критичны, алерт если exited/unhealthy
 CRITICAL_CONTAINERS = frozenset(
-    ["telegram-bot", "socket-proxy", "nginx", "xray-client", "xray-client-2", "xray-client-cdn"]
+    ["telegram-bot", "socket-proxy", "nginx", "xray-client-xhttp", "xray-client-cdn"]
 )
 # Контейнеры фазы 2 (мониторинг) — опциональны:
 # алерт только если контейнер СУЩЕСТВУЕТ но нездоров; отсутствие — норма
@@ -1444,7 +1456,7 @@ async def _health_quick_checks() -> list[CheckResult]:
     else:
         results.append(CheckResult("wg1_active", "warn", "wg1 не найден (нет WG клиентов?)", weight=3))
 
-    # 7. xray-client (хотя бы один)
+    # 7. xray-client* (хотя бы один)
     xray = [k for k in state.docker_health if "xray-client" in k]
     xray_ok = sum(1 for c in xray if state.docker_health.get(c) == 1)
     if xray and xray_ok > 0:
@@ -1917,7 +1929,8 @@ async def test_standby_tunnels() -> None:
         if not plugin or plugin.meta.get("direct_mode"):
             continue
 
-        ok, mbps = await plugin.test(timeout=15)
+        async with _LOCK:
+            ok, mbps = await _test_stack_runtime(plugin, name, timeout=15)
         if not ok:
             failed.append(name)
             alert(f"⚠️ Standby стек *{name}* не прошёл проверку")
@@ -2079,7 +2092,7 @@ async def _do_switch(new_stack: str, reason: str) -> bool:
     # Перезапускаем tier-2 SSH туннель — он зависит от активного стека (SOCKS5).
     # После смены стека меняется порт прокси, autossh должен переподключиться.
     asyncio.create_task(run_cmd(
-        ["systemctl", "restart", "autossh-vpn"],
+        ["systemctl", "restart", "autossh-tier2"],
         timeout=15,
     ))
 
@@ -2970,7 +2983,7 @@ async def _manual_reassessment() -> None:
             plugin = plugins.get(name)
             if not plugin or plugin.meta.get("direct_mode"):
                 continue
-            ok, mbps = await plugin.test(timeout=10)
+            ok, mbps = await _test_stack_runtime(plugin, name, timeout=10)
             results.append((name, ok, mbps))
 
     best_stack: Optional[str] = None
@@ -3610,7 +3623,7 @@ def _vps_ssh_prefix(vps: dict) -> list[str]:
         "-o", "ConnectTimeout=8",
         "-o", "BatchMode=yes",
     ]
-    # SOCKS5-прокси через xray-client-2 (обязателен для доступа к VPS снаружи)
+    # SOCKS5-прокси через xray-client-xhttp (обязателен для доступа к VPS снаружи)
     proxy = os.getenv("VPS_SSH_PROXY", "")  # socks5://127.0.0.1:1081
     if proxy:
         proxy_addr = proxy.replace("socks5://", "").replace("socks4://", "")

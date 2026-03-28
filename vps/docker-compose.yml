@@ -2,7 +2,8 @@
 # Запуск: docker compose up -d
 #
 # Архитектура:
-#   3x-ui (network_mode: host) — Xray с REALITY + gRPC + fallback → Nginx
+#   3x-ui (network_mode: host) — панель + CDN inbound → Nginx
+#   xray-reality-xhttp — standalone VLESS+REALITY+XHTTP на :2083
 #   nginx — mTLS reverse proxy на :8443 (3x-ui панель)
 #   cloudflared — CDN-стек (tunnel к Cloudflare)
 #   node-exporter — метрики VPS (scrape с домашнего Prometheus через tier2)
@@ -45,6 +46,26 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Xray reality-xhttp — standalone server-side стек на :2083 ───────────────
+  xray-reality-xhttp:
+    image: teddysun/xray:latest
+    container_name: xray-reality-xhttp
+    restart: always
+    network_mode: host
+    volumes:
+      - ./xray/reality-xhttp.json:/etc/xray/config.json:ro
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z 127.0.0.1 2083 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     logging:
       driver: json-file
       options:

@@ -252,8 +252,7 @@ def _get_socks5_proxy() -> Optional[str]:
     """
     port_map = {
         "cloudflare-cdn": 1082,
-        "reality":        1080,
-        "reality-grpc":   1081,
+        "reality-xhttp":  1081,
         "hysteria2":      1083,
     }
 

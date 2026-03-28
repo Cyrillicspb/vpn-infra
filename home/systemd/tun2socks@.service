@@ -3,15 +3,14 @@ Description=tun2socks — TUN device через SOCKS5 прокси (%i)
 Documentation=https://github.com/Cyrillicspb/vpn-infra/blob/main/docs/ARCHITECTURE.md
 # %i = имя TUN-интерфейса (например: tun0, tun1)
 # Использование:
-#   systemctl start tun2socks@tun0   → SOCKS5 :1080 (xray-client, REALITY)
-#   systemctl start tun2socks@tun1   → SOCKS5 :1081 (xray-client-2, gRPC)
+#   systemctl start tun2socks@tun1   → SOCKS5 :1081 (xray-client-xhttp)
 #   systemctl start tun2socks@tun2   → SOCKS5 :1082 (временный, make-before-break)
 #
 # Порт SOCKS5 определяется по имени:
 #   tun0 → 1080, tun1 → 1081, tun2 → 1082 (захардкожено в ExecStartPre)
-After=network-online.target vpn-routes.service xray-client.service
+After=network-online.target vpn-routes.service docker.service
 Wants=network-online.target
-BindsTo=xray-client.service
+BindsTo=docker.service
 
 [Service]
 Type=simple

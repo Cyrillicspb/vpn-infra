@@ -71,6 +71,21 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+def _dpi_status_summary(st: dict) -> tuple[str, str, str]:
+    enabled = st.get("enabled", False)
+    zapret = st.get("zapret_running", False)
+    services = st.get("services", [])
+    active_services = [svc for svc in services if svc.get("enabled")]
+
+    if enabled and zapret and active_services:
+        return "✅ ВКЛЮЧЁН", "🟢", ""
+    if enabled and not active_services:
+        return "⚠️ НЕТ СЕРВИСОВ", "🔴", "Добавь хотя бы один сервис через /dpi add"
+    if enabled and not zapret:
+        return "⚠️ НЕАКТИВЕН", "🔴", "zapret/nfqws не запущен"
+    return "❌ ВЫКЛЮЧЕН", "🔴", ""
+
+
 def _display_name(client: dict, fallback: str = "") -> str:
     """Вернуть читаемое имя клиента, отфильтровав пустые/невидимые символы."""
     import re
@@ -419,8 +434,8 @@ async def cmd_logs(message: Message, state: FSMContext, **kw):
         return
     await state.clear()
     args = message.text.split()
-    allowed = ["watchdog", "dnsmasq", "hysteria2", "telegram-bot", "xray-client",
-               "xray-client-2", "cloudflared", "node-exporter"]
+    allowed = ["watchdog", "dnsmasq", "hysteria2", "telegram-bot",
+               "xray-client-xhttp", "cloudflared", "node-exporter"]
     if len(args) < 2 or args[1] not in allowed:
         await message.answer(
             "Использование: `/logs <сервис> [N]`\n"
@@ -430,7 +445,7 @@ async def cmd_logs(message: Message, state: FSMContext, **kw):
     service = args[1]
     n = min(int(args[2]), 300) if len(args) > 2 and args[2].isdigit() else 50
 
-    docker_services = {"telegram-bot", "xray-client", "xray-client-2", "cloudflared", "node-exporter"}
+    docker_services = {"telegram-bot", "xray-client-xhttp", "cloudflared", "node-exporter"}
     try:
         if service in docker_services:
             text = await _docker_logs(service, n)
@@ -511,7 +526,7 @@ async def cmd_switch(message: Message, state: FSMContext, **kw):
         return
     await state.clear()
     args = message.text.split()
-    stacks = ["cloudflare-cdn", "reality-grpc", "reality", "hysteria2"]
+    stacks = ["cloudflare-cdn", "reality-xhttp", "hysteria2"]
     if len(args) < 2 or args[1] not in stacks:
         await message.answer(
             "Использование: `/switch <стек>`\n\n"
@@ -2593,7 +2608,7 @@ async def cb_adm_logs_menu(cb: CallbackQuery, **kw):
 async def cb_adm_log(cb: CallbackQuery, **kw):
     service = cb.data[len("adm:log:"):]
     await cb.answer(f"Загружаю логи {service}...")
-    allowed_docker = {"telegram-bot", "xray-client", "xray-client-2", "cloudflared", "node-exporter"}
+    allowed_docker = {"telegram-bot", "xray-client-xhttp", "cloudflared", "node-exporter"}
     try:
         if service in allowed_docker:
             text = await _docker_logs(service, 50)
@@ -3220,20 +3235,20 @@ async def cmd_dpi(message: Message, state: FSMContext, **kw):
         else:
             # Статус
             st = await wc.get_dpi_status()
-            enabled = st.get("enabled", False)
-            zapret = st.get("zapret_running", False)
             services = st.get("services", [])
             ip_count = st.get("dpi_direct_ip_count", 0)
             presets = st.get("presets", [])
 
-            status_icon = "✅ ВКЛЮЧЁН" if enabled else "❌ ВЫКЛЮЧЕН"
-            zapret_icon = "🟢" if zapret else "🔴"
+            status_icon, zapret_icon, hint = _dpi_status_summary(st)
 
             lines = [
                 f"⚡ *DPI bypass: {status_icon}*",
                 f"nfqws: {zapret_icon}  |  IP в dpi_direct: {ip_count}",
                 "",
             ]
+            if hint:
+                lines.append(f"_{hint}_")
+                lines.append("")
             if services:
                 lines.append("*Сервисы:*")
                 for svc in services:
@@ -3274,14 +3289,14 @@ async def _show_dpi_menu(cb: CallbackQuery):
         return
     enabled = st.get("enabled", False)
     services = st.get("services", [])
-    zapret = st.get("zapret_running", False)
     ip_count = st.get("dpi_direct_ip_count", 0)
-    status_icon = "✅ ВКЛЮЧЁН" if enabled else "❌ ВЫКЛЮЧЕН"
-    zapret_icon = "🟢" if zapret else "🔴"
+    status_icon, zapret_icon, hint = _dpi_status_summary(st)
     text = (
         f"⚡ <b>DPI bypass: {status_icon}</b>\n"
         f"nfqws: {zapret_icon}  |  IP в dpi_direct: {ip_count}"
     )
+    if hint:
+        text += f"\n<i>{hint}</i>"
     await _edit_or_answer(cb, text, admin_dpi_menu(enabled, services))
 
 

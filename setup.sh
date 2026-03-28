@@ -887,15 +887,16 @@ for a in d.get('assets',[]):
             log_ok "AWG junk-параметры H1-H4 сгенерированы"
         fi
 
-        # Xray UUID
-        [[ -z "${XRAY_UUID:-}" ]] && {
-            XRAY_UUID=$(uuidgen | tr '[:upper:]' '[:lower:]')
-            env_set "XRAY_UUID" "$XRAY_UUID"
+        # Xray UUID для active TCP-стека reality-xhttp.
+        # Legacy fallback: XRAY_GRPC_* поддерживается для уже развёрнутых .env.
+        if [[ -z "${XRAY_XHTTP_UUID:-}" && -n "${XRAY_GRPC_UUID:-}" ]]; then
+            env_set "XRAY_XHTTP_UUID" "$XRAY_GRPC_UUID"
+        fi
+        [[ -z "${XRAY_XHTTP_UUID:-}" ]] && {
+            XRAY_XHTTP_UUID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+            env_set "XRAY_XHTTP_UUID" "$XRAY_XHTTP_UUID"
         }
-        [[ -z "${XRAY_GRPC_UUID:-}" ]] && {
-            XRAY_GRPC_UUID=$(uuidgen | tr '[:upper:]' '[:lower:]')
-            env_set "XRAY_GRPC_UUID" "$XRAY_GRPC_UUID"
-        }
+        env_set "XRAY_GRPC_UUID" "${XRAY_GRPC_UUID:-${XRAY_XHTTP_UUID:-}}"
 
         # Hysteria2 секреты
         [[ -z "${HYSTERIA2_AUTH:-}" ]] && {
@@ -956,14 +957,21 @@ for a in d.get('assets',[]):
         env_set "WG_SUBNET"               "${WG_SUBNET:-10.177.3.0/24}"
         env_set "DEVICE_LIMIT_PER_CLIENT" "${DEVICE_LIMIT_PER_CLIENT:-5}"
         env_set "FSM_TIMEOUT_MINUTES"     "${FSM_TIMEOUT_MINUTES:-10}"
-        env_set "XRAY_SOCKS_PORT"         "${XRAY_SOCKS_PORT:-1080}"
-        env_set "XRAY_GRPC_SOCKS_PORT"    "${XRAY_GRPC_SOCKS_PORT:-1081}"
+        if [[ -z "${XRAY_XHTTP_SOCKS_PORT:-}" && -n "${XRAY_GRPC_SOCKS_PORT:-}" ]]; then
+            env_set "XRAY_XHTTP_SOCKS_PORT" "$XRAY_GRPC_SOCKS_PORT"
+        fi
+        env_set "XRAY_XHTTP_SOCKS_PORT"   "${XRAY_XHTTP_SOCKS_PORT:-1081}"
+        env_set "XRAY_GRPC_SOCKS_PORT"    "${XRAY_GRPC_SOCKS_PORT:-${XRAY_XHTTP_SOCKS_PORT:-1081}}"
+        if [[ -z "${XRAY_XHTTP_SHORT_ID:-}" && -n "${XRAY_GRPC_SHORT_ID:-}" ]]; then
+            env_set "XRAY_XHTTP_SHORT_ID" "$XRAY_GRPC_SHORT_ID"
+        fi
+        [[ -z "${XRAY_XHTTP_SHORT_ID:-}" ]] && env_set "XRAY_XHTTP_SHORT_ID" "$(openssl rand -hex 4)"
         env_set "BACKUP_VPS_HOST"         "${VPS_IP:-}"
         env_set "BACKUP_VPS_USER"         "sysadmin"
 
         chmod 600 "$ENV_FILE"
         log_ok "Все секреты сгенерированы и сохранены в ${ENV_FILE}"
-        # Примечание: XRAY_PUBLIC_KEY и XRAY_GRPC_PUBLIC_KEY генерируются
+        # Примечание: XRAY_XHTTP_PUBLIC_KEY генерируется
         # в шаге 19 (install-home.sh) с помощью Docker/xray x25519
         step_done "step07_generate_secrets"
     fi
@@ -1267,53 +1275,9 @@ UNITEOF
     if is_done "step46b_sync_xray_keys"; then
         step_skip "step46b_sync_xray_keys"
     else
-        step "Синхронизация ключей Xray REALITY и Hysteria2 из VPS в .env"
-        log_info "xray-setup.sh генерирует shortIds случайно — читаем из VPS 3x-ui DB"
-        log_info "Деривируем publicKey из privateKey через xray x25519"
-
-        # Пишем Python-скрипт в temp файл (без проблем с экранированием)
-        TMPSCRIPT=$(mktemp /tmp/xray_keys_XXXXXX.py)
-        cat > "$TMPSCRIPT" << 'PYEOF'
-import sqlite3, json
-db = "/opt/vpn/3x-ui/db/x-ui.db"
-try:
-    conn = sqlite3.connect(db)
-    rows = conn.execute("SELECT port,stream_settings FROM inbounds WHERE protocol='vless'").fetchall()
-    for port, stream_settings in rows:
-        try:
-            r = json.loads(stream_settings).get("realitySettings",{})
-            ids = r.get("shortIds",[""])
-            print("{}:{}".format(port, ids[0] if ids else ""))
-        except:
-            pass
-except Exception as e:
-    print("ERROR:{}".format(e))
-PYEOF
-
-        vps_copy "$TMPSCRIPT" "sysadmin@${VPS_IP}:/tmp/xray_keys.py"
-        KEY_DATA=$(vps_exec "sudo python3 /tmp/xray_keys.py; rm -f /tmp/xray_keys.py" 2>/dev/null || echo "")
-        rm -f "$TMPSCRIPT"
-
-        if echo "$KEY_DATA" | grep -q "^ERROR:"; then
-            log_warn "Ошибка чтения VPS DB: $(echo "$KEY_DATA" | grep "^ERROR:")"
-        fi
-
-        REALITY_SHORT_ID=$(echo "$KEY_DATA" | grep "^2087:" | cut -d: -f2)
-        GRPC_SHORT_ID=$(echo "$KEY_DATA" | grep "^2083:" | cut -d: -f2)
-
-        if [[ -n "$REALITY_SHORT_ID" ]]; then
-            env_set "XRAY_SHORT_ID" "$REALITY_SHORT_ID"
-            log_ok "XRAY_SHORT_ID=$REALITY_SHORT_ID (из VPS DB порт 2087)"
-        else
-            log_warn "shortId для порта 2087 не найден — используем пустой"
-        fi
-
-        if [[ -n "$GRPC_SHORT_ID" ]]; then
-            env_set "XRAY_GRPC_SHORT_ID" "$GRPC_SHORT_ID"
-            log_ok "XRAY_GRPC_SHORT_ID=$GRPC_SHORT_ID (из VPS DB порт 2083)"
-        else
-            log_warn "shortId для порта 2083 не найден — используем пустой"
-        fi
+        step "Синхронизация ключей reality-xhttp и Hysteria2 из VPS в .env"
+        log_info "reality-xhttp больше не зависит от 3x-ui DB: shortId хранится в .env"
+        log_info "Деривируем publicKey из privateKey через Python cryptography"
 
         # Деривируем publicKey из privateKey через xray x25519 в Docker-контейнере
         [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
@@ -1335,38 +1299,28 @@ print(base64.urlsafe_b64encode(pub).decode().rstrip("="))
 PYEOF
         }
 
-        if [[ -n "${XRAY_PRIVATE_KEY:-}" ]]; then
-            NEW_PUB=$(derive_x25519_pub "${XRAY_PRIVATE_KEY}")
-            if [[ -n "$NEW_PUB" ]]; then
-                env_set "XRAY_PUBLIC_KEY" "$NEW_PUB"
-                log_ok "XRAY_PUBLIC_KEY обновлён из XRAY_PRIVATE_KEY"
+        if [[ -z "${XRAY_XHTTP_PRIVATE_KEY:-}" && -n "${XRAY_GRPC_PRIVATE_KEY:-}" ]]; then
+            env_set "XRAY_XHTTP_PRIVATE_KEY" "$XRAY_GRPC_PRIVATE_KEY"
+        fi
+        if [[ -n "${XRAY_XHTTP_PRIVATE_KEY:-}" ]]; then
+            NEW_XHTTP_PUB=$(derive_x25519_pub "${XRAY_XHTTP_PRIVATE_KEY}")
+            if [[ -n "$NEW_XHTTP_PUB" ]]; then
+                env_set "XRAY_XHTTP_PUBLIC_KEY" "$NEW_XHTTP_PUB"
+                env_set "XRAY_GRPC_PUBLIC_KEY" "${XRAY_GRPC_PUBLIC_KEY:-$NEW_XHTTP_PUB}"
+                log_ok "XRAY_XHTTP_PUBLIC_KEY обновлён из XRAY_XHTTP_PRIVATE_KEY"
             else
-                log_warn "Не удалось дериватизировать XRAY_PUBLIC_KEY — проверьте XRAY_PRIVATE_KEY в .env"
+                log_warn "Не удалось дериватизировать XRAY_XHTTP_PUBLIC_KEY — проверьте XRAY_XHTTP_PRIVATE_KEY в .env"
             fi
         else
-            log_warn "XRAY_PRIVATE_KEY не задан — пропускаем деривацию XRAY_PUBLIC_KEY"
+            log_warn "XRAY_XHTTP_PRIVATE_KEY не задан — пропускаем деривацию XRAY_XHTTP_PUBLIC_KEY"
         fi
 
-        if [[ -n "${XRAY_GRPC_PRIVATE_KEY:-}" ]]; then
-            NEW_GRPC_PUB=$(derive_x25519_pub "${XRAY_GRPC_PRIVATE_KEY}")
-            if [[ -n "$NEW_GRPC_PUB" ]]; then
-                env_set "XRAY_GRPC_PUBLIC_KEY" "$NEW_GRPC_PUB"
-                log_ok "XRAY_GRPC_PUBLIC_KEY обновлён из XRAY_GRPC_PRIVATE_KEY"
-            else
-                log_warn "Не удалось дериватизировать XRAY_GRPC_PUBLIC_KEY — проверьте XRAY_GRPC_PRIVATE_KEY в .env"
-            fi
-        else
-            log_warn "XRAY_GRPC_PRIVATE_KEY не задан — пропускаем деривацию XRAY_GRPC_PUBLIC_KEY"
-        fi
-
-        # Hysteria2 использует self-signed cert на VPS + pinSHA256 на клиенте.
+        # Hysteria2 pinSHA256 — fingerprint leaf certificate.
         # При перевыпуске server.crt pin в /opt/vpn/.env обязан обновиться, иначе
         # клиент падает с "no certificate matches the pinned hash".
-        H2_CERT_HASH=$(vps_exec "openssl x509 -in /opt/vpn/hysteria2/server.crt \
-            -pubkey -noout 2>/dev/null \
-            | openssl pkey -pubin -outform DER 2>/dev/null \
-            | openssl dgst -sha256 -binary 2>/dev/null \
-            | base64" 2>/dev/null || echo "")
+        H2_CERT_HASH=$(vps_exec "openssl x509 -noout -fingerprint -sha256 \
+            -in /opt/vpn/hysteria2/server.crt 2>/dev/null \
+            | cut -d= -f2" 2>/dev/null || echo "")
         if [[ -n "$H2_CERT_HASH" ]]; then
             env_set "HYSTERIA2_CERT_HASH" "$H2_CERT_HASH"
             log_ok "HYSTERIA2_CERT_HASH синхронизирован из VPS cert"
@@ -1384,73 +1338,30 @@ PYEOF
         step_skip "step47_xray_client_configs"
     else
         step "Генерация конфигов Xray-клиента (VLESS+XHTTP+REALITY)"
-        log_info "config-reality.json → SOCKS :1080 → VPS:2087 (XHTTP, microsoft.com)"
-        log_info "config-grpc.json    → SOCKS :1081 → VPS:2083 (XHTTP, cdn.jsdelivr.net)"
+        log_info "config-xhttp.json   → SOCKS :1081 → VPS:2083 (XHTTP, cdn.jsdelivr.net)"
         log_info "tun2socks создаёт tun-устройство, маршрутизируя трафик fwmark 0x1 в SOCKS."
 
-        XRAY_PUB="${XRAY_PUBLIC_KEY:-}"
-        XRAY_GRPC_PUB="${XRAY_GRPC_PUBLIC_KEY:-}"
-        XRAY_SID="${XRAY_SHORT_ID:-}"
-        XRAY_GRPC_SID="${XRAY_GRPC_SHORT_ID:-}"
+        if [[ -z "${XRAY_XHTTP_UUID:-}" && -n "${XRAY_GRPC_UUID:-}" ]]; then
+            env_set "XRAY_XHTTP_UUID" "$XRAY_GRPC_UUID"
+        fi
+        if [[ -z "${XRAY_XHTTP_PUBLIC_KEY:-}" && -n "${XRAY_GRPC_PUBLIC_KEY:-}" ]]; then
+            env_set "XRAY_XHTTP_PUBLIC_KEY" "$XRAY_GRPC_PUBLIC_KEY"
+        fi
+        XRAY_XHTTP_PUB="${XRAY_XHTTP_PUBLIC_KEY:-}"
+        XRAY_XHTTP_SID="${XRAY_XHTTP_SHORT_ID:-${XRAY_GRPC_SHORT_ID:-}}"
 
-        if [[ -z "$XRAY_PUB" ]]; then
-            log_warn "XRAY_PUBLIC_KEY не найден — пропускаем генерацию Xray-конфигов."
+        if [[ -z "$XRAY_XHTTP_PUB" ]]; then
+            log_warn "XRAY_XHTTP_PUBLIC_KEY не найден — пропускаем генерацию Xray-конфигов."
             log_warn "Шаг 18 (install-home.sh) должен сгенерировать ключи через Docker."
         else
             mkdir -p /opt/vpn/xray
 
-            # Конфиг VLESS+XHTTP+REALITY (stack 3: microsoft.com, порт 2087)
-            # XHTTP (splithttp) — Xray 26.x, без flow vision (несовместим с splithttp)
-            # password в splithttpSettings — обязателен для Xray 26.x (иначе "empty password" error)
-            cat > /opt/vpn/xray/config-reality.json << EOF
+            cat > /opt/vpn/xray/config-xhttp.json << EOF
 {
     "log": {"loglevel": "warning"},
     "inbounds": [{
         "listen": "127.0.0.1",
-        "port": ${XRAY_SOCKS_PORT:-1080},
-        "protocol": "socks",
-        "settings": {"udp": true}
-    }],
-    "outbounds": [{
-        "protocol": "vless",
-        "settings": {
-            "vnext": [{
-                "address": "${VPS_IP}",
-                "port": 2087,
-                "users": [{
-                    "id": "${XRAY_UUID}",
-                    "encryption": "none",
-                    "flow": ""
-                }]
-            }]
-        },
-        "streamSettings": {
-            "network": "splithttp",
-            "security": "reality",
-            "realitySettings": {
-                "fingerprint": "chrome",
-                "serverName": "microsoft.com",
-                "publicKey": "${XRAY_PUB}",
-                "shortId": "${XRAY_SID}"
-            },
-            "splithttpSettings": {
-                "path": "/",
-                "host": "microsoft.com",
-                "password": "${XHTTP_MS_PASSWORD:-}"
-            }
-        }
-    }]
-}
-EOF
-
-            # Конфиг VLESS+XHTTP+REALITY (stack 2: cdn.jsdelivr.net, порт 2083)
-            # SNI cdn.jsdelivr.net — более устойчив к блокировкам чем microsoft.com
-            cat > /opt/vpn/xray/config-grpc.json << EOF
-{
-    "log": {"loglevel": "warning"},
-    "inbounds": [{
-        "listen": "127.0.0.1",
-        "port": ${XRAY_GRPC_SOCKS_PORT:-1081},
+        "port": ${XRAY_XHTTP_SOCKS_PORT:-1081},
         "protocol": "socks",
         "settings": {"udp": true}
     }],
@@ -1461,7 +1372,7 @@ EOF
                 "address": "${VPS_IP}",
                 "port": 2083,
                 "users": [{
-                    "id": "${XRAY_GRPC_UUID}",
+                    "id": "${XRAY_XHTTP_UUID:-${XRAY_GRPC_UUID:-}}",
                     "encryption": "none",
                     "flow": ""
                 }]
@@ -1473,8 +1384,8 @@ EOF
             "realitySettings": {
                 "fingerprint": "chrome",
                 "serverName": "cdn.jsdelivr.net",
-                "publicKey": "${XRAY_GRPC_PUB}",
-                "shortId": "${XRAY_GRPC_SID}"
+                "publicKey": "${XRAY_XHTTP_PUB}",
+                "shortId": "${XRAY_XHTTP_SID}"
             },
             "splithttpSettings": {
                 "path": "/",
@@ -1485,7 +1396,8 @@ EOF
     }]
 }
 EOF
-            log_ok "Конфиги Xray-клиента созданы (XHTTP/splithttp)"
+            rm -f /opt/vpn/xray/config-reality.json /opt/vpn/xray/config-grpc.json
+            log_ok "Конфиг reality-xhttp создан (XHTTP/splithttp)"
 
             # CDN-стек: config-cdn.json (если настроен CF Worker)
             if [[ -n "${CF_CDN_HOSTNAME:-}" ]]; then
@@ -1538,7 +1450,7 @@ CDNEOF
             # Перезапуск основных Xray-контейнеров если Docker запущен
             if command -v docker &>/dev/null && docker ps &>/dev/null 2>&1; then
                 docker compose -f /opt/vpn/docker-compose.yml \
-                    restart xray-client xray-client-2 2>/dev/null || true
+                    restart xray-client-xhttp 2>/dev/null || true
             fi
         fi
 
@@ -1632,7 +1544,7 @@ EOF
             log_info "Запуск Docker-контейнеров..."
             docker compose -f /opt/vpn/docker-compose.yml up -d 2>&1 || true
             sleep 5
-            for ct in telegram-bot xray-client xray-client-2; do
+            for ct in telegram-bot xray-client-xhttp; do
                 STATUS=$(docker inspect --format='{{.State.Status}}' "$ct" 2>/dev/null || echo "not_found")
                 if [[ "$STATUS" == "running" ]]; then
                     log_ok "  ${ct}: запущен"

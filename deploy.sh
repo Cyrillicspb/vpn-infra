@@ -67,6 +67,15 @@ ${changelog}"
         > /dev/null 2>&1 || true
 }
 
+persist_env_default() {
+    local key="$1"
+    local value="${2:-}"
+    [[ -n "$value" ]] || return 0
+    grep -q "^${key}=" "$ENV_FILE" 2>/dev/null && return 0
+    printf "%s=%s\n" "$key" "$value" >> "$ENV_FILE"
+    export "${key}=${value}"
+}
+
 # ── Загрузка .env ─────────────────────────────────────────────────────────────
 load_env() {
     [[ -f "$ENV_FILE" ]] || { log_warn ".env не найден ($ENV_FILE)"; return; }
@@ -74,6 +83,18 @@ load_env() {
     # shellcheck disable=SC1090
     source "$ENV_FILE"
     set +o allexport
+
+    persist_env_default "XRAY_XHTTP_UUID"        "${XRAY_XHTTP_UUID:-${XRAY_GRPC_UUID:-}}"
+    persist_env_default "XRAY_XHTTP_PRIVATE_KEY" "${XRAY_XHTTP_PRIVATE_KEY:-${XRAY_GRPC_PRIVATE_KEY:-}}"
+    persist_env_default "XRAY_XHTTP_PUBLIC_KEY"  "${XRAY_XHTTP_PUBLIC_KEY:-${XRAY_GRPC_PUBLIC_KEY:-}}"
+    persist_env_default "XRAY_XHTTP_SHORT_ID"    "${XRAY_XHTTP_SHORT_ID:-${XRAY_GRPC_SHORT_ID:-}}"
+    persist_env_default "XRAY_XHTTP_SOCKS_PORT"  "${XRAY_XHTTP_SOCKS_PORT:-${XRAY_GRPC_SOCKS_PORT:-1081}}"
+
+    export XRAY_XHTTP_UUID="${XRAY_XHTTP_UUID:-${XRAY_GRPC_UUID:-}}"
+    export XRAY_XHTTP_PRIVATE_KEY="${XRAY_XHTTP_PRIVATE_KEY:-${XRAY_GRPC_PRIVATE_KEY:-}}"
+    export XRAY_XHTTP_PUBLIC_KEY="${XRAY_XHTTP_PUBLIC_KEY:-${XRAY_GRPC_PUBLIC_KEY:-}}"
+    export XRAY_XHTTP_SHORT_ID="${XRAY_XHTTP_SHORT_ID:-${XRAY_GRPC_SHORT_ID:-}}"
+    export XRAY_XHTTP_SOCKS_PORT="${XRAY_XHTTP_SOCKS_PORT:-${XRAY_GRPC_SOCKS_PORT:-1081}}"
 }
 
 # ── SSH к VPS ─────────────────────────────────────────────────────────────────
@@ -564,7 +585,7 @@ deploy_vps() {
     local retry=0 max_retry=2
     while (( retry <= max_retry )); do
         # Всегда pull новых образов (теги могут измениться в compose)
-        local cmd="cd /opt/vpn && docker compose pull --quiet 2>/dev/null || true"
+        local cmd="cd /opt/vpn && bash /opt/vpn/scripts/render-reality-xhttp-config.sh && docker compose pull --quiet 2>/dev/null || true"
 
         # Принудительный рестарт nginx если его конфиги изменились
         if vps_nginx_changed || [[ "$force" == "--force" ]]; then
@@ -737,6 +758,7 @@ do_deploy() {
     rsync -a "$REPO_DIR/home/watchdog/watchdog.py" "$REPO_DIR/watchdog/watchdog.py" 2>/dev/null || true
     rsync -a "$REPO_DIR/home/watchdog/plugins/" "$REPO_DIR/watchdog/plugins/" 2>/dev/null || true
     rsync -a "$REPO_DIR/home/scripts/" "$REPO_DIR/scripts/" 2>/dev/null && chmod +x "$REPO_DIR/scripts/"*.sh 2>/dev/null || true
+    rm -rf "$REPO_DIR/watchdog/plugins/reality" "$REPO_DIR/watchdog/plugins/reality-grpc" 2>/dev/null || true
 
     # Xray конфиги: шаблоны из home/xray/ → подставить .env → xray/
     # ВАЖНО: home/xray/*.json — шаблоны с ${VAR}, нельзя rsync напрямую
@@ -755,6 +777,7 @@ do_deploy() {
         fi
         echo "$result" > "$REPO_DIR/xray/$name"
     done
+    rm -f "$REPO_DIR/xray/config-reality.json" "$REPO_DIR/xray/config-grpc.json" 2>/dev/null || true
     log_ok "Xray конфиги обновлены (envsubst)"
 
     # CDN конфиг: регенерировать из .env если CF_CDN_HOSTNAME задан
@@ -792,7 +815,7 @@ json.dump(cfg, open('$REPO_DIR/xray/config-cdn.json', 'w'), indent=4)
     fi
     if $rebuild_xray; then
         log_info "xray конфиги обновлены — перезапуск xray контейнеров..."
-        (cd "$REPO_DIR" && docker compose up -d --force-recreate xray-client xray-client-2 xray-client-cdn 2>/dev/null || true)
+        (cd "$REPO_DIR" && docker compose up -d --force-recreate xray-client-xhttp xray-client-cdn 2>/dev/null || true)
         log_ok "xray контейнеры перезапущены"
     fi
 

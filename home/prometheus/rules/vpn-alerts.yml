@@ -8,7 +8,7 @@
 #   vpn_tunnel_download_mbps    скорость скачивания (Мбит/с)
 #   vpn_tunnel_upload_mbps      скорость отдачи (Мбит/с)
 #   vpn_tunnel_upload_util_pct  утилизация upload-канала (%)
-#   vpn_active_stack            текущий стек {stack="reality|grpc|cdn|hysteria2"}
+#   vpn_active_stack            текущий стек {stack="reality-xhttp|cloudflare-cdn|hysteria2"}
 #   vpn_stacks_all_down         1 если все 4 стека упали
 #   vpn_peer_last_handshake{interface,peer}  секунды с последнего handshake
 #   vpn_peer_count{interface}   кол-во активных пиров

@@ -475,7 +475,7 @@ if is_done "step19_generate_reality_keys"; then
 else
     step "Генерация REALITY x25519 ключей (через Docker/xray)"
     log_info "x25519 keypair нужен для VLESS+XHTTP+REALITY — имитация TLS к легитимному домену."
-    log_info "Генерируем два keypair: для microsoft.com (стек 3) и cdn.jsdelivr.net (стек 2)."
+    log_info "Генерируем keypair для стека reality-xhttp (cdn.jsdelivr.net)."
 
     # Загружаем актуальные переменные
     set -o allexport; source "$ENV_FILE"; set +o allexport
@@ -490,34 +490,20 @@ else
         log_info "Загрузка образа ${XRAY_IMAGE}..."
         docker pull "${XRAY_IMAGE}" --quiet 2>/dev/null || true
 
-        # Генерация ключей REALITY (stack 3: VLESS+REALITY, microsoft.com)
-        if [[ -z "${XRAY_PUBLIC_KEY:-}" ]]; then
-            XRAY_KEYS=$(docker run --rm "${XRAY_IMAGE}" xray x25519 2>/dev/null) \
-                || die "Не удалось запустить xray x25519 в Docker"
-            XRAY_PRIVATE_KEY=$(echo "$XRAY_KEYS" | grep "Private key:" | awk '{print $NF}')
-            XRAY_PUBLIC_KEY=$(echo "$XRAY_KEYS" | grep "Public key:" | awk '{print $NF}')
-            [[ -n "$XRAY_PRIVATE_KEY" ]] || die "Не удалось извлечь Private key из xray x25519 (неожиданный формат вывода)"
-            [[ -n "$XRAY_PUBLIC_KEY" ]]  || die "Не удалось извлечь Public key из xray x25519 (неожиданный формат вывода)"
-            env_set "XRAY_PRIVATE_KEY" "$XRAY_PRIVATE_KEY"
-            env_set "XRAY_PUBLIC_KEY"  "$XRAY_PUBLIC_KEY"
-            log_ok "Ключи REALITY (microsoft.com) сгенерированы"
-        else
-            log_info "XRAY_PUBLIC_KEY уже существует"
-        fi
-
-        # Генерация ключей REALITY gRPC (stack 2: VLESS+REALITY+gRPC, cdn.jsdelivr.net)
-        if [[ -z "${XRAY_GRPC_PUBLIC_KEY:-}" ]]; then
+        if [[ -z "${XRAY_XHTTP_PUBLIC_KEY:-}" ]]; then
             XRAY_GRPC_KEYS=$(docker run --rm "${XRAY_IMAGE}" xray x25519 2>/dev/null) \
-                || die "Не удалось запустить xray x25519 (gRPC) в Docker"
-            XRAY_GRPC_PRIVATE_KEY=$(echo "$XRAY_GRPC_KEYS" | grep "Private key:" | awk '{print $NF}')
-            XRAY_GRPC_PUBLIC_KEY=$(echo "$XRAY_GRPC_KEYS" | grep "Public key:" | awk '{print $NF}')
-            [[ -n "$XRAY_GRPC_PRIVATE_KEY" ]] || die "Не удалось извлечь Private key из xray x25519 gRPC (неожиданный формат вывода)"
-            [[ -n "$XRAY_GRPC_PUBLIC_KEY" ]]  || die "Не удалось извлечь Public key из xray x25519 gRPC (неожиданный формат вывода)"
-            env_set "XRAY_GRPC_PRIVATE_KEY" "$XRAY_GRPC_PRIVATE_KEY"
-            env_set "XRAY_GRPC_PUBLIC_KEY"  "$XRAY_GRPC_PUBLIC_KEY"
-            log_ok "Ключи REALITY gRPC (cdn.jsdelivr.net) сгенерированы"
+                || die "Не удалось запустить xray x25519 (XHTTP) в Docker"
+            XRAY_XHTTP_PRIVATE_KEY=$(echo "$XRAY_GRPC_KEYS" | grep "Private key:" | awk '{print $NF}')
+            XRAY_XHTTP_PUBLIC_KEY=$(echo "$XRAY_GRPC_KEYS" | grep "Public key:" | awk '{print $NF}')
+            [[ -n "$XRAY_XHTTP_PRIVATE_KEY" ]] || die "Не удалось извлечь Private key из xray x25519 XHTTP (неожиданный формат вывода)"
+            [[ -n "$XRAY_XHTTP_PUBLIC_KEY" ]]  || die "Не удалось извлечь Public key из xray x25519 XHTTP (неожиданный формат вывода)"
+            env_set "XRAY_XHTTP_PRIVATE_KEY" "$XRAY_XHTTP_PRIVATE_KEY"
+            env_set "XRAY_XHTTP_PUBLIC_KEY"  "$XRAY_XHTTP_PUBLIC_KEY"
+            env_set "XRAY_GRPC_PRIVATE_KEY"  "$XRAY_XHTTP_PRIVATE_KEY"
+            env_set "XRAY_GRPC_PUBLIC_KEY"   "$XRAY_XHTTP_PUBLIC_KEY"
+            log_ok "Ключи REALITY XHTTP (cdn.jsdelivr.net) сгенерированы"
         else
-            log_info "XRAY_GRPC_PUBLIC_KEY уже существует"
+            log_info "XRAY_XHTTP_PUBLIC_KEY уже существует"
         fi
 
         chmod 600 "$ENV_FILE"
@@ -1388,7 +1374,7 @@ if is_done "step31_docker_compose_home"; then
     step_skip "step31_docker_compose_home"
 else
     step "Запуск Docker Compose — фаза 1 (VPN-контейнеры)"
-    log_info "Фаза 1: telegram-bot, xray-client*, socket-proxy, nginx"
+    log_info "Фаза 1: telegram-bot, xray-client-xhttp, xray-client-cdn, socket-proxy, nginx"
     log_info "Фаза 2 (мониторинг): после поднятия VPN — автоматически через cron"
 
     set -o allexport; source "$ENV_FILE"; set +o allexport
@@ -1434,7 +1420,7 @@ else
         # Создаём placeholder-файлы для xray конфигов ДО docker compose up.
         # Без этого Docker монтирует несуществующие пути как директории.
         mkdir -p /opt/vpn/xray
-        for _xray_cfg in config-reality.json config-grpc.json config-cdn.json; do
+        for _xray_cfg in config-xhttp.json config-cdn.json; do
             [[ ! -e "/opt/vpn/xray/${_xray_cfg}" ]] && echo '{}' > "/opt/vpn/xray/${_xray_cfg}"
         done
 
@@ -1535,7 +1521,7 @@ EOF
             # Pull только фазы 1 (без мониторинга — те в профиле monitoring)
             log_info "Pull образов фазы 1 (по одному, макс. 120 сек)..."
             _pull_failed=0
-            PHASE1_SERVICES=(nginx socket-proxy xray-client xray-client-2 xray-client-cdn)
+            PHASE1_SERVICES=(nginx socket-proxy xray-client-xhttp xray-client-cdn)
             for _svc in "${PHASE1_SERVICES[@]}"; do
                 log_info "  pull: $_svc ..."
                 if timeout 120 docker compose pull "$_svc" >> /tmp/docker-pull.log 2>&1; then
@@ -1583,7 +1569,7 @@ EOF
                 2>&1 | tee /tmp/docker-up.log
         else
             timeout 300 docker compose up -d --no-build --pull missing --remove-orphans \
-                socket-proxy xray-client xray-client-2 xray-client-cdn nginx \
+                socket-proxy xray-client-xhttp xray-client-cdn nginx \
                 2>&1 | tee /tmp/docker-up.log
         fi
         _UP_EXIT=${PIPESTATUS[0]}

@@ -5,8 +5,8 @@ tunnel: ${CF_TUNNEL_ID}
 credentials-file: /etc/cloudflared/credentials.json
 
 ingress:
-  # Трафик через CDN → xray-client на локальный SOCKS5
-  - service: socks5://127.0.0.1:1080
+  # Трафик через CDN → xray-client-cdn на локальный SOCKS5
+  - service: socks5://127.0.0.1:1082
 
 # Метрики (только локально)
 metrics: 127.0.0.1:20241

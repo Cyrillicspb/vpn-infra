@@ -178,7 +178,7 @@ docker_running() { docker inspect --format '{{.State.Running}}' "$1" 2>/dev/null
 docker_exists()  { docker inspect "$1" &>/dev/null 2>&1; }
 
 # Фаза 1 — критичные (FAIL если не running)
-for cname in telegram-bot socket-proxy xray-client xray-client-2 xray-client-cdn nginx; do
+for cname in telegram-bot socket-proxy xray-client-xhttp xray-client-cdn nginx; do
     if docker_running "$cname"; then
         ok "docker: $cname"
     else
@@ -211,8 +211,7 @@ fi
 section "6. Xray клиенты (SOCKS5)"
 # ═══════════════════════════════════════════════════════════════════════════════
 
-check "xray-client  SOCKS5 :1080"  "nc -z 127.0.0.1 1080"  "docker logs xray-client"
-check "xray-client-2 SOCKS5 :1081" "nc -z 127.0.0.1 1081"  "docker logs xray-client-2"
+check "xray-client-xhttp SOCKS5 :1081" "nc -z 127.0.0.1 1081"  "docker logs xray-client-xhttp"
 check "xray-client-cdn SOCKS5 :1082" "nc -z 127.0.0.1 1082" "docker logs xray-client-cdn"
 
 # ═══════════════════════════════════════════════════════════════════════════════

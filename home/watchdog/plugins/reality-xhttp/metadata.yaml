@@ -1,4 +1,4 @@
-name: reality-grpc
+name: reality-xhttp
 display_name: "VLESS+REALITY+XHTTP (cdn.jsdelivr.net)"
 resilience: 2
 protocol: vless
@@ -8,8 +8,8 @@ flow: ""
 fingerprint: chrome
 dest: cdn.jsdelivr.net
 socks_port: 1081
-tun_name: tun-grpc
+tun_name: tun-xhttp
 requires:
-  - xray-client-2
+  - xray-client-xhttp
   - tcp-2083-open
 description: "XHTTP (splithttp) маскировка под cdn.jsdelivr.net. Порт 2083. Работает."

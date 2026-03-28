@@ -139,7 +139,23 @@ chain postrouting:
 - /status: кол-во LAN-клиентов из conntrack
 - nft set router_external_ips обновлять при смене IP
 
-### 8. Что НЕ меняется
+### 8. Gateway-only меню
+- `LAN Clients`
+  Список IP, hostname, MAC, last seen, активные conntrack-сессии, какой стек сейчас обслуживает трафик.
+- `Gateway Status`
+  `SERVER_MODE`, `LAN_IFACE`, `LAN_SUBNET`, `HOME_SERVER_IP`, `ROUTER_EXTERNAL_IP`, активный стек, dnsmasq на LAN, hairpin NAT, kill switch.
+- `DHCP/DNS Check`
+  Какие клиенты реально используют `192.168.1.201` как DNS и какие ещё ходят мимо.
+- `LAN Routes`
+  Счётчики по `blocked_static`, `blocked_dynamic`, `dpi_direct`, текущие `ip rule` и `table 100/200`.
+- `Top LAN Talkers`
+  Какие IP сейчас больше всего гонят трафик через gateway.
+- `Router Reachability`
+  Проверка `router_external_ips`, hairpin NAT для `51820/51821`, доступности AWG/WG из LAN.
+- `Bypass/Exclude`
+  Быстро исключить конкретный LAN IP из gateway-режима.
+
+### 9. Что НЕ меняется
 Плагины стеков, failover, конфиг-билдер, бот, базы РКН, AllowedIPs. Конфиги клиентов: endpoint = ROUTER_EXTERNAL_IP, HAIRPIN решает.
 
 -----

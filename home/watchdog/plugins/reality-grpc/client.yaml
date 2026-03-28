@@ -1,7 +1,0 @@
-# VLESS+REALITY+gRPC client config
-# Управляется через xray-client-2 Docker контейнер
-
-stack: reality-grpc
-socks_port: 1081
-tun_interface: tun-reality-grpc
-container: xray-client-2

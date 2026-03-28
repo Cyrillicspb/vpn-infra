@@ -1,0 +1,27 @@
+# VLESS+REALITY+XHTTP server config — standalone Xray на VPS
+
+inbound:
+  protocol: vless
+  port: 443
+  settings:
+    clients:
+      - id: "${XRAY_XHTTP_UUID}"
+        flow: ""    # ВАЖНО: flow пустой, vision несовместим с XHTTP
+    decryption: none
+
+  streamSettings:
+    network: splithttp
+    security: reality
+    splithttpSettings:
+      path: "/"
+      password: "${XHTTP_CDN_PASSWORD}"
+      maxConcurrentUploads: 2
+    realitySettings:
+      show: false
+      dest: "cdn.jsdelivr.net:443"
+      xver: 0
+      serverNames:
+        - cdn.jsdelivr.net
+      privateKey: "${XRAY_XHTTP_PRIVATE_KEY}"
+      shortIds:
+        - "${XRAY_XHTTP_SHORT_ID}"

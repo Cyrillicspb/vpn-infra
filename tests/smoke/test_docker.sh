@@ -15,13 +15,12 @@ echo "=== ${TEST_NAME} ==="
 # Обязательные контейнеры (фаза 1 — нужны для VPN)
 REQUIRED_CONTAINERS=(
     "telegram-bot"
-    "xray-client"
+    "xray-client-xhttp"
     "socket-proxy"
 )
 
 # Желательные контейнеры фазы 1
 OPTIONAL_CONTAINERS=(
-    "xray-client-2"
     "cloudflared"
     "nginx"
 )
@@ -76,7 +75,7 @@ for CONTAINER in "${OPTIONAL_CONTAINERS[@]}"; do
 done
 
 # 4. Проверка healthcheck для контейнеров с HEALTHCHECK
-for CONTAINER in telegram-bot xray-client; do
+for CONTAINER in telegram-bot xray-client-xhttp; do
     HEALTH=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' \
         "$CONTAINER" 2>/dev/null || echo "missing")
     case "$HEALTH" in

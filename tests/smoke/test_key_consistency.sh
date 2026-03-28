@@ -6,6 +6,11 @@ set -uo pipefail
 ENV_FILE="/opt/vpn/.env"
 source "$ENV_FILE" 2>/dev/null || { echo "  [FAIL] $ENV_FILE не найден"; exit 1; }
 
+[[ -z "${XRAY_XHTTP_UUID:-}"        && -n "${XRAY_GRPC_UUID:-}" ]]        && XRAY_XHTTP_UUID="$XRAY_GRPC_UUID"
+[[ -z "${XRAY_XHTTP_PRIVATE_KEY:-}" && -n "${XRAY_GRPC_PRIVATE_KEY:-}" ]] && XRAY_XHTTP_PRIVATE_KEY="$XRAY_GRPC_PRIVATE_KEY"
+[[ -z "${XRAY_XHTTP_PUBLIC_KEY:-}"  && -n "${XRAY_GRPC_PUBLIC_KEY:-}" ]]  && XRAY_XHTTP_PUBLIC_KEY="$XRAY_GRPC_PUBLIC_KEY"
+[[ -z "${XRAY_XHTTP_SHORT_ID:-}"    && -n "${XRAY_GRPC_SHORT_ID:-}" ]]    && XRAY_XHTTP_SHORT_ID="$XRAY_GRPC_SHORT_ID"
+
 # Guard: XRAY_INBOUNDS может не быть определён в .env
 if [[ -n "${XRAY_INBOUNDS[*]+x}" ]]; then
     while IFS= read -r line; do
@@ -95,40 +100,25 @@ if [[ -f "$WG0_CONF" ]]; then
     done
 fi
 
-# ── 4. XRAY REALITY: публичный ключ в конфиге клиента ──────────────────────────────
-XRAY_CONF="/opt/vpn/xray/config-reality.json"
-if [[ -f "$XRAY_CONF" ]]; then
-    env_pub="${XRAY_PUBLIC_KEY:-}"
+# ── 4. XRAY XHTTP: публичный ключ в конфиге клиента ────────────────────────────────
+XRAY_XHTTP_CONF="/opt/vpn/xray/config-xhttp.json"
+if [[ -f "$XRAY_XHTTP_CONF" ]]; then
+    env_pub="${XRAY_XHTTP_PUBLIC_KEY:-${XRAY_GRPC_PUBLIC_KEY:-}}"
     if [[ -z "$env_pub" ]]; then
-        warn "XRAY_PUBLIC_KEY не задан в .env"
-    elif grep -q "$env_pub" "$XRAY_CONF" 2>/dev/null; then
-        pass "xray reality: XRAY_PUBLIC_KEY совпадает с конфигом"
+        warn "XRAY_XHTTP_PUBLIC_KEY не задан в .env"
+    elif grep -q "$env_pub" "$XRAY_XHTTP_CONF" 2>/dev/null; then
+        pass "xray xhttp: XRAY_XHTTP_PUBLIC_KEY совпадает с конфигом"
     else
-        fail "xray reality: XRAY_PUBLIC_KEY из .env не найден в $XRAY_CONF"
+        fail "xray xhttp: XRAY_XHTTP_PUBLIC_KEY из .env не найден в $XRAY_XHTTP_CONF"
     fi
-    env_uuid="${XRAY_UUID:-}"
-    if [[ -n "$env_uuid" ]] && ! grep -q "$env_uuid" "$XRAY_CONF" 2>/dev/null; then
-        fail "xray reality: XRAY_UUID из .env не найден в $XRAY_CONF"
+    env_uuid="${XRAY_XHTTP_UUID:-${XRAY_GRPC_UUID:-}}"
+    if [[ -n "$env_uuid" ]] && ! grep -q "$env_uuid" "$XRAY_XHTTP_CONF" 2>/dev/null; then
+        fail "xray xhttp: XRAY_XHTTP_UUID из .env не найден в $XRAY_XHTTP_CONF"
     elif [[ -n "$env_uuid" ]]; then
-        pass "xray reality: XRAY_UUID совпадает с конфигом"
+        pass "xray xhttp: XRAY_XHTTP_UUID совпадает с конфигом"
     fi
 else
-    warn "$XRAY_CONF не найден (Xray не установлен?)"
-fi
-
-# ── 5. XRAY gRPC: публичный ключ в конфиге клиента ─────────────────────────────────
-XRAY_GRPC_CONF="/opt/vpn/xray/config-grpc.json"
-if [[ -f "$XRAY_GRPC_CONF" ]]; then
-    env_pub="${XRAY_GRPC_PUBLIC_KEY:-}"
-    if [[ -z "$env_pub" ]]; then
-        warn "XRAY_GRPC_PUBLIC_KEY не задан в .env"
-    elif grep -q "$env_pub" "$XRAY_GRPC_CONF" 2>/dev/null; then
-        pass "xray grpc: XRAY_GRPC_PUBLIC_KEY совпадает с конфигом"
-    else
-        fail "xray grpc: XRAY_GRPC_PUBLIC_KEY из .env не найден в $XRAY_GRPC_CONF"
-    fi
-else
-    warn "$XRAY_GRPC_CONF не найден (Xray gRPC не установлен?)"
+    warn "$XRAY_XHTTP_CONF не найден (Xray XHTTP не установлен?)"
 fi
 
 # ── 6. Hysteria2: auth в клиентском конфиге ─────────────────────────────────────────
@@ -167,8 +157,7 @@ REQUIRED_VARS=(
     AWG_SERVER_PRIVATE_KEY AWG_SERVER_PUBLIC_KEY
     WG_SERVER_PRIVATE_KEY WG_SERVER_PUBLIC_KEY
     AWG_H1 AWG_H2 AWG_H3 AWG_H4
-    XRAY_UUID XRAY_PRIVATE_KEY XRAY_PUBLIC_KEY
-    XRAY_GRPC_UUID XRAY_GRPC_PRIVATE_KEY XRAY_GRPC_PUBLIC_KEY
+    XRAY_XHTTP_UUID XRAY_XHTTP_PRIVATE_KEY XRAY_XHTTP_PUBLIC_KEY XRAY_XHTTP_SHORT_ID
     HYSTERIA2_AUTH HYSTERIA2_OBFS_PASSWORD
     WATCHDOG_API_TOKEN BACKUP_GPG_PASSPHRASE
 )

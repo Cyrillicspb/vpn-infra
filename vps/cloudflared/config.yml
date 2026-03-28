@@ -13,7 +13,7 @@
 # Xray WS inbound настраивается в 3x-ui:
 #   Protocol: VLESS, Network: ws, Security: none
 #   Listen: 127.0.0.1, Port: 8080, Path: /vpn
-#   UUID: $XRAY_UUID (тот же что для REALITY)
+#   UUID: $CF_CDN_UUID
 #
 # Для --token режима ingress-правила в Dashboard:
 #   Hostname: <your-domain.com>   →   http://localhost:8080

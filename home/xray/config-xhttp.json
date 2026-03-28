@@ -11,7 +11,7 @@
         "auth": "noauth",
         "udp": true
       },
-      "tag": "socks-grpc-in"
+      "tag": "socks-xhttp-in"
     }
   ],
   "outbounds": [
@@ -24,7 +24,7 @@
             "port": 2083,
             "users": [
               {
-                "id": "${XRAY_GRPC_UUID}",
+                "id": "${XRAY_XHTTP_UUID}",
                 "encryption": "none",
                 "flow": ""
               }
@@ -38,8 +38,8 @@
         "realitySettings": {
           "serverName": "cdn.jsdelivr.net",
           "fingerprint": "chrome",
-          "publicKey": "${XRAY_GRPC_PUBLIC_KEY}",
-          "shortId": "${XRAY_GRPC_SHORT_ID}"
+          "publicKey": "${XRAY_XHTTP_PUBLIC_KEY}",
+          "shortId": "${XRAY_XHTTP_SHORT_ID}"
         },
         "splithttpSettings": {
           "path": "/",
@@ -51,7 +51,7 @@
           "xPaddingBytes": "100-1000"
         }
       },
-      "tag": "vless-xhttp-cdn-out"
+      "tag": "vless-reality-xhttp-out"
     },
     {
       "protocol": "freedom",

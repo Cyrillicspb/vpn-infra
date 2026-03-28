@@ -72,7 +72,7 @@ route_exists() {
 
 # Явные маршруты VPS через eth0 — предотвращают routing loop.
 # hysteria2 добавляет host route VPS_IP dev tun-hysteria2 в main table,
-# из-за чего xray-client (reality, grpc, cdn) уходит через tun → loop.
+# из-за чего xray-клиенты (reality-xhttp, cdn) уходят через tun → loop.
 # Маршрут с metric 1 ниже чем hysteria2 добавляет, поэтому побеждает.
 ensure_vps_routes() {
     for vps_ip in ${VPS_IP:-} ${VPS_IP2:-} ${VPS_IP3:-}; do

@@ -269,7 +269,7 @@ table inet filter {
         tcp dport 8080 ct state new limit rate 100/second burst 200 packets accept
 
         # Xray REALITY inbounds (прямое подключение, XTLS-Vision + gRPC)
-        tcp dport { 2083, 2087 } ct state new limit rate 200/second burst 500 packets accept
+        tcp dport { 2083 } ct state new limit rate 200/second burst 500 packets accept
 
         # Rate limiting TCP 443 (защита Xray/Nginx от flood)
         tcp dport 443 ct state new limit rate 200/second burst 500 packets accept
@@ -286,6 +286,9 @@ table inet filter {
         # DNS от Tier-2 туннеля (dnsmasq на VPS слушает на tun0 10.177.2.2)
         iifname "tun0" udp dport 53 accept
         iifname "tun0" tcp dport 53 accept
+
+        # iperf3 baseline для watchdog /assess — только через Tier-2 туннель
+        iifname "tun0" tcp dport 5201 accept
 
         # Node-exporter — только через tier-2 туннель (10.177.2.0/30)
         ip saddr 10.177.2.0/30 tcp dport 9100 accept
@@ -368,7 +371,7 @@ else
     vps_exec "sudo mkdir -p /opt/vpn && sudo chown sysadmin:sysadmin /opt/vpn && \
         mkdir -p /opt/vpn/scripts /opt/vpn/nginx/mtls /opt/vpn/nginx/ssl \
                  /opt/vpn/nginx/conf.d /opt/vpn/cloudflared /opt/vpn/3x-ui/db \
-                 /opt/vpn/hysteria2 /opt/vpn/backups /opt/vpn/vpn-repo.git"
+                 /opt/vpn/hysteria2 /opt/vpn/xray /opt/vpn/backups /opt/vpn/vpn-repo.git"
 
     # Копируем директорию vps/ из репозитория
     VPS_DIR="${REPO_DIR}/vps"
@@ -406,13 +409,14 @@ TELEGRAM_ADMIN_CHAT_ID='${TELEGRAM_ADMIN_CHAT_ID:-}'
 
 CF_CDN_HOSTNAME='${CF_CDN_HOSTNAME:-}'
 CF_CDN_UUID='${CF_CDN_UUID:-}'
-XRAY_UUID='${XRAY_UUID:-}'
-XRAY_GRPC_UUID='${XRAY_GRPC_UUID:-}'
-XRAY_PRIVATE_KEY='${XRAY_PRIVATE_KEY:-}'
-XRAY_GRPC_PRIVATE_KEY='${XRAY_GRPC_PRIVATE_KEY:-}'
-XRAY_PUBLIC_KEY='${XRAY_PUBLIC_KEY:-}'
-XRAY_GRPC_PUBLIC_KEY='${XRAY_GRPC_PUBLIC_KEY:-}'
-XHTTP_MS_PASSWORD='${XHTTP_MS_PASSWORD:-}'
+XRAY_XHTTP_UUID='${XRAY_XHTTP_UUID:-${XRAY_GRPC_UUID:-}}'
+XRAY_XHTTP_PRIVATE_KEY='${XRAY_XHTTP_PRIVATE_KEY:-${XRAY_GRPC_PRIVATE_KEY:-}}'
+XRAY_XHTTP_PUBLIC_KEY='${XRAY_XHTTP_PUBLIC_KEY:-${XRAY_GRPC_PUBLIC_KEY:-}}'
+XRAY_XHTTP_SHORT_ID='${XRAY_XHTTP_SHORT_ID:-${XRAY_GRPC_SHORT_ID:-}}'
+XRAY_GRPC_UUID='${XRAY_GRPC_UUID:-${XRAY_XHTTP_UUID:-}}'
+XRAY_GRPC_PRIVATE_KEY='${XRAY_GRPC_PRIVATE_KEY:-${XRAY_XHTTP_PRIVATE_KEY:-}}'
+XRAY_GRPC_PUBLIC_KEY='${XRAY_GRPC_PUBLIC_KEY:-${XRAY_XHTTP_PUBLIC_KEY:-}}'
+XRAY_GRPC_SHORT_ID='${XRAY_GRPC_SHORT_ID:-${XRAY_XHTTP_SHORT_ID:-}}'
 XHTTP_CDN_PASSWORD='${XHTTP_CDN_PASSWORD:-}'
 HYSTERIA2_AUTH='${HYSTERIA2_AUTH:-}'
 HYSTERIA2_OBFS_PASSWORD='${HYSTERIA2_OBFS_PASSWORD:-}'
@@ -503,12 +507,10 @@ else
             echo 'hysteria2 cert already exists — skipping generation'; \
         fi"
 
-    # Извлекаем SHA256-хеш публичного ключа cert — используется как pinSHA256 на клиенте
-    HYSTERIA2_CERT_HASH=$(vps_exec "openssl x509 -in /opt/vpn/hysteria2/server.crt \
-        -pubkey -noout 2>/dev/null \
-        | openssl pkey -pubin -outform DER 2>/dev/null \
-        | openssl dgst -sha256 -binary 2>/dev/null \
-        | base64") || true
+    # Hysteria2 pinSHA256 ожидает fingerprint leaf certificate, а не hash public key.
+    HYSTERIA2_CERT_HASH=$(vps_exec "openssl x509 -noout -fingerprint -sha256 \
+        -in /opt/vpn/hysteria2/server.crt 2>/dev/null \
+        | cut -d= -f2") || true
     [[ -n "${HYSTERIA2_CERT_HASH:-}" ]] && env_set HYSTERIA2_CERT_HASH "$HYSTERIA2_CERT_HASH"
 
     # Генерируем server.yaml с реальными значениями из .env
@@ -567,7 +569,7 @@ if is_done "step42_vps_docker_compose"; then
     step_skip "step42_vps_docker_compose"
 else
     step "Запуск Docker Compose на VPS"
-    log_info "Запускаем: 3x-ui (Xray inbounds), nginx (mTLS :8443),"
+    log_info "Запускаем: 3x-ui (панель), xray-reality-xhttp (:2083), nginx (mTLS :8443),"
     log_info "           cloudflared, prometheus, alertmanager, grafana, node-exporter, hysteria2"
 
     # Если SSH при socat bootstrap был добавлен на порт 443 — убираем его СЕЙЧАС,
@@ -596,6 +598,9 @@ else
         log_warn "docker-compose.yml не найден на VPS в /opt/vpn/"
         log_warn "Скопируйте файл VPS конфигурации и повторите шаг."
     else
+        log_info "Рендер standalone конфига reality-xhttp..."
+        vps_exec "bash /opt/vpn/scripts/render-reality-xhttp-config.sh"
+
         log_info "Загрузка Docker-образов на VPS..."
         vps_exec_long "cd /opt/vpn && sudo docker compose pull 2>&1 || true"
 
@@ -655,8 +660,7 @@ if is_done "step43_vps_3xui_inbounds"; then
 else
     step "Настройка VLESS-XHTTP инбаундов в 3x-ui"
     log_info "Создаём 3 inbound в 3x-ui через API:"
-    log_info "  VLESS-XHTTP-microsoft  :2087  (стек reality,      SNI: microsoft.com)"
-    log_info "  VLESS-XHTTP-jsdelivr   :2083  (стек reality-grpc, SNI: cdn.jsdelivr.net)"
+    log_info "  reality-xhttp          :2083  (standalone Xray,  SNI: cdn.jsdelivr.net)"
     log_info "  VLESS-WS-cdn           :8080  (стек cdn, для Cloudflare Worker)"
 
     SETUP_SCRIPT="${REPO_DIR}/vps/scripts/xray-setup.sh"
@@ -666,7 +670,8 @@ else
     else
         vps_copy "$SETUP_SCRIPT" "sysadmin@${VPS_IP}:/tmp/xray-setup.sh"
         vps_exec "chmod +x /tmp/xray-setup.sh && bash /tmp/xray-setup.sh && rm -f /tmp/xray-setup.sh"
-        log_ok "Инбаунды 3x-ui настроены"
+        vps_exec "bash /opt/vpn/scripts/render-reality-xhttp-config.sh"
+        log_ok "Конфиги VPS Xray настроены"
         # После обновления инбаундов — синхронизировать ключи и пересоздать конфиги
         step_reset "step46b_sync_xray_keys"
         step_reset "step47_xray_client_configs"
@@ -751,9 +756,9 @@ fi
 log_info "═══ Фаза 2 (VPS) завершена ═══"
 echo ""
 echo -e "${YELLOW}ВАЖНО — SSH к VPS после настройки:${NC}"
-echo "  Прямой SSH к VPS (порт 22) доступен ТОЛЬКО через SOCKS5-прокси xray-client-2."
+echo "  Прямой SSH к VPS (порт 22) доступен ТОЛЬКО через SOCKS5-прокси xray-client-xhttp."
 echo "  После запуска VPN-стеков используйте команду с домашнего сервера:"
 echo "    ssh -i /root/.ssh/vpn_id_ed25519 \\"
 echo "        -o ProxyCommand=\"nc -X 5 -x 127.0.0.1:1081 %h %p\" \\"
 echo "        sysadmin@${VPS_IP:-<VPS_IP>}"
-echo "  (xray-client-2 должен быть запущен: docker ps | grep xray-client-2)"
+echo "  (xray-client-xhttp должен быть запущен: docker ps | grep xray-client-xhttp)"

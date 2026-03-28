@@ -111,39 +111,13 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # ── Xray-client (REALITY / REALITY+gRPC) — standby, SOCKS5 :1080 ───────────
-  # Управляется watchdog-ом (выбор стека), всегда запущен
-  xray-client:
+  # ── Xray-client-xhttp (REALITY + XHTTP, dest cdn.jsdelivr.net) — SOCKS5 :1081
+  xray-client-xhttp:
     image: teddysun/xray:latest
-    container_name: xray-client
+    container_name: xray-client-xhttp
     restart: always
     volumes:
-      - ./xray/config-reality.json:/etc/xray/config.json:ro
-    network_mode: host
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: '1.0'
-    healthcheck:
-      test: ["CMD", "sh", "-c", "nc -z localhost 1080 || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ── Xray-client-2 (gRPC REALITY, dest cdn.jsdelivr.net) — standby, SOCKS5 :1081
-  xray-client-2:
-    image: teddysun/xray:latest
-    container_name: xray-client-2
-    restart: always
-    volumes:
-      - ./xray/config-grpc.json:/etc/xray/config.json:ro
+      - ./xray/config-xhttp.json:/etc/xray/config.json:ro
     network_mode: host
     deploy:
       resources:

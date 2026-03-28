@@ -1,0 +1,7 @@
+# VLESS+REALITY+XHTTP client config
+# Управляется через xray-client-xhttp Docker контейнер
+
+stack: reality-xhttp
+socks_port: 1081
+tun_interface: tun-xhttp
+container: xray-client-xhttp
