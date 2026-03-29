@@ -91,18 +91,18 @@ install_bundled_package_group() {
     find "$dir" -maxdepth 1 -type f -name '*.deb' -exec cp -f {} "${_tmp_apt}/archives/" \;
 
     env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
-        dpkg -i "${_tmp_apt}"/archives/*.deb >/dev/null 2>&1 || true
+        dpkg -i "${_tmp_apt}"/archives/*.deb || true
 
     if [[ -n "$COMPACT_OUTPUT" ]]; then
         env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
             apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 \
             -o Dir::Cache::archives="${_tmp_apt}/archives" \
-            install --no-download --no-install-recommends -y "${_bundle_pkgs[@]}"
+            -f install --no-download --no-install-recommends -y
     else
         env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
             apt-get \
             -o Dir::Cache::archives="${_tmp_apt}/archives" \
-            install --no-download --no-install-recommends -y "${_bundle_pkgs[@]}"
+            -f install --no-download --no-install-recommends -y
     fi
 
     rm -rf "${_tmp_apt}"

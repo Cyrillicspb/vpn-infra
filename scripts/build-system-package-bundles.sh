@@ -164,12 +164,11 @@ set -euo pipefail
 tmp_apt=\$(mktemp -d /tmp/vpn-bundle-apt.XXXXXX)
 mkdir -p \"\$tmp_apt/archives/partial\"
 cp -f /repo/${group_dir}/*.deb \"\$tmp_apt/archives/\"
-mapfile -t bundle_pkgs < '/repo/${group_dir}/group-packages.txt'
-dpkg -i \"\$tmp_apt\"/archives/*.deb >/dev/null 2>&1 || true
+dpkg -i \"\$tmp_apt\"/archives/*.deb || true
 env DEBIAN_FRONTEND=noninteractive \
   apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 \
   -o Dir::Cache::archives=\"\$tmp_apt/archives\" \
-  install -y --no-download --no-install-recommends \"\${bundle_pkgs[@]}\"
+  -f install -y --no-download --no-install-recommends
 rm -rf \"\$tmp_apt\"
 "
 }

@@ -226,11 +226,10 @@ vps_install_bundled_package_group() {
 tmp_apt=\$(mktemp -d /tmp/vpn-bundle-apt.XXXXXX)
 mkdir -p \"\$tmp_apt/archives/partial\"
 cp -f /tmp/vpn-system-packages/${group}/*.deb \"\$tmp_apt/archives/\"
-mapfile -t bundle_pkgs < /tmp/vpn-system-packages/${group}/group-packages.txt
-dpkg -i \"\$tmp_apt\"/archives/*.deb >/dev/null 2>&1 || true
+dpkg -i \"\$tmp_apt\"/archives/*.deb || true
 apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 \
         -o Dir::Cache::archives=\"\$tmp_apt/archives\" \
-        install --no-download --no-install-recommends -y -qq \"\${bundle_pkgs[@]}\"
+        -f install --no-download --no-install-recommends -y -qq
 rm -rf \"\$tmp_apt\"
 '"
 }
