@@ -38,19 +38,30 @@ jobs:
       - name: Build installer GUI wheel bundle
         run: |
           set -euo pipefail
+          WHEEL_BUNDLE_SCHEMA=2
+          WHEEL_BUNDLE_BUILDER_DIGEST="$(
+            {
+              printf '%s\n' "$WHEEL_BUNDLE_SCHEMA"
+              sed -n '/Build installer GUI wheel bundle/,/Build Docker image bundles/p' .github/workflows/release.yml
+              cat installers/gui/requirements.txt
+            } | sha256sum | awk '{print $1}'
+          )"
           cat > /tmp/installer-gui-wheel-packages.txt <<'EOF'
           virtualenv
           pip
           EOF
           digest="$(
             {
+              printf '%s\n' "$WHEEL_BUNDLE_SCHEMA"
+              printf '%s\n' "$WHEEL_BUNDLE_BUILDER_DIGEST"
               cat installers/gui/requirements.txt
               cat /tmp/installer-gui-wheel-packages.txt
             } | sha256sum | awk '{print $1}'
           )"
           {
-            echo "schema=1"
+            echo "schema=${WHEEL_BUNDLE_SCHEMA}"
             echo "generated_at=$(date -u +%FT%TZ)"
+            echo "builder_digest=${WHEEL_BUNDLE_BUILDER_DIGEST}"
             echo "pkgset|installer-gui-wheels.tar.gz|${digest}"
           } > installer-gui-wheels-manifest.txt
           mkdir -p /tmp/installer-gui-wheels

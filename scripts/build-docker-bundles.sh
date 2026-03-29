@@ -7,6 +7,12 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=scripts/docker-image-groups.sh
 source "${SCRIPT_DIR}/docker-image-groups.sh"
 
+DOCKER_BUNDLE_SCHEMA=2
+DOCKER_BUNDLE_BUILDER_DIGEST="$(
+    cat "${SCRIPT_DIR}/build-docker-bundles.sh" "${SCRIPT_DIR}/docker-image-groups.sh" \
+        | sha256sum | awk '{print $1}'
+)"
+
 cd "$REPO_DIR"
 
 MANIFEST_OUT="${MANIFEST_OUT:-docker-bundles-manifest.txt}"
@@ -56,8 +62,9 @@ fi
 
 tmp_manifest="$(mktemp)"
 {
-    echo "schema=1"
+    echo "schema=${DOCKER_BUNDLE_SCHEMA}"
     echo "generated_at=$(date -u +%FT%TZ)"
+    echo "builder_digest=${DOCKER_BUNDLE_BUILDER_DIGEST}"
 } > "$tmp_manifest"
 
 while IFS= read -r group; do
@@ -69,6 +76,7 @@ while IFS= read -r group; do
         image_id="$(docker image inspect --format '{{.Id}}' "$img")"
         group_lines+=("image|${group}|${img}|${repo_digest}|${image_id}|${archive_name}")
     done < <(docker_image_group_names "$group")
+    group_lines+=("builder|${group}|${DOCKER_BUNDLE_SCHEMA}|${DOCKER_BUNDLE_BUILDER_DIGEST}")
 
     printf '%s\n' "${group_lines[@]}" >> "$tmp_manifest"
     group_digest="$(printf '%s\n' "${group_lines[@]}" | sha256sum | awk '{print $1}')"

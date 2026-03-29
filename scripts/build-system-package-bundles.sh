@@ -7,6 +7,12 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=scripts/system-package-groups.sh
 source "${SCRIPT_DIR}/system-package-groups.sh"
 
+SYSTEM_PACKAGE_BUNDLE_SCHEMA=2
+SYSTEM_PACKAGE_BUNDLE_BUILDER_DIGEST="$(
+    cat "${SCRIPT_DIR}/build-system-package-bundles.sh" "${SCRIPT_DIR}/system-package-groups.sh" \
+        | sha256sum | awk '{print $1}'
+)"
+
 OUTPUT_DIR="${OUTPUT_DIR:-.}"
 WORK_DIR="${WORK_DIR:-system-packages-build}"
 MANIFEST_OUT="${MANIFEST_OUT:-system-packages-manifest.txt}"
@@ -49,8 +55,9 @@ fi
 
 tmp_manifest="$(mktemp)"
 {
-    echo "schema=1"
+    echo "schema=${SYSTEM_PACKAGE_BUNDLE_SCHEMA}"
     echo "generated_at=$(date -u +%FT%TZ)"
+    echo "builder_digest=${SYSTEM_PACKAGE_BUNDLE_BUILDER_DIGEST}"
 } > "$tmp_manifest"
 
 for group in "${TARGET_GROUPS[@]}"; do
@@ -64,6 +71,7 @@ for group in "${TARGET_GROUPS[@]}"; do
         [[ -n "$pkg" ]] || continue
         group_lines+=("pkg|${group}|${repo_kind}|${pkg}")
     done
+    group_lines+=("builder|${group}|${SYSTEM_PACKAGE_BUNDLE_SCHEMA}|${SYSTEM_PACKAGE_BUNDLE_BUILDER_DIGEST}")
     printf '%s\n' "${group_lines[@]}" >> "$tmp_manifest"
     group_digest="$(printf '%s\n' "${group_lines[@]}" | sha256sum | awk '{print $1}')"
     echo "group|${group}|${asset}|${group_digest}" >> "$tmp_manifest"
