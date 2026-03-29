@@ -1405,7 +1405,7 @@ if is_done "step31_docker_compose_home"; then
     step_skip "step31_docker_compose_home"
 else
     step "Запуск Docker Compose — фаза 1 (VPN-контейнеры)"
-    log_info "Фаза 1: telegram-bot, xray-client-xhttp, xray-client-cdn, socket-proxy, nginx"
+    log_info "Фаза 1: telegram-bot, xray-client-xhttp, xray-client-vision, xray-client-cdn, socket-proxy, nginx"
     log_info "Фаза 2 (мониторинг): после поднятия VPN — автоматически через cron"
 
     set -o allexport; source "$ENV_FILE"; set +o allexport
@@ -1451,7 +1451,7 @@ else
         # Создаём placeholder-файлы для xray конфигов ДО docker compose up.
         # Без этого Docker монтирует несуществующие пути как директории.
         mkdir -p /opt/vpn/xray
-        for _xray_cfg in config-xhttp.json config-cdn.json; do
+        for _xray_cfg in config-xhttp.json config-vision.json config-cdn.json; do
             [[ ! -e "/opt/vpn/xray/${_xray_cfg}" ]] && echo '{}' > "/opt/vpn/xray/${_xray_cfg}"
         done
 
@@ -1553,7 +1553,7 @@ EOF
             # Pull только фазы 1 (без мониторинга — те в профиле monitoring)
             log_info "Pull образов фазы 1 (по одному, макс. 120 сек)..."
             _pull_failed=0
-            PHASE1_SERVICES=(nginx socket-proxy xray-client-xhttp xray-client-cdn)
+            PHASE1_SERVICES=(nginx socket-proxy xray-client-xhttp xray-client-vision xray-client-cdn)
             for _svc in "${PHASE1_SERVICES[@]}"; do
                 log_info "  pull: $_svc ..."
                 if timeout 120 docker compose pull "$_svc" >> /tmp/docker-pull.log 2>&1; then
@@ -1601,7 +1601,7 @@ EOF
                 2>&1 | tee /tmp/docker-up.log
         else
             timeout 300 docker compose up -d --no-build --pull missing --remove-orphans \
-                socket-proxy xray-client-xhttp xray-client-cdn nginx \
+                socket-proxy xray-client-xhttp xray-client-vision xray-client-cdn nginx \
                 2>&1 | tee /tmp/docker-up.log
         fi
         _UP_EXIT=${PIPESTATUS[0]}

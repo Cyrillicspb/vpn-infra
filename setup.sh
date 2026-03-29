@@ -887,7 +887,7 @@ for a in d.get('assets',[]):
             log_ok "AWG junk-параметры H1-H4 сгенерированы"
         fi
 
-        # Xray UUID для active TCP-стека reality-xhttp.
+        # Xray UUID для TCP стеков REALITY.
         # Legacy fallback: XRAY_GRPC_* поддерживается для уже развёрнутых .env.
         if [[ -z "${XRAY_XHTTP_UUID:-}" && -n "${XRAY_GRPC_UUID:-}" ]]; then
             env_set "XRAY_XHTTP_UUID" "$XRAY_GRPC_UUID"
@@ -897,6 +897,7 @@ for a in d.get('assets',[]):
             env_set "XRAY_XHTTP_UUID" "$XRAY_XHTTP_UUID"
         }
         env_set "XRAY_GRPC_UUID" "${XRAY_GRPC_UUID:-${XRAY_XHTTP_UUID:-}}"
+        env_set "XRAY_VISION_UUID" "${XRAY_VISION_UUID:-${XRAY_XHTTP_UUID:-}}"
 
         # Hysteria2 секреты
         [[ -z "${HYSTERIA2_AUTH:-}" ]] && {
@@ -962,10 +963,12 @@ for a in d.get('assets',[]):
         fi
         env_set "XRAY_XHTTP_SOCKS_PORT"   "${XRAY_XHTTP_SOCKS_PORT:-1081}"
         env_set "XRAY_GRPC_SOCKS_PORT"    "${XRAY_GRPC_SOCKS_PORT:-${XRAY_XHTTP_SOCKS_PORT:-1081}}"
+        env_set "XRAY_VISION_SOCKS_PORT"  "${XRAY_VISION_SOCKS_PORT:-1084}"
         if [[ -z "${XRAY_XHTTP_SHORT_ID:-}" && -n "${XRAY_GRPC_SHORT_ID:-}" ]]; then
             env_set "XRAY_XHTTP_SHORT_ID" "$XRAY_GRPC_SHORT_ID"
         fi
         [[ -z "${XRAY_XHTTP_SHORT_ID:-}" ]] && env_set "XRAY_XHTTP_SHORT_ID" "$(openssl rand -hex 4)"
+        env_set "XRAY_VISION_SHORT_ID" "${XRAY_VISION_SHORT_ID:-${XRAY_XHTTP_SHORT_ID:-}}"
         env_set "BACKUP_VPS_HOST"         "${VPS_IP:-}"
         env_set "BACKUP_VPS_USER"         "sysadmin"
 
@@ -1307,6 +1310,8 @@ PYEOF
             if [[ -n "$NEW_XHTTP_PUB" ]]; then
                 env_set "XRAY_XHTTP_PUBLIC_KEY" "$NEW_XHTTP_PUB"
                 env_set "XRAY_GRPC_PUBLIC_KEY" "${XRAY_GRPC_PUBLIC_KEY:-$NEW_XHTTP_PUB}"
+                env_set "XRAY_VISION_PRIVATE_KEY" "${XRAY_VISION_PRIVATE_KEY:-${XRAY_XHTTP_PRIVATE_KEY}}"
+                env_set "XRAY_VISION_PUBLIC_KEY" "${XRAY_VISION_PUBLIC_KEY:-$NEW_XHTTP_PUB}"
                 log_ok "XRAY_XHTTP_PUBLIC_KEY обновлён из XRAY_XHTTP_PRIVATE_KEY"
             else
                 log_warn "Не удалось дериватизировать XRAY_XHTTP_PUBLIC_KEY — проверьте XRAY_XHTTP_PRIVATE_KEY в .env"
@@ -1337,8 +1342,9 @@ PYEOF
     if is_done "step47_xray_client_configs"; then
         step_skip "step47_xray_client_configs"
     else
-        step "Генерация конфигов Xray-клиента (VLESS+XHTTP+REALITY)"
-        log_info "config-xhttp.json   → SOCKS :1081 → VPS:2083 (XHTTP, cdn.jsdelivr.net)"
+        step "Генерация конфигов Xray-клиента (REALITY/XHTTP + REALITY/Vision)"
+        log_info "config-xhttp.json   → SOCKS :1081 → VPS:2083 (experimental XHTTP, cdn.jsdelivr.net)"
+        log_info "config-vision.json  → SOCKS :1084 → VPS:443  (stable Vision, www.microsoft.com)"
         log_info "tun2socks создаёт tun-устройство, маршрутизируя трафик fwmark 0x1 в SOCKS."
 
         if [[ -z "${XRAY_XHTTP_UUID:-}" && -n "${XRAY_GRPC_UUID:-}" ]]; then
@@ -1379,7 +1385,7 @@ PYEOF
             }]
         },
         "streamSettings": {
-            "network": "splithttp",
+            "network": "xhttp",
             "security": "reality",
             "realitySettings": {
                 "fingerprint": "chrome",
@@ -1387,17 +1393,52 @@ PYEOF
                 "publicKey": "${XRAY_XHTTP_PUB}",
                 "shortId": "${XRAY_XHTTP_SID}"
             },
-            "splithttpSettings": {
+            "xhttpSettings": {
                 "path": "/",
-                "host": "cdn.jsdelivr.net",
-                "password": "${XHTTP_CDN_PASSWORD:-}"
+                "password": "${XHTTP_CDN_PASSWORD:-}",
+                "mode": "packet-up"
+            }
+        }
+    }]
+}
+EOF
+            cat > /opt/vpn/xray/config-vision.json << EOF
+{
+    "log": {"loglevel": "warning"},
+    "inbounds": [{
+        "listen": "127.0.0.1",
+        "port": ${XRAY_VISION_SOCKS_PORT:-1084},
+        "protocol": "socks",
+        "settings": {"udp": true}
+    }],
+    "outbounds": [{
+        "protocol": "vless",
+        "settings": {
+            "vnext": [{
+                "address": "${VPS_IP}",
+                "port": 443,
+                "users": [{
+                    "id": "${XRAY_VISION_UUID:-${XRAY_XHTTP_UUID:-${XRAY_GRPC_UUID:-}}}",
+                    "encryption": "none",
+                    "flow": "xtls-rprx-vision"
+                }]
+            }]
+        },
+        "streamSettings": {
+            "network": "tcp",
+            "security": "reality",
+            "realitySettings": {
+                "fingerprint": "chrome",
+                "serverName": "www.microsoft.com",
+                "publicKey": "${XRAY_VISION_PUBLIC_KEY:-${XRAY_XHTTP_PUB}}",
+                "shortId": "${XRAY_VISION_SHORT_ID:-${XRAY_XHTTP_SID}}"
             }
         }
     }]
 }
 EOF
             rm -f /opt/vpn/xray/config-reality.json /opt/vpn/xray/config-grpc.json
-            log_ok "Конфиг reality-xhttp создан (XHTTP/splithttp)"
+            log_ok "Конфиги reality-xhttp и reality-vision созданы"
 
             # CDN-стек: config-cdn.json (если настроен CF Worker)
             if [[ -n "${CF_CDN_HOSTNAME:-}" ]]; then
@@ -1450,7 +1491,7 @@ CDNEOF
             # Перезапуск основных Xray-контейнеров если Docker запущен
             if command -v docker &>/dev/null && docker ps &>/dev/null 2>&1; then
                 docker compose -f /opt/vpn/docker-compose.yml \
-                    restart xray-client-xhttp 2>/dev/null || true
+                    restart xray-client-xhttp xray-client-vision 2>/dev/null || true
             fi
         fi
 
@@ -1544,7 +1585,7 @@ EOF
             log_info "Запуск Docker-контейнеров..."
             docker compose -f /opt/vpn/docker-compose.yml up -d 2>&1 || true
             sleep 5
-            for ct in telegram-bot xray-client-xhttp; do
+            for ct in telegram-bot xray-client-xhttp xray-client-vision; do
                 STATUS=$(docker inspect --format='{{.State.Status}}' "$ct" 2>/dev/null || echo "not_found")
                 if [[ "$STATUS" == "running" ]]; then
                     log_ok "  ${ct}: запущен"
@@ -1753,7 +1794,7 @@ phase5() {
     if [[ "${USE_CLOUDFLARE:-n}" == "y" && -n "${CF_CDN_HOSTNAME:-}" ]]; then
         echo -e "${BOLD}━━━ ШАГ D: CDN-стек (Cloudflare Worker настроен) ━━━${NC}"
         echo "   Worker: https://${CF_CDN_HOSTNAME}"
-        echo "   Стек автоматически активируется watchdog при блокировке XHTTP."
+        echo "   Стек автоматически активируется watchdog как самый устойчивый fallback."
         echo "   Для ручного переключения: /switch cdn (через Telegram-бот)"
         echo ""
     fi

@@ -1,0 +1,15 @@
+name: vless-reality-vision
+display_name: "VLESS+REALITY+Vision (tcp/443)"
+resilience: 3
+protocol: vless
+transport: tcp
+port: 443
+flow: xtls-rprx-vision
+fingerprint: chrome
+dest: www.microsoft.com
+socks_port: 1084
+tun_name: tun-vision
+requires:
+  - xray-client-vision
+  - tcp-443-open
+description: "Штатный TCP fallback на базе VLESS+REALITY+Vision."

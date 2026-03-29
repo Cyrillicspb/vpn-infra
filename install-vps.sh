@@ -413,6 +413,10 @@ XRAY_XHTTP_UUID='${XRAY_XHTTP_UUID:-${XRAY_GRPC_UUID:-}}'
 XRAY_XHTTP_PRIVATE_KEY='${XRAY_XHTTP_PRIVATE_KEY:-${XRAY_GRPC_PRIVATE_KEY:-}}'
 XRAY_XHTTP_PUBLIC_KEY='${XRAY_XHTTP_PUBLIC_KEY:-${XRAY_GRPC_PUBLIC_KEY:-}}'
 XRAY_XHTTP_SHORT_ID='${XRAY_XHTTP_SHORT_ID:-${XRAY_GRPC_SHORT_ID:-}}'
+XRAY_VISION_UUID='${XRAY_VISION_UUID:-${XRAY_XHTTP_UUID:-${XRAY_GRPC_UUID:-}}}'
+XRAY_VISION_PRIVATE_KEY='${XRAY_VISION_PRIVATE_KEY:-${XRAY_XHTTP_PRIVATE_KEY:-${XRAY_GRPC_PRIVATE_KEY:-}}}'
+XRAY_VISION_PUBLIC_KEY='${XRAY_VISION_PUBLIC_KEY:-${XRAY_XHTTP_PUBLIC_KEY:-${XRAY_GRPC_PUBLIC_KEY:-}}}'
+XRAY_VISION_SHORT_ID='${XRAY_VISION_SHORT_ID:-${XRAY_XHTTP_SHORT_ID:-${XRAY_GRPC_SHORT_ID:-}}}'
 XRAY_GRPC_UUID='${XRAY_GRPC_UUID:-${XRAY_XHTTP_UUID:-}}'
 XRAY_GRPC_PRIVATE_KEY='${XRAY_GRPC_PRIVATE_KEY:-${XRAY_XHTTP_PRIVATE_KEY:-}}'
 XRAY_GRPC_PUBLIC_KEY='${XRAY_GRPC_PUBLIC_KEY:-${XRAY_XHTTP_PUBLIC_KEY:-}}'
@@ -569,7 +573,7 @@ if is_done "step42_vps_docker_compose"; then
     step_skip "step42_vps_docker_compose"
 else
     step "Запуск Docker Compose на VPS"
-    log_info "Запускаем: 3x-ui (панель), xray-reality-xhttp (:2083), nginx (mTLS :8443),"
+    log_info "Запускаем: 3x-ui (панель), xray-reality-vision (:443), xray-reality-xhttp (:2083), nginx (mTLS :8443),"
     log_info "           cloudflared, prometheus, alertmanager, grafana, node-exporter, hysteria2"
 
     # Если SSH при socat bootstrap был добавлен на порт 443 — убираем его СЕЙЧАС,
@@ -598,7 +602,8 @@ else
         log_warn "docker-compose.yml не найден на VPS в /opt/vpn/"
         log_warn "Скопируйте файл VPS конфигурации и повторите шаг."
     else
-        log_info "Рендер standalone конфига reality-xhttp..."
+        log_info "Рендер standalone конфигов reality-vision и reality-xhttp..."
+        vps_exec "bash /opt/vpn/scripts/render-reality-vision-config.sh"
         vps_exec "bash /opt/vpn/scripts/render-reality-xhttp-config.sh"
 
         if [[ -f "${REPO_DIR}/scripts/docker-image-groups.sh" ]]; then
@@ -681,9 +686,10 @@ fi
 if is_done "step43_vps_3xui_inbounds"; then
     step_skip "step43_vps_3xui_inbounds"
 else
-    step "Настройка VLESS-XHTTP инбаундов в 3x-ui"
-    log_info "Создаём 3 inbound в 3x-ui через API:"
-    log_info "  reality-xhttp          :2083  (standalone Xray,  SNI: cdn.jsdelivr.net)"
+    step "Настройка Xray/VLESS контуров на VPS"
+    log_info "Создаём 3 inbound/контура:"
+    log_info "  reality-vision         :443   (standalone Xray,  SNI: www.microsoft.com)"
+    log_info "  reality-xhttp          :2083  (standalone Xray,  SNI: cdn.jsdelivr.net, experimental)"
     log_info "  VLESS-WS-cdn           :8080  (стек cdn, для Cloudflare Worker)"
 
     SETUP_SCRIPT="${REPO_DIR}/vps/scripts/xray-setup.sh"
@@ -693,6 +699,7 @@ else
     else
         vps_copy "$SETUP_SCRIPT" "sysadmin@${VPS_IP}:/tmp/xray-setup.sh"
         vps_exec "chmod +x /tmp/xray-setup.sh && bash /tmp/xray-setup.sh && rm -f /tmp/xray-setup.sh"
+        vps_exec "bash /opt/vpn/scripts/render-reality-vision-config.sh"
         vps_exec "bash /opt/vpn/scripts/render-reality-xhttp-config.sh"
         log_ok "Конфиги VPS Xray настроены"
         # После обновления инбаундов — синхронизировать ключи и пересоздать конфиги
@@ -779,9 +786,9 @@ fi
 log_info "═══ Фаза 2 (VPS) завершена ═══"
 echo ""
 echo -e "${YELLOW}ВАЖНО — SSH к VPS после настройки:${NC}"
-echo "  Прямой SSH к VPS (порт 22) доступен ТОЛЬКО через SOCKS5-прокси xray-client-xhttp."
+echo "  Прямой SSH к VPS (порт 22) доступен через SOCKS5-прокси активного Xray-стека."
 echo "  После запуска VPN-стеков используйте команду с домашнего сервера:"
 echo "    ssh -i /root/.ssh/vpn_id_ed25519 \\"
-echo "        -o ProxyCommand=\"nc -X 5 -x 127.0.0.1:1081 %h %p\" \\"
+echo "        -o ProxyCommand=\"nc -X 5 -x 127.0.0.1:1084 %h %p\" \\"
 echo "        sysadmin@${VPS_IP:-<VPS_IP>}"
-echo "  (xray-client-xhttp должен быть запущен: docker ps | grep xray-client-xhttp)"
+echo "  (обычно используется xray-client-vision; проверьте docker ps | grep xray-client)"

@@ -229,7 +229,7 @@ docker_running() { docker inspect --format '{{.State.Running}}' "$1" 2>/dev/null
 docker_exists()  { docker inspect "$1" &>/dev/null 2>&1; }
 
 # Фаза 1 — критичные (FAIL если не running)
-for cname in telegram-bot socket-proxy xray-client-xhttp xray-client-cdn nginx; do
+for cname in telegram-bot socket-proxy xray-client-xhttp xray-client-vision xray-client-cdn nginx; do
     if docker_running "$cname"; then
         ok "docker: $cname"
     else
@@ -263,6 +263,7 @@ section "6. Xray клиенты (SOCKS5)"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 check "xray-client-xhttp SOCKS5 :1081" "nc -z 127.0.0.1 1081"  "docker logs xray-client-xhttp"
+check "xray-client-vision SOCKS5 :1084" "nc -z 127.0.0.1 1084" "docker logs xray-client-vision"
 check "xray-client-cdn SOCKS5 :1082" "nc -z 127.0.0.1 1082" "docker logs xray-client-cdn"
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -295,6 +296,7 @@ case "$ACTIVE_STACK" in
     reality-xhttp) ACTIVE_SOCKS_PORT="1081" ;;
     cloudflare-cdn) ACTIVE_SOCKS_PORT="1082" ;;
     hysteria2) ACTIVE_SOCKS_PORT="1083" ;;
+    vless-reality-vision) ACTIVE_SOCKS_PORT="1084" ;;
 esac
 
 if [[ -n "$ACTIVE_SOCKS_PORT" ]]; then
@@ -360,7 +362,7 @@ if [[ -n "$VPS_IP" && -f "$SSH_KEY" ]]; then
         "sudo docker ps --format '{{.Names}}:{{.Status}}' 2>/dev/null" 2>/dev/null || echo "")
 
     if [[ -n "$VPS_CONTAINERS" ]]; then
-        for cname in 3x-ui hysteria2 node-exporter; do
+        for cname in 3x-ui xray-reality-vision xray-reality-xhttp hysteria2 node-exporter; do
             if echo "$VPS_CONTAINERS" | grep -q "^${cname}:Up"; then
                 ok "VPS docker: $cname"
             else

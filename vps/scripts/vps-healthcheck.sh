@@ -6,7 +6,7 @@
 #
 # Проверяет:
 #   - Docker-контейнеры (running + healthy)
-#   - Xray XHTTP: порт 2087/tcp (microsoft.com) и 2083/tcp (cdn.jsdelivr.net)
+#   - Xray Vision/XHTTP: порты 443/tcp и 2083/tcp
 #   - Hysteria2: контейнер running
 #   - Cloudflared: HTTP 200 на metrics endpoint
 #   - Nginx: HTTP 200 на /health
@@ -143,9 +143,9 @@ check_container "hysteria2"
 check_container_health "3x-ui"
 check_container_health "nginx"
 
-# ── Xray XHTTP: порты 2087 (microsoft.com) и 2083 (cdn.jsdelivr.net) ─────────
-check "Xray XHTTP 2087" "xray_xhttp_2087" \
-    "nc -z -w5 localhost 2087"
+# ── Xray Vision/XHTTP: порты 443 и 2083 ──────────────────────────────────────
+check "Xray Vision 443" "xray_vision_443" \
+    "nc -z -w5 localhost 443"
 check "Xray XHTTP 2083" "xray_xhttp_2083" \
     "nc -z -w5 localhost 2083"
 

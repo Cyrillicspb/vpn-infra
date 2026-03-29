@@ -39,21 +39,21 @@ cat > /opt/vpn/xray/reality-xhttp.json <<EOF
             "decryption": "none"
         },
         "streamSettings": {
-            "network": "splithttp",
+            "network": "xhttp",
             "security": "reality",
             "realitySettings": {
                 "show": false,
-                "dest": "cdn.jsdelivr.net:443",
+                "target": "cdn.jsdelivr.net:443",
                 "xver": 0,
                 "serverNames": ["cdn.jsdelivr.net"],
                 "privateKey": "${XRAY_XHTTP_PRIVATE_KEY}",
                 "shortIds": ["${XRAY_XHTTP_SHORT_ID}"],
                 "fingerprint": "chrome"
             },
-            "splithttpSettings": {
+            "xhttpSettings": {
                 "path": "/",
                 "password": "${XHTTP_CDN_PASSWORD}",
-                "maxConcurrentUploads": 2
+                "mode": "packet-up"
             }
         },
         "sniffing": {

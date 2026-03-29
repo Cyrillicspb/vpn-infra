@@ -1,16 +1,15 @@
 #!/bin/bash
-# Настройка VLESS+REALITY+gRPC в 3x-ui на VPS
-echo "=== Настройка VLESS+REALITY+gRPC ==="
+# Историческая памятка по experimental reality-xhttp
+echo "=== Настройка VLESS+REALITY+XHTTP (experimental) ==="
 echo ""
-echo "Настраивается через панель 3x-ui:"
+echo "Standalone Xray на VPS:"
 echo "  - Протокол: vless"
-echo "  - Порт: 443 (отдельный inbound)"
-echo "  - Transport: gRPC"
+echo "  - Порт: 2083"
 echo "  - Transport: XHTTP (splithttp)"
 echo "  - Security: Reality"
 echo "  - Dest: cdn.jsdelivr.net:443"
 echo "  - SNI: cdn.jsdelivr.net"
-echo "  - Flow: ПУСТОЙ (vision несовместим с gRPC!)"
+echo "  - Flow: ПУСТОЙ (Vision несовместим с XHTTP)"
 echo "  - Fingerprint: chrome"
 echo ""
 echo "Скопируйте Public Key → XRAY_XHTTP_PUBLIC_KEY"

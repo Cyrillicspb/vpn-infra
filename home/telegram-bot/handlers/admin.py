@@ -435,7 +435,7 @@ async def cmd_logs(message: Message, state: FSMContext, **kw):
     await state.clear()
     args = message.text.split()
     allowed = ["watchdog", "dnsmasq", "hysteria2", "telegram-bot",
-               "xray-client-xhttp", "cloudflared", "node-exporter"]
+               "xray-client-vision", "xray-client-xhttp", "cloudflared", "node-exporter"]
     if len(args) < 2 or args[1] not in allowed:
         await message.answer(
             "Использование: `/logs <сервис> [N]`\n"
@@ -445,7 +445,7 @@ async def cmd_logs(message: Message, state: FSMContext, **kw):
     service = args[1]
     n = min(int(args[2]), 300) if len(args) > 2 and args[2].isdigit() else 50
 
-    docker_services = {"telegram-bot", "xray-client-xhttp", "cloudflared", "node-exporter"}
+    docker_services = {"telegram-bot", "xray-client-vision", "xray-client-xhttp", "cloudflared", "node-exporter"}
     try:
         if service in docker_services:
             text = await _docker_logs(service, n)
@@ -526,7 +526,7 @@ async def cmd_switch(message: Message, state: FSMContext, **kw):
         return
     await state.clear()
     args = message.text.split()
-    stacks = ["cloudflare-cdn", "reality-xhttp", "hysteria2"]
+    stacks = ["cloudflare-cdn", "reality-xhttp", "vless-reality-vision", "hysteria2"]
     if len(args) < 2 or args[1] not in stacks:
         await message.answer(
             "Использование: `/switch <стек>`\n\n"
@@ -2608,7 +2608,7 @@ async def cb_adm_logs_menu(cb: CallbackQuery, **kw):
 async def cb_adm_log(cb: CallbackQuery, **kw):
     service = cb.data[len("adm:log:"):]
     await cb.answer(f"Загружаю логи {service}...")
-    allowed_docker = {"telegram-bot", "xray-client-xhttp", "cloudflared", "node-exporter"}
+    allowed_docker = {"telegram-bot", "xray-client-vision", "xray-client-xhttp", "cloudflared", "node-exporter"}
     try:
         if service in allowed_docker:
             text = await _docker_logs(service, 50)

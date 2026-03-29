@@ -16,7 +16,7 @@
 #### `/status`
 
 Сводка состояния инфраструктуры:
-- Активный стек (reality / reality-grpc / cdn / hysteria2) и время переключения
+- Активный стек (vless-reality-vision / reality-xhttp / cloudflare-cdn / hysteria2) и время переключения
 - RTT к VPS и baseline (7-дневное скользящее)
 - Количество пиров на wg0 и wg1
 - Статус dnsmasq
@@ -97,8 +97,8 @@
 | `/logs telegram-bot 100` | Docker: контейнер `telegram-bot` |
 | `/logs dnsmasq` | journald: `dnsmasq.service` |
 | `/logs hysteria2` | journald: `hysteria2.service` |
-| `/logs xray-client` | Docker: контейнер `xray-client` |
-| `/logs xray-client-2` | Docker: контейнер `xray-client-2` |
+| `/logs xray-client-vision` | Docker: контейнер `xray-client-vision` |
+| `/logs xray-client-xhttp` | Docker: контейнер `xray-client-xhttp` |
 | `/logs nginx` | Docker: контейнер `nginx` на VPS |
 
 ---
@@ -108,10 +108,10 @@
 #### Ручное переключение стека
 
 ```
-/switch reality       — переключить на стек reality (XHTTP/microsoft.com, :2087)
-/switch reality-grpc  — переключить на стек reality-grpc (XHTTP/cdn.jsdelivr.net, :2083)
-/switch cdn           — переключить на CDN (VLESS+WS через Cloudflare)
-/switch hysteria2     — переключить на Hysteria2 (QUIC+Salamander, UDP 443)
+/switch vless-reality-vision  — переключить на штатный TCP fallback (Vision, :443)
+/switch reality-xhttp         — переключить на experimental XHTTP (:2083)
+/switch cloudflare-cdn        — переключить на CDN (VLESS+WS через Cloudflare)
+/switch hysteria2             — переключить на Hysteria2 (QUIC+Salamander, UDP 443)
 ```
 
 Переключение выполняется через watchdog (make-before-break). Кратковременный обрыв ≈1–3 сек.
@@ -132,8 +132,8 @@
 | `/restart dnsmasq` | dnsmasq.service (systemd) |
 | `/restart hysteria2` | hysteria2.service (systemd) |
 | `/restart telegram-bot` | Docker-контейнер telegram-bot |
-| `/restart xray-client` | Docker-контейнер xray-client |
-| `/restart xray-client-2` | Docker-контейнер xray-client-2 |
+| `/restart xray-client-vision` | Docker-контейнер xray-client-vision |
+| `/restart xray-client-xhttp` | Docker-контейнер xray-client-xhttp |
 | `/restart cloudflared` | Docker-контейнер cloudflared |
 
 #### Перезагрузка сервера

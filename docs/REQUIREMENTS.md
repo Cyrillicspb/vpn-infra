@@ -90,10 +90,9 @@
 | Порт | Протокол | Назначение |
 |------|----------|------------|
 | 22 | TCP | SSH (или альтернативный порт) |
-| 443 | TCP | REALITY + nginx |
+| 443 | TCP | VLESS+REALITY+Vision |
 | 443 | UDP | Hysteria2 (standalone, не через 3x-ui) |
-| 2087 | TCP | VLESS-XHTTP-microsoft (REALITY, стек 3) |
-| 2083 | TCP | VLESS-XHTTP-jsdelivr (REALITY, стек 2) |
+| 2083 | TCP | VLESS+REALITY+XHTTP (experimental) |
 | 8443 | TCP | Nginx admin panels (mTLS) |
 | 22 (или 443) | TCP | Tier-2 SSH tun туннель (autossh, уже открыт для SSH) |
 

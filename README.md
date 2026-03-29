@@ -38,8 +38,8 @@
   │
   │  Docker (172.20.0.0/24):
   │    telegram-bot      управление ботом
-  │    xray-client       SOCKS5 :1080 (стек reality)
-  │    xray-client-2     SOCKS5 :1081 (стек reality-grpc)
+  │    xray-client-xhttp  SOCKS5 :1081 (experimental reality-xhttp)
+  │    xray-client-vision SOCKS5 :1084 (stable reality-vision)
   │    cloudflared       CDN стек
   │    socket-proxy      доступ к Docker API
   │    node-exporter     метрики для Prometheus
@@ -48,13 +48,14 @@
   │    blocked_static + blocked_dynamic → fwmark 0x1 → table marked → tun → VPS
   │    остальное → table vpn → eth0 (прямой интернет)
   │
-  ├──[стек 1: CDN]         VLESS+WebSocket → Cloudflare Worker → VPS:8080
-  ├──[стек 2: reality-grpc] VLESS+XHTTP, SNI cdn.jsdelivr.net → VPS:2083
-  ├──[стек 3: reality]      VLESS+XHTTP, SNI microsoft.com    → VPS:2087
-  └──[стек 4: hysteria2]    QUIC+Salamander UDP 443
+  ├──[стек 1: CDN]            VLESS+WebSocket → Cloudflare Worker → VPS:8080
+  ├──[стек 2: reality-vision] VLESS+REALITY+Vision, SNI www.microsoft.com → VPS:443
+  ├──[стек 3: reality-xhttp]  VLESS+REALITY+XHTTP, SNI cdn.jsdelivr.net    → VPS:2083
+  └──[стек 4: hysteria2]      QUIC+Salamander UDP 443
   ▼
 VPS — Ubuntu 22.04/24.04 (за рубежом)
-  │  3x-ui (Xray: VLESS-XHTTP-jsdelivr :2083, VLESS-XHTTP-microsoft :2087)
+  │  3x-ui (панель + CDN inbound :8080)
+  │  xray-reality-vision :443, xray-reality-xhttp :2083
   │  nginx (mTLS :8443), cloudflared
   │  prometheus, grafana, alertmanager, node-exporter
   │  hysteria2 (standalone)
@@ -101,7 +102,8 @@ VPS — Ubuntu 22.04/24.04 (за рубежом)
 | Метод | Как обходит DPI |
 |---|---|
 | **AmneziaWG** (клиент → сервер) | Обфускация заголовков WireGuard: случайный junk в начале пакета — ТСПУ не распознаёт как WireGuard |
-| **VLESS+XHTTP+REALITY** | Трафик неотличим от HTTPS к легитимному домену (microsoft.com или cdn.jsdelivr.net). REALITY — TLS с реальным сертификатом цели |
+| **VLESS+REALITY+Vision** | Штатный TCP fallback на 443/tcp. Более предсказуемый и зрелый стек для автоматического failover |
+| **VLESS+REALITY+XHTTP** | Экспериментальный резервный стек для ручных тестов. Оставлен в системе, но не участвует в автоматическом standby |
 | **Cloudflare CDN** | Трафик через глобальную CDN Cloudflare — блокировка невозможна без отключения всего Cloudflare в России |
 | **Hysteria2 + Salamander** | QUIC с обфускацией: выглядит как случайный UDP-поток |
 
@@ -271,8 +273,8 @@ curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/instal
 | # | Стек | Протокол | Порт VPS | Устойчивость | Скорость |
 |---|---|---|---|---|---|
 | 1 | **cdn** | VLESS+WebSocket через Cloudflare Worker | 8080 TCP | Максимальная | Умеренная |
-| 2 | **reality-grpc** | VLESS+XHTTP (splithttp), SNI cdn.jsdelivr.net | 2083 TCP | Очень высокая | Высокая |
-| 3 | **reality** | VLESS+XHTTP (splithttp), SNI microsoft.com | 2087 TCP | Высокая | Высокая |
+| 2 | **reality-vision** | VLESS+REALITY+Vision, SNI www.microsoft.com | 443 TCP | Очень высокая | Высокая |
+| 3 | **reality-xhttp** | VLESS+REALITY+XHTTP, SNI cdn.jsdelivr.net | 2083 TCP | Экспериментально | Нестабильно |
 | 4 | **hysteria2** | QUIC+Salamander obfuscation | 443 UDP | Средняя | Максимальная |
 
 > CDN-стек требует предварительной настройки Cloudflare Worker (опционально, но рекомендуется для максимальной устойчивости).

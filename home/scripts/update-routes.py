@@ -254,6 +254,7 @@ def _get_socks5_proxy() -> Optional[str]:
         "cloudflare-cdn": 1082,
         "reality-xhttp":  1081,
         "hysteria2":      1083,
+        "vless-reality-vision": 1084,
     }
 
     state_paths = [
@@ -273,7 +274,7 @@ def _get_socks5_proxy() -> Optional[str]:
                 pass
 
     # Fallback: проверяем известные порты
-    for port in [1083, 1080, 1081, 1082]:
+    for port in [1083, 1084, 1081, 1082]:
         try:
             s = socket.socket()
             s.settimeout(1.0)

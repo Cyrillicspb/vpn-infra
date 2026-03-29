@@ -43,7 +43,7 @@ fi
 
 # 3. vpn-active-stack содержит известное имя стека
 active_stack=$(tr -d '[:space:]' < "$STACK_FILE" 2>/dev/null)
-KNOWN_STACKS=(hysteria2 reality-xhttp cloudflare-cdn)
+KNOWN_STACKS=(hysteria2 vless-reality-vision reality-xhttp cloudflare-cdn)
 stack_known=false
 for s in "${KNOWN_STACKS[@]}"; do
     [[ "$active_stack" == "$s" ]] && stack_known=true && break

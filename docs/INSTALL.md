@@ -175,7 +175,7 @@ curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/instal
 - Шаг 37: Копирование файлов конфигурации на VPS (`/opt/vpn/`)
 - Шаг 38: Запись `/opt/vpn/.env` на VPS (chmod 600)
 - Шаг 39: Запуск 3x-ui на VPS (network_mode: host)
-- Шаг 40: Настройка инбаундов 3x-ui через API (VLESS-XHTTP-jsdelivr :2083, VLESS-XHTTP-microsoft :2087)
+- Шаг 40: Настройка Xray/VLESS контуров на VPS (standalone reality-vision :443, reality-xhttp :2083, CDN inbound :8080)
 - Шаг 41: Запуск остальных контейнеров VPS (nginx, cloudflared, prometheus, grafana, alertmanager, node-exporter)
 - Шаг 42: Настройка git-зеркала на VPS (cron sync с GitHub/jsdelivr каждые 30 мин)
 - Шаг 43: Установка fail2ban на VPS
@@ -187,8 +187,8 @@ curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/instal
 
 - Шаг 45: Подготовка SSH Tier-2 туннеля (PermitTunnel на VPS, установка autossh)
 - Шаг 46: Запуск autossh-tier2 (SSH tun, tun0, 10.177.2.1↔10.177.2.2, TCP 22/443)
-- Шаг 47: Генерация конфига xray-client (SOCKS :1080, стек reality, VPS:2087)
-- Шаг 47: Генерация конфига xray-client-2 (SOCKS :1081, стек reality-grpc, VPS:2083)
+- Шаг 47: Генерация конфига xray-client-xhttp (SOCKS :1081, experimental reality-xhttp, VPS:2083)
+- Шаг 47: Генерация конфига xray-client-vision (SOCKS :1084, stable reality-vision, VPS:443)
 - Шаг 48: Генерация конфига hysteria2 (стек hysteria2, VPS UDP:443)
 - Шаг 49: Перезапуск всех сервисов, первый запуск watchdog с активным стеком
 

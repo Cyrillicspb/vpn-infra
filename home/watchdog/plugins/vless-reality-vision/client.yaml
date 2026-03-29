@@ -1,0 +1,7 @@
+# VLESS+REALITY+Vision client config
+# Управляется через xray-client-vision Docker контейнер
+
+stack: vless-reality-vision
+socks_port: 1084
+tun_interface: tun-vision
+container: xray-client-vision

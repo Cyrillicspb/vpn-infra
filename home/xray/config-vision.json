@@ -1,0 +1,33 @@
+{
+    "log": {"loglevel": "warning"},
+    "inbounds": [{
+        "listen": "127.0.0.1",
+        "port": 1084,
+        "protocol": "socks",
+        "settings": {"udp": true}
+    }],
+    "outbounds": [{
+        "protocol": "vless",
+        "settings": {
+            "vnext": [{
+                "address": "${VPS_IP}",
+                "port": 443,
+                "users": [{
+                    "id": "${XRAY_VISION_UUID:-${XRAY_XHTTP_UUID}}",
+                    "encryption": "none",
+                    "flow": "xtls-rprx-vision"
+                }]
+            }]
+        },
+        "streamSettings": {
+            "network": "tcp",
+            "security": "reality",
+            "realitySettings": {
+                "fingerprint": "chrome",
+                "serverName": "www.microsoft.com",
+                "publicKey": "${XRAY_VISION_PUBLIC_KEY:-${XRAY_XHTTP_PUBLIC_KEY}}",
+                "shortId": "${XRAY_VISION_SHORT_ID:-${XRAY_XHTTP_SHORT_ID}}"
+            }
+        }
+    }]
+}

@@ -77,7 +77,7 @@ def _cloudflare_cdn_enabled() -> bool:
     return os.getenv("USE_CLOUDFLARE", "n").lower() == "y" and bool(os.getenv("CF_CDN_HOSTNAME", "").strip())
 
 
-STACK_ORDER = ["hysteria2", "reality-xhttp"]
+STACK_ORDER = ["hysteria2", "vless-reality-vision", "reality-xhttp"]
 if _cloudflare_cdn_enabled():
     STACK_ORDER.insert(0, "cloudflare-cdn")
 
@@ -357,6 +357,8 @@ class Plugin:
         with open(meta_path) as f:
             self.meta: dict[str, Any] = yaml.safe_load(f)
         self.resilience: int = self.meta.get("resilience", 0)
+        self.experimental: bool = bool(self.meta.get("experimental", False))
+        self.auto_enabled: bool = bool(self.meta.get("auto_enabled", not self.experimental))
 
     async def _run(self, *args: str, timeout: int = 30) -> tuple[int, str, str]:
         client = self.dir / "client.py"
@@ -444,10 +446,21 @@ class PluginManager:
             )
         ]
 
+    def auto_names(self) -> list[str]:
+        """Стеки для автоматических reassessment/failover/standby-проверок."""
+        return [
+            p.name for p in sorted(
+                self._plugins.values(), key=lambda p: p.resilience, reverse=True
+            )
+            if not p.meta.get("direct_mode") and p.auto_enabled
+        ]
+
     def names_list(self) -> list[dict]:
         return [
             {"name": p.name, "display": p.meta.get("display_name", p.name),
-             "resilience": p.resilience}
+             "resilience": p.resilience,
+             "experimental": p.experimental,
+             "auto_enabled": p.auto_enabled}
             for p in sorted(self._plugins.values(), key=lambda p: p.resilience, reverse=True)
         ]
 
@@ -533,7 +546,8 @@ class WatchdogState:
         self.nftables_ok: bool = False          # True если check_nftables_integrity прошла
         self.nftables_checked: bool = False     # True после первой проверки
         self.nfqws_ok: Optional[bool] = None    # None=не проверялось, True/False по факту
-        self.last_heartbeat_ts: float = 0.0     # timestamp последнего успешного heartbeat
+        self.last_heartbeat_ts: float = 0.0     # timestamp последней успешной проверки доступности VPS
+        self.last_wg_check_ts: float = 0.0      # timestamp последней проверки wg0/wg1
         self.stacks_ok_count: int = 0           # количество рабочих стеков
         self.stacks_checked: bool = False       # True после первой проверки стеков
         self.health_score: float = 0.0          # последний расчитанный score
@@ -947,7 +961,7 @@ async def check_wg_peers() -> None:
 
 # Контейнеры фазы 1 — критичны, алерт если exited/unhealthy
 CRITICAL_CONTAINERS = frozenset(
-    ["telegram-bot", "socket-proxy", "nginx", "xray-client-xhttp", "xray-client-cdn"]
+    ["telegram-bot", "socket-proxy", "nginx", "xray-client-xhttp", "xray-client-vision", "xray-client-cdn"]
 )
 # Контейнеры фазы 2 (мониторинг) — опциональны:
 # алерт только если контейнер СУЩЕСТВУЕТ но нездоров; отсутствие — норма
@@ -1156,21 +1170,23 @@ async def _update_ddns(ip: str) -> None:
 # ---------------------------------------------------------------------------
 # Мониторинг: heartbeat → VPS
 # ---------------------------------------------------------------------------
-async def send_heartbeat() -> None:
-    """Отправка heartbeat на VPS каждые 60 сек."""
-    vps = state.active_vps
-    if not vps:
-        return
+async def probe_vps_reachability() -> None:
+    """Проверка доступности VPS через Tier-2 туннель.
+
+    Исторически watchdog слал heartbeat на public `:8081`, но на VPS такого
+    сервиса нет. Для health score нам важнее реальная доступность VPS по
+    data-plane, поэтому используем node-exporter на `VPS_TUNNEL_IP:9100`.
+    """
     try:
         async with aiohttp.ClientSession() as s:
-            await s.post(
-                f"http://{vps['ip']}:8081/heartbeat",
-                json={"ts": datetime.now().isoformat()},
+            async with s.get(
+                f"http://{VPS_TUNNEL_IP}:9100/metrics",
                 timeout=aiohttp.ClientTimeout(total=5),
-            )
-        state.last_heartbeat_ts = time.time()
+            ) as resp:
+                if resp.status == 200:
+                    state.last_heartbeat_ts = time.time()
     except Exception:
-        pass   # Не алертим здесь — это делает VPS-side скрипт
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1366,6 +1382,7 @@ async def check_wg_interfaces() -> None:
     state.wg0_up = rc0 == 0
     rc1, _, _ = await run_cmd(["ip", "link", "show", "wg1"], timeout=5)
     state.wg1_up = rc1 == 0
+    state.last_wg_check_ts = time.time()
 
 
 # ---------------------------------------------------------------------------
@@ -1455,7 +1472,9 @@ async def _health_quick_checks() -> list[CheckResult]:
         results.append(CheckResult("dns_responding", "fail", "dnsmasq не отвечает", weight=5))
 
     # 4. wg0
-    if state.wg0_up:
+    if state.last_wg_check_ts <= 0:
+        results.append(CheckResult("wg0_active", "warn", "ещё не проверялось", weight=5))
+    elif state.wg0_up:
         results.append(CheckResult("wg0_active", "ok", weight=5))
     else:
         results.append(CheckResult("wg0_active", "fail", "wg0 не найден", weight=5))
@@ -1529,13 +1548,17 @@ async def _health_standard_checks() -> list[CheckResult]:
             results.append(CheckResult(f"cert_{label}_expiry", "fail", "просрочен или ошибка чтения", weight=5, tier="standard"))
 
     # 14. VPS heartbeat
-    hb_age = time.time() - state.last_heartbeat_ts if state.last_heartbeat_ts > 0 else 99999
-    if hb_age < 120:
-        results.append(CheckResult("vps_reachable", "ok", f"heartbeat {hb_age:.0f}s назад", weight=5, tier="standard"))
-    elif hb_age < 300:
-        results.append(CheckResult("vps_reachable", "warn", f"heartbeat {hb_age:.0f}s назад", weight=5, tier="standard"))
+    if state.last_heartbeat_ts <= 0:
+        results.append(CheckResult("vps_reachable", "warn", "ещё не проверялось", weight=5, tier="standard"))
+        hb_age = None
     else:
-        results.append(CheckResult("vps_reachable", "fail", f"нет heartbeat {hb_age:.0f}s", weight=5, tier="standard"))
+        hb_age = time.time() - state.last_heartbeat_ts
+    if hb_age is not None and hb_age < 120:
+        results.append(CheckResult("vps_reachable", "ok", f"probe {hb_age:.0f}s назад", weight=5, tier="standard"))
+    elif hb_age is not None and hb_age < 300:
+        results.append(CheckResult("vps_reachable", "warn", f"probe {hb_age:.0f}s назад", weight=5, tier="standard"))
+    elif hb_age is not None:
+        results.append(CheckResult("vps_reachable", "fail", f"нет probe {hb_age:.0f}s", weight=5, tier="standard"))
 
     # 15. Disk
     try:
@@ -1941,11 +1964,11 @@ async def test_standby_tunnels() -> None:
     logger.info("Проверка standby туннелей...")
     current = state.active_stack
     failed = []
-    for name in plugins.all_names():
+    for name in plugins.auto_names():
         if name == current:
             continue
         plugin = plugins.get(name)
-        if not plugin or plugin.meta.get("direct_mode"):
+        if not plugin:
             continue
 
         async with _LOCK:
@@ -1956,8 +1979,7 @@ async def test_standby_tunnels() -> None:
         else:
             logger.info(f"Standby {name}: OK ({mbps:.1f} Mbps)")
 
-    total = len([n for n in plugins.all_names()
-                 if not (plugins.get(n) or type("", (), {"meta": {}})()).meta.get("direct_mode")])
+    total = len(plugins.auto_names())
     state.stacks_ok_count = total - len(failed)
     state.stacks_checked = True
 
@@ -2125,7 +2147,7 @@ async def _failover_impl(reason: str) -> None:
     state.failover_in_progress = True
     try:
         current = state.active_stack
-        ordered = plugins.all_names()
+        ordered = plugins.auto_names()
         try:
             cur_pos = ordered.index(current)
         except ValueError:
@@ -2133,7 +2155,7 @@ async def _failover_impl(reason: str) -> None:
         candidates = ordered[:cur_pos] + ordered[cur_pos + 1:]
         for candidate in candidates:
             plugin = plugins.get(candidate)
-            if not plugin or plugin.meta.get("direct_mode"):
+            if not plugin:
                 continue
             logger.info(f"Тест кандидата: {candidate}")
             ok, mbps = await _test_stack_runtime(plugin, candidate, timeout=10)
@@ -2216,9 +2238,9 @@ async def _first_run_assessment() -> None:
     best_stack: Optional[str] = None
     best_mbps = 0.0
 
-    for name in STACK_ORDER:
+    for name in [n for n in STACK_ORDER if n in plugins.auto_names()]:
         plugin = plugins.get(name)
-        if not plugin or plugin.meta.get("direct_mode"):
+        if not plugin:
             continue
         ok, mbps = await _test_stack_runtime(plugin, name, timeout=10)
         logger.info(f"Оценка {name}: {'OK' if ok else 'FAIL'} {mbps:.1f} Mbps")
@@ -2245,9 +2267,9 @@ async def _full_reassessment() -> None:
         best_stack: Optional[str] = None
         best_mbps = 0.0
 
-        for name in STACK_ORDER:
+        for name in [n for n in STACK_ORDER if n in plugins.auto_names()]:
             plugin = plugins.get(name)
-            if not plugin or plugin.meta.get("direct_mode"):
+            if not plugin:
                 continue
             ok, mbps = await _test_stack_runtime(plugin, name, timeout=10)
             logger.info(f"Переоценка {name}: {'OK' if ok else 'FAIL'} {mbps:.1f} Mbps")
@@ -2366,6 +2388,11 @@ async def monitoring_loop() -> None:
     last_standby_check_date = datetime.now().date()
     logger.info("monitoring_loop запущен")
 
+    # Прогреваем состояние сразу после старта, чтобы health checks не ловили
+    # значения по умолчанию после рестарта watchdog.
+    await check_wg_interfaces()
+    await probe_vps_reachability()
+
     while True:
         try:
             now = time.time()
@@ -2378,9 +2405,9 @@ async def monitoring_loop() -> None:
             if tick % 3 == 0:
                 await check_dnsmasq()
 
-            # Каждые 60 сек: heartbeat → VPS
+            # Каждые 60 сек: проверка доступности VPS через Tier-2
             if now - last_heartbeat >= 60:
-                await send_heartbeat()
+                await probe_vps_reachability()
                 last_heartbeat = now
 
             # Каждые 5 мин: внешний IP, диск, small speedtest, блок. сайты, upload
@@ -3644,7 +3671,7 @@ def _vps_ssh_prefix(vps: dict) -> list[str]:
         "-o", "ConnectTimeout=8",
         "-o", "BatchMode=yes",
     ]
-    # SOCKS5-прокси через xray-client-xhttp (обязателен для доступа к VPS снаружи)
+    # SOCKS5-прокси через активный Xray-клиент (порт задаётся в VPS_SSH_PROXY)
     proxy = os.getenv("VPS_SSH_PROXY", "")  # socks5://127.0.0.1:1081
     if proxy:
         proxy_addr = proxy.replace("socks5://", "").replace("socks4://", "")

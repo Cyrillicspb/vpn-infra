@@ -2,14 +2,16 @@ name: reality-xhttp
 display_name: "VLESS+REALITY+XHTTP (cdn.jsdelivr.net)"
 resilience: 2
 protocol: vless
-transport: splithttp
+transport: xhttp
 port: 2083
 flow: ""
 fingerprint: chrome
 dest: cdn.jsdelivr.net
 socks_port: 1081
 tun_name: tun-xhttp
+experimental: true
+auto_enabled: false
 requires:
   - xray-client-xhttp
   - tcp-2083-open
-description: "XHTTP (splithttp) маскировка под cdn.jsdelivr.net. Порт 2083. Работает."
+description: "Экспериментальный XHTTP-стек на 2083/tcp. Оставлен для ручных тестов, не участвует в автоматическом standby."

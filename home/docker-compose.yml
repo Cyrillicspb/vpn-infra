@@ -136,6 +136,31 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # ── Xray-client-vision (VLESS + REALITY + Vision) — standby, SOCKS5 :1084 ──
+  xray-client-vision:
+    image: teddysun/xray:latest
+    container_name: xray-client-vision
+    restart: always
+    volumes:
+      - ./xray/config-vision.json:/etc/xray/config.json:ro
+    network_mode: host
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z localhost 1084 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # ── Xray-client-cdn (Cloudflare Workers CDN-стек) — standby, SOCKS5 :1082 ───
   # Подключается к Cloudflare Worker → VPS Xray VLESS+WS :8080
   # Worker URL задаётся через CF_CDN_HOSTNAME в .env → config-cdn.json

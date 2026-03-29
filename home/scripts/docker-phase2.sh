@@ -70,6 +70,7 @@ mapping = {
     "reality-xhttp": 1081,
     "cloudflare-cdn": 1082,
     "hysteria2": 1083,
+    "vless-reality-vision": 1084,
 }
 
 if state_path.exists():
@@ -82,7 +83,7 @@ if state_path.exists():
     except Exception:
         pass
 
-for port in (1083, 1081, 1082):
+for port in (1083, 1084, 1081, 1082):
     print(port)
     raise SystemExit(0)
 PY
