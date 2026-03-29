@@ -222,7 +222,24 @@ vps_install_bundled_package_group() {
     vps_stage_bundled_package_group "$group" || return 1
     vps_exec_long_progress "$label" \
         "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
-        bash -lc 'apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 install --no-download --no-install-recommends -y -qq /tmp/vpn-system-packages/${group}/*.deb'"
+        bash -lc '
+tmp_apt=\$(mktemp -d /tmp/vpn-bundle-apt.XXXXXX)
+mkdir -p \"\$tmp_apt/empty\" \"\$tmp_apt/lists/partial\"
+printf \"deb [trusted=yes] file:/tmp/vpn-system-packages/${group} ./\\n\" > \"\$tmp_apt/bundle.list\"
+apt-get -o Dir::Etc::sourcelist=\"\$tmp_apt/bundle.list\" \
+        -o Dir::Etc::sourceparts=\"\$tmp_apt/empty\" \
+        -o Dir::State::lists=\"\$tmp_apt/lists\" \
+        -o APT::Get::List-Cleanup=0 \
+        -o Acquire::Languages=none \
+        update -qq
+mapfile -t bundle_pkgs < /tmp/vpn-system-packages/${group}/group-packages.txt
+apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 \
+        -o Dir::Etc::sourcelist=\"\$tmp_apt/bundle.list\" \
+        -o Dir::Etc::sourceparts=\"\$tmp_apt/empty\" \
+        -o Dir::State::lists=\"\$tmp_apt/lists\" \
+        install --no-install-recommends -y -qq \"\${bundle_pkgs[@]}\"
+rm -rf \"\$tmp_apt\"
+'"
 }
 
 vps_root_exec() {

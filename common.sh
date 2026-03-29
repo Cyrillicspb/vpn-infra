@@ -78,19 +78,44 @@ install_bundled_package_group() {
     local group="$2"
     local dir
     dir="$(bundled_package_dir "$group")" || return 1
-
-    mapfile -t _bundle_debs < <(find "$dir" -maxdepth 1 -type f -name '*.deb' | sort)
-    [[ ${#_bundle_debs[@]} -gt 0 ]] || return 1
+    local pkg_file="${dir}/group-packages.txt"
+    [[ -f "$pkg_file" ]] || return 1
+    mapfile -t _bundle_pkgs < "$pkg_file"
+    [[ ${#_bundle_pkgs[@]} -gt 0 ]] || return 1
 
     log_info "${label}: локальный .deb bundle (${group})"
+
+    local _tmp_apt
+    _tmp_apt="$(mktemp -d /tmp/vpn-bundle-apt.XXXXXX)"
+    mkdir -p "${_tmp_apt}/empty" "${_tmp_apt}/lists/partial"
+    printf 'deb [trusted=yes] file:%s ./\n' "$dir" > "${_tmp_apt}/bundle.list"
+
+    env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
+        apt-get \
+            -o Dir::Etc::sourcelist="${_tmp_apt}/bundle.list" \
+            -o Dir::Etc::sourceparts="${_tmp_apt}/empty" \
+            -o Dir::State::lists="${_tmp_apt}/lists" \
+            -o APT::Get::List-Cleanup=0 \
+            -o Acquire::Languages=none \
+            update -qq
+
     if [[ -n "$COMPACT_OUTPUT" ]]; then
         env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
             apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 \
-            install --no-download --no-install-recommends -y "${_bundle_debs[@]}"
+            -o Dir::Etc::sourcelist="${_tmp_apt}/bundle.list" \
+            -o Dir::Etc::sourceparts="${_tmp_apt}/empty" \
+            -o Dir::State::lists="${_tmp_apt}/lists" \
+            install --no-install-recommends -y "${_bundle_pkgs[@]}"
     else
         env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
-            apt-get install --no-download --no-install-recommends -y "${_bundle_debs[@]}"
+            apt-get \
+            -o Dir::Etc::sourcelist="${_tmp_apt}/bundle.list" \
+            -o Dir::Etc::sourceparts="${_tmp_apt}/empty" \
+            -o Dir::State::lists="${_tmp_apt}/lists" \
+            install --no-install-recommends -y "${_bundle_pkgs[@]}"
     fi
+
+    rm -rf "${_tmp_apt}"
 }
 
 format_duration() {
