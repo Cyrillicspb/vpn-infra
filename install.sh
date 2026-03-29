@@ -234,4 +234,8 @@ fi
 echo ""
 info "Запускаем установщик setup.sh..."
 echo ""
-exec env VPN_COMPACT_OUTPUT=1 bash "${OPT_VPN}/setup.sh"
+if [[ -r /dev/tty && -w /dev/tty ]]; then
+    exec </dev/tty >/dev/tty 2>/dev/tty env VPN_COMPACT_OUTPUT=1 bash "${OPT_VPN}/setup.sh"
+else
+    exec env VPN_COMPACT_OUTPUT=1 bash "${OPT_VPN}/setup.sh"
+fi
