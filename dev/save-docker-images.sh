@@ -46,48 +46,14 @@ if ! command -v docker &>/dev/null; then
 fi
 
 if [[ "$UPLOAD_ONLY" == false ]]; then
-    # ── Шаг 1: Pull и сохранение образов ─────────────────────────────────────
-    mkdir -p "$OUTDIR"
-
     info "Будут подготовлены группы:"
     printf '  - %s\n' "${GROUPS[@]}"
     echo ""
 
-    mapfile -t ALL_IMAGES < <(docker_image_group_names all)
-    total_saved=0
-    for img in "${ALL_IMAGES[@]}"; do
-        fname=$(docker_image_to_archive_name "$img")
-        outpath="${OUTDIR}/${fname}"
+    bash "${REPO_DIR}/scripts/build-docker-bundles.sh" \
+        --manifest-out docker-bundles-manifest.txt
 
-        info "Pull: ${img}..."
-        docker pull "$img"
-
-        info "Сохраняем → ${outpath}"
-        docker save "$img" | gzip > "$outpath"
-        size=$(du -sh "$outpath" | cut -f1)
-        ok "${fname} (${size})"
-        ((total_saved++)) || true
-    done
-
-    echo ""
-    ok "Сохранено образов: ${total_saved}"
-    ls -lh "${OUTDIR}"/*.tar.gz
-    echo "Итого: $(du -sh "$OUTDIR" | cut -f1)"
-
-    # ── Шаг 2: Упаковка групповых архивов ─────────────────────────────────────
-    for group in "${GROUPS[@]}"; do
-        archive=$(docker_image_bundle_asset_name "$group")
-        mapfile -t GROUP_IMAGES < <(docker_image_group_names "$group")
-        archive_members=()
-        for img in "${GROUP_IMAGES[@]}"; do
-            archive_members+=("${OUTDIR}/$(docker_image_to_archive_name "$img")")
-        done
-
-        info "Пакуем ${group} → ${archive}..."
-        tar czf "$archive" "${archive_members[@]}"
-        size=$(du -sh "$archive" | cut -f1)
-        ok "${archive} готов (${size})"
-    done
+    ok "Docker bundles и manifest подготовлены"
 fi
 
 # ── Шаг 3: Загрузка в GitHub Release ─────────────────────────────────────────
@@ -122,6 +88,15 @@ for group in "${GROUPS[@]}"; do
         --repo "${REPO_OWNER}/${REPO_NAME}" \
         --clobber
 done
+
+if [[ ! -f docker-bundles-manifest.txt ]]; then
+    echo "Ошибка: docker-bundles-manifest.txt не найден." >&2
+    exit 1
+fi
+info "Загружаем docker-bundles-manifest.txt в релиз ${LATEST_TAG}..."
+gh release upload "$LATEST_TAG" docker-bundles-manifest.txt \
+    --repo "${REPO_OWNER}/${REPO_NAME}" \
+    --clobber
 
 ok "Загружено в https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/tag/${LATEST_TAG}"
 echo ""

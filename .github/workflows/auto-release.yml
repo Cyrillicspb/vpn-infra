@@ -108,30 +108,104 @@ jobs:
           mv /tmp/vpn-infra.tar.gz vpn-infra.tar.gz
           echo "Размер архива: $(du -sh vpn-infra.tar.gz | cut -f1)"
 
-      - name: Build Docker image bundles
+      - name: Resolve Docker bundle manifest
+        run: |
+          set -euo pipefail
+          bash scripts/build-docker-bundles.sh \
+            --manifest-out docker-bundles-manifest.txt \
+            --manifest-only
+
+      - name: Plan Docker bundle reuse
+        id: docker_plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           source scripts/docker-image-groups.sh
 
-          mkdir -p docker-images
-          mapfile -t ALL_IMAGES < <(docker_image_group_names all)
-          for img in "${ALL_IMAGES[@]}"; do
-            fname="$(docker_image_to_archive_name "$img")"
-            echo "Pull: $img"
-            docker pull "$img"
-            echo "Save: docker-images/${fname}"
-            docker save "$img" | gzip > "docker-images/${fname}"
-            ls -lh "docker-images/${fname}"
+          PREV_TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 | awk '{print $1}' | head -1 || true)"
+          PREV_MANIFEST=""
+          if [[ -n "$PREV_TAG" ]]; then
+            mkdir -p /tmp/prev-release
+            if gh release download "$PREV_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern docker-bundles-manifest.txt \
+              --dir /tmp/prev-release 2>/dev/null; then
+              PREV_MANIFEST="/tmp/prev-release/docker-bundles-manifest.txt"
+            fi
+          fi
+
+          build_groups=()
+          reuse_groups=()
+          while IFS= read -r group; do
+            current_digest="$(awk -F'|' -v g="$group" '$1=="group" && $2==g {print $4}' docker-bundles-manifest.txt)"
+            prev_digest=""
+            if [[ -n "$PREV_MANIFEST" ]]; then
+              prev_digest="$(awk -F'|' -v g="$group" '$1=="group" && $2==g {print $4}' "$PREV_MANIFEST")"
+            fi
+
+            if [[ -n "$PREV_TAG" && -n "$prev_digest" && "$prev_digest" == "$current_digest" ]]; then
+              reuse_groups+=("$group")
+            else
+              build_groups+=("$group")
+            fi
+          done < <(docker_image_bundle_groups)
+
+          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+          echo "build_groups=$(IFS=,; echo "${build_groups[*]}")" >> "$GITHUB_OUTPUT"
+          echo "reuse_groups=$(IFS=,; echo "${reuse_groups[*]}")" >> "$GITHUB_OUTPUT"
+          echo "Build groups: ${build_groups[*]:-(none)}"
+          echo "Reuse groups: ${reuse_groups[*]:-(none)}"
+
+      - name: Build changed Docker bundles
+        if: steps.docker_plan.outputs.build_groups != ''
+        run: |
+          set -euo pipefail
+          bash scripts/build-docker-bundles.sh \
+            --manifest-out docker-bundles-manifest.txt \
+            --no-pull \
+            --build-groups "${{ steps.docker_plan.outputs.build_groups }}"
+
+      - name: Reuse unchanged Docker bundles
+        if: steps.docker_plan.outputs.reuse_groups != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          source scripts/docker-image-groups.sh
+
+          fallback_groups=()
+          IFS=',' read -r -a reuse_groups <<< "${{ steps.docker_plan.outputs.reuse_groups }}"
+          for group in "${reuse_groups[@]}"; do
+            [[ -n "$group" ]] || continue
+            asset="$(docker_image_bundle_asset_name "$group")"
+            if gh release download "${{ steps.docker_plan.outputs.prev_tag }}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "$asset" \
+              --dir .; then
+              echo "Reused $asset from ${{ steps.docker_plan.outputs.prev_tag }}"
+            else
+              echo "Reuse failed for $asset; rebuilding locally"
+              fallback_groups+=("$group")
+            fi
           done
 
+          if (( ${#fallback_groups[@]} > 0 )); then
+            bash scripts/build-docker-bundles.sh \
+              --manifest-out docker-bundles-manifest.txt \
+              --no-pull \
+              --build-groups "$(IFS=,; echo "${fallback_groups[*]}")"
+          fi
+
+      - name: Verify release assets
+        run: |
+          set -euo pipefail
+          source scripts/docker-image-groups.sh
+          [[ -f vpn-infra.tar.gz ]]
+          [[ -f docker-bundles-manifest.txt ]]
           while IFS= read -r group; do
-            archive="$(docker_image_bundle_asset_name "$group")"
-            members=()
-            while IFS= read -r img; do
-              members+=("docker-images/$(docker_image_to_archive_name "$img")")
-            done < <(docker_image_group_names "$group")
-            tar -czf "$archive" "${members[@]}"
-            echo "Bundle ${archive}: $(du -sh "$archive" | cut -f1)"
+            asset="$(docker_image_bundle_asset_name "$group")"
+            [[ -f "$asset" ]] || { echo "Missing release asset: $asset" >&2; exit 1; }
           done < <(docker_image_bundle_groups)
 
       - name: Create tag and release
@@ -151,6 +225,42 @@ jobs:
             --notes "${{ steps.notes.outputs.notes }}" \
             --latest \
             vpn-infra.tar.gz \
+            docker-bundles-manifest.txt \
             docker-images.tar.gz \
             docker-images-monitoring.tar.gz \
             docker-images-vps.tar.gz
+
+      - name: Delete old Docker bundle assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURRENT_TAG: v${{ steps.next.outputs.next }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > /tmp/releases.json
+          python3 - <<'PY' > /tmp/stale-assets.txt
+import json
+import os
+
+current_tag = os.environ["CURRENT_TAG"]
+target_names = {
+    "docker-images.tar.gz",
+    "docker-images-monitoring.tar.gz",
+    "docker-images-vps.tar.gz",
+}
+
+with open("/tmp/releases.json", "r", encoding="utf-8") as fh:
+    releases = json.load(fh)
+
+for release in releases:
+    if release["tag_name"] == current_tag:
+        continue
+    for asset in release.get("assets", []):
+        if asset["name"] in target_names:
+            print(f'{release["tag_name"]}|{asset["id"]}|{asset["name"]}')
+PY
+
+          while IFS='|' read -r tag asset_id asset_name; do
+            [[ -n "$asset_id" ]] || continue
+            echo "Delete old asset: ${tag} ${asset_name}"
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"
+          done < /tmp/stale-assets.txt
