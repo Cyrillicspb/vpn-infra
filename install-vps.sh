@@ -222,7 +222,7 @@ vps_install_bundled_package_group() {
     vps_stage_bundled_package_group "$group" || return 1
     vps_exec_long_progress "$label" \
         "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
-        bash -lc 'apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 install --no-download -y -qq /tmp/vpn-system-packages/${group}/*.deb'"
+        bash -lc 'apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 install --no-download --no-install-recommends -y -qq /tmp/vpn-system-packages/${group}/*.deb'"
 }
 
 vps_root_exec() {

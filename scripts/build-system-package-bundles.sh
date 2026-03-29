@@ -156,6 +156,19 @@ dpkg-scanpackages . /dev/null | gzip -9c > Packages.gz
         done
     } >> "$tmp_manifest"
     tar -czf "${OUTPUT_DIR}/${asset}" -C "$group_dir" .
+
+    docker run --rm \
+        -e DEBIAN_FRONTEND=noninteractive \
+        -v "${REPO_DIR}:/repo" \
+        -w /repo \
+        ubuntu:24.04 \
+        bash -lc "
+set -euo pipefail
+apt-get update -qq
+env DEBIAN_FRONTEND=noninteractive \
+  apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 \
+  install --no-download --no-install-recommends -y '/repo/${group_dir}'/*.deb
+"
 done
 
 mv "$tmp_manifest" "$MANIFEST_OUT"

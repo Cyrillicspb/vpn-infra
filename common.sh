@@ -86,10 +86,10 @@ install_bundled_package_group() {
     if [[ -n "$COMPACT_OUTPUT" ]]; then
         env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
             apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 \
-            install --no-download -y "${_bundle_debs[@]}"
+            install --no-download --no-install-recommends -y "${_bundle_debs[@]}"
     else
         env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
-            apt-get install --no-download -y "${_bundle_debs[@]}"
+            apt-get install --no-download --no-install-recommends -y "${_bundle_debs[@]}"
     fi
 }
 
