@@ -24,6 +24,11 @@ PROXY_CONF="/etc/systemd/system/docker.service.d/http-proxy.conf"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 
+critical_containers_running() {
+    docker ps --format '{{.Names}}' 2>/dev/null | grep -Eq \
+        '^(telegram-bot|socket-proxy|nginx|xray-client-xhttp|xray-client-cdn)$'
+}
+
 active_socks_works() {
     local port="$1"
     local code=""
@@ -119,6 +124,11 @@ Environment="HTTPS_PROXY=${_desired_proxy}"
 Environment="NO_PROXY=localhost,127.0.0.1,172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
 EOF
     systemctl daemon-reload
+    if critical_containers_running; then
+        log "WARN: Docker proxy обновлён на диске, но restart docker отложен — есть активные контейнеры"
+        log "WARN: Примените вручную в окно обслуживания: systemctl restart docker"
+        exit 0
+    fi
     systemctl restart docker
     sleep 5
     log "Docker proxy настроен и docker перезапущен"

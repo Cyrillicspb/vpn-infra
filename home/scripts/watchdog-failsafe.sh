@@ -49,11 +49,11 @@ if systemctl is-active --quiet watchdog; then
     # Процесс жив — дополнительно проверяем что HTTP API отвечает (event loop не завис)
     WD_PORT="${WATCHDOG_PORT:-8080}"
     WD_TOKEN="${WATCHDOG_API_TOKEN:-}"
-    AUTH_HEADER=""
+    CURL_ARGS=(-sf --max-time 5)
     if [[ -n "$WD_TOKEN" ]]; then
-        AUTH_HEADER="-H \"Authorization: Bearer ${WD_TOKEN}\""
+        CURL_ARGS+=(-H "Authorization: Bearer ${WD_TOKEN}")
     fi
-    if ! curl -sf --max-time 5 ${AUTH_HEADER} "http://127.0.0.1:${WD_PORT}/status" > /dev/null 2>&1; then
+    if ! curl "${CURL_ARGS[@]}" "http://127.0.0.1:${WD_PORT}/status" > /dev/null 2>&1; then
         # Процесс активен, но HTTP не отвечает → event loop завис
         HUNG_FILE="/run/vpn-failsafe-hung"
         NOW=$(date +%s)
