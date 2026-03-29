@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import stat
+import subprocess
+import tempfile
+from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.containers import ScrollableContainer, Vertical
@@ -77,7 +82,7 @@ class VpsScreen(WizardScreen):
                     password=True,
                     hint="Нужен только для первоначальной установки SSH-ключа",
                 )
-                yield Button("⟳ Проверить подключение к VPS", id="btn-check-vps")
+                yield Button("⟳ Проверить root SSH к VPS", id="btn-check-vps")
                 yield Static("", id="vps-validation")
             yield RichLog(highlight=False, markup=False, wrap=True, id="vps-log")
 
@@ -129,33 +134,105 @@ class VpsScreen(WizardScreen):
         else:
             super().on_button_pressed(event)
 
+    @staticmethod
+    def _probe_root_ssh(ip: str, port: int, password: str) -> tuple[bool, str]:
+        """
+        Реальная проверка root SSH по паролю.
+        Используем временный SSH_ASKPASS helper, чтобы не зависеть от sshpass.
+        """
+        with tempfile.TemporaryDirectory(prefix="vpn-installer-ssh-") as tmpdir:
+            askpass = Path(tmpdir) / "askpass.sh"
+            askpass.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' \"$VPN_INSTALLER_SSH_PASSWORD\"\n",
+                encoding="utf-8",
+            )
+            askpass.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+            env = os.environ.copy()
+            env["SSH_ASKPASS"] = str(askpass)
+            env["SSH_ASKPASS_REQUIRE"] = "force"
+            env["VPN_INSTALLER_SSH_PASSWORD"] = password
+            env["DISPLAY"] = "vpn-installer:0"
+
+            cmd = [
+                "setsid",
+                "ssh",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "NumberOfPasswordPrompts=1",
+                "-o",
+                "PreferredAuthentications=password",
+                "-o",
+                "PubkeyAuthentication=no",
+                "-o",
+                "PasswordAuthentication=yes",
+                "-o",
+                "KbdInteractiveAuthentication=no",
+                "-p",
+                str(port),
+                f"root@{ip}",
+                "exit 0",
+            ]
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    env=env,
+                )
+            except FileNotFoundError as exc:
+                return False, f"Не найдено: {exc.filename}"
+            except subprocess.TimeoutExpired:
+                return False, "Timeout (15 с) — SSH не ответил вовремя"
+
+        if proc.returncode == 0:
+            return True, f"✓ root@{ip}:{port} — авторизация успешна"
+
+        details = (proc.stderr or proc.stdout or "").strip()
+        if "Permission denied" in details:
+            return False, "✗ Неверный пароль root или вход по паролю запрещён"
+        if "Connection refused" in details:
+            return False, f"✗ {ip}:{port} — SSH-порт отклоняет соединение"
+        if "No route to host" in details:
+            return False, f"✗ Нет маршрута до {ip}:{port}"
+        if "Connection timed out" in details:
+            return False, f"✗ Timeout — {ip}:{port} не отвечает"
+        if details:
+            return False, f"✗ {details}"
+        return False, "✗ SSH-проверка не прошла"
+
     async def _check_vps(self) -> None:
-        """TCP-тест SSH-порта VPS (без аутентификации)."""
+        """Проверка реальной SSH-аутентификации root по паролю."""
         log = self.query_one("#vps-log", RichLog)
         state = self.app.state
+        if not self._validate():
+            log.write("[WARN] Сначала заполните IP, порт и root пароль")
+            return
+
         ip = state.vps_ip
         try:
             port = int(state.vps_ssh_port or "22")
         except ValueError:
             log.write("[WARN] Некорректный порт")
             return
-        log.write(f"TCP-проверка {ip}:{port}...")
-        try:
-            _, writer = await asyncio.wait_for(
-                asyncio.open_connection(ip, port),
-                timeout=8,
-            )
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except Exception:
-                pass
-            log.write(f"✓ TCP {ip}:{port} доступен — SSH-порт отвечает")
-        except asyncio.TimeoutError:
-            log.write(f"✗ Timeout (8 с) — {ip}:{port} не отвечает")
-            log.write("  Проверьте IP, порт, и что VPS запущен.")
-        except OSError as e:
-            log.write(f"✗ {e}")
+        log.write(f"Проверка root SSH {ip}:{port}...")
+        ok, message = await asyncio.to_thread(
+            self._probe_root_ssh,
+            ip,
+            port,
+            state.vps_root_password,
+        )
+        log.write(message)
+        if not ok:
+            log.write("  Проверьте IP, SSH-порт, root пароль и разрешён ли password login.")
 
     def _on_next(self) -> None:
         if self._validate():

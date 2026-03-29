@@ -25,17 +25,31 @@ NC='\033[0m'
 TOTAL_STEPS=61
 STATE_FILE="/opt/vpn/.setup-state"
 ENV_FILE="/opt/vpn/.env"
+COMPACT_OUTPUT="${VPN_NONINTERACTIVE:-}"
 
 # ── Логирование ───────────────────────────────────────────────────────────────
-log_info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
-log_ok()    { echo -e "${GREEN}[✓]${NC}   $*"; }
-log_warn()  { echo -e "${YELLOW}[!]${NC}   $*"; }
-log_error() { echo -e "${RED}[✗]${NC}   $*" >&2; }
+_log_emit() {
+    local color="$1" prefix="$2"; shift 2
+    if [[ -n "$COMPACT_OUTPUT" ]]; then
+        printf '%s %s\n' "$prefix" "$*"
+    else
+        echo -e "${color}${prefix}${NC} $*"
+    fi
+}
+
+log_info()  { _log_emit "${BLUE}"   "[INFO]" "$*"; }
+log_ok()    { _log_emit "${GREEN}"  "[OK]"   "$*"; }
+log_warn()  { _log_emit "${YELLOW}" "[WARN]" "$*"; }
+log_error() { _log_emit "${RED}"    "[ERR]"  "$*" >&2; }
 
 step() {
     ((STEP++)) || true
     echo ""
-    echo -e "${CYAN}${BOLD}━━━ Шаг ${STEP}/${TOTAL_STEPS}: $* ━━━${NC}"
+    if [[ -n "$COMPACT_OUTPUT" ]]; then
+        printf '[STEP %d/%d] %s\n' "${STEP}" "${TOTAL_STEPS}" "$*"
+    else
+        echo -e "${CYAN}${BOLD}━━━ Шаг ${STEP}/${TOTAL_STEPS}: $* ━━━${NC}"
+    fi
     emit_progress "$*" "start"
 }
 
@@ -47,18 +61,31 @@ emit_progress() {
 
 # ── Состояние шагов (.setup-state) ────────────────────────────────────────────
 is_done()    { grep -qxF "$1" "$STATE_FILE" 2>/dev/null; }
-step_done()  { echo "$1" >> "$STATE_FILE"; log_ok "Готово: $1"; emit_progress "$1" "done"; }
-step_skip()  { ((STEP++)) || true; log_info "Пропуск (уже выполнено): $1"; emit_progress "$1" "skip"; }
+step_done()  {
+    echo "$1" >> "$STATE_FILE"
+    [[ -z "$COMPACT_OUTPUT" ]] && log_ok "Готово: $1"
+    emit_progress "$1" "done"
+}
+step_skip()  {
+    ((STEP++)) || true
+    [[ -z "$COMPACT_OUTPUT" ]] && log_info "Пропуск (уже выполнено): $1"
+    emit_progress "$1" "skip"
+}
 step_reset() { sed -i "/^$(printf '%s' "$1" | sed 's/[.[\*^$]/\\&/g')$/d" "$STATE_FILE" 2>/dev/null || true; }
 
 # ── Завершение с ошибкой ──────────────────────────────────────────────────────
 die() {
     log_error "$*"
     echo ""
-    echo -e "${RED}━━━ Ошибка ━━━${NC}"
-    echo "  Проблема: $*"
-    echo "  Действие: проверьте вывод выше и устраните причину."
-    echo "  Повтор:   sudo bash setup.sh  (выполненные шаги будут пропущены)"
+    if [[ -n "$COMPACT_OUTPUT" ]]; then
+        echo "[ERR] Установка остановлена."
+        echo "[ERR] Исправьте проблему выше и повторите запуск."
+    else
+        echo -e "${RED}━━━ Ошибка ━━━${NC}"
+        echo "  Проблема: $*"
+        echo "  Действие: проверьте вывод выше и устраните причину."
+        echo "  Повтор:   sudo bash setup.sh  (выполненные шаги будут пропущены)"
+    fi
     exit 1
 }
 

@@ -63,7 +63,7 @@ class WizardScreen(Screen):
         )
         yield from self._compose_content()
         yield Static(
-            "Tab → поле | PgDn/PgUp скролл | Enter ✓ | ? помощь",
+            "Tab → поле | PgDn/PgUp скролл | Enter ✓ | ? помощь | ПКМ вставка",
             classes="keyboard-hints",
         )
         with Horizontal(id="wizard-btn-row"):

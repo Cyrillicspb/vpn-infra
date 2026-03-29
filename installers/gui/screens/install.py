@@ -24,6 +24,7 @@ SETUP_SH = _find_setup_sh()
 _RE_PROGRESS = re.compile(r"^##PROGRESS:(\d+):(\d+):([^:]+):(\w*)$")
 # Regex для очистки ANSI escape-кодов
 _RE_ANSI = re.compile(r"\x1b\[[0-9;]*[mKHJAB]")
+_RE_DECORATIVE = re.compile(r"^[\s═━─╔╗╚╝║╠╣]+$")
 
 
 class InstallScreen(Screen):
@@ -48,6 +49,13 @@ class InstallScreen(Screen):
         margin: 0 2;
         color: $text-muted;
     }
+    .keyboard-hints {
+        height: 1;
+        margin: 0 2;
+        color: $text-muted;
+        background: $panel;
+        text-align: center;
+    }
     #install-log {
         height: 1fr;
         margin: 1 2;
@@ -64,6 +72,7 @@ class InstallScreen(Screen):
 
     _running: bool = False
     _proc = None
+    _last_line: str = ""
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -79,6 +88,10 @@ class InstallScreen(Screen):
             markup=False,
             wrap=True,
             id="install-log",
+        )
+        yield Static(
+            "Esc назад | Ctrl+C выход | ПКМ вставка",
+            classes="keyboard-hints",
         )
         with Horizontal(id="btn-row"):
             yield Button("▶  Установить", variant="primary", id="btn-run")
@@ -96,13 +109,27 @@ class InstallScreen(Screen):
             self.query_one("#btn-run", Button).disabled = True
             return
 
-        log.write(f"=== VPN Infrastructure Installer ===")
-        log.write(f"setup.sh : {SETUP_SH}")
-        log.write(f"VPS      : {state.vps_ip}:{state.vps_ssh_port}")
-        log.write(f"Admin ID : {state.telegram_admin_chat_id}")
+        log.write("VPN Infrastructure Installer")
+        log.write(f"setup.sh: {SETUP_SH}")
+        log.write(f"VPS: {state.vps_ip}:{state.vps_ssh_port}")
+        log.write(f"Admin ID: {state.telegram_admin_chat_id}")
         log.write("")
-        log.write("[WARN] Установка займёт 20–40 минут.")
+        log.write("[INFO] Установка займёт 20–40 минут.")
         log.write("[INFO] Нажмите «Установить» для начала.")
+
+    def _normalize_log_line(self, line: str) -> str:
+        clean = _RE_ANSI.sub("", line).strip()
+        if not clean:
+            return ""
+        if _RE_DECORATIVE.match(clean):
+            return ""
+        clean = re.sub(r"^[═━─]{3,}\s*", "", clean)
+        clean = re.sub(r"\s*[═━─]{3,}$", "", clean)
+        clean = re.sub(r"\s{2,}", " ", clean).strip()
+        if clean == self._last_line:
+            return ""
+        self._last_line = clean
+        return clean
 
     async def _run(self) -> None:
         if self._running:
@@ -170,7 +197,7 @@ class InstallScreen(Screen):
                         step_lbl.update(f"  ⟳ {name}")
                     continue
 
-                clean = _RE_ANSI.sub("", line).strip()
+                clean = self._normalize_log_line(line)
                 if clean:
                     log.write(clean)
 

@@ -17,13 +17,13 @@ fi
 TOTAL_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
 if (( TOTAL_RAM_MB < 2048 )); then
     if ! swapon --show | grep -q '/swapfile'; then
-        echo "[INFO] RAM ${TOTAL_RAM_MB}MB < 2048MB — создаём swap 1GB..."
+        printf '[INFO] RAM %sMB < 2048MB — создаём swap 1GB...\n' "${TOTAL_RAM_MB}"
         fallocate -l 1G /swapfile
         chmod 600 /swapfile
         mkswap /swapfile
         swapon /swapfile
         echo '/swapfile none swap sw 0 0' >> /etc/fstab
-        echo "[✓]   Swap 1GB активирован"
+        echo "[OK] Swap 1GB активирован"
     fi
 fi
 
@@ -784,11 +784,17 @@ chmod +x /opt/vpn/scripts/vps-healthcheck.sh"
 fi
 
 log_info "═══ Фаза 2 (VPS) завершена ═══"
-echo ""
-echo -e "${YELLOW}ВАЖНО — SSH к VPS после настройки:${NC}"
-echo "  Прямой SSH к VPS (порт 22) доступен через SOCKS5-прокси активного Xray-стека."
-echo "  После запуска VPN-стеков используйте команду с домашнего сервера:"
-echo "    ssh -i /root/.ssh/vpn_id_ed25519 \\"
-echo "        -o ProxyCommand=\"nc -X 5 -x 127.0.0.1:1084 %h %p\" \\"
-echo "        sysadmin@${VPS_IP:-<VPS_IP>}"
-echo "  (обычно используется xray-client-vision; проверьте docker ps | grep xray-client)"
+if [[ -n "${VPN_NONINTERACTIVE:-}" ]]; then
+    log_warn "SSH к VPS после настройки идёт через SOCKS5 активного Xray-стека."
+    log_info "Команда с домашнего сервера:"
+    log_info "ssh -i /root/.ssh/vpn_id_ed25519 -o ProxyCommand=\"nc -X 5 -x 127.0.0.1:1084 %h %p\" sysadmin@${VPS_IP:-<VPS_IP>}"
+else
+    echo ""
+    echo -e "${YELLOW}ВАЖНО — SSH к VPS после настройки:${NC}"
+    echo "  Прямой SSH к VPS (порт 22) доступен через SOCKS5-прокси активного Xray-стека."
+    echo "  После запуска VPN-стеков используйте команду с домашнего сервера:"
+    echo "    ssh -i /root/.ssh/vpn_id_ed25519 \\"
+    echo "        -o ProxyCommand=\"nc -X 5 -x 127.0.0.1:1084 %h %p\" \\"
+    echo "        sysadmin@${VPS_IP:-<VPS_IP>}"
+    echo "  (обычно используется xray-client-vision; проверьте docker ps | grep xray-client)"
+fi

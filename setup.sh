@@ -98,6 +98,7 @@ ask() {
 # ── Баннер ───────────────────────────────────────────────────────────────────
 
 print_banner() {
+    [[ -n "${VPN_NONINTERACTIVE:-}" ]] && return 0
     echo ""
     echo "╔══════════════════════════════════════════════════════════════════╗"
     echo "║      VPN Infrastructure v4.0 — Двухуровневая установка          ║"
@@ -277,20 +278,24 @@ phase0() {
         fi
 
         if [[ $CGNAT_DETECTED -eq 1 ]] || [[ $DOUBLE_NAT_DETECTED -eq 1 ]]; then
-            echo ""
-            echo -e "${RED}━━━ ВНИМАНИЕ: CGNAT / Двойной NAT ━━━${NC}"
-            echo "Три возможные причины:"
-            echo "  1. Провайдер использует CGNAT (диапазон 100.64.0.0/10)"
-            echo "  2. Двойной NAT (роутер провайдера + ваш роутер)"
-            echo "  3. На роутере провайдера не включён bridge mode"
-            echo ""
-            echo "Проект не будет работать без реального (белого) IP."
-            echo "Решения: попросите у провайдера белый IP или арендуйте дополнительный."
-            echo ""
             if [[ -n "${VPN_NONINTERACTIVE:-}" ]]; then
+                log_warn "Обнаружен CGNAT или двойной NAT."
+                log_warn "Без белого IP клиентский VPN снаружи работать не будет."
+                log_info "Проверьте: CGNAT провайдера, двойной NAT, bridge mode на роутере провайдера."
+                log_info "Решение: белый IP у провайдера или отдельный внешний адрес."
                 log_warn "Non-interactive режим: продолжаем несмотря на CGNAT/NAT."
                 _cont="y"
             else
+                echo ""
+                echo -e "${RED}━━━ ВНИМАНИЕ: CGNAT / Двойной NAT ━━━${NC}"
+                echo "Три возможные причины:"
+                echo "  1. Провайдер использует CGNAT (диапазон 100.64.0.0/10)"
+                echo "  2. Двойной NAT (роутер провайдера + ваш роутер)"
+                echo "  3. На роутере провайдера не включён bridge mode"
+                echo ""
+                echo "Проект не будет работать без реального (белого) IP."
+                echo "Решения: попросите у провайдера белый IP или арендуйте дополнительный."
+                echo ""
                 read -rp "  Продолжить установку несмотря на это? [y/N]: " _cont
             fi
             if [[ "${_cont,,}" != "y" ]]; then
@@ -676,31 +681,36 @@ for a in d.get('assets',[]):
                 log_warn "Попытка 4/4: Bootstrap через веб-консоль VPS..."
                 apt-get install -y -qq socat 2>/dev/null || \
                     die "Не удалось установить socat. Проверьте доступ к интернету."
-                echo ""
-                echo -e "${BOLD}${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-                echo -e "${BOLD}${YELLOW}  SSH к VPS заблокирован провайдером${NC}"
-                echo -e "${BOLD}${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-                echo ""
-                echo "  Нужно выполнить одну команду в веб-консоли VPS."
-                echo ""
-                echo "  1. Зайдите в панель управления VPS-провайдера"
-                echo "  2. Откройте Console / VNC / noVNC"
-                echo "  3. Войдите как root"
-                echo "  4. Выполните команду:"
-                echo ""
-                echo -e "  ${CYAN}${BOLD}bash <(curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/bootstrap-vps.sh)${NC}"
-                echo ""
-                echo "  Или вручную (если GitHub недоступен):"
-                echo -e "  ${CYAN}apt install -y socat openssl"
-                echo "  openssl req -x509 -newkey rsa:2048 -keyout /tmp/k.pem -out /tmp/c.pem \\"
-                echo "    -days 1 -nodes -subj '/CN=vpn' 2>/dev/null"
-                echo "  cat /tmp/c.pem /tmp/k.pem > /tmp/vpn-bootstrap.pem && rm /tmp/k.pem /tmp/c.pem"
-                echo -e "  socat OPENSSL-LISTEN:443,reuseaddr,fork,cert=/tmp/vpn-bootstrap.pem,verify=0 TCP:127.0.0.1:22 &${NC}"
-                echo ""
                 if [[ -z "${VPN_NONINTERACTIVE:-}" ]]; then
+                    echo ""
+                    echo -e "${BOLD}${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                    echo -e "${BOLD}${YELLOW}  SSH к VPS заблокирован провайдером${NC}"
+                    echo -e "${BOLD}${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                    echo ""
+                    echo "  Нужно выполнить одну команду в веб-консоли VPS."
+                    echo ""
+                    echo "  1. Зайдите в панель управления VPS-провайдера"
+                    echo "  2. Откройте Console / VNC / noVNC"
+                    echo "  3. Войдите как root"
+                    echo "  4. Выполните команду:"
+                    echo ""
+                    echo -e "  ${CYAN}${BOLD}bash <(curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/bootstrap-vps.sh)${NC}"
+                    echo ""
+                    echo "  Или вручную (если GitHub недоступен):"
+                    echo -e "  ${CYAN}apt install -y socat openssl"
+                    echo "  openssl req -x509 -newkey rsa:2048 -keyout /tmp/k.pem -out /tmp/c.pem \\"
+                    echo "    -days 1 -nodes -subj '/CN=vpn' 2>/dev/null"
+                    echo "  cat /tmp/c.pem /tmp/k.pem > /tmp/vpn-bootstrap.pem && rm /tmp/k.pem /tmp/c.pem"
+                    echo -e "  socat OPENSSL-LISTEN:443,reuseaddr,fork,cert=/tmp/vpn-bootstrap.pem,verify=0 TCP:127.0.0.1:22 &${NC}"
+                    echo ""
                     read -r -p "  Нажмите Enter когда команда выполнена на VPS..." _bs_dummy
+                    echo ""
+                else
+                    log_warn "SSH к VPS заблокирован. Нужен bootstrap через веб-консоль VPS."
+                    log_info "Выполните в Console/VNC как root:"
+                    log_info "bash <(curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/bootstrap-vps.sh)"
+                    log_info "Дальше скрипт сам проверит порт 443 VPS."
                 fi
-                echo ""
 
                 log_info "Проверка socat bootstrap (порт 443 VPS)..."
                 _bs_retry=0
@@ -1711,19 +1721,32 @@ phase4() {
 
     # Итоги
     TOTAL=$((PASS + FAIL))
-    echo ""
-    echo -e "${BOLD}━━━ Результаты: ${PASS}/${TOTAL} тестов прошли ━━━${NC}"
-
-    if [[ ${#FAILED_TESTS[@]} -gt 0 ]]; then
-        echo ""
-        echo -e "${YELLOW}Не прошедшие тесты и подсказки по исправлению:${NC}"
-        for t in "${FAILED_TESTS[@]}"; do
-            echo -e "  ${RED}✗${NC} $t"
-        done
-        echo ""
-        log_warn "После устранения проблем: sudo bash setup.sh (выполненные шаги пропустятся)"
+    if [[ -n "${VPN_NONINTERACTIVE:-}" ]]; then
+        log_info "Итоги smoke-тестов: ${PASS}/${TOTAL} прошли"
+        if [[ ${#FAILED_TESTS[@]} -gt 0 ]]; then
+            log_warn "Не прошедшие тесты:"
+            for t in "${FAILED_TESTS[@]}"; do
+                log_warn "$t"
+            done
+            log_warn "После исправлений повторите: sudo bash setup.sh"
+        else
+            log_ok "Все ${TOTAL} тестов прошли успешно"
+        fi
     else
-        log_ok "Все ${TOTAL} тестов прошли успешно!"
+        echo ""
+        echo -e "${BOLD}━━━ Результаты: ${PASS}/${TOTAL} тестов прошли ━━━${NC}"
+
+        if [[ ${#FAILED_TESTS[@]} -gt 0 ]]; then
+            echo ""
+            echo -e "${YELLOW}Не прошедшие тесты и подсказки по исправлению:${NC}"
+            for t in "${FAILED_TESTS[@]}"; do
+                echo -e "  ${RED}✗${NC} $t"
+            done
+            echo ""
+            log_warn "После устранения проблем: sudo bash setup.sh (выполненные шаги пропустятся)"
+        else
+            log_ok "Все ${TOTAL} тестов прошли успешно!"
+        fi
     fi
 }
 
@@ -1736,87 +1759,103 @@ phase5() {
 
     step "Инструкции по завершению настройки"
 
-    echo ""
-    echo "╔══════════════════════════════════════════════════════════════════╗"
-    echo "║             НЕОБХОДИМЫЕ РУЧНЫЕ ДЕЙСТВИЯ                         ║"
-    echo "╚══════════════════════════════════════════════════════════════════╝"
-    echo ""
-    echo -e "${RED}${BOLD}  ⚠  Без этих шагов VPN не будет работать для клиентов!${NC}"
-    echo ""
+    if [[ -n "${VPN_NONINTERACTIVE:-}" ]]; then
+        log_warn "Нужны ручные действия до выдачи клиентских конфигов."
+        log_info "Порты на роутере: UDP 51820 -> ${HOME_SERVER_IP:-<LAN-IP>}:51820, UDP 51821 -> ${HOME_SERVER_IP:-<LAN-IP>}:51821"
+        if [[ "${SERVER_MODE:-hosted}" == "gateway" ]]; then
+            log_info "Gateway mode: для LAN-клиентов при необходимости задайте Gateway/DNS = ${HOME_SERVER_IP:-<LAN-IP>}"
+            log_info "На самом роутере default gateway не менять."
+        fi
+        log_info "Запустите Telegram-бота: /start -> выбрать протокол -> создать устройство -> импортировать конфиг."
+        log_info "Grafana: https://${VPS_IP:-<VPS_IP>}:8443/grafana/ ; клиентский cert через /renew-cert"
+        if [[ "${USE_CLOUDFLARE:-n}" == "y" && -n "${CF_CDN_HOSTNAME:-}" ]]; then
+            log_info "Cloudflare Worker: https://${CF_CDN_HOSTNAME}"
+        fi
+        log_info "Диагностика: wg show ; systemctl status watchdog ; journalctl -u watchdog -f"
+        log_info "Документация: https://github.com/Cyrillicspb/vpn-infra/blob/master/docs/"
+    else
+        echo ""
+        echo "╔══════════════════════════════════════════════════════════════════╗"
+        echo "║             НЕОБХОДИМЫЕ РУЧНЫЕ ДЕЙСТВИЯ                         ║"
+        echo "╚══════════════════════════════════════════════════════════════════╝"
+        echo ""
+        echo -e "${RED}${BOLD}  ⚠  Без этих шагов VPN не будет работать для клиентов!${NC}"
+        echo ""
 
-    if [[ "${SERVER_MODE:-hosted}" == "gateway" ]]; then
-        echo -e "${BOLD}━━━ GATEWAY MODE: Настройка роутера ━━━${NC}"
-        echo "   1. Port Forward на роутере:"
-        echo "      UDP 51820 → ${HOME_SERVER_IP:-<LAN-IP-сервера>}:51820  (AmneziaWG)"
-        echo "      UDP 51821 → ${HOME_SERVER_IP:-<LAN-IP-сервера>}:51821  (WireGuard)"
+        if [[ "${SERVER_MODE:-hosted}" == "gateway" ]]; then
+            echo -e "${BOLD}━━━ GATEWAY MODE: Настройка роутера ━━━${NC}"
+            echo "   1. Port Forward на роутере:"
+            echo "      UDP 51820 → ${HOME_SERVER_IP:-<LAN-IP-сервера>}:51820  (AmneziaWG)"
+            echo "      UDP 51821 → ${HOME_SERVER_IP:-<LAN-IP-сервера>}:51821  (WireGuard)"
+            echo ""
+            echo "   2. Для LAN-устройств (Smart TV, консоли) — опционально:"
+            echo "      Default Gateway = ${HOME_SERVER_IP:-<LAN-IP-сервера>}"
+            echo "      DNS Server      = ${HOME_SERVER_IP:-<LAN-IP-сервера>}"
+            echo "      (через DHCP или вручную на каждом устройстве)"
+            echo ""
+            echo "   3. НЕ менять default gateway на самом роутере (петля!)"
+            echo "   4. Рекомендуется UPS — сервер станет SPOF для LAN"
+            echo ""
+        fi
+
+        echo -e "${BOLD}━━━ ШАГ A: Проброс портов на роутере ━━━${NC}"
+        echo "   Войдите в веб-панель роутера (обычно http://192.168.1.1)"
+        echo "   Найдите раздел: Port Forwarding / Virtual Server / NAT"
+        echo "   Добавьте два правила (протокол UDP):"
         echo ""
-        echo "   2. Для LAN-устройств (Smart TV, консоли) — опционально:"
-        echo "      Default Gateway = ${HOME_SERVER_IP:-<LAN-IP-сервера>}"
-        echo "      DNS Server      = ${HOME_SERVER_IP:-<LAN-IP-сервера>}"
-        echo "      (через DHCP или вручную на каждом устройстве)"
+        echo "   ┌────────────────────────────────────────────────────────────┐"
+        echo "   │  Внешний порт  →  Внутренний адрес : Порт                 │"
+        echo "   │  UDP 51820     →  ${HOME_SERVER_IP:-<LAN-IP-сервера>} : 51820  (AmneziaWG)   │"
+        echo "   │  UDP 51821     →  ${HOME_SERVER_IP:-<LAN-IP-сервера>} : 51821  (WireGuard)   │"
+        echo "   └────────────────────────────────────────────────────────────┘"
         echo ""
-        echo "   3. НЕ менять default gateway на самом роутере (петля!)"
-        echo "   4. Рекомендуется UPS — сервер станет SPOF для LAN"
+        echo "   Проверка (с телефона через мобильный интернет):"
+        echo "   nc -vzu ${WG_HOST:-<внешний-IP>} 51820   # должен ответить"
         echo ""
+
+        echo -e "${BOLD}━━━ ШАГ B: Первый запуск Telegram-бота ━━━${NC}"
+        echo "   a) Откройте Telegram, найдите бота по имени (от @BotFather)"
+        echo "   b) Нажмите /start — первый пользователь автоматически станет"
+        echo "      администратором (без invite-кода)"
+        echo "   c) Следуйте инструкциям: выберите протокол → назовите устройство"
+        echo "   d) Получите конфиг и импортируйте в WireGuard / AmneziaWG"
+        echo ""
+
+        echo -e "${BOLD}━━━ ШАГ C: mTLS сертификат для Grafana/панели (опционально) ━━━${NC}"
+        echo "   mTLS CA уже создан на VPS: /opt/vpn/nginx/mtls/ca.crt"
+        echo "   Для доступа к Grafana (https://VPS:8443/grafana/) нужен клиентский cert."
+        echo "   Через бот: /renew-cert — получить .p12 файл для браузера"
+        echo "   Grafana: https://${VPS_IP:-<VPS_IP>}:8443/grafana/"
+        echo "   Логин: admin / Пароль: ${GRAFANA_PASSWORD:-<см. /opt/vpn/.env>}"
+        echo ""
+
+        if [[ "${USE_CLOUDFLARE:-n}" == "y" && -n "${CF_CDN_HOSTNAME:-}" ]]; then
+            echo -e "${BOLD}━━━ ШАГ D: CDN-стек (Cloudflare Worker настроен) ━━━${NC}"
+            echo "   Worker: https://${CF_CDN_HOSTNAME}"
+            echo "   Стек автоматически активируется watchdog как самый устойчивый fallback."
+            echo "   Для ручного переключения: /switch cdn (через Telegram-бот)"
+            echo ""
+        fi
+
+        echo -e "${BOLD}━━━ КОМАНДЫ ДИАГНОСТИКИ ━━━${NC}"
+        echo "   wg show                                  — пиры WireGuard"
+        echo "   systemctl status watchdog                — агент"
+        echo "   journalctl -u watchdog -f                — логи агента"
+        echo "   nft list set inet vpn blocked_static | wc -l"
+        echo "                                            — заблокированных IP"
+        echo "   docker compose -f /opt/vpn/docker-compose.yml ps"
+        echo "                                            — контейнеры"
+        echo "   curl -sf http://localhost:8080/status -H 'Authorization: Bearer \$(grep '^WATCHDOG_API_TOKEN=' /opt/vpn/.env | cut -d= -f2-)'"
+        echo "                                            — статус watchdog"
+        echo ""
+        echo -e "${BOLD}━━━ SSH ДОСТУП ━━━${NC}"
+        echo "   Домашний сервер: ssh sysadmin@${HOME_SERVER_IP:-<IP>}"
+        echo "   VPS (через туннель): ssh -i /root/.ssh/vpn_id_ed25519 sysadmin@10.177.2.2"
+        echo ""
+        echo "   Документация: https://github.com/Cyrillicspb/vpn-infra/blob/master/docs/"
+        echo ""
+        echo "╚══════════════════════════════════════════════════════════════════╝"
     fi
-
-    echo -e "${BOLD}━━━ ШАГ A: Проброс портов на роутере ━━━${NC}"
-    echo "   Войдите в веб-панель роутера (обычно http://192.168.1.1)"
-    echo "   Найдите раздел: Port Forwarding / Virtual Server / NAT"
-    echo "   Добавьте два правила (протокол UDP):"
-    echo ""
-    echo "   ┌────────────────────────────────────────────────────────────┐"
-    echo "   │  Внешний порт  →  Внутренний адрес : Порт                 │"
-    echo "   │  UDP 51820     →  ${HOME_SERVER_IP:-<LAN-IP-сервера>} : 51820  (AmneziaWG)   │"
-    echo "   │  UDP 51821     →  ${HOME_SERVER_IP:-<LAN-IP-сервера>} : 51821  (WireGuard)   │"
-    echo "   └────────────────────────────────────────────────────────────┘"
-    echo ""
-    echo "   Проверка (с телефона через мобильный интернет):"
-    echo "   nc -vzu ${WG_HOST:-<внешний-IP>} 51820   # должен ответить"
-    echo ""
-
-    echo -e "${BOLD}━━━ ШАГ B: Первый запуск Telegram-бота ━━━${NC}"
-    echo "   a) Откройте Telegram, найдите бота по имени (от @BotFather)"
-    echo "   b) Нажмите /start — первый пользователь автоматически станет"
-    echo "      администратором (без invite-кода)"
-    echo "   c) Следуйте инструкциям: выберите протокол → назовите устройство"
-    echo "   d) Получите конфиг и импортируйте в WireGuard / AmneziaWG"
-    echo ""
-
-    echo -e "${BOLD}━━━ ШАГ C: mTLS сертификат для Grafana/панели (опционально) ━━━${NC}"
-    echo "   mTLS CA уже создан на VPS: /opt/vpn/nginx/mtls/ca.crt"
-    echo "   Для доступа к Grafana (https://VPS:8443/grafana/) нужен клиентский cert."
-    echo "   Через бот: /renew-cert — получить .p12 файл для браузера"
-    echo "   Grafana: https://${VPS_IP:-<VPS_IP>}:8443/grafana/"
-    echo "   Логин: admin / Пароль: ${GRAFANA_PASSWORD:-<см. /opt/vpn/.env>}"
-    echo ""
-
-    if [[ "${USE_CLOUDFLARE:-n}" == "y" && -n "${CF_CDN_HOSTNAME:-}" ]]; then
-        echo -e "${BOLD}━━━ ШАГ D: CDN-стек (Cloudflare Worker настроен) ━━━${NC}"
-        echo "   Worker: https://${CF_CDN_HOSTNAME}"
-        echo "   Стек автоматически активируется watchdog как самый устойчивый fallback."
-        echo "   Для ручного переключения: /switch cdn (через Telegram-бот)"
-        echo ""
-    fi
-
-    echo -e "${BOLD}━━━ КОМАНДЫ ДИАГНОСТИКИ ━━━${NC}"
-    echo "   wg show                                  — пиры WireGuard"
-    echo "   systemctl status watchdog                — агент"
-    echo "   journalctl -u watchdog -f                — логи агента"
-    echo "   nft list set inet vpn blocked_static | wc -l"
-    echo "                                            — заблокированных IP"
-    echo "   docker compose -f /opt/vpn/docker-compose.yml ps"
-    echo "                                            — контейнеры"
-    echo "   curl -sf http://localhost:8080/status -H 'Authorization: Bearer \$(grep '^WATCHDOG_API_TOKEN=' /opt/vpn/.env | cut -d= -f2-)'"
-    echo "                                            — статус watchdog"
-    echo ""
-    echo -e "${BOLD}━━━ SSH ДОСТУП ━━━${NC}"
-    echo "   Домашний сервер: ssh sysadmin@${HOME_SERVER_IP:-<IP>}"
-    echo "   VPS (через туннель): ssh -i /root/.ssh/vpn_id_ed25519 sysadmin@10.177.2.2"
-    echo ""
-    echo "   Документация: https://github.com/Cyrillicspb/vpn-infra/blob/master/docs/"
-    echo ""
-    echo "╚══════════════════════════════════════════════════════════════════╝"
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
