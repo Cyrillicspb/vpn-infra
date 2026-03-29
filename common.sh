@@ -25,7 +25,7 @@ NC='\033[0m'
 TOTAL_STEPS=61
 STATE_FILE="/opt/vpn/.setup-state"
 ENV_FILE="/opt/vpn/.env"
-COMPACT_OUTPUT="${VPN_NONINTERACTIVE:-}"
+COMPACT_OUTPUT="${VPN_COMPACT_OUTPUT:-${VPN_NONINTERACTIVE:-}}"
 
 # ── Логирование ───────────────────────────────────────────────────────────────
 _log_emit() {

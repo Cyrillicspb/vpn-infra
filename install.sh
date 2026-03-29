@@ -47,7 +47,7 @@ count_tar_archives() {
     local dir="$1"
     local files=()
     shopt -s nullglob
-    files=("${dir}"/*.tar.gz)
+    files=("${dir}"/*.tar.gz "${dir}"/docker-images/*.tar.gz)
     shopt -u nullglob
     printf '%d' "${#files[@]}"
 }
@@ -207,6 +207,7 @@ else
         info "Скачиваем ${_asset}..."
         if download_with_progress "$_docker_url" "/tmp/${_asset}" "${_asset}"; then
             tar xzf "/tmp/${_asset}" -C "$DOCKER_IMAGES_DIR" \
+                --strip-components=1 \
                 --no-same-permissions --no-same-owner --overwrite 2>/dev/null || true
             rm -f "/tmp/${_asset}"
             ok "${_asset} скачан и распакован"
@@ -233,4 +234,4 @@ fi
 echo ""
 info "Запускаем установщик setup.sh..."
 echo ""
-exec env VPN_NONINTERACTIVE=1 bash "${OPT_VPN}/setup.sh"
+exec env VPN_COMPACT_OUTPUT=1 bash "${OPT_VPN}/setup.sh"
