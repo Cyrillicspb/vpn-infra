@@ -103,7 +103,10 @@ chmod +x "${OPT_VPN}/setup.sh" "${OPT_VPN}/install-home.sh" \
 # ── 3. Docker-образы из GitHub Releases ───────────────────────────────────────
 # Основной архив: docker-images.tar.gz (home phase 1).
 # Дополнительные архивы monitoring/VPS скачиваются opportunistically.
-_img_count=$(ls "${DOCKER_IMAGES_DIR}"/*.tar.gz 2>/dev/null | wc -l || echo 0)
+shopt -s nullglob
+_docker_archives=("${DOCKER_IMAGES_DIR}"/*.tar.gz)
+shopt -u nullglob
+_img_count=${#_docker_archives[@]}
 if [[ "$_img_count" -gt 0 ]]; then
     ok "Docker-образы уже есть: ${_img_count} файлов в ${DOCKER_IMAGES_DIR}"
 else
