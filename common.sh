@@ -87,32 +87,22 @@ install_bundled_package_group() {
 
     local _tmp_apt
     _tmp_apt="$(mktemp -d /tmp/vpn-bundle-apt.XXXXXX)"
-    mkdir -p "${_tmp_apt}/empty" "${_tmp_apt}/lists/partial"
-    printf 'deb [trusted=yes] file:%s ./\n' "$dir" > "${_tmp_apt}/bundle.list"
+    mkdir -p "${_tmp_apt}/archives/partial"
+    find "$dir" -maxdepth 1 -type f -name '*.deb' -exec cp -f {} "${_tmp_apt}/archives/" \;
 
     env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
-        apt-get \
-            -o Dir::Etc::sourcelist="${_tmp_apt}/bundle.list" \
-            -o Dir::Etc::sourceparts="${_tmp_apt}/empty" \
-            -o Dir::State::lists="${_tmp_apt}/lists" \
-            -o APT::Get::List-Cleanup=0 \
-            -o Acquire::Languages=none \
-            update -qq
+        dpkg -i "${_tmp_apt}"/archives/*.deb >/dev/null 2>&1 || true
 
     if [[ -n "$COMPACT_OUTPUT" ]]; then
         env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
             apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 \
-            -o Dir::Etc::sourcelist="${_tmp_apt}/bundle.list" \
-            -o Dir::Etc::sourceparts="${_tmp_apt}/empty" \
-            -o Dir::State::lists="${_tmp_apt}/lists" \
-            install --no-install-recommends -y "${_bundle_pkgs[@]}"
+            -o Dir::Cache::archives="${_tmp_apt}/archives" \
+            install --no-download --no-install-recommends -y "${_bundle_pkgs[@]}"
     else
         env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
             apt-get \
-            -o Dir::Etc::sourcelist="${_tmp_apt}/bundle.list" \
-            -o Dir::Etc::sourceparts="${_tmp_apt}/empty" \
-            -o Dir::State::lists="${_tmp_apt}/lists" \
-            install --no-install-recommends -y "${_bundle_pkgs[@]}"
+            -o Dir::Cache::archives="${_tmp_apt}/archives" \
+            install --no-download --no-install-recommends -y "${_bundle_pkgs[@]}"
     fi
 
     rm -rf "${_tmp_apt}"

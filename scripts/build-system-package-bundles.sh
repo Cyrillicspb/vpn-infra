@@ -162,21 +162,14 @@ validate_group_bundle() {
         bash -lc "
 set -euo pipefail
 tmp_apt=\$(mktemp -d /tmp/vpn-bundle-apt.XXXXXX)
-mkdir -p \"\$tmp_apt/empty\" \"\$tmp_apt/lists/partial\"
-printf 'deb [trusted=yes] file:/repo/${group_dir} ./\n' > \"\$tmp_apt/bundle.list\"
-apt-get \
-  -o Dir::Etc::sourcelist=\"\$tmp_apt/bundle.list\" \
-  -o Dir::Etc::sourceparts=\"\$tmp_apt/empty\" \
-  -o Dir::State::lists=\"\$tmp_apt/lists\" \
-  -o APT::Get::List-Cleanup=0 \
-  update -qq
+mkdir -p \"\$tmp_apt/archives/partial\"
+cp -f /repo/${group_dir}/*.deb \"\$tmp_apt/archives/\"
 mapfile -t bundle_pkgs < '/repo/${group_dir}/group-packages.txt'
+dpkg -i \"\$tmp_apt\"/archives/*.deb >/dev/null 2>&1 || true
 env DEBIAN_FRONTEND=noninteractive \
   apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 \
-  -o Dir::Etc::sourcelist=\"\$tmp_apt/bundle.list\" \
-  -o Dir::Etc::sourceparts=\"\$tmp_apt/empty\" \
-  -o Dir::State::lists=\"\$tmp_apt/lists\" \
-  install -y --no-install-recommends \"\${bundle_pkgs[@]}\"
+  -o Dir::Cache::archives=\"\$tmp_apt/archives\" \
+  install -y --no-download --no-install-recommends \"\${bundle_pkgs[@]}\"
 rm -rf \"\$tmp_apt\"
 "
 }
