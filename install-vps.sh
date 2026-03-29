@@ -238,16 +238,17 @@ else
     step "Проверка SSH-доступа к VPS (sysadmin)"
 
     if ! vps_exec "echo ok" &>/dev/null 2>&1; then
-        log_warn "SSH с ключом не работает. Попытка через sshpass..."
+        log_warn "SSH с ключом не работает. Пытаемся установить ключ для sysadmin по паролю..."
 
         [[ -z "${VPS_ROOT_PASSWORD:-}" ]] && \
             die "VPS_ROOT_PASSWORD не задан. Установите пароль в ${ENV_FILE} и повторите."
 
-        sshpass -p "${VPS_ROOT_PASSWORD}" ssh-copy-id \
-            -i "${SSH_KEY}.pub" \
-            -p "${VPS_SSH_PORT:-22}" \
-            -o StrictHostKeyChecking=no \
-            "sysadmin@${VPS_IP}" 2>/dev/null \
+        ssh_install_public_key \
+            "${VPS_ROOT_PASSWORD}" \
+            "sysadmin" \
+            "${VPS_IP}" \
+            "${VPS_SSH_PORT:-22}" \
+            "${SSH_KEY}.pub" 2>/dev/null \
             || die "SSH к VPS недоступен. Проверьте IP (${VPS_IP}), порт (${VPS_SSH_PORT:-22}) и учётные данные."
     fi
 
