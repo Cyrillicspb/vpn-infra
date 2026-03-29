@@ -62,16 +62,17 @@ class OptionsScreen(WizardScreen):
     OptionsScreen {{ layout: vertical; }}
     {WIZARD_BASE_CSS}
     #opt-form {{
-        width: 74;
+        width: 1fr;
+        max-width: 96;
         height: auto;
         margin: 1 2;
         padding: 1 2;
         border: round $primary;
     }}
-    .opt-row {{ height: 3; margin-bottom: 0; }}
-    .vi-row {{ height: 3; margin-bottom: 0; }}
-    .opt-label {{ width: 28; padding-top: 1; color: $text-muted; }}
-    .opt-hint {{ height: 1; color: $text-muted; margin-left: 28; margin-bottom: 1; }}
+    .opt-row {{ height: auto; min-height: 3; margin-bottom: 0; }}
+    .vi-row {{ height: auto; min-height: 3; margin-bottom: 0; }}
+    .opt-label {{ width: 20; padding-top: 1; color: $text-muted; }}
+    .opt-hint {{ height: auto; color: $text-muted; margin-left: 20; margin-bottom: 1; }}
     .toggle-btn {{ width: 8; }}
     .opt-details {{
         height: auto;
@@ -102,7 +103,7 @@ class OptionsScreen(WizardScreen):
         padding-top: 1;
         padding-left: 1;
         color: $text-muted;
-        width: 14;
+        width: 12;
     }}
     """
 
@@ -182,15 +183,14 @@ class OptionsScreen(WizardScreen):
                             id="ddns-subdomain",
                         )
                         yield Static(".duckdns.org", classes="subdomain-suffix")
-                    with Horizontal(classes="opt-row"):
-                        yield Label("DuckDNS Token:", classes="opt-label")
-                        yield Input(
-                            value=state.ddns_token,
-                            placeholder="a1b2c3d4-e5f6-...",
-                            id="ddns-token",
-                            password=True,
-                        )
-                    yield Static("UUID токен с сайта duckdns.org", classes="opt-hint")
+                    yield ValidatedInput(
+                        "DuckDNS Token",
+                        input_id="ddns-token",
+                        placeholder="a1b2c3d4-e5f6-...",
+                        value=state.ddns_token,
+                        password=True,
+                        hint="UUID токен с сайта duckdns.org",
+                    )
 
                 yield Static(
                     "\n[dim]Все опции можно настроить позже вручную\n"
