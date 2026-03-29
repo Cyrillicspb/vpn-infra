@@ -55,6 +55,28 @@ if [[ -z "${VPN_NONINTERACTIVE:-}" ]] && [[ "${1:-}" != "--from-export" ]]; then
             echo "[INFO] Запускаем TUI из system Python..." >&2
             exec python3 "$_TUI"
         elif [[ -d "${REPO_DIR}/installers/gui/wheels" ]] && ls "${REPO_DIR}/installers/gui/wheels"/*.whl >/dev/null 2>&1; then
+            echo "[INFO] Пробуем прямой запуск TUI из локального wheel bundle..." >&2
+            if python3 - "${REPO_DIR}/installers/gui/wheels" "$_TUI" <<'PY'
+import pathlib
+import runpy
+import sys
+
+wheel_dir = pathlib.Path(sys.argv[1])
+tui_path = sys.argv[2]
+wheel_paths = sorted(str(p) for p in wheel_dir.glob("*.whl"))
+if not wheel_paths:
+    raise SystemExit(1)
+
+for wheel_path in reversed(wheel_paths):
+    sys.path.insert(0, wheel_path)
+
+sys.argv = [tui_path]
+runpy.run_path(tui_path, run_name="__main__")
+PY
+            then
+                exit 0
+            fi
+
             echo "[INFO] Подготавливаем isolated installer venv из локальных wheel..." >&2
             if {
                 python3 - "${REPO_DIR}/installers/gui/wheels" "${_INSTALLER_VENV}" >/dev/null 2>&1 <<'PY'
