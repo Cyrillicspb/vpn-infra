@@ -21,8 +21,30 @@ COMPOSE_FILE="/opt/vpn/docker-compose.yml"
 LOG="/var/log/vpn-docker-phase2.log"
 CRON_FILE="/etc/cron.d/vpn-docker-phase2"
 PROXY_CONF="/etc/systemd/system/docker.service.d/http-proxy.conf"
+TG_SEND="/opt/vpn/scripts/tg-send.sh"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
+
+notify_admin() {
+    local msg="$1"
+
+    if [[ -z "${TELEGRAM_ADMIN_CHAT_ID:-}" ]]; then
+        log "WARN: TELEGRAM_ADMIN_CHAT_ID не задан — уведомление пропущено"
+        return 1
+    fi
+
+    if [[ -x "$TG_SEND" ]]; then
+        if "$TG_SEND" "${TELEGRAM_ADMIN_CHAT_ID}" "$msg"; then
+            log "Уведомление в Telegram отправлено"
+            return 0
+        fi
+        log "WARN: tg-send.sh не смог отправить уведомление"
+        return 1
+    fi
+
+    log "WARN: tg-send.sh не найден — уведомление пропущено"
+    return 1
+}
 
 critical_containers_running() {
     docker ps --format '{{.Names}}' 2>/dev/null | grep -Eq \
@@ -178,13 +200,11 @@ if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^prometheus$"; then
     log "Cron-задание удалено"
 
     # Отправляем уведомление в Telegram
-    _msg="✅ *Мониторинг установлен* — Prometheus, Grafana, Alertmanager запущены после поднятия VPN"
-    [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_ADMIN_CHAT_ID:-}" ]] && \
-        curl -sf --max-time 10 \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d "chat_id=${TELEGRAM_ADMIN_CHAT_ID}" \
-            --data-urlencode "text=${_msg}" \
-            -d "parse_mode=Markdown" >/dev/null 2>&1 || true
+    _msg="✅ Мониторинг доустановлен
+
+Prometheus, Grafana, Alertmanager и node-exporter запущены.
+Фаза 2 завершена, система поднята полностью."
+    notify_admin "$_msg" || true
 else
     log "WARN: prometheus не запустился — попробуем при следующем запуске cron"
     [[ $_failed -gt 0 ]] && log "  Не скачалось образов: ${_failed}"
