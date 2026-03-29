@@ -21,9 +21,11 @@ XRAY_XHTTP_SHORT_ID="${XRAY_XHTTP_SHORT_ID:-${XRAY_GRPC_SHORT_ID:-}}"
 : "${XRAY_XHTTP_SHORT_ID:?XRAY_XHTTP_SHORT_ID or XRAY_GRPC_SHORT_ID is required}"
 : "${XHTTP_CDN_PASSWORD:?XHTTP_CDN_PASSWORD is required}"
 
-mkdir -p /opt/vpn/xray
+sudo install -d -m 755 /opt/vpn/xray
+tmp_config="$(mktemp /tmp/reality-xhttp.XXXXXX.json)"
+trap 'rm -f "$tmp_config"' EXIT
 
-cat > /opt/vpn/xray/reality-xhttp.json <<EOF
+cat > "$tmp_config" <<EOF
 {
     "log": {"loglevel": "warning"},
     "inbounds": [{
@@ -68,5 +70,7 @@ cat > /opt/vpn/xray/reality-xhttp.json <<EOF
     ]
 }
 EOF
+
+sudo install -m 644 "$tmp_config" /opt/vpn/xray/reality-xhttp.json
 
 echo "OK: /opt/vpn/xray/reality-xhttp.json rendered"
