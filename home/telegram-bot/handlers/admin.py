@@ -855,21 +855,22 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
         await message.answer(
             f"🎫 <b>Bootstrap-инвайт создан.</b>\n\n"
             f"Перешлите клиенту конфиги ниже через любой мессенджер (WhatsApp, Email и т.д.).\n"
-            f"Код для регистрации: <code>{code}</code>\n\n"
+            f"Код для регистрации будет отправлен следующим сообщением отдельно.\n\n"
             f"<b>Сценарий A — Telegram заблокирован (основной):</b>\n"
             f"1. Установите AmneziaWG или WireGuard\n"
             f"2. Импортируйте один из конфигов (.conf или QR)\n"
             f"3. Включите VPN → откройте Telegram → напишите /start\n"
-            f"4. Введите код: <code>{code}</code>\n"
+            f"4. Введите полученный код\n"
             f"→ Конфиг останется прежним, AWG-пир сохранится как постоянный.\n\n"
             f"<b>Сценарий B — Telegram уже доступен (без VPN):</b>\n"
             f"1. Напишите боту /start\n"
-            f"2. Введите код: <code>{code}</code>\n"
+            f"2. Введите полученный код\n"
             f"→ Временные конфиги будут удалены, бот создаст и пришлёт новый конфиг.\n\n"
             f"Бот: {bot_link}\n"
             f"⏳ Bootstrap-конфиги активны 24 часа.",
             parse_mode="HTML",
         )
+        await message.answer(f"<code>{code}</code>", parse_mode="HTML")
         # AWG конфиг + QR
         await message.answer_document(
             BufferedInputFile(awg_conf.encode(), filename="vpn-bootstrap-awg.conf"),
@@ -2269,15 +2270,16 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
         await cb.message.answer(
             f"🎫 <b>Bootstrap-инвайт создан.</b>\n\n"
             f"Перешлите конфиги клиенту через любой мессенджер (WhatsApp, Email и т.д.).\n"
-            f"Код: <code>{code}</code>\n\n"
+            f"Код будет отправлен следующим сообщением отдельно.\n\n"
             f"<b>Сценарий A — Telegram заблокирован:</b>\n"
-            f"AWG/WG → включить VPN → /start → ввести код.\n"
+            f"AWG/WG → включить VPN → /start → ввести полученный код.\n"
             f"→ Конфиг останется прежним.\n\n"
             f"<b>Сценарий B — Telegram доступен без VPN:</b>\n"
-            f"/start → ввести код (без VPN).\n"
+            f"/start → ввести полученный код (без VPN).\n"
             f"→ Временные конфиги удалятся, бот пришлёт новый.\n\n"
             f"Бот: {bot_link}\n⏳ Bootstrap-конфиги активны 24 часа.", parse_mode="HTML",
         )
+        await cb.message.answer(f"<code>{code}</code>", parse_mode="HTML")
         await cb.message.answer_document(
             BufferedInputFile(awg_conf.encode(), filename="vpn-bootstrap-awg.conf"),
             caption="📄 AmneziaWG (рекомендуется)")
