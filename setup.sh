@@ -1651,8 +1651,8 @@ EOF
 
         sleep 10
         echo ""
-        log_info "Статус сервисов:"
-        for svc in nftables dnsmasq hysteria2 watchdog awg-quick@wg0; do
+        log_info "Статус базовых сервисов:"
+        for svc in nftables dnsmasq hysteria2 watchdog; do
             if systemctl is-active "$svc" &>/dev/null 2>&1; then
                 log_ok "  ${svc}: активен"
             else
@@ -1727,6 +1727,27 @@ phase4() {
     run_test "Policy routing: fwmark 0x1 → lookup 200" \
         "ip rule show | grep -qE 'fwmark 0x1 lookup (200|marked)'" \
         "systemctl status vpn-routes; systemctl restart vpn-routes; ip rule show"
+
+    # Шаг 54 — WireGuard / AmneziaWG
+    step "Тест WireGuard / AmneziaWG"
+    run_test "awg-quick@wg0 active" \
+        "systemctl is-active --quiet awg-quick@wg0" \
+        "systemctl status awg-quick@wg0; journalctl -u awg-quick@wg0 -n 30"
+    run_test "wg-quick@wg1 active" \
+        "systemctl is-active --quiet wg-quick@wg1" \
+        "systemctl status wg-quick@wg1; journalctl -u wg-quick@wg1 -n 30"
+    run_test "wg0 interface UP" \
+        "ip link show wg0 2>/dev/null | grep -q UP" \
+        "ip link show wg0; wg show wg0"
+    run_test "wg1 interface UP" \
+        "ip link show wg1 2>/dev/null | grep -q UP" \
+        "ip link show wg1; wg show wg1"
+    run_test "UDP 51820 listening" \
+        "ss -ulnp | grep -q ':51820 '" \
+        "ss -ulnp | grep 51820; wg show wg0"
+    run_test "UDP 51821 listening" \
+        "ss -ulnp | grep -q ':51821 '" \
+        "ss -ulnp | grep 51821; wg show wg1"
 
     # Шаг 55 — Мониторинг (домашний сервер)
     step "Тест мониторинга (домашний сервер)"

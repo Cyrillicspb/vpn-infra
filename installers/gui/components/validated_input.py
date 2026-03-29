@@ -15,11 +15,18 @@ class ValidatedInput(Widget):
         height: auto;
         margin-bottom: 1;
     }
-    ValidatedInput .vi-row { height: 3; }
+    ValidatedInput .vi-row {
+        height: auto;
+        min-height: 3;
+    }
     ValidatedInput .vi-label {
         width: 22;
         padding-top: 1;
         color: $text-muted;
+    }
+    ValidatedInput Input {
+        height: auto;
+        min-height: 3;
     }
     ValidatedInput .vi-hint {
         height: 1;

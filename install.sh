@@ -201,8 +201,8 @@ if ! ls "${_installer_wheels_dir}"/*.whl >/dev/null 2>&1; then
 fi
 
 # ── 4. Docker-образы из GitHub Releases ───────────────────────────────────────
-# Основной архив: docker-images.tar.gz (home phase 1).
-# Дополнительные архивы monitoring/VPS скачиваются opportunistically.
+# Основные архивы домашней установки: docker-images.tar.gz + docker-images-monitoring.tar.gz.
+# Без monitoring bundle установка считается неполной и должна завершаться ошибкой.
 _img_count="$(count_tar_archives "${DOCKER_IMAGES_DIR}")"
 case "$_img_count" in
     ''|*[!0-9]*) _img_count=0 ;;
@@ -211,6 +211,7 @@ if [[ "$_img_count" -gt 0 ]]; then
     ok "Docker-образы уже есть: ${_img_count} файлов в ${DOCKER_IMAGES_DIR}"
 else
     _bundle_assets=(docker-images.tar.gz docker-images-monitoring.tar.gz docker-images-vps.tar.gz)
+    _required_assets=(docker-images.tar.gz docker-images-monitoring.tar.gz)
     if [[ -f "${OPT_VPN}/scripts/docker-image-groups.sh" ]]; then
         # shellcheck source=scripts/docker-image-groups.sh
         source "${OPT_VPN}/scripts/docker-image-groups.sh"
@@ -224,12 +225,25 @@ else
     info "Поиск архивов Docker-образов в GitHub Releases..."
     mkdir -p "$DOCKER_IMAGES_DIR"
     _downloaded=0
+    _missing_required=()
 
     for _asset in "${_bundle_assets[@]}"; do
         _docker_url="$(release_asset_url "$_release_json" "$_asset")"
+        _is_required=0
+        for _required in "${_required_assets[@]}"; do
+            if [[ "$_asset" == "$_required" ]]; then
+                _is_required=1
+                break
+            fi
+        done
 
         if [[ -z "$_docker_url" ]]; then
-            warn "${_asset} не найден в релизе"
+            if [[ "$_is_required" -eq 1 ]]; then
+                err "${_asset} не найден в релизе"
+                _missing_required+=("$_asset")
+            else
+                warn "${_asset} не найден в релизе"
+            fi
             continue
         fi
 
@@ -242,9 +256,20 @@ else
             ok "${_asset} скачан и распакован"
             ((_downloaded++)) || true
         else
-            warn "Не удалось скачать ${_asset}"
+            if [[ "$_is_required" -eq 1 ]]; then
+                err "Не удалось скачать ${_asset}"
+                _missing_required+=("$_asset")
+            else
+                warn "Не удалось скачать ${_asset}"
+            fi
         fi
     done
+
+    if (( ${#_missing_required[@]} > 0 )); then
+        err "Не удалось подготовить обязательные Docker bundles: ${_missing_required[*]}"
+        err "Без них monitoring не будет поднят во время установки."
+        exit 1
+    fi
 
     _img_count="$(count_tar_archives "${DOCKER_IMAGES_DIR}")"
     case "$_img_count" in
@@ -253,9 +278,9 @@ else
     if [[ "$_downloaded" -gt 0 && "$_img_count" -gt 0 ]]; then
         ok "Docker-образы готовы: ${_img_count} файлов"
     else
-        warn "Локальный Docker image cache не скачан"
-        warn "Сгенерируйте и загрузите архивы: bash dev/save-docker-images.sh"
-        warn "Образы будут скачаны через зеркала/registry во время установки"
+        err "Локальный Docker image cache не подготовлен"
+        err "Сгенерируйте и загрузите архивы: bash dev/save-docker-images.sh"
+        exit 1
     fi
 fi
 

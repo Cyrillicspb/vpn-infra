@@ -193,7 +193,7 @@ services:
   # ── Prometheus — сбор метрик ─────────────────────────────────────────────────
   # Scrape: home node-exporter (host.docker.internal:9100), VPS (10.177.2.2:9100),
   #         watchdog (host.docker.internal:8080), alertmanager (alertmanager:9093)
-  # Profile "monitoring": устанавливается в фазе 2 (после поднятия VPN-стека)
+  # Profile "monitoring": обязателен и поднимается во время основной установки
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus

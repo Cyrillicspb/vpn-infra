@@ -47,6 +47,16 @@ class NetworkScreen(WizardScreen):
         width: 1fr;
         height: 5;
     }}
+    #btn-mode-a.selected, #btn-mode-b.selected {{
+        background: $success-darken-2;
+        color: $text;
+        border: tall $success;
+        text-style: bold;
+    }}
+    #btn-mode-a.selected:focus, #btn-mode-b.selected:focus {{
+        background: $success;
+        color: $text;
+    }}
     #gateway-row {{
         height: auto;
         margin: 0 2;
@@ -80,11 +90,13 @@ class NetworkScreen(WizardScreen):
                     "[A] Сервер на хостинге\n    (публичный IP)",
                     id="btn-mode-a",
                     variant="success" if mode == "A" else "default",
+                    classes="selected" if mode == "A" else "",
                 )
                 yield Button(
                     "[B] Сервер дома\n    за роутером",
                     id="btn-mode-b",
                     variant="success" if mode == "B" else "default",
+                    classes="selected" if mode == "B" else "",
                 )
             with Vertical(id="gateway-row", classes=hidden_cls):
                 yield Label("Внешний IP роутера (для HAIRPIN NAT):")
@@ -172,14 +184,22 @@ class NetworkScreen(WizardScreen):
         log = self.query_one("#net-log", RichLog)
         if event.button.id == "btn-mode-a":
             self.app.state.server_mode = "A"
-            self.query_one("#btn-mode-a", Button).variant = "success"
-            self.query_one("#btn-mode-b", Button).variant = "default"
+            btn_a = self.query_one("#btn-mode-a", Button)
+            btn_b = self.query_one("#btn-mode-b", Button)
+            btn_a.variant = "success"
+            btn_b.variant = "default"
+            btn_a.add_class("selected")
+            btn_b.remove_class("selected")
             self.query_one("#gateway-row").add_class("hidden")
             self.app.state.save()
         elif event.button.id == "btn-mode-b":
             self.app.state.server_mode = "B"
-            self.query_one("#btn-mode-a", Button).variant = "default"
-            self.query_one("#btn-mode-b", Button).variant = "success"
+            btn_a = self.query_one("#btn-mode-a", Button)
+            btn_b = self.query_one("#btn-mode-b", Button)
+            btn_a.variant = "default"
+            btn_b.variant = "success"
+            btn_a.remove_class("selected")
+            btn_b.add_class("selected")
             self.query_one("#gateway-row").remove_class("hidden")
             self.app.state.save()
             log.write("ВНИМАНИЕ: Gateway Mode — сервер станет SPOF для LAN-сети")

@@ -86,6 +86,17 @@ class VPNInstallerApp(App):
     Footer {
         background: $primary-darken-2;
     }
+    Button {
+        text-style: none;
+    }
+    Button:focus {
+        text-style: bold;
+        border: tall $accent;
+    }
+    Button.-active,
+    Button:hover {
+        text-style: bold;
+    }
     """
 
     def on_mount(self) -> None:

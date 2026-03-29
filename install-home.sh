@@ -1337,15 +1337,8 @@ EOF
         fi
     fi
 
-    # Доустановка мониторинга (фаза 2): каждые 15 мин пока prometheus не запустится
-    # docker-phase2.sh сам удалит это задание после успешной установки
-    cat > /etc/cron.d/vpn-docker-phase2 << 'EOF'
-# Фаза 2: мониторинг скачивается после поднятия VPN (скрипт идемпотентен)
-*/15 * * * * root bash /opt/vpn/scripts/docker-phase2.sh >/dev/null 2>&1
-EOF
-    touch /var/log/vpn-docker-phase2.log
-    chmod 640 /var/log/vpn-docker-phase2.log
-    log_ok "Cron фазы 2 (мониторинг): /etc/cron.d/vpn-docker-phase2"
+    rm -f /etc/cron.d/vpn-docker-phase2 /var/log/vpn-docker-phase2.log 2>/dev/null || true
+    log_ok "Отложенная фаза мониторинга отключена: monitoring поднимается сразу"
 
     log_ok "Cron-задания настроены"
     step_done "step29_configure_cron"
@@ -1365,26 +1358,17 @@ else
 
     # Копируем конфиги из репозитория
     REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    if [[ -d "${REPO_DIR}/home/prometheus" ]]; then
-        rsync -a "${REPO_DIR}/home/prometheus/" /opt/vpn/prometheus/
-        log_ok "prometheus конфиг скопирован"
-    else
-        log_warn "home/prometheus/ не найден — пропускаем"
-    fi
+    [[ -d "${REPO_DIR}/home/prometheus" ]] || die "home/prometheus/ не найден"
+    rsync -a "${REPO_DIR}/home/prometheus/" /opt/vpn/prometheus/
+    log_ok "prometheus конфиг скопирован"
 
-    if [[ -d "${REPO_DIR}/home/alertmanager" ]]; then
-        rsync -a "${REPO_DIR}/home/alertmanager/" /opt/vpn/alertmanager/
-        log_ok "alertmanager конфиг скопирован"
-    else
-        log_warn "home/alertmanager/ не найден — пропускаем"
-    fi
+    [[ -d "${REPO_DIR}/home/alertmanager" ]] || die "home/alertmanager/ не найден"
+    rsync -a "${REPO_DIR}/home/alertmanager/" /opt/vpn/alertmanager/
+    log_ok "alertmanager конфиг скопирован"
 
-    if [[ -d "${REPO_DIR}/home/grafana" ]]; then
-        rsync -a "${REPO_DIR}/home/grafana/" /opt/vpn/grafana/
-        log_ok "grafana конфиг скопирован"
-    else
-        log_warn "home/grafana/ не найден — пропускаем"
-    fi
+    [[ -d "${REPO_DIR}/home/grafana" ]] || die "home/grafana/ не найден"
+    rsync -a "${REPO_DIR}/home/grafana/" /opt/vpn/grafana/
+    log_ok "grafana конфиг скопирован"
 
     # Записываем watchdog-token для Prometheus и Alertmanager
     if [[ -n "${WATCHDOG_API_TOKEN:-}" ]]; then
@@ -1393,7 +1377,7 @@ else
         chmod 644 /opt/vpn/prometheus/watchdog-token /opt/vpn/alertmanager/watchdog-token
         log_ok "watchdog-token записан"
     else
-        log_warn "WATCHDOG_API_TOKEN не задан — watchdog-token пустой"
+        die "WATCHDOG_API_TOKEN не задан — monitoring не сможет опрашивать watchdog"
     fi
 
     step_done "step30_monitoring_configs"
@@ -1404,9 +1388,8 @@ fi
 if is_done "step31_docker_compose_home"; then
     step_skip "step31_docker_compose_home"
 else
-    step "Запуск Docker Compose — фаза 1 (VPN-контейнеры)"
-    log_info "Фаза 1: telegram-bot, xray-client-xhttp, xray-client-vision, xray-client-cdn, socket-proxy, nginx"
-    log_info "Фаза 2 (мониторинг): после поднятия VPN — автоматически через cron"
+    step "Запуск Docker Compose (VPN + monitoring)"
+    log_info "Поднимаем telegram-bot, xray-клиенты, socket-proxy, nginx и monitoring в одном проходе"
 
     set -o allexport; source "$ENV_FILE"; set +o allexport
 
@@ -1443,8 +1426,7 @@ else
     done
 
     if [[ ! -f "$COMPOSE_FILE" ]]; then
-        log_warn "docker-compose.yml не найден в /opt/vpn/"
-        log_warn "Docker-контейнеры будут запущены позже."
+        die "docker-compose.yml не найден в /opt/vpn/"
     else
         cd /opt/vpn
 
@@ -1531,7 +1513,7 @@ else
                 log_info "Docker Hub доступен напрямую"
             else
                 log_warn "Docker Hub и зеркала недоступны — build telegram-bot пропущен"
-                log_warn "Мониторинг и бот установятся автоматически после поднятия VPN (~15 мин)"
+                log_warn "Требуется локальный Docker image cache, загруженный через install.sh"
             fi
 
             # Обновляем daemon.json — только рабочее зеркало
@@ -1550,13 +1532,17 @@ EOF
                 sleep 3
             fi
 
-            # Pull только фазы 1 (без мониторинга — те в профиле monitoring)
-            log_info "Pull образов фазы 1 (по одному, макс. 120 сек)..."
+            # Pull всех обязательных сервисов, включая monitoring.
+            log_info "Pull обязательных образов (по одному, макс. 120 сек)..."
             _pull_failed=0
-            PHASE1_SERVICES=(nginx socket-proxy xray-client-xhttp xray-client-vision xray-client-cdn)
-            for _svc in "${PHASE1_SERVICES[@]}"; do
+            REQUIRED_SERVICES=(
+                nginx socket-proxy
+                xray-client-xhttp xray-client-vision xray-client-cdn
+                prometheus alertmanager grafana grafana-renderer node-exporter
+            )
+            for _svc in "${REQUIRED_SERVICES[@]}"; do
                 log_info "  pull: $_svc ..."
-                if timeout 120 docker compose pull "$_svc" >> /tmp/docker-pull.log 2>&1; then
+                if timeout 120 docker compose --profile monitoring pull "$_svc" >> /tmp/docker-pull.log 2>&1; then
                     log_ok "  $_svc OK"
                 else
                     log_warn "  $_svc не скачался"
@@ -1564,7 +1550,7 @@ EOF
                 fi
             done
             [[ $_pull_failed -gt 0 ]] && \
-                log_warn "${_pull_failed} образов не скачались — запустятся позже"
+                die "Не удалось скачать ${_pull_failed} обязательных образов"
         fi
 
         # ── Build telegram-bot (python:3.12-slim уже в docker load или зеркале) ──
@@ -1580,7 +1566,7 @@ EOF
                     timeout 300 bash -c "DOCKER_BASE_PYTHON='python:3.12-slim' docker compose build telegram-bot" \
                         2>&1 | tee /tmp/docker-build-fallback.log
                     _BUILD_EXIT=${PIPESTATUS[0]}
-                    [[ $_BUILD_EXIT -ne 0 ]] && log_warn "Fallback build провалился — запустите вручную после подъёма VPN"
+                    [[ $_BUILD_EXIT -ne 0 ]] && die "Fallback build telegram-bot провалился"
                 fi
             fi
         fi
@@ -1588,24 +1574,14 @@ EOF
         if docker image inspect vpn-telegram-bot:latest >/dev/null 2>&1; then
             _telegram_bot_ready=1
         else
-            log_warn "Локальный образ telegram-bot отсутствует — пропускаем его запуск на фазе 1"
-            log_warn "Повторная сборка и запуск будут выполнены docker-phase2.sh после поднятия VPN"
+            die "Локальный образ telegram-bot отсутствует после сборки"
         fi
 
-        # ── Запуск фазы 1 (без профиля monitoring) ────────────────────────────────
-        # Мониторинг-контейнеры имеют profiles: [monitoring] и не запускаются здесь.
-        # docker-phase2.sh (cron каждые 15 мин) поднимет их после старта VPN-стека.
-        log_info "Запуск контейнеров фазы 1..."
-        if [[ $_telegram_bot_ready -eq 1 ]]; then
-            timeout 300 docker compose up -d --no-build --pull missing --remove-orphans \
-                2>&1 | tee /tmp/docker-up.log
-        else
-            timeout 300 docker compose up -d --no-build --pull missing --remove-orphans \
-                socket-proxy xray-client-xhttp xray-client-vision xray-client-cdn nginx \
-                2>&1 | tee /tmp/docker-up.log
-        fi
+        log_info "Запуск контейнеров (включая профиль monitoring)..."
+        timeout 300 docker compose --profile monitoring up -d --no-build --pull missing --remove-orphans \
+            2>&1 | tee /tmp/docker-up.log
         _UP_EXIT=${PIPESTATUS[0]}
-        [[ $_UP_EXIT -ne 0 ]] && log_warn "docker compose up завершился с ошибкой (код $_UP_EXIT)"
+        [[ $_UP_EXIT -ne 0 ]] && die "docker compose up завершился с ошибкой (код $_UP_EXIT)"
 
         set -e; set -o pipefail
 
@@ -1623,12 +1599,15 @@ EOF
 
         sleep 5
         echo ""
-        log_info "Статус Docker-контейнеров (фаза 1):"
+        log_info "Статус Docker-контейнеров:"
         docker compose ps 2>/dev/null || true
-        log_info "Мониторинг: установится автоматически после поднятия VPN (~15 мин)"
+        for _required_container in prometheus grafana alertmanager node-exporter telegram-bot; do
+            docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${_required_container}$" \
+                || die "Обязательный контейнер ${_required_container} не запущен"
+        done
     fi
 
-    log_ok "Фаза 1 (домашний сервер) завершена"
+    log_ok "Docker Compose (домашний сервер) завершён"
     step_done "step31_docker_compose_home"
 fi
 
@@ -1727,26 +1706,19 @@ else
     step_done "step33_ssh_proxy"
 fi
 
-# ── Шаг 34: Попытка фазы 2 (мониторинг) если VPN уже работает ───────────────
-# Актуально при повторном запуске install-home.sh когда VPN уже поднят.
-# При первой установке VPN ещё не настроен → docker-phase2.sh (cron) сделает это позже.
+# ── Шаг 34: Проверка обязательного monitoring ────────────────────────────────
 
 if is_done "step34_docker_phase2_attempt"; then
     step_skip "step34_docker_phase2_attempt"
 else
-    step "Попытка фазы 2: мониторинг через VPN (если VPN готов)"
-
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^prometheus$"; then
-        log_ok "Мониторинг уже работает — пропускаем"
-    elif [[ -x /opt/vpn/scripts/docker-phase2.sh ]]; then
-        log_info "Запускаем docker-phase2.sh (скрипт сам проверит активный VPN-стек)..."
-        bash /opt/vpn/scripts/docker-phase2.sh || true
-        log_info "Если VPN ещё не готов — cron повторит попытку автоматически"
-        log_info "  Cron docker-phase2.sh: каждые 15 мин (/etc/cron.d/vpn-docker-phase2)"
-    else
-        log_warn "docker-phase2.sh не найден — мониторинг установите вручную после поднятия VPN:"
-        log_warn "  bash /opt/vpn/scripts/docker-phase2.sh"
-    fi
+    step "Проверка обязательного monitoring"
+    for _required_container in prometheus grafana alertmanager node-exporter; do
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${_required_container}$"; then
+            log_ok "monitoring: ${_required_container}"
+        else
+            die "monitoring контейнер ${_required_container} не запущен"
+        fi
+    done
 
     step_done "step34_docker_phase2_attempt"
 fi

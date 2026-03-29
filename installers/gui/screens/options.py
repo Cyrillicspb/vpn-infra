@@ -95,6 +95,16 @@ class OptionsScreen(WizardScreen):
     .opt-label {{ width: 20; padding-top: 1; color: $text-muted; }}
     .opt-hint {{ height: auto; color: $text-muted; margin-left: 20; margin-bottom: 1; }}
     .toggle-btn {{ width: 8; }}
+    .toggle-btn.selected {{
+        background: $success-darken-2;
+        color: $text;
+        border: tall $success;
+        text-style: bold;
+    }}
+    .toggle-btn.selected:focus {{
+        background: $success;
+        color: $text;
+    }}
     .opt-details {{
         height: auto;
         margin-top: 1;
@@ -158,7 +168,7 @@ class OptionsScreen(WizardScreen):
                         "Да" if cf_on else "Нет",
                         id="btn-cf",
                         variant="success" if cf_on else "default",
-                        classes="toggle-btn",
+                        classes="toggle-btn selected" if cf_on else "toggle-btn",
                     )
                 yield Static(
                     "Stack 1 (VLESS+WS через Cloudflare CDN)",
@@ -205,7 +215,7 @@ class OptionsScreen(WizardScreen):
                         "Да" if ddns_on else "Нет",
                         id="btn-ddns",
                         variant="success" if ddns_on else "default",
-                        classes="toggle-btn",
+                        classes="toggle-btn selected" if ddns_on else "toggle-btn",
                     )
                 yield Static(
                     "Нужен при динамическом IP роутера",
@@ -324,6 +334,7 @@ class OptionsScreen(WizardScreen):
         btn = self.query_one(f"#{btn_id}", Button)
         btn.label = "Да" if new_val == "y" else "Нет"
         btn.variant = "success" if new_val == "y" else "default"
+        btn.set_class(new_val == "y", "selected")
         self.app.state.save()
         self._validate()
 

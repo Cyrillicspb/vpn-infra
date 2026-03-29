@@ -238,25 +238,14 @@ for cname in telegram-bot socket-proxy xray-client-xhttp xray-client-vision xray
     fi
 done
 
-# Фаза 2 — мониторинг (WARN если контейнер существует но не running; INFO если нет вообще)
-_monitoring_installed=false
-docker_exists prometheus && _monitoring_installed=true
-
-if $_monitoring_installed; then
-    for cname in prometheus grafana alertmanager node-exporter; do
-        if docker_running "$cname"; then
-            ok "мониторинг: $cname"
-        else
-            STATUS=$(docker inspect --format '{{.State.Status}}' "$cname" 2>/dev/null || echo "не найден")
-            warn "мониторинг: $cname" "$STATUS"
-        fi
-    done
-else
-    log_info "Мониторинг (фаза 2) ещё не установлен"
-    log_info "  Устанавливается автоматически через cron после поднятия VPN (~15 мин)"
-    log_info "  Вручную: bash /opt/vpn/scripts/docker-phase2.sh"
-    REPORT_LINES+=("ℹ️ Мониторинг: установится после поднятия VPN")
-fi
+for cname in prometheus grafana alertmanager node-exporter; do
+    if docker_running "$cname"; then
+        ok "мониторинг: $cname"
+    else
+        STATUS=$(docker inspect --format '{{.State.Status}}' "$cname" 2>/dev/null || echo "не найден")
+        fail "мониторинг: $cname" "$STATUS"
+    fi
+done
 
 # ═══════════════════════════════════════════════════════════════════════════════
 section "6. Xray клиенты (SOCKS5)"
@@ -330,15 +319,10 @@ fi
 section "8. Мониторинг"
 # ═══════════════════════════════════════════════════════════════════════════════
 
-if $_monitoring_installed; then
-    check "Prometheus :9090"    "curl -sf --max-time 5 http://172.20.0.30:9090/-/healthy"   "docker logs prometheus"
-    check "Grafana :3000"       "curl -sf --max-time 5 http://172.20.0.32:3000/api/health"  "docker logs grafana"
-    check "Alertmanager :9093"  "curl -sf --max-time 5 http://172.20.0.31:9093/-/healthy"   "docker logs alertmanager"
-    check "node-exporter :9100" "curl -sf --max-time 5 http://127.0.0.1:9100/metrics"       "docker logs node-exporter"
-else
-    log_info "Мониторинг ещё не поднят — проверки секции 8 пропущены"
-    REPORT_LINES+=("ℹ️ Секция 8: мониторинг пропущен до завершения docker-phase2")
-fi
+check "Prometheus :9090"    "curl -sf --max-time 5 http://172.20.0.30:9090/-/healthy"   "docker logs prometheus"
+check "Grafana :3000"       "curl -sf --max-time 5 http://172.20.0.32:3000/api/health"  "docker logs grafana"
+check "Alertmanager :9093"  "curl -sf --max-time 5 http://172.20.0.31:9093/-/healthy"   "docker logs alertmanager"
+check "node-exporter :9100" "curl -sf --max-time 5 http://127.0.0.1:9100/metrics"       "docker logs node-exporter"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 section "9. VPS подключение"
