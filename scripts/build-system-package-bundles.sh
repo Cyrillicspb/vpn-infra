@@ -122,6 +122,9 @@ download_group_packages() {
         ubuntu:24.04 \
         bash -lc "
 set -euo pipefail
+apt-get update -qq
+apt-get install -y -qq ca-certificates
+
 rm -rf /etc/apt/sources.list.d/*
 rm -rf /etc/apt/keyrings/*
 rm -f /etc/apt/sources.list
