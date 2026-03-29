@@ -118,6 +118,67 @@ _compact_emit_failure_log() {
     fi
 }
 
+ssh_password_exec() {
+    local password="$1"; shift
+    local tmpdir askpass rc
+    tmpdir="$(mktemp -d /tmp/vpn-askpass.XXXXXX)"
+    askpass="${tmpdir}/askpass.sh"
+    cat >"$askpass" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$VPN_INSTALLER_SSH_PASSWORD"
+EOF
+    chmod 700 "$askpass"
+
+    set +e
+    env \
+        SSH_ASKPASS="$askpass" \
+        SSH_ASKPASS_REQUIRE=force \
+        VPN_INSTALLER_SSH_PASSWORD="$password" \
+        DISPLAY="vpn-installer:0" \
+        setsid "$@" </dev/null
+    rc=$?
+    set -e
+
+    rm -rf "$tmpdir"
+    return "$rc"
+}
+
+ssh_install_public_key() {
+    local password="$1"
+    local user="$2"
+    local host="$3"
+    local port="$4"
+    local pubkey_path="$5"
+    local proxy_cmd="${6:-}"
+    local pubkey key_b64 remote_script remote_cmd
+    local ssh_args=(
+        ssh
+        -o StrictHostKeyChecking=no
+        -o UserKnownHostsFile=/dev/null
+        -o ConnectTimeout=15
+        -o NumberOfPasswordPrompts=1
+        -o PreferredAuthentications=password
+        -o PubkeyAuthentication=no
+        -o PasswordAuthentication=yes
+        -o KbdInteractiveAuthentication=no
+        -p "$port"
+    )
+    [[ -n "$proxy_cmd" ]] && ssh_args+=(-o "ProxyCommand=${proxy_cmd}")
+
+    pubkey="$(cat "$pubkey_path")" || return 1
+    key_b64="$(printf '%s' "$pubkey" | base64 -w0)"
+    remote_script="KEY=\$(printf '%s' '$key_b64' | base64 -d); \
+umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; \
+chmod 700 ~/.ssh; chmod 600 ~/.ssh/authorized_keys; \
+grep -qxF \"\$KEY\" ~/.ssh/authorized_keys || printf '%s\n' \"\$KEY\" >> ~/.ssh/authorized_keys"
+    printf -v remote_cmd '%q' "$remote_script"
+
+    ssh_password_exec "$password" \
+        "${ssh_args[@]}" \
+        "${user}@${host}" \
+        "bash -lc ${remote_cmd}"
+}
+
 install_elapsed_seconds() {
     local now
     now="$(date +%s)"

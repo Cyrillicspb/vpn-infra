@@ -36,7 +36,7 @@ echo "║       VPS Reset — vpn-infra dev tool     ║"
 echo "╚══════════════════════════════════════════╝"
 echo -e "${NC}"
 warn "Этот скрипт сбросит VPS к состоянию 'чистая Ubuntu с SSH'."
-warn "Docker engine, сеть, /opt/vpn и пароль root НЕ трогаются."
+warn "Docker engine, сеть и пароль root НЕ трогаются."
 echo ""
 
 # ── 1. SSH — сбросить к дефолту ──────────────────────────────────────────────
@@ -63,10 +63,17 @@ fi
 # Убираем AllowUsers и MaxAuthTries (могли быть ужесточены setup.sh)
 sed -i '/^AllowUsers/d'    "$SSHD_CFG"
 sed -i '/^MaxAuthTries/d'  "$SSHD_CFG"
+sed -i '/^PermitTunnel/d'  "$SSHD_CFG"
+sed -i '/^ClientAliveInterval/d' "$SSHD_CFG"
+sed -i '/^ClientAliveCountMax/d' "$SSHD_CFG"
+sed -i '/^Port 443$/d' "$SSHD_CFG"
+sed -i '/^Port 8022$/d' "$SSHD_CFG"
+grep -q '^Port 22$' "$SSHD_CFG" || echo "Port 22" >> "$SSHD_CFG"
 
 info "Удаляем authorized_keys..."
 rm -f /root/.ssh/authorized_keys
 rm -f /home/sysadmin/.ssh/authorized_keys 2>/dev/null || true
+rm -f /tmp/vpn-bootstrap.pem /tmp/c.pem /tmp/k.pem 2>/dev/null || true
 
 info "Перезапускаем ssh..."
 systemctl restart ssh && ok "ssh перезапущен" || warn "ssh restart завершился с ошибкой"
@@ -178,9 +185,19 @@ ok "systemd daemon-reload выполнен"
 
 set -e
 
-# ── 6. Cron — удалить vpn-задания ────────────────────────────────────────────
-step "6. Cron"
+# ── 6. Пользователь sysadmin, cron и docker overrides ───────────────────────
+step "6. sysadmin / cron / docker overrides"
 set +e
+
+if id sysadmin &>/dev/null; then
+    info "Удаляем пользователя sysadmin и его home..."
+    userdel -r sysadmin 2>/dev/null && ok "sysadmin удалён" || warn "userdel sysadmin завершился с ошибкой"
+else
+    info "Пользователь sysadmin не найден"
+fi
+
+rm -f /etc/sudoers.d/sysadmin
+ok "sudoers для sysadmin удалён"
 
 if crontab -l 2>/dev/null | grep -q '/opt/vpn'; then
     info "Удаляем cron-задания vpn-infra..."
@@ -189,6 +206,19 @@ if crontab -l 2>/dev/null | grep -q '/opt/vpn'; then
 else
     info "vpn-infra cron-заданий не найдено"
 fi
+
+rm -f /etc/cron.d/vpn-mirror /etc/cron.d/vps-healthcheck
+rm -f /var/log/vpn-mirror.log /var/log/vps-healthcheck.log 2>/dev/null || true
+ok "vpn-infra cron.d файлы удалены"
+
+info "Удаляем docker overrides и локальные cache-хвосты..."
+rm -f /etc/docker/daemon.json
+rm -f /etc/systemd/system/docker.service.d/http-proxy.conf
+rmdir /etc/systemd/system/docker.service.d 2>/dev/null || true
+rm -rf /tmp/vpn-system-packages
+rm -rf /opt/vpn/docker-images 2>/dev/null || true
+systemctl daemon-reload 2>/dev/null || true
+systemctl restart docker 2>/dev/null && ok "docker перезапущен без overrides" || warn "docker restart завершился с ошибкой"
 
 set -e
 
@@ -199,6 +229,7 @@ set +e
 info "Сбрасываем .setup-state и .env.bak..."
 rm -f /opt/vpn/.setup-state
 rm -f /opt/vpn/.env.bak
+rm -f /opt/vpn/.env
 ok "setup state очищен (/opt/vpn остался)"
 
 set -e

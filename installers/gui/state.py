@@ -39,6 +39,8 @@ class InstallerState:
     # Progress tracking
     current_step: int = 0
     setup_completed: bool = False
+    # Volatile validation state
+    vps_check_passed: bool = False
 
     @classmethod
     def load(cls) -> "InstallerState":
@@ -58,7 +60,7 @@ class InstallerState:
     def save(self) -> None:
         """Persist non-sensitive fields only (no passwords/tokens)."""
         data = asdict(self)
-        for secret in ("vps_root_password", "telegram_bot_token", "ddns_token"):
+        for secret in ("vps_root_password", "telegram_bot_token", "ddns_token", "vps_check_passed"):
             data.pop(secret, None)
         STATE_FILE.write_text(json.dumps(data, indent=2))
         STATE_FILE.chmod(0o600)

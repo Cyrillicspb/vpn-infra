@@ -390,15 +390,19 @@ phase0() {
         ask VPS_ROOT_PASSWORD "Пароль root на VPS (для первоначального подключения)" yes
 
         # Проверяем пароль реальным SSH-соединением прямо на экране ввода.
-        # Позволяет убедиться в правильности credentials до начала установки.
-        if command -v sshpass &>/dev/null && [[ -n "${VPS_ROOT_PASSWORD:-}" ]]; then
+        # Используем SSH_ASKPASS helper, чтобы не зависеть от sshpass.
+        if [[ -n "${VPS_ROOT_PASSWORD:-}" ]]; then
             while true; do
                 log_info "Проверка root@${VPS_IP}:${VPS_SSH_PORT}..."
-                if sshpass -p "${VPS_ROOT_PASSWORD}" ssh \
+                if ssh_password_exec "${VPS_ROOT_PASSWORD}" ssh \
                         -o StrictHostKeyChecking=no \
+                        -o UserKnownHostsFile=/dev/null \
                         -o ConnectTimeout=10 \
+                        -o NumberOfPasswordPrompts=1 \
+                        -o PreferredAuthentications=password \
                         -o PasswordAuthentication=yes \
                         -o PubkeyAuthentication=no \
+                        -o KbdInteractiveAuthentication=no \
                         -p "${VPS_SSH_PORT}" \
                         "root@${VPS_IP}" "exit 0" 2>/dev/null; then
                     log_ok "root@${VPS_IP} — авторизация успешна"
@@ -420,8 +424,6 @@ phase0() {
                     esac
                 fi
             done
-        else
-            log_info "sshpass недоступен — проверка пароля пропущена"
         fi
 
         echo ""
@@ -794,21 +796,23 @@ for a in d.get('assets',[]):
                 "root@${VPS_IP}" "$@"
         }
 
-        # Копирование ключа на VPS через sshpass
+        # Копирование ключа на VPS через password-auth + authorized_keys
         log_info "Копирование SSH-ключа на VPS..."
         SSH_KEY_TEST_OPTS=(-p "${SSH_PORT}" -i /root/.ssh/vpn_id_ed25519
                            -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes)
         [[ -n "${PROXY_CMD:-}" ]] && SSH_KEY_TEST_OPTS+=(-o "ProxyCommand=${PROXY_CMD}")
         if ssh "${SSH_KEY_TEST_OPTS[@]}" "root@${VPS_IP}" "echo ok" 2>/dev/null; then
-            log_ok "SSH-ключ уже установлен на VPS, пропускаем ssh-copy-id"
+            log_ok "SSH-ключ уже установлен на VPS, пропускаем установку"
         else
             [[ -z "${VPS_ROOT_PASSWORD:-}" ]] && \
                 die "VPS_ROOT_PASSWORD не задан. Добавьте в /opt/vpn/.env и повторите."
-            SSH_COPY_OPTS=(-i /root/.ssh/vpn_id_ed25519.pub -p "${SSH_PORT}"
-                           -o StrictHostKeyChecking=no)
-            [[ -n "${PROXY_CMD:-}" ]] && SSH_COPY_OPTS+=(-o "ProxyCommand=${PROXY_CMD}")
-            sshpass -p "${VPS_ROOT_PASSWORD}" ssh-copy-id \
-                "${SSH_COPY_OPTS[@]}" "root@${VPS_IP}" 2>/dev/null \
+            ssh_install_public_key \
+                "${VPS_ROOT_PASSWORD}" \
+                "root" \
+                "${VPS_IP}" \
+                "${SSH_PORT}" \
+                "/root/.ssh/vpn_id_ed25519.pub" \
+                "${PROXY_CMD:-}" 2>/dev/null \
                 || die "Не удалось скопировать SSH-ключ на VPS. Проверьте пароль root."
             log_ok "SSH-ключ скопирован на VPS"
         fi
