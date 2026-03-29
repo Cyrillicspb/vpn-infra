@@ -167,6 +167,16 @@ logging.basicConfig(
 logger = logging.getLogger("watchdog")
 
 
+def installed_version_label() -> str:
+    try:
+        version = Path("/opt/vpn/version").read_text(encoding="utf-8").strip()
+        if version and all(ch.isdigit() or ch == "." for ch in version):
+            return f"v{version}"
+    except Exception:
+        pass
+    return "v4.0"
+
+
 # ---------------------------------------------------------------------------
 # Утилиты
 # ---------------------------------------------------------------------------
@@ -3894,7 +3904,11 @@ async def on_startup() -> None:
 
     _notify_systemd(b"READY=1")
     logger.info(f"Watchdog готов. Стек: {state.active_stack}, degraded={state.degraded_mode}")
-    alert(f"✅ *Watchdog v4.0 запущен*\nСтек: {state.active_stack}\nVPS: {VPS_IP or 'не задан'}")
+    alert(
+        f"✅ *Watchdog {installed_version_label()} запущен*\n"
+        f"Стек: {state.active_stack}\n"
+        f"VPS: {VPS_IP or 'не задан'}"
+    )
 
 
 @app.on_event("shutdown")

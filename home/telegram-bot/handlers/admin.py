@@ -73,6 +73,16 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+def _installed_version_label() -> str:
+    try:
+        version = Path("/opt/vpn/version").read_text(encoding="utf-8").strip()
+        if version and all(ch.isdigit() or ch == "." for ch in version):
+            return f"v{version}"
+    except Exception:
+        pass
+    return "v4.0"
+
+
 def _dpi_status_summary(st: dict) -> tuple[str, str, str]:
     enabled = st.get("enabled", False)
     zapret = st.get("zapret_running", False)
@@ -1592,9 +1602,11 @@ async def cb_adm_dashboard(cb: CallbackQuery, **kw):
 
         vps_ips = [v["ip"] for v in s.get("vps_list", [])]
         vps_str = ", ".join(f"<code>{ip}</code>" for ip in vps_ips) if vps_ips else "—"
+        version_label = _installed_version_label()
 
         text = (
             f"<b>🏠 Дашборд</b>\n\n"
+            f"<b>Версия:</b> <code>{version_label}</code>\n"
             f"<b>Режим:</b> {mode_str}\n"
             f"<b>Туннель:</b> <code>{active_stack}</code>{rtt_str}\n"
             f"<b>Primary:</b> <code>{primary}</code>\n"
