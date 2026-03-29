@@ -13,7 +13,7 @@ from pathlib import Path
 # ── Bootstrap: проверка textual ───────────────────────────────────────────────
 
 MIN_PYTHON = (3, 10)
-TEXTUAL_REQ = "textual>=0.47.0"
+TEXTUAL_REQ = "textual==0.47.1"
 
 
 def _detect_install_version() -> str:

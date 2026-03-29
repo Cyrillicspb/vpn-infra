@@ -55,16 +55,6 @@ if [[ -z "${VPN_NONINTERACTIVE:-}" ]] && [[ "${1:-}" != "--from-export" ]]; then
             echo "[INFO] Запускаем TUI из system Python..." >&2
             exec python3 "$_TUI"
         elif [[ -d "${REPO_DIR}/installers/gui/wheels" ]] && ls "${REPO_DIR}/installers/gui/wheels"/*.whl >/dev/null 2>&1; then
-            echo "[INFO] Пробуем прямой запуск TUI из локального wheel bundle..." >&2
-            _WHEEL_PYTHONPATH="$(printf '%s:' "${REPO_DIR}"/installers/gui/wheels/*.whl 2>/dev/null || true)"
-            _WHEEL_PYTHONPATH="${_WHEEL_PYTHONPATH%:}"
-            if [[ -n "${_WHEEL_PYTHONPATH}" ]] \
-                && PYTHONPATH="${_WHEEL_PYTHONPATH}${PYTHONPATH:+:${PYTHONPATH}}" \
-                   python3 -c 'import textual' >/dev/null 2>&1; then
-                echo "[INFO] Запускаем TUI напрямую через python3 + PYTHONPATH..." >&2
-                exec env PYTHONPATH="${_WHEEL_PYTHONPATH}${PYTHONPATH:+:${PYTHONPATH}}" python3 "$_TUI"
-            fi
-
             echo "[INFO] Подготавливаем isolated installer venv из локальных wheel..." >&2
             if {
                 python3 - "${REPO_DIR}/installers/gui/wheels" "${_INSTALLER_VENV}" >/dev/null 2>&1 <<'PY'
