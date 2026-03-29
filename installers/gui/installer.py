@@ -16,6 +16,25 @@ MIN_PYTHON = (3, 10)
 TEXTUAL_REQ = "textual>=0.47.0"
 
 
+def _detect_install_version() -> str:
+    env_version = os.environ.get("VPN_INSTALL_VERSION", "").strip()
+    if env_version:
+        return env_version.lstrip("v")
+
+    version_file = Path(__file__).resolve().parents[2] / "version"
+    try:
+        version_value = version_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+    if version_value and all(ch.isdigit() or ch == "." for ch in version_value):
+        return version_value
+    return ""
+
+
+INSTALL_VERSION = _detect_install_version()
+
+
 def _bootstrap() -> None:
     if sys.version_info < MIN_PYTHON:
         sys.exit(
@@ -49,8 +68,8 @@ from state import InstallerState
 class VPNInstallerApp(App):
     """TUI-установщик VPN Infrastructure v4.0."""
 
-    TITLE = "VPN Infrastructure"
-    SUB_TITLE = "v4.0 Installer"
+    TITLE = "vpn-infra"
+    SUB_TITLE = f"Installer v{INSTALL_VERSION}" if INSTALL_VERSION else "Installer"
 
     BINDINGS = [
         Binding("ctrl+c", "quit", "Выход", priority=True, show=True),

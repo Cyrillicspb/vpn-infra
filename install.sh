@@ -43,6 +43,22 @@ ok()    { echo -e "${GREEN}[✓]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
 err()   { echo -e "${RED}[✗]${NC} $*" >&2; }
 
+read_install_version() {
+    local version_file="$1"
+    local version_value=""
+    if [[ -f "$version_file" ]]; then
+        version_value="$(tr -d '[:space:]' < "$version_file" 2>/dev/null || true)"
+    fi
+    case "$version_value" in
+        ''|*[!0-9.]*)
+            return 1
+            ;;
+        *)
+            printf '%s' "$version_value"
+            ;;
+    esac
+}
+
 count_tar_archives() {
     local dir="$1"
     local files=()
@@ -57,6 +73,14 @@ release_asset_url() {
     printf '%s' "$release_json" \
         | grep -o "\"browser_download_url\": *\"[^\"]*${asset_name}\"" \
         | grep -o 'https://[^"]*' | head -1 || true
+}
+
+release_tag_name() {
+    local release_json="$1"
+    printf '%s' "$release_json" \
+        | grep -o '"tag_name": *"[^"]*"' \
+        | sed -E 's/^"tag_name": *"([^"]*)"$/\1/' \
+        | head -1 || true
 }
 
 download_with_progress() {
@@ -83,7 +107,12 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-info "vpn-infra bootstrap install"
+_release_json="$(curl -sf --max-time 20 "$RELEASE_API" 2>/dev/null || true)"
+_bootstrap_tag="$(release_tag_name "$_release_json")"
+case "$_bootstrap_tag" in
+    v*) info "vpn-infra bootstrap install ${_bootstrap_tag}" ;;
+    *)  info "vpn-infra bootstrap install" ;;
+esac
 
 # ── 1. Минимальные зависимости ────────────────────────────────────────────────
 info "Проверка базовых зависимостей (curl, git)..."
@@ -146,7 +175,10 @@ fi
 chmod +x "${OPT_VPN}/setup.sh" "${OPT_VPN}/install-home.sh" \
     "${OPT_VPN}/scripts/docker-load-cache.sh" "${OPT_VPN}/dev/save-docker-images.sh" 2>/dev/null || true
 
-_release_json="$(curl -sf --max-time 20 "$RELEASE_API" 2>/dev/null || true)"
+_install_version="$(read_install_version "${OPT_VPN}/version" || true)"
+if [[ -n "${_install_version}" ]]; then
+    info "Устанавливаемая версия: v${_install_version}"
+fi
 
 # ── 3. TUI wheels из GitHub Releases ──────────────────────────────────────────
 _installer_wheels_dir="${OPT_VPN}/installers/gui/wheels"
@@ -232,7 +264,7 @@ echo ""
 info "Запускаем установщик setup.sh..."
 echo ""
 if [[ -r /dev/tty && -w /dev/tty ]]; then
-    exec </dev/tty >/dev/tty 2>/dev/tty env VPN_COMPACT_OUTPUT=1 bash "${OPT_VPN}/setup.sh"
+    exec </dev/tty >/dev/tty 2>/dev/tty env VPN_COMPACT_OUTPUT=1 VPN_INSTALL_VERSION="${_install_version:-}" bash "${OPT_VPN}/setup.sh"
 else
-    exec env VPN_COMPACT_OUTPUT=1 bash "${OPT_VPN}/setup.sh"
+    exec env VPN_COMPACT_OUTPUT=1 VPN_INSTALL_VERSION="${_install_version:-}" bash "${OPT_VPN}/setup.sh"
 fi
