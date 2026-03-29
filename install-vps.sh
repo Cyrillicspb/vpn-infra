@@ -822,7 +822,10 @@ HCEOF"
 # vps-healthcheck.sh — Мониторинг состояния VPS
 set -euo pipefail
 
-source /opt/vpn/.env 2>/dev/null || true
+if sudo test -f /opt/vpn/.env; then
+    # shellcheck disable=SC1091
+    source <(sudo cat /opt/vpn/.env)
+fi
 
 send_alert() {
     local msg=\"\$1\"
