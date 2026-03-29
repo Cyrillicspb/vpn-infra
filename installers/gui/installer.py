@@ -7,11 +7,10 @@ VPN Infrastructure TUI Installer
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 
-# ── Bootstrap: установка textual если отсутствует ─────────────────────────────
+# ── Bootstrap: проверка textual ───────────────────────────────────────────────
 
 MIN_PYTHON = (3, 10)
 TEXTUAL_REQ = "textual>=0.47.0"
@@ -26,26 +25,10 @@ def _bootstrap() -> None:
     try:
         import textual  # noqa: F401
     except ImportError:
-        print("Установка зависимостей (textual)...", flush=True)
-        # Убедиться что pip есть (на свежем Ubuntu 24.04 pip может отсутствовать)
-        subprocess.run(
-            [sys.executable, "-m", "ensurepip", "--default-pip"],
-            capture_output=True,
+        sys.exit(
+            "Модуль textual не установлен.\n"
+            "Запустите setup.sh для консольной установки или установите textual заранее."
         )
-        rc = subprocess.run(
-            [
-                sys.executable, "-m", "pip", "install",
-                TEXTUAL_REQ, "--quiet", "--break-system-packages", "--ignore-installed",
-            ],
-            stdout=subprocess.DEVNULL,
-        )
-        if rc.returncode != 0:
-            sys.exit(
-                "Не удалось установить textual.\n"
-                "Выполните: sudo apt install python3-pip && "
-                f"sudo pip3 install textual --break-system-packages"
-            )
-        print("Готово.", flush=True)
 
 
 _bootstrap()

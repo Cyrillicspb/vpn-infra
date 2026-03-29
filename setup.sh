@@ -46,12 +46,11 @@ if [[ -z "${VPN_NONINTERACTIVE:-}" ]] && [[ "${1:-}" != "--from-export" ]]; then
     fi
 
     if [[ -n "$_TUI" ]] && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
-        # Установить pip если отсутствует
-        if ! python3 -m pip --version &>/dev/null 2>&1; then
-            apt_quiet "Установка python3-pip и python3-venv" install -y -qq python3-pip python3-venv || true
+        if python3 -c 'import textual' 2>/dev/null; then
+            exec python3 "$_TUI"
+        else
+            echo "[WARN] textual не установлен — запускаем консольный установщик" >&2
         fi
-        # installer.py сам установит textual через _bootstrap()
-        exec python3 "$_TUI"
     fi
 fi
 
