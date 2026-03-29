@@ -679,6 +679,12 @@ else
             mapfile -t _vps_cache_images < <(docker_image_group_names vps-core)
             _copied_cache=0
             vps_exec "sudo install -d -m 755 /opt/vpn/docker-images && sudo chown sysadmin:sysadmin /opt/vpn/docker-images"
+            if [[ -f "${REPO_DIR}/scripts/docker-load-cache.sh" ]]; then
+                vps_copy "${REPO_DIR}/scripts/docker-load-cache.sh" "sysadmin@${VPS_IP}:/tmp/docker-load-cache.sh"
+                vps_exec "sudo install -d -m 755 /opt/vpn/scripts && \
+                    sudo install -m 755 /tmp/docker-load-cache.sh /opt/vpn/scripts/docker-load-cache.sh && \
+                    rm -f /tmp/docker-load-cache.sh"
+            fi
             for _img in "${_vps_cache_images[@]}"; do
                 _archive_name=$(docker_image_to_archive_name "$_img")
                 if [[ -f "/opt/vpn/docker-images/${_archive_name}" ]]; then
