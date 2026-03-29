@@ -71,6 +71,7 @@ NFT_STATIC      = Path("/etc/nftables-blocked-static.conf")
 DNSMASQ_DOMAINS = Path("/etc/dnsmasq.d/vpn-domains.conf")
 DNSMASQ_FORCE   = Path("/etc/dnsmasq.d/vpn-force.conf")
 DNSMASQ_DIRECT  = Path("/etc/dnsmasq.d/vpn-direct.conf")
+WATCHDOG_STATE  = Path("/opt/vpn/watchdog/state.json")
 MANUAL_VPN      = ROUTES_DIR / "manual-vpn.txt"
 MANUAL_DIRECT   = ROUTES_DIR / "manual-direct.txt"
 
@@ -760,6 +761,31 @@ def load_manual_vpn() -> tuple[set[ipaddress.IPv4Network], set[str]]:
     return networks, domains
 
 
+def load_active_dpi_domains() -> set[str]:
+    """
+    Считать домены активных DPI bypass сервисов из watchdog state.
+    Эти домены нельзя одновременно писать в blocked_dynamic, иначе dnsmasq
+    начинает заполнять только один set и DPI path теряет смысл.
+    """
+    domains: set[str] = set()
+    if not WATCHDOG_STATE.exists():
+        return domains
+    try:
+        data = json.loads(WATCHDOG_STATE.read_text(encoding="utf-8"))
+        for svc in data.get("dpi_services", []):
+            if not svc.get("enabled", True):
+                continue
+            for domain in svc.get("domains", []):
+                domain = str(domain).strip().lower().lstrip("*.")
+                if domain and _is_valid_domain(domain):
+                    domains.add(domain)
+    except Exception as exc:
+        log.warning(f"[dpi] Не удалось прочитать {WATCHDOG_STATE}: {exc}")
+    if domains:
+        log.info(f"[dpi] Активных DPI-доменов: {len(domains)}")
+    return domains
+
+
 # =============================================================================
 # Агрегация CIDR
 # =============================================================================
@@ -858,15 +884,16 @@ def write_nftables_static(networks: list[ipaddress.IPv4Network]) -> None:
 # =============================================================================
 # Запись dnsmasq конфига
 # =============================================================================
-def write_dnsmasq_config(
+def render_dnsmasq_config(
     domains: list[str],
-    out_file: Path,
+    out_name: str,
     vps_dns: str,
     header_comment: str = "Автогенерировано update-routes.py",
-) -> None:
+    exclude_domains: set[str] | None = None,
+) -> tuple[str, int, int]:
     now = datetime.now(timezone.utc).isoformat()
     lines: list[str] = [
-        f"# {out_file.name} — {header_comment}",
+        f"# {out_name} — {header_comment}",
         f"# Обновлено: {now}",
         f"# Доменов: {len(domains)}",
         "# НЕ РЕДАКТИРОВАТЬ ВРУЧНУЮ — перезаписывается update-routes.py",
@@ -874,20 +901,48 @@ def write_dnsmasq_config(
     ]
 
     written = 0
+    excluded = 0
+    exclude_domains = exclude_domains or set()
     for domain in sorted(set(domains)):
         domain = domain.strip().lower().lstrip("*.")
         if not domain or not _is_valid_domain(domain):
             continue
         if _is_direct_tld(domain):
             continue  # .ru/.рф → всегда прямое, не добавлять через VPS
+        if domain in exclude_domains:
+            excluded += 1
+            continue
         lines.append(f"server=/{domain}/{vps_dns}")
         lines.append(f"nftset=/{domain}/4#inet#vpn#blocked_dynamic")
         lines.append("")
         written += 1
 
+    return "\n".join(lines), written, excluded
+
+
+def write_dnsmasq_config(
+    domains: list[str],
+    out_file: Path,
+    vps_dns: str,
+    header_comment: str = "Автогенерировано update-routes.py",
+    exclude_domains: set[str] | None = None,
+) -> str:
+    content, written, excluded = render_dnsmasq_config(
+        domains,
+        out_file.name,
+        vps_dns,
+        header_comment=header_comment,
+        exclude_domains=exclude_domains,
+    )
+
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    out_file.write_text("\n".join(lines), encoding="utf-8")
-    log.info(f"{out_file.name}: {written} доменов (пропущено direct TLD: {len(domains) - written})")
+    out_file.write_text(content, encoding="utf-8")
+    log.info(
+        f"{out_file.name}: {written} доменов "
+        f"(пропущено: direct TLD/invalid/DPI duplicates = {len(domains) - written}, "
+        f"из них DPI duplicates = {excluded})"
+    )
+    return content
 
 
 # =============================================================================
@@ -952,15 +1007,15 @@ def apply_nftables() -> bool:
 def reload_dnsmasq() -> None:
     try:
         result = subprocess.run(
-            ["systemctl", "kill", "-s", "SIGHUP", "dnsmasq"],
-            capture_output=True, text=True, timeout=15,
+            ["systemctl", "restart", "dnsmasq"],
+            capture_output=True, text=True, timeout=30,
         )
         if result.returncode == 0:
-            log.info("dnsmasq перезагружен (SIGHUP)")
+            log.info("dnsmasq перезапущен (cache flushed)")
         else:
-            log.warning(f"dnsmasq reload: {result.stderr.strip()}")
+            log.warning(f"dnsmasq restart: {result.stderr.strip()}")
     except Exception as exc:
-        log.warning(f"dnsmasq reload failed: {exc}")
+        log.warning(f"dnsmasq restart failed: {exc}")
 
 
 # =============================================================================
@@ -1025,6 +1080,7 @@ def main() -> None:
     manual_networks, manual_domains = load_manual_vpn()
     all_networks.update(manual_networks)
     cidr_networks.update(manual_networks)
+    dpi_domains = load_active_dpi_domains()
 
     if not all_networks:
         log.error("Нет данных для обновления!")
@@ -1080,7 +1136,27 @@ def main() -> None:
         + "\n"
     )
     new_hash = content_hash(combined_content)
-    changed = (new_hash != old_hash)
+    dnsmasq_domains_content, _, _ = render_dnsmasq_config(
+        list(all_domains),
+        DNSMASQ_DOMAINS.name,
+        VPS_TUNNEL_IP,
+        header_comment="Базы РКН + статические домены",
+        exclude_domains=dpi_domains,
+    )
+    dnsmasq_force_content, _, _ = render_dnsmasq_config(
+        list(manual_domains),
+        DNSMASQ_FORCE.name,
+        VPS_TUNNEL_IP,
+        header_comment="manual-vpn.txt (добавлены через /vpn add)",
+        exclude_domains=dpi_domains,
+    )
+    current_dnsmasq_domains = DNSMASQ_DOMAINS.read_text(encoding="utf-8") if DNSMASQ_DOMAINS.exists() else ""
+    current_dnsmasq_force = DNSMASQ_FORCE.read_text(encoding="utf-8") if DNSMASQ_FORCE.exists() else ""
+    changed = (
+        new_hash != old_hash
+        or dnsmasq_domains_content != current_dnsmasq_domains
+        or dnsmasq_force_content != current_dnsmasq_force
+    )
 
     if not changed and not force:
         log.info("Маршруты не изменились — обновление не требуется (--force для принудительного)")
@@ -1100,21 +1176,32 @@ def main() -> None:
 
     write_nftables_static(nft_networks)
 
-    write_dnsmasq_config(
-        list(all_domains),
-        DNSMASQ_DOMAINS,
-        VPS_TUNNEL_IP,
-        header_comment="Базы РКН + статические домены",
-    )
-
-    write_dnsmasq_config(
-        list(manual_domains),
-        DNSMASQ_FORCE,
-        VPS_TUNNEL_IP,
-        header_comment="manual-vpn.txt (добавлены через /vpn add)",
-    )
+    DNSMASQ_DOMAINS.write_text(dnsmasq_domains_content, encoding="utf-8")
+    log.info(f"{DNSMASQ_DOMAINS.name}: конфиг записан")
+    DNSMASQ_FORCE.write_text(dnsmasq_force_content, encoding="utf-8")
+    log.info(f"{DNSMASQ_FORCE.name}: конфиг записан")
 
     write_dnsmasq_direct()
+
+    # Логируем итоговые счётчики после записи, чтобы было видно исключение DPI-доменов.
+    _, dnsmasq_written, dnsmasq_excluded = render_dnsmasq_config(
+        list(all_domains),
+        DNSMASQ_DOMAINS.name,
+        VPS_TUNNEL_IP,
+        header_comment="Базы РКН + статические домены",
+        exclude_domains=dpi_domains,
+    )
+    _, force_written, force_excluded = render_dnsmasq_config(
+        list(manual_domains),
+        DNSMASQ_FORCE.name,
+        VPS_TUNNEL_IP,
+        header_comment="manual-vpn.txt (добавлены через /vpn add)",
+        exclude_domains=dpi_domains,
+    )
+    log.info(
+        f"dnsmasq итог: vpn-domains={dnsmasq_written}, vpn-force={force_written}, "
+        f"dpi-excluded={dnsmasq_excluded + force_excluded}"
+    )
 
     # ── Применение (только root) ───────────────────────────────────────────────
     if os.geteuid() == 0:
