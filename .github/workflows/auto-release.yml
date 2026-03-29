@@ -377,19 +377,34 @@ jobs:
           done < <(system_package_bundle_groups)
 
       - name: Create tag and release
+        id: create_release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          NEXT="${{ steps.next.outputs.next }}"
+          git fetch origin master --tags
+          git checkout -B auto-release "$GITHUB_SHA"
+          git rebase origin/master
+
+          CURRENT="$(cat version | tr -d '[:space:]')"
+          PREFIX="$(echo "$CURRENT" | rev | cut -d. -f2- | rev)"
+          PATCH="$(echo "$CURRENT" | rev | cut -d. -f1 | rev)"
+          NEXT_PATCH=$((PATCH + 1))
+          NEXT="${PREFIX}.${NEXT_PATCH}"
+          TAG="v${NEXT}"
+
+          echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
           echo "$NEXT" > version
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add version
           git commit -m "chore: bump version to $NEXT"
-          git tag "v$NEXT"
-          git push origin HEAD:master "v$NEXT"
-          gh release create "v$NEXT" \
-            --title "v$NEXT" \
+          git push origin HEAD:master
+          git tag "$TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" \
+            --title "$TAG" \
             --notes "${{ steps.notes.outputs.notes }}" \
             --latest \
             installer-gui-wheels.tar.gz \
@@ -409,7 +424,7 @@ jobs:
       - name: Delete old Docker bundle assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CURRENT_TAG: v${{ steps.next.outputs.next }}
+          CURRENT_TAG: ${{ steps.create_release.outputs.tag }}
         run: |
           set -euo pipefail
           gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > /tmp/releases.json
