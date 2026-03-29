@@ -34,15 +34,6 @@ ok()    { echo -e "${GREEN}[✓]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
 err()   { echo -e "${RED}[✗]${NC} $*" >&2; }
 
-human_bytes() {
-    local bytes="${1:-0}"
-    if command -v numfmt >/dev/null 2>&1; then
-        numfmt --to=iec-i --suffix=B "$bytes" 2>/dev/null || printf '%sB' "$bytes"
-    else
-        printf '%sB' "$bytes"
-    fi
-}
-
 count_tar_archives() {
     local dir="$1"
     local files=()
@@ -54,56 +45,21 @@ count_tar_archives() {
 
 download_with_progress() {
     local url="$1" dest="$2" label="$3"
-    python3 - "$url" "$dest" "$label" <<'PY'
-import os
-import sys
-import time
-import urllib.request
+    local progress_log
+    progress_log="$(mktemp /tmp/vpn-curl-progress.XXXXXX)"
 
-url, dest, label = sys.argv[1:4]
+    if [[ -t 1 && -r /dev/tty && -w /dev/tty ]]; then
+        curl -fL --connect-timeout 20 --retry 2 --retry-delay 2 \
+            --progress-bar -o "$dest" "$url" > /dev/tty 2>&1
+    else
+        curl -fL --connect-timeout 20 --retry 2 --retry-delay 2 \
+            --progress-bar -o "$dest" "$url" 2>"$progress_log"
+        sed -n "s/^#/# ${label}: /p" "$progress_log" || true
+    fi
 
-def human(n: int) -> str:
-    units = ["B", "KiB", "MiB", "GiB", "TiB"]
-    value = float(n)
-    for unit in units:
-        if value < 1024 or unit == units[-1]:
-            if unit == "B":
-                return f"{int(value)}{unit}"
-            return f"{value:.1f}{unit}"
-        value /= 1024.0
-    return f"{n}B"
-
-req = urllib.request.Request(url, headers={"User-Agent": "vpn-infra-installer"})
-with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as out:
-    total_hdr = resp.headers.get("Content-Length")
-    total = int(total_hdr) if total_hdr and total_hdr.isdigit() else None
-    downloaded = 0
-    last_report = 0.0
-    last_percent = -1
-
-    while True:
-        chunk = resp.read(1024 * 1024)
-        if not chunk:
-            break
-        out.write(chunk)
-        downloaded += len(chunk)
-
-        now = time.time()
-        if total:
-            percent = int(downloaded * 100 / total)
-            if percent >= last_percent + 5 or now - last_report >= 5:
-                print(f"[DL] {label}: {human(downloaded)} / {human(total)} ({percent}%)", flush=True)
-                last_percent = percent
-                last_report = now
-        elif now - last_report >= 5:
-            print(f"[DL] {label}: {human(downloaded)}", flush=True)
-            last_report = now
-
-if total:
-    print(f"[DL] {label}: {human(downloaded)} / {human(total)} (100%)", flush=True)
-else:
-    print(f"[DL] {label}: {human(downloaded)}", flush=True)
-PY
+    local rc=$?
+    rm -f "$progress_log"
+    return "$rc"
 }
 
 if [[ $EUID -ne 0 ]]; then
@@ -114,9 +70,9 @@ fi
 info "vpn-infra bootstrap install"
 
 # ── 1. Минимальные зависимости ────────────────────────────────────────────────
-info "Проверка базовых зависимостей (curl, git, python3)..."
+info "Проверка базовых зависимостей (curl, git)..."
 apt-get update -qq 2>/dev/null || true
-for pkg in curl git python3; do
+for pkg in curl git; do
     if ! command -v "$pkg" &>/dev/null; then
         apt-get install -y -qq "$pkg" 2>/dev/null || true
     fi
