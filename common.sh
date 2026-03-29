@@ -42,6 +42,81 @@ log_ok()    { _log_emit "${GREEN}"  "[OK]"   "$*"; }
 log_warn()  { _log_emit "${YELLOW}" "[WARN]" "$*"; }
 log_error() { _log_emit "${RED}"    "[ERR]"  "$*" >&2; }
 
+format_duration() {
+    local total="${1:-0}"
+    local hours=$(( total / 3600 ))
+    local minutes=$(( (total % 3600) / 60 ))
+    local seconds=$(( total % 60 ))
+    if (( hours > 0 )); then
+        printf '%02d:%02d:%02d' "$hours" "$minutes" "$seconds"
+    else
+        printf '%02d:%02d' "$minutes" "$seconds"
+    fi
+}
+
+_compact_emit_failure_log() {
+    local log_file="$1"
+    [[ -f "$log_file" ]] || return 0
+
+    local _matched
+    _matched="$(grep -E '^(E: |W: |Err: |dpkg: error:|apt(?:-get)?: )' "$log_file" || true)"
+    if [[ -n "$_matched" ]]; then
+        printf '%s\n' "$_matched" >&2
+    else
+        tail -n 80 "$log_file" >&2 || true
+    fi
+}
+
+run_with_compact_progress() {
+    local label="$1"; shift
+
+    if [[ -z "$COMPACT_OUTPUT" ]]; then
+        "$@"
+        return $?
+    fi
+
+    local log_file
+    log_file="$(mktemp /tmp/vpn-install-step.XXXXXX.log)"
+    log_info "${label}..."
+
+    set +e
+    "$@" >"$log_file" 2>&1 &
+    local pid=$!
+    local start_ts=$SECONDS
+    local last_emit=-10
+
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 2
+        kill -0 "$pid" 2>/dev/null || break
+        local elapsed=$(( SECONDS - start_ts ))
+        if (( elapsed >= 5 && elapsed - last_emit >= 10 )); then
+            log_info "${label}... $(format_duration "$elapsed")"
+            last_emit=$elapsed
+        fi
+    done
+
+    wait "$pid"
+    local rc=$?
+    set -e
+
+    if (( rc != 0 )); then
+        log_error "${label}: команда завершилась с ошибкой"
+        _compact_emit_failure_log "$log_file"
+        rm -f "$log_file"
+        return "$rc"
+    fi
+
+    rm -f "$log_file"
+    return 0
+}
+
+apt_quiet() {
+    local label="$1"; shift
+    run_with_compact_progress "$label" \
+        env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
+        apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 "$@"
+}
+
 step() {
     ((STEP++)) || true
     echo ""

@@ -111,6 +111,71 @@ vps_exec_long() {
     return "$_exit"
 }
 
+vps_exec_long_progress() {
+    local label="$1"; shift
+    local log="/tmp/vps-cmd-$RANDOM.log"
+    local done_file="${log}.done"
+    local cmd="$*"
+    # shellcheck disable=SC2086
+    local _ssh="ssh $_SSH_OPTS sysadmin@${VPS_IP}"
+
+    $_ssh "nohup bash -c '$cmd > $log 2>&1; echo \$? > $done_file' >/dev/null 2>&1 &"
+
+    if [[ -z "$COMPACT_OUTPUT" ]]; then
+        local _exit=1
+        while true; do
+            $_ssh "tail -n +1 -f $log 2>/dev/null &
+                   TAIL=\$!
+                   until [[ -f $done_file ]]; do sleep 2; done
+                   sleep 1; kill \$TAIL 2>/dev/null
+                   exit \$(cat $done_file)"
+            _exit=$?
+
+            if $_ssh "[[ -f $done_file ]]" 2>/dev/null; then
+                _exit=$($_ssh "cat $done_file" 2>/dev/null || echo 1)
+                break
+            fi
+
+            log_warn "SSH обрыв. Переподключение через 10 сек..."
+            sleep 10
+        done
+        return "$_exit"
+    fi
+
+    local _exit=1
+    local start_ts=$SECONDS
+    local last_emit=-10
+    while true; do
+        if $_ssh "[[ -f $done_file ]]" 2>/dev/null; then
+            _exit=$($_ssh "cat $done_file" 2>/dev/null || echo 1)
+            break
+        fi
+
+        local elapsed=$(( SECONDS - start_ts ))
+        if (( elapsed >= 5 && elapsed - last_emit >= 10 )); then
+            log_info "${label}... $(format_duration "$elapsed")"
+            last_emit=$elapsed
+        fi
+
+        sleep 2
+    done
+
+    if (( _exit != 0 )); then
+        log_error "${label}: ошибка на VPS"
+        $_ssh "grep -E '^(E: |W: |Err: |dpkg: error:|apt(?:-get)?: )' $log || true; tail -n 80 $log" >&2 \
+            || true
+    fi
+
+    return "$_exit"
+}
+
+vps_apt_quiet() {
+    local label="$1"; shift
+    vps_exec_long_progress "$label" \
+        "${_APT_WAIT} && sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
+        apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 $*"
+}
+
 vps_copy() {
     # shellcheck disable=SC2086
     scp $_SCP_OPTS "$@"
@@ -157,10 +222,10 @@ if is_done "step33_vps_update_packages"; then
 else
     step "Обновление системных пакетов на VPS"
 
-    vps_exec_long "${_APT_WAIT} && sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
-        sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq"
+    vps_apt_quiet "Обновление списка пакетов на VPS" "update -qq"
+    vps_apt_quiet "Установка обновлений системы на VPS" "upgrade -y -qq"
 
-    vps_exec_long "${_APT_WAIT} && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    vps_apt_quiet "Установка системных пакетов на VPS" "install -y -qq \
         curl wget git jq wireguard-tools openssl gnupg2 ca-certificates \
         python3 python3-pip net-tools mosh"
 
@@ -205,7 +270,7 @@ else
             https://download.docker.com/linux/ubuntu \${VERSION_CODENAME} stable\" \
             | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null && \
             ${_APT_WAIT} && sudo apt-get update -qq"
-        vps_exec_long "${_APT_WAIT} && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+        vps_apt_quiet "Установка Docker CE на VPS" "install -y -qq \
             docker-ce docker-ce-cli containerd.io docker-compose-plugin" \
             || die "Не удалось установить Docker на VPS"
         vps_exec "sudo systemctl enable docker && sudo systemctl start docker"
@@ -241,7 +306,7 @@ else
     log_info "Rate limiting: TCP/UDP 443 — 200/сек, burst 500 (защита Xray + Hysteria2)"
     log_info "Открытые порты: 22 (SSH), 443 (Xray/Hysteria2), 8022 (SSH аварийный)"
 
-    vps_exec "${_APT_WAIT} && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables"
+    vps_apt_quiet "Установка nftables на VPS" "install -y -qq nftables"
 
     vps_exec "cat << 'NFTEOF' | sudo tee /etc/nftables-vps.conf > /dev/null
 #!/usr/sbin/nft -f
@@ -324,7 +389,7 @@ else
     log_info "Домашний сервер форвардит DNS заблокированных доменов на 10.177.2.2:53."
     log_info "Устанавливаем dnsmasq на VPS — слушает на tun0, форвардит в 1.1.1.1/8.8.8.8."
 
-    vps_exec "${_APT_WAIT} && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dnsmasq"
+    vps_apt_quiet "Установка dnsmasq на VPS" "install -y -qq dnsmasq"
 
     vps_exec "cat << 'DNSEOF' | sudo tee /etc/dnsmasq.d/vpn-tier2.conf > /dev/null
 # DNS-форвардер для Tier-2 туннеля
@@ -349,7 +414,7 @@ if is_done "step37_vps_fail2ban"; then
 else
     step "Настройка fail2ban на VPS"
 
-    vps_exec "${_APT_WAIT} && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq fail2ban"
+    vps_apt_quiet "Установка fail2ban на VPS" "install -y -qq fail2ban"
     # ignoreip: loopback + VPN subnets (static) + home server external IP
     F2B_IGNOREIP="127.0.0.1/8 ::1 10.177.0.0/16 ${EXTERNAL_IP}"
     vps_exec "printf '[DEFAULT]\nbantime = 86400\nfindtime = 300\nmaxretry = 3\nbackend = systemd\nignoreip = ${F2B_IGNOREIP}\n\n[sshd]\nenabled = true\nport = 22,8022\nfilter = sshd\nmode = aggressive\nmaxretry = 3\n' | \

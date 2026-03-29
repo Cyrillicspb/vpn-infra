@@ -48,7 +48,7 @@ if [[ -z "${VPN_NONINTERACTIVE:-}" ]] && [[ "${1:-}" != "--from-export" ]]; then
     if [[ -n "$_TUI" ]] && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
         # Установить pip если отсутствует
         if ! python3 -m pip --version &>/dev/null 2>&1; then
-            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pip python3-venv 2>/dev/null || true
+            apt_quiet "Установка python3-pip и python3-venv" install -y -qq python3-pip python3-venv || true
         fi
         # installer.py сам установит textual через _bootstrap()
         exec python3 "$_TUI"
@@ -206,9 +206,9 @@ phase0() {
         step "Автоопределение сетевых параметров"
 
         # Установить необходимые инструменты сейчас
-        apt-get update -qq 2>/dev/null || true
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            sshpass wireguard-tools curl iproute2 traceroute 2>/dev/null || true
+        apt_quiet "Обновление списка пакетов" update -qq || true
+        apt_quiet "Установка сетевых утилит" install -y -qq \
+            sshpass wireguard-tools curl iproute2 traceroute || true
 
         ETH_IFACE=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -1)
         GATEWAY_IP=$(ip route show default 2>/dev/null | awk '/default/ {print $3}' | head -1)
@@ -679,7 +679,7 @@ for a in d.get('assets',[]):
             # Попытка 4: socat bootstrap через веб-консоль VPS
             if [[ -z "$BOOTSTRAP_METHOD" ]]; then
                 log_warn "Попытка 4/4: Bootstrap через веб-консоль VPS..."
-                apt-get install -y -qq socat 2>/dev/null || \
+                apt_quiet "Установка socat" install -y -qq socat || \
                     die "Не удалось установить socat. Проверьте доступ к интернету."
                 if [[ -z "${VPN_NONINTERACTIVE:-}" ]]; then
                     echo ""
@@ -1178,7 +1178,7 @@ phase3() {
         log_ok "Persistent tun0 создан на VPS (sshd подключится к существующему)"
 
         # Устанавливаем autossh на домашнем сервере
-        apt-get install -y -qq autossh 2>/dev/null || true
+        apt_quiet "Установка autossh" install -y -qq autossh || true
         log_ok "autossh установлен на домашнем сервере"
 
         step_done "step45_exchange_keys"

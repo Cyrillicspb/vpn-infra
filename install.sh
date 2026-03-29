@@ -233,4 +233,4 @@ fi
 echo ""
 info "Запускаем установщик setup.sh..."
 echo ""
-exec bash "${OPT_VPN}/setup.sh"
+exec env VPN_NONINTERACTIVE=1 bash "${OPT_VPN}/setup.sh"

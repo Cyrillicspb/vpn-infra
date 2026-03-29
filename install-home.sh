@@ -32,8 +32,8 @@ if is_done "step09_apt_update"; then
     step_skip "step09_apt_update"
 else
     step "Обновление системных пакетов"
-    apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
+    apt_quiet "Обновление списка пакетов" update -qq
+    apt_quiet "Установка обновлений системы" upgrade -y -qq
     log_ok "Система обновлена"
     step_done "step09_apt_update"
 fi
@@ -44,7 +44,7 @@ if is_done "step10_install_packages"; then
     step_skip "step10_install_packages"
 else
     step "Установка системных пакетов"
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    apt_quiet "Установка системных пакетов" install -y -qq \
         curl wget git jq rsync unzip \
         nftables dnsmasq \
         python3 python3-pip python3-venv python3-cryptography \
@@ -268,8 +268,8 @@ else
             ${VERSION_CODENAME} stable" \
             | tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-        apt-get update -qq
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+        apt_quiet "Обновление APT для Docker" update -qq
+        apt_quiet "Установка Docker CE" install -y -qq \
             docker-ce docker-ce-cli containerd.io docker-compose-plugin
         log_ok "Docker CE установлен"
     else
@@ -367,9 +367,9 @@ AMNEZIA_KEY_EOF
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/amnezia-ppa.gpg] \
 https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu noble main" \
             > /etc/apt/sources.list.d/amnezia.list
-        apt-get update -qq 2>/dev/null || true
-        if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            amneziawg-dkms amneziawg-tools 2>/dev/null; then
+        apt_quiet "Обновление APT для AmneziaWG" update -qq || true
+        if apt_quiet "Установка AmneziaWG" install -y -qq \
+            amneziawg-dkms amneziawg-tools; then
             AWG_INSTALLED=1
             log_ok "AmneziaWG установлен из PPA"
         fi
@@ -673,7 +673,7 @@ else
     # Установить nmap если нет (не добавляем в шаг 10 — нужен только здесь)
     if ! command -v nmap &>/dev/null; then
         log_info "Устанавливаем nmap..."
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nmap
+        apt_quiet "Установка nmap" install -y -qq nmap
     fi
 
     # Тестируем через LAN IP (не loopback) — пакеты проходят через nftables INPUT
@@ -1694,7 +1694,7 @@ else
     # netcat-openbsd нужен для nc -X 5 (SOCKS5 ProxyCommand)
     if ! dpkg -l netcat-openbsd 2>/dev/null | grep -q "^ii"; then
         log_info "Установка netcat-openbsd..."
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq netcat-openbsd
+        apt_quiet "Установка netcat-openbsd" install -y -qq netcat-openbsd
     fi
     log_ok "netcat-openbsd установлен"
 
