@@ -64,9 +64,7 @@ installers/
 │   ├── screens/           ← по файлу на экран
 │   ├── components/        ← ValidatedInput, ProgressPane, ConsolePane
 │   └── state.py           ← InstallerState + JSON persist
-├── windows/install-windows.bat
-├── macos/install-macos.command
-└── linux/install-linux.sh
+└── bootstrap.sh
 ```
 
 -----

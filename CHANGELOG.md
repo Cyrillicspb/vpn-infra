@@ -18,7 +18,7 @@
 ### Исправления
 
 - **install-home.sh**: удалён авто-запуск tmux из середины скрипта — он ломал поток setup.sh (дочерний процесс exec'd в tmux-клиент, родитель продолжал независимо). Убраны также точки от pip3 (двойная PTY-буферизация).
-- **installers/windows/install-windows.bat**, **install-linux.sh**, **install-macos.command**: SSH-команда теперь запускает `tmux new-session -A -s vpn-install 'sudo bash setup.sh'` — tmux стартует один раз снаружи, до запуска любых скриптов. `-A` означает: присоединиться если сессия уже есть, создать если нет.
+- **Legacy client installers**: SSH-команда теперь запускает `tmux new-session -A -s vpn-install 'sudo bash setup.sh'` — tmux стартует один раз снаружи, до запуска любых скриптов. `-A` означает: присоединиться если сессия уже есть, создать если нет.
 
 ---
 
@@ -130,7 +130,7 @@
 
 - **setup.sh** (`run_test`): `eval "$cmd"` заменён на `(eval "$cmd")` — команды с `exit 0`/`exit 1` внутри smoke-тестов теперь не завершают setup.sh. Telegram-тест (шаг 57) вызывал `exit 1` при недоступном Telegram, прерывая всю установку.
 - **install-home.sh** (шаг 31): `docker compose build` теперь показывает реальные ошибки вместо `2>/dev/null`. При ошибке build запускается `docker compose up --no-build`, чтобы все прочие контейнеры (prometheus, grafana, xray-client) стартовали даже если telegram-bot не собрался.
-- **install-windows.bat**: `tar xzf ... -C /opt/vpn` → добавлены `--no-same-permissions --no-same-owner 2>/dev/null` (аналог уже исправленных Linux/macOS установщиков).
+- **Legacy Windows installer**: `tar xzf ... -C /opt/vpn` → добавлены `--no-same-permissions --no-same-owner 2>/dev/null` (аналог уже исправленных клиентских установщиков).
 - **setup.sh** (шаг 51, tier-2 тест): добавлено ожидание до 60 сек — туннель поднимается после инициализации watchdog и первого стека. Исправлена подсказка: `autossh-tier2` вместо `awg-quick@wg0`.
 - **setup.sh** (шаг 50, DNS тест): добавлено ожидание до 30 сек — DNS через VPS доступен только после подъёма tier-2.
 
@@ -140,7 +140,7 @@
 
 ### Исправления
 
-- **install-linux.sh / install-macos.command**: добавлены флаги `--no-same-permissions --no-same-owner` и подавление ошибок прав доступа при распаковке `vpn-infra.tar.gz`. Tar выдавал «Cannot utime / Cannot change mode» и завершался с ошибкой, прерывая установку.
+- **Legacy Linux/macOS installers**: добавлены флаги `--no-same-permissions --no-same-owner` и подавление ошибок прав доступа при распаковке `vpn-infra.tar.gz`. Tar выдавал «Cannot utime / Cannot change mode» и завершался с ошибкой, прерывая установку.
 
 ---
 

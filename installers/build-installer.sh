@@ -33,8 +33,6 @@ mkdir -p "$PAYLOAD_DIR"
 rsync -a --exclude='.git' --exclude='*.pyc' --exclude='__pycache__' \
     --exclude='*/venv/*' --exclude='*.log' --exclude='.env' \
     --exclude='node_modules' --exclude='.setup-state' \
-    --exclude='installers/windows' --exclude='installers/macos' \
-    --exclude='installers/linux' \
     --exclude='docs' --exclude='tests' --exclude='.github' \
     --exclude='*.tar.gz' --exclude='install.sh' \
     --exclude='overnight-*' --exclude='run-overnight*' \
