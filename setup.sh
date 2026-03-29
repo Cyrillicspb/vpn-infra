@@ -49,8 +49,10 @@ if [[ -z "${VPN_NONINTERACTIVE:-}" ]] && [[ "${1:-}" != "--from-export" ]]; then
         _INSTALLER_VENV="/opt/vpn/.installer-venv"
         if [[ -x "${_INSTALLER_VENV}/bin/python" ]] \
             && "${_INSTALLER_VENV}/bin/python" -c 'import textual' 2>/dev/null; then
+            echo "[INFO] Запускаем TUI из installer venv..." >&2
             exec "${_INSTALLER_VENV}/bin/python" "$_TUI"
         elif python3 -c 'import textual' 2>/dev/null; then
+            echo "[INFO] Запускаем TUI из system Python..." >&2
             exec python3 "$_TUI"
         elif [[ -d "${REPO_DIR}/installers/gui/wheels" ]] && ls "${REPO_DIR}/installers/gui/wheels"/*.whl >/dev/null 2>&1; then
             echo "[INFO] Подготавливаем isolated installer venv из локальных wheel..." >&2
@@ -78,6 +80,7 @@ PY
                     -r "${REPO_DIR}/installers/gui/requirements.txt" \
                     --disable-pip-version-check --quiet >/dev/null 2>&1 \
                 && "${_INSTALLER_VENV}/bin/python" -c 'import textual' 2>/dev/null; then
+                echo "[INFO] Запускаем TUI из локального wheel bundle..." >&2
                 exec "${_INSTALLER_VENV}/bin/python" "$_TUI"
             else
                 echo "[WARN] Не удалось подготовить installer venv из локальных wheel — запускаем консольный установщик" >&2

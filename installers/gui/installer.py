@@ -99,9 +99,6 @@ class VPNInstallerApp(App):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
-    if sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get("TERM", "dumb") != "dumb":
-        sys.stdout.write("\033[2J\033[H")
-        sys.stdout.flush()
     app = VPNInstallerApp()
     app.state = InstallerState.load()
     app.run()
