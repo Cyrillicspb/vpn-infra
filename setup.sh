@@ -54,10 +54,25 @@ if [[ -z "${VPN_NONINTERACTIVE:-}" ]] && [[ "${1:-}" != "--from-export" ]]; then
             exec python3 "$_TUI"
         elif [[ -d "${REPO_DIR}/installers/gui/wheels" ]] && ls "${REPO_DIR}/installers/gui/wheels"/*.whl >/dev/null 2>&1; then
             echo "[INFO] Подготавливаем isolated installer venv из локальных wheel..." >&2
-            _VIRTUALENV_WHL="$(ls "${REPO_DIR}/installers/gui/wheels"/virtualenv-*.whl 2>/dev/null | sort | tail -1)"
-            if [[ -n "${_VIRTUALENV_WHL:-}" ]] \
-                && PYTHONPATH="${_VIRTUALENV_WHL}${PYTHONPATH:+:${PYTHONPATH}}" \
-                    python3 -m virtualenv --no-periodic-update "${_INSTALLER_VENV}" >/dev/null 2>&1 \
+            if {
+                python3 - "${REPO_DIR}/installers/gui/wheels" "${_INSTALLER_VENV}" >/dev/null 2>&1 <<'PY'
+import pathlib
+import runpy
+import sys
+
+wheel_dir = pathlib.Path(sys.argv[1])
+venv_dir = sys.argv[2]
+wheel_paths = sorted(str(p) for p in wheel_dir.glob("*.whl"))
+if not wheel_paths:
+    raise SystemExit(1)
+
+for wheel_path in reversed(wheel_paths):
+    sys.path.insert(0, wheel_path)
+
+sys.argv = ["virtualenv", "--no-periodic-update", venv_dir]
+runpy.run_module("virtualenv", run_name="__main__")
+PY
+            } \
                 && "${_INSTALLER_VENV}/bin/pip" install --no-index \
                     --find-links "${REPO_DIR}/installers/gui/wheels" \
                     -r "${REPO_DIR}/installers/gui/requirements.txt" \
