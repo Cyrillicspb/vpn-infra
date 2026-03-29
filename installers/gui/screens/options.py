@@ -1,6 +1,9 @@
 """Экран 5/8 — Дополнительные опции (Cloudflare CDN, DDNS/DuckDNS)."""
 from __future__ import annotations
 
+import base64
+import sys
+
 from textual.app import ComposeResult
 from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.widgets import Button, Input, Label, RichLog, Static
@@ -27,6 +30,24 @@ def _worker_code(vps_ip: str) -> str:
         "  }\n"
         "}"
     )
+
+
+def _copy_to_clipboard_osc52(text: str) -> bool:
+    """Пробует положить текст в clipboard терминала через OSC52."""
+    try:
+        payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        seq = f"\033]52;c;{payload}\a"
+        with open("/dev/tty", "w", encoding="utf-8", buffering=1) as tty:
+            tty.write(seq)
+            tty.flush()
+        return True
+    except Exception:
+        try:
+            sys.__stdout__.write(f"\033]52;c;{payload}\a")
+            sys.__stdout__.flush()
+            return True
+        except Exception:
+            return False
 
 
 class OptionsScreen(WizardScreen):
@@ -87,12 +108,21 @@ class OptionsScreen(WizardScreen):
         margin-bottom: 1;
         color: $text;
     }}
+    .cf-actions {{ height: auto; margin: 1 0; }}
+    #btn-copy-worker {{ width: 1fr; }}
+    #btn-toggle-worker {{ width: 24; margin-left: 1; }}
+    #worker-copy-status {{
+        height: auto;
+        color: $text-muted;
+        margin-bottom: 1;
+    }}
     #worker-code {{
         height: 4;
         margin: 1 0;
         border: round $success-darken-2;
         background: #0d1117;
     }}
+    #worker-code.expanded {{ height: 12; }}
     .ddns-instructions {{
         height: auto;
         margin-bottom: 1;
@@ -139,13 +169,27 @@ class OptionsScreen(WizardScreen):
                     classes="opt-details" + ("" if cf_on else " hidden"),
                 ):
                     yield Static(
-                        "[dim]Workers & Pages → Create Worker → Edit code → вставьте код → Save & Deploy (? для инструкций)[/dim]",
+                        "[dim]Workers & Pages → Create Worker → Edit code → вставьте код → Save & Deploy[/dim]",
                         classes="cf-instructions",
                     )
                     code_log = RichLog(
                         highlight=False, markup=False, wrap=False, id="worker-code"
                     )
                     yield code_log
+                    with Horizontal(classes="cf-actions"):
+                        yield Button(
+                            "Скопировать код",
+                            id="btn-copy-worker",
+                            variant="primary",
+                        )
+                        yield Button(
+                            "Показать код полностью",
+                            id="btn-toggle-worker",
+                        )
+                    yield Static(
+                        "[dim]В Termius обычно работает. Если вставка не сработала — откройте полный код и скопируйте вручную.[/dim]",
+                        id="worker-copy-status",
+                    )
                     yield ValidatedInput(
                         "Worker hostname",
                         input_id="cf-cdn-hostname",
@@ -215,8 +259,15 @@ class OptionsScreen(WizardScreen):
     def _fill_worker_code(self) -> None:
         try:
             log = self.query_one("#worker-code", RichLog)
+            log.clear()
             for line in _worker_code(self.app.state.vps_ip).splitlines():
                 log.write(line)
+        except Exception:
+            pass
+
+    def _set_worker_status(self, message: str) -> None:
+        try:
+            self.query_one("#worker-copy-status", Static).update(message)
         except Exception:
             pass
 
@@ -242,6 +293,21 @@ class OptionsScreen(WizardScreen):
                 self.query_one("#cf-details").remove_class("hidden")
             else:
                 self.query_one("#cf-details").add_class("hidden")
+        elif event.button.id == "btn-copy-worker":
+            ok = _copy_to_clipboard_osc52(_worker_code(self.app.state.vps_ip))
+            if ok:
+                self._set_worker_status("[green]Код отправлен в буфер терминала через OSC52.[/green]")
+            else:
+                self._set_worker_status("[yellow]Не удалось скопировать автоматически. Нажмите «Показать код полностью» и скопируйте вручную.[/yellow]")
+        elif event.button.id == "btn-toggle-worker":
+            code_log = self.query_one("#worker-code", RichLog)
+            btn = self.query_one("#btn-toggle-worker", Button)
+            if code_log.has_class("expanded"):
+                code_log.remove_class("expanded")
+                btn.label = "Показать код полностью"
+            else:
+                code_log.add_class("expanded")
+                btn.label = "Свернуть код"
         elif event.button.id == "btn-ddns":
             self._toggle("use_ddns", "btn-ddns")
             if self.app.state.use_ddns == "y":

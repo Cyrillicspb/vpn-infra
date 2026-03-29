@@ -109,7 +109,7 @@ class InstallScreen(Screen):
             self.query_one("#btn-run", Button).disabled = True
             return
 
-        log.write("VPN Infrastructure Installer")
+        log.write("StackInfra Installer")
         log.write(f"setup.sh: {SETUP_SH}")
         log.write(f"VPS: {state.vps_ip}:{state.vps_ssh_port}")
         log.write(f"Admin ID: {state.telegram_admin_chat_id}")

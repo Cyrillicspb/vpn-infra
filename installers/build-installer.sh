@@ -86,7 +86,7 @@ base64 "$TARBALL" > "$PAYLOAD_B64"
 echo "→ Сборка $OUTPUT..."
 cat > "$OUTPUT" << 'HEADER'
 #!/bin/bash
-# VPN Infrastructure — Self-Extracting Installer
+# StackInfra — Self-Extracting Installer
 # Использование: sudo bash install.sh
 #
 # Содержит весь репозиторий + Python wheels (offline).

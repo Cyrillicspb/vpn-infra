@@ -80,7 +80,7 @@ def _installed_version_label() -> str:
             return f"v{version}"
     except Exception:
         pass
-    return "v4.0"
+    return "неизвестно"
 
 
 def _dpi_status_summary(st: dict) -> tuple[str, str, str]:

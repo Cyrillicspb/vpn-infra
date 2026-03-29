@@ -174,7 +174,7 @@ def installed_version_label() -> str:
             return f"v{version}"
     except Exception:
         pass
-    return "v4.0"
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -3035,14 +3035,17 @@ async def _manual_reassessment() -> None:
     vps_mbps = await speedtest_iperf_vps()
     direct_mbps = await speedtest_direct()
 
-    results: list[tuple[str, bool, float]] = []
+    results: list[tuple[str, str, float]] = []
     async with _LOCK:
         for name in plugins.all_names():
             plugin = plugins.get(name)
             if not plugin or plugin.meta.get("direct_mode"):
                 continue
+            if not plugin.auto_enabled:
+                results.append((name, "disabled", 0.0))
+                continue
             ok, mbps = await _test_stack_runtime(plugin, name, timeout=10)
-            results.append((name, ok, mbps))
+            results.append((name, "ok" if ok else "fail", mbps))
 
     best_stack: Optional[str] = None
     best_mbps = 0.0
@@ -3064,16 +3067,18 @@ async def _manual_reassessment() -> None:
     # Базовая линия для процентов стеков — канал до VPS (он реалистичнее ISP)
     base_mbps = vps_mbps if vps_mbps > 0 else direct_mbps
 
-    for name, ok, mbps in results:
-        icon = "✅" if ok else "❌"
+    for name, status, mbps in results:
+        icon = "✅" if status == "ok" else ("⚪" if status == "disabled" else "❌")
         marker = " ← активный" if name == state.active_stack else ""
-        if ok:
+        if status == "ok":
             pct = f"  ({round(mbps / base_mbps * 100)}%)" if base_mbps > 0 else ""
             speed = f"{mbps:.1f} Mbps{pct}"
+        elif status == "disabled":
+            speed = "не включён"
         else:
             speed = "недоступен"
         lines.append(f"{icon} {name}: {speed}{marker}")
-        if ok and mbps > best_mbps:
+        if status == "ok" and mbps > best_mbps:
             best_mbps, best_stack = mbps, name
 
     report = "\n".join(lines)
@@ -3817,7 +3822,8 @@ async def _run_tier2_proxy() -> None:
 @app.on_event("startup")
 async def on_startup() -> None:
     logger.info("=" * 60)
-    logger.info("Watchdog v4.0 запускается...")
+    version_label = installed_version_label()
+    logger.info("Watchdog%s запускается...", f" {version_label}" if version_label else "")
 
     # Загружаем плагины
     plugins.load()
@@ -3904,8 +3910,9 @@ async def on_startup() -> None:
 
     _notify_systemd(b"READY=1")
     logger.info(f"Watchdog готов. Стек: {state.active_stack}, degraded={state.degraded_mode}")
+    startup_title = f"✅ *Watchdog {version_label} запущен*" if version_label else "✅ *Watchdog запущен*"
     alert(
-        f"✅ *Watchdog {installed_version_label()} запущен*\n"
+        f"{startup_title}\n"
         f"Стек: {state.active_stack}\n"
         f"VPS: {VPS_IP or 'не задан'}"
     )

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-VPN Infrastructure TUI Installer
+StackInfra TUI Installer
 Запуск: python3 installer.py
 Требования: Python 3.10+, textual (устанавливается автоматически)
 """
@@ -66,9 +66,9 @@ from state import InstallerState
 # ── App ───────────────────────────────────────────────────────────────────────
 
 class VPNInstallerApp(App):
-    """TUI-установщик VPN Infrastructure v4.0."""
+    """TUI-установщик StackInfra."""
 
-    TITLE = "vpn-infra"
+    TITLE = "StackInfra"
     SUB_TITLE = f"Installer v{INSTALL_VERSION}" if INSTALL_VERSION else "Installer"
 
     BINDINGS = [

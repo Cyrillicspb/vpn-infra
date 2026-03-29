@@ -12,7 +12,7 @@ info() { echo -e "  → $*"; }
 err()  { echo -e "${RED}  ✗ $*${RESET}" >&2; }
 
 echo -e "${BOLD}╔══════════════════════════════════════════╗${RESET}"
-echo -e "${BOLD}║    VPN Infrastructure — Установка        ║${RESET}"
+echo -e "${BOLD}║         StackInfra — Установка           ║${RESET}"
 echo -e "${BOLD}╚══════════════════════════════════════════╝${RESET}"
 echo ""
 

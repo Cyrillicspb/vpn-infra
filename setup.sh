@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# setup.sh — Главный мастер-установщик VPN Infrastructure v4.0
+# setup.sh — Главный мастер-установщик StackInfra v4.0
 # Запуск: sudo bash setup.sh
 # Идемпотентен: уже выполненные шаги пропускаются автоматически
 # =============================================================================
@@ -135,9 +135,17 @@ ask() {
 
 print_banner() {
     [[ -n "${VPN_NONINTERACTIVE:-}" ]] && return 0
+    local version_label=""
+    if [[ -n "${VPN_INSTALL_VERSION:-}" ]]; then
+        version_label=" v${VPN_INSTALL_VERSION#v}"
+    elif [[ -f /opt/vpn/version ]]; then
+        local _ver=""
+        _ver="$(tr -d '[:space:]' < /opt/vpn/version 2>/dev/null || true)"
+        [[ "$_ver" =~ ^[0-9]+(\.[0-9]+)*$ ]] && version_label=" v${_ver}"
+    fi
     echo ""
     echo "╔══════════════════════════════════════════════════════════════════╗"
-    echo "║      VPN Infrastructure v4.0 — Двухуровневая установка          ║"
+    printf '║ %-64s ║\n' "StackInfra${version_label} — Двухуровневая установка"
     echo "║  Hybrid B+ Split Tunneling | 4 стека | AmneziaWG + WireGuard   ║"
     echo "╚══════════════════════════════════════════════════════════════════╝"
     echo ""
@@ -1962,7 +1970,13 @@ print(d.get('vpn_version', ''))
     echo ""
     log_ok "Установка завершена!"
     echo ""
-    echo -e "${GREEN}${BOLD}VPN-инфраструктура v4.0 установлена.${NC}"
+    local final_version_label=""
+    if [[ -n "${CURRENT_VERSION:-}" ]]; then
+        final_version_label=" v${CURRENT_VERSION#v}"
+    elif [[ -n "${VPN_INSTALL_VERSION:-}" ]]; then
+        final_version_label=" v${VPN_INSTALL_VERSION#v}"
+    fi
+    echo -e "${GREEN}${BOLD}StackInfra${final_version_label} установлена.${NC}"
     echo "  Конфигурация: ${ENV_FILE}"
     echo "  Логи агента:  journalctl -u watchdog -f"
     echo "  Управление:   Telegram-бот (команда /help)"

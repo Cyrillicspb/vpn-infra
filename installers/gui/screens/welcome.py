@@ -1,4 +1,6 @@
 """Экран приветствия — первый экран TUI."""
+import os
+
 from textual.app import ComposeResult
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Static
@@ -32,12 +34,14 @@ class WelcomeScreen(Screen):
     """
 
     def compose(self) -> ComposeResult:
+        version = os.environ.get("VPN_INSTALL_VERSION", "").strip().lstrip("v")
+        title = f"StackInfra v{version}" if version else "StackInfra"
         yield Header(show_clock=False)
         with Center():
             with Middle():
                 with Vertical(id="welcome-box"):
                     yield Static(
-                        "[bold]VPN Infrastructure v4.0[/bold]",
+                        f"[bold]{title}[/bold]",
                         id="welcome-title",
                     )
                     yield Static(

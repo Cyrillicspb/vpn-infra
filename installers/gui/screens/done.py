@@ -29,7 +29,7 @@ class DoneScreen(WizardScreen):
         with ScrollableContainer(id="wizard-content"):
             with Vertical(id="done-box"):
                 yield Static(
-                    "[bold green]✓  VPN Infrastructure установлена успешно![/bold green]",
+                    "[bold green]✓  StackInfra установлена успешно![/bold green]",
                     id="done-title",
                 )
                 yield Static(

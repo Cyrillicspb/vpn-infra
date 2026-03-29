@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — официальный однострочный bootstrap vpn-infra
+# install.sh — официальный однострочный bootstrap StackInfra
 #
 # Запуск на чистом Ubuntu-сервере:
 #   curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install.sh | sudo bash
@@ -110,8 +110,8 @@ fi
 _release_json="$(curl -sf --max-time 20 "$RELEASE_API" 2>/dev/null || true)"
 _bootstrap_tag="$(release_tag_name "$_release_json")"
 case "$_bootstrap_tag" in
-    v*) info "vpn-infra bootstrap install ${_bootstrap_tag}" ;;
-    *)  info "vpn-infra bootstrap install" ;;
+    v*) info "StackInfra bootstrap install ${_bootstrap_tag}" ;;
+    *)  info "StackInfra bootstrap install" ;;
 esac
 
 # ── 1. Минимальные зависимости ────────────────────────────────────────────────
