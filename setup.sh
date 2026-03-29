@@ -251,12 +251,18 @@ phase0() {
 
         # Установить необходимые инструменты сейчас
         if has_bundled_package_group "home-core"; then
-            install_bundled_package_group "Установка системных пакетов из bundle" "home-core" || true
+            install_bundled_package_group "Установка системных пакетов из bundle" "home-core" \
+                || die "Не удалось установить home-core bundle. Повторите загрузку system-packages и запустите снова."
         else
-            apt_quiet "Обновление списка пакетов" update -qq || true
+            apt_quiet "Обновление списка пакетов" update -qq \
+                || die "Не удалось обновить apt index на раннем bootstrap шаге."
             apt_quiet "Установка сетевых утилит" install -y -qq \
-                sshpass wireguard-tools curl iproute2 traceroute || true
+                sshpass wireguard-tools curl iproute2 traceroute \
+                || die "Не удалось установить базовые сетевые утилиты на раннем bootstrap шаге."
         fi
+
+        command -v wg >/dev/null 2>&1 \
+            || die "wireguard-tools не установлены: команда wg недоступна после раннего bootstrap шага."
 
         ETH_IFACE=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -1)
         GATEWAY_IP=$(ip route show default 2>/dev/null | awk '/default/ {print $3}' | head -1)
