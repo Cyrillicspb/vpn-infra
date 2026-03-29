@@ -501,8 +501,10 @@ CF_API_TOKEN='${CF_API_TOKEN:-}'
 SSH_ADDITIONAL_PORT='443'
 EOF
 
-    vps_copy "$VPS_ENV_TMP" "sysadmin@${VPS_IP}:/opt/vpn/.env"
-    vps_exec "chmod 600 /opt/vpn/.env"
+    vps_copy "$VPS_ENV_TMP" "sysadmin@${VPS_IP}:/tmp/vpn.env.$$"
+    vps_exec "sudo install -d -m 755 /opt/vpn && \
+        sudo install -m 600 /tmp/vpn.env.$$ /opt/vpn/.env && \
+        rm -f /tmp/vpn.env.$$"
     rm -f "$VPS_ENV_TMP"
 
     log_ok ".env скопирован на VPS"
@@ -518,34 +520,34 @@ else
     log_info "mTLS CA: 4096 bit RSA, 10 лет — для защиты панели Grafana/3x-ui"
     log_info "Клиентский сертификат: запрос через Telegram /renew-cert"
 
-    vps_exec "mkdir -p /opt/vpn/nginx/mtls /opt/vpn/nginx/ssl"
+    vps_exec "sudo install -d -m 755 /opt/vpn/nginx/mtls /opt/vpn/nginx/ssl"
 
     # Генерируем CA только если ещё нет
     vps_exec "[ -f /opt/vpn/nginx/mtls/ca.crt ] && echo 'exists' || ( \
-        openssl genrsa -out /opt/vpn/nginx/mtls/ca.key 4096 2>/dev/null && \
-        openssl req -new -x509 -days 3650 \
+        sudo openssl genrsa -out /opt/vpn/nginx/mtls/ca.key 4096 2>/dev/null && \
+        sudo openssl req -new -x509 -days 3650 \
             -key /opt/vpn/nginx/mtls/ca.key \
             -out /opt/vpn/nginx/mtls/ca.crt \
             -subj '/CN=VPN-CA/O=VPNInfra/C=RU' 2>/dev/null && \
-        chmod 600 /opt/vpn/nginx/mtls/ca.key && \
+        sudo chmod 600 /opt/vpn/nginx/mtls/ca.key && \
         echo 'CA создан' \
     )" | grep -v '^$' | while IFS= read -r line; do log_info "$line"; done || true
 
     # Генерируем server.crt/server.key для nginx (подписываем нашим CA)
     vps_exec "[ -f /opt/vpn/nginx/ssl/server.crt ] && echo 'exists' || ( \
-        openssl genrsa -out /opt/vpn/nginx/ssl/server.key 2048 2>/dev/null && \
-        openssl req -new \
+        sudo openssl genrsa -out /opt/vpn/nginx/ssl/server.key 2048 2>/dev/null && \
+        sudo openssl req -new \
             -key /opt/vpn/nginx/ssl/server.key \
             -out /opt/vpn/nginx/ssl/server.csr \
             -subj '/CN=vpn-server/O=VPNInfra/C=RU' 2>/dev/null && \
-        openssl x509 -req -days 730 \
+        sudo openssl x509 -req -days 730 \
             -in /opt/vpn/nginx/ssl/server.csr \
             -CA /opt/vpn/nginx/mtls/ca.crt \
             -CAkey /opt/vpn/nginx/mtls/ca.key \
             -CAcreateserial \
             -out /opt/vpn/nginx/ssl/server.crt 2>/dev/null && \
-        rm -f /opt/vpn/nginx/ssl/server.csr && \
-        chmod 600 /opt/vpn/nginx/ssl/server.key && \
+        sudo rm -f /opt/vpn/nginx/ssl/server.csr && \
+        sudo chmod 600 /opt/vpn/nginx/ssl/server.key && \
         echo 'server cert создан' \
     )" | grep -v '^$' | while IFS= read -r line; do log_info "$line"; done || true
 
@@ -676,7 +678,7 @@ else
             source "${REPO_DIR}/scripts/docker-image-groups.sh"
             mapfile -t _vps_cache_images < <(docker_image_group_names vps-core)
             _copied_cache=0
-            vps_exec "mkdir -p /opt/vpn/docker-images"
+            vps_exec "sudo install -d -m 755 /opt/vpn/docker-images && sudo chown sysadmin:sysadmin /opt/vpn/docker-images"
             for _img in "${_vps_cache_images[@]}"; do
                 _archive_name=$(docker_image_to_archive_name "$_img")
                 if [[ -f "/opt/vpn/docker-images/${_archive_name}" ]]; then
@@ -783,7 +785,8 @@ else
     step "Настройка git-зеркала и healthcheck cron на VPS"
 
     # Инициализация bare git-репозитория (зеркало GitHub)
-    vps_exec "mkdir -p /opt/vpn/vpn-repo.git && \
+    vps_exec "sudo install -d -m 755 /opt/vpn/vpn-repo.git && \
+        sudo chown -R sysadmin:sysadmin /opt/vpn/vpn-repo.git && \
         git -C /opt/vpn/vpn-repo.git init --bare 2>/dev/null || true"
 
     vps_exec "git -C /opt/vpn/vpn-repo.git remote add origin \
@@ -814,7 +817,7 @@ HCEOF"
 
     # Создание скрипта healthcheck если его нет
     vps_exec "[ -f /opt/vpn/scripts/vps-healthcheck.sh ] && echo 'exists' || \
-        mkdir -p /opt/vpn/scripts && cat << 'HSEOF' > /opt/vpn/scripts/vps-healthcheck.sh
+        sudo install -d -m 755 /opt/vpn/scripts && cat << 'HSEOF' | sudo tee /opt/vpn/scripts/vps-healthcheck.sh > /dev/null
 #!/bin/bash
 # vps-healthcheck.sh — Мониторинг состояния VPS
 set -euo pipefail
@@ -838,7 +841,7 @@ if [[ \${DISK_USE:-0} -ge 85 ]]; then
     send_alert \"VPS: диск заполнен на \${DISK_USE}%%\"
 fi
 HSEOF
-chmod +x /opt/vpn/scripts/vps-healthcheck.sh"
+sudo chmod +x /opt/vpn/scripts/vps-healthcheck.sh"
 
     # Разрешения на cron-файлы
     vps_exec "sudo chmod 644 /etc/cron.d/vpn-mirror /etc/cron.d/vps-healthcheck \
