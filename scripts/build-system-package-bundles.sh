@@ -249,7 +249,8 @@ set -euo pipefail
 apt-get update -qq
 apt-get install -y -qq dpkg-dev
 cd '/repo/${group_dir}'
-dpkg-scanpackages . /dev/null | gzip -9c > Packages.gz
+dpkg-scanpackages . /dev/null > Packages
+gzip -9c Packages > Packages.gz
 "
 
     mapfile -t debs < <(find "$group_dir" -maxdepth 1 -type f -name '*.deb' | sort)
