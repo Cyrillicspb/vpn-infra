@@ -78,6 +78,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          if ! gh release view "${{ inputs.tag }}" >/dev/null 2>&1; then
+            gh release create "${{ inputs.tag }}" \
+              --title "${{ inputs.tag }}" \
+              --notes "Release assets rebuilt for ${{ inputs.tag }}"
+          fi
+
           gh release upload "${{ inputs.tag }}" \
             --clobber \
             installer-gui-wheels.tar.gz \
