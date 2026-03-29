@@ -34,16 +34,21 @@ ok()    { echo -e "${GREEN}[✓]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
 err()   { echo -e "${RED}[✗]${NC} $*" >&2; }
 
+count_tar_archives() {
+    local dir="$1"
+    local files=()
+    shopt -s nullglob
+    files=("${dir}"/*.tar.gz)
+    shopt -u nullglob
+    printf '%d' "${#files[@]}"
+}
+
 if [[ $EUID -ne 0 ]]; then
     err "Запустите от root: sudo bash install.sh"
     exit 1
 fi
 
-echo -e "${CYAN}"
-echo "╔══════════════════════════════════════════╗"
-echo "║       vpn-infra — bootstrap install     ║"
-echo "╚══════════════════════════════════════════╝"
-echo -e "${NC}"
+info "vpn-infra bootstrap install"
 
 # ── 1. Минимальные зависимости ────────────────────────────────────────────────
 info "Проверка базовых зависимостей (curl, git)..."
@@ -103,10 +108,10 @@ chmod +x "${OPT_VPN}/setup.sh" "${OPT_VPN}/install-home.sh" \
 # ── 3. Docker-образы из GitHub Releases ───────────────────────────────────────
 # Основной архив: docker-images.tar.gz (home phase 1).
 # Дополнительные архивы monitoring/VPS скачиваются opportunistically.
-shopt -s nullglob
-_docker_archives=("${DOCKER_IMAGES_DIR}"/*.tar.gz)
-shopt -u nullglob
-_img_count=${#_docker_archives[@]}
+_img_count="$(count_tar_archives "${DOCKER_IMAGES_DIR}")"
+case "$_img_count" in
+    ''|*[!0-9]*) _img_count=0 ;;
+esac
 if [[ "$_img_count" -gt 0 ]]; then
     ok "Docker-образы уже есть: ${_img_count} файлов в ${DOCKER_IMAGES_DIR}"
 else
@@ -147,10 +152,10 @@ else
         fi
     done
 
-    shopt -s nullglob
-    _docker_archives=("${DOCKER_IMAGES_DIR}"/*.tar.gz)
-    shopt -u nullglob
-    _img_count=${#_docker_archives[@]}
+    _img_count="$(count_tar_archives "${DOCKER_IMAGES_DIR}")"
+    case "$_img_count" in
+        ''|*[!0-9]*) _img_count=0 ;;
+    esac
     if [[ "$_downloaded" -gt 0 && "$_img_count" -gt 0 ]]; then
         ok "Docker-образы готовы: ${_img_count} файлов"
     else
