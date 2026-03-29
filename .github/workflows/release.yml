@@ -38,6 +38,21 @@ jobs:
       - name: Build installer GUI wheel bundle
         run: |
           set -euo pipefail
+          cat > /tmp/installer-gui-wheel-packages.txt <<'EOF'
+          virtualenv
+          pip
+          EOF
+          digest="$(
+            {
+              cat installers/gui/requirements.txt
+              cat /tmp/installer-gui-wheel-packages.txt
+            } | sha256sum | awk '{print $1}'
+          )"
+          {
+            echo "schema=1"
+            echo "generated_at=$(date -u +%FT%TZ)"
+            echo "pkgset|installer-gui-wheels.tar.gz|${digest}"
+          } > installer-gui-wheels-manifest.txt
           mkdir -p /tmp/installer-gui-wheels
           python3 -m pip download \
             --dest /tmp/installer-gui-wheels \
@@ -66,6 +81,7 @@ jobs:
           gh release upload "${{ inputs.tag }}" \
             --clobber \
             installer-gui-wheels.tar.gz \
+            installer-gui-wheels-manifest.txt \
             vpn-infra.tar.gz \
             docker-bundles-manifest.txt \
             system-packages-manifest.txt \

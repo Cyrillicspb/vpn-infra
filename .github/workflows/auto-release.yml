@@ -98,7 +98,54 @@ jobs:
           chmod +x tools/tun2socks-linux-amd64 tools/tun2socks-linux-arm64
           ls -lh tools/
 
+      - name: Resolve installer GUI wheel bundle manifest
+        run: |
+          set -euo pipefail
+          cat > /tmp/installer-gui-wheel-packages.txt <<'EOF'
+          virtualenv
+          pip
+          EOF
+          digest="$(
+            {
+              cat installers/gui/requirements.txt
+              cat /tmp/installer-gui-wheel-packages.txt
+            } | sha256sum | awk '{print $1}'
+          )"
+          {
+            echo "schema=1"
+            echo "generated_at=$(date -u +%FT%TZ)"
+            echo "pkgset|installer-gui-wheels.tar.gz|${digest}"
+          } > installer-gui-wheels-manifest.txt
+
+      - name: Plan installer GUI wheel bundle reuse
+        id: gui_wheels_plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PREV_TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 | awk '{print $1}' | head -1 || true)"
+          prev_digest=""
+          if [[ -n "$PREV_TAG" ]]; then
+            mkdir -p /tmp/prev-release-gui-wheels
+            if gh release download "$PREV_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern installer-gui-wheels-manifest.txt \
+              --dir /tmp/prev-release-gui-wheels 2>/dev/null; then
+              prev_digest="$(awk -F'|' '$1=="pkgset" && $2=="installer-gui-wheels.tar.gz" {print $3}' /tmp/prev-release-gui-wheels/installer-gui-wheels-manifest.txt)"
+            fi
+          fi
+
+          current_digest="$(awk -F'|' '$1=="pkgset" && $2=="installer-gui-wheels.tar.gz" {print $3}' installer-gui-wheels-manifest.txt)"
+          if [[ -n "$PREV_TAG" && -n "$prev_digest" && "$prev_digest" == "$current_digest" ]]; then
+            echo "reuse=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+          echo "Wheel bundle reuse: $(cat "$GITHUB_OUTPUT" | tr '\n' ' ')"
+
       - name: Build installer GUI wheel bundle
+        if: steps.gui_wheels_plan.outputs.reuse != 'true'
         run: |
           set -euo pipefail
           mkdir -p /tmp/installer-gui-wheels
@@ -110,6 +157,19 @@ jobs:
             -r installers/gui/requirements.txt
           tar -czf installer-gui-wheels.tar.gz -C /tmp/installer-gui-wheels .
           echo "Размер wheel bundle: $(du -sh installer-gui-wheels.tar.gz | cut -f1)"
+
+      - name: Reuse installer GUI wheel bundle
+        if: steps.gui_wheels_plan.outputs.reuse == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release download "${{ steps.gui_wheels_plan.outputs.prev_tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern installer-gui-wheels.tar.gz \
+            --dir .
+          [[ -f installer-gui-wheels.tar.gz ]]
+          echo "Reused installer-gui-wheels.tar.gz from ${{ steps.gui_wheels_plan.outputs.prev_tag }}"
 
       - name: Build repo archive
         run: |
@@ -128,11 +188,12 @@ jobs:
             --manifest-out docker-bundles-manifest.txt \
             --manifest-only
 
-      - name: Build system package bundles
+      - name: Resolve system package bundle manifest
         run: |
           set -euo pipefail
           bash scripts/build-system-package-bundles.sh \
-            --manifest-out system-packages-manifest.txt
+            --manifest-out system-packages-manifest.txt \
+            --manifest-only
 
       - name: Plan Docker bundle reuse
         id: docker_plan
@@ -176,6 +237,48 @@ jobs:
           echo "Build groups: ${build_groups[*]:-(none)}"
           echo "Reuse groups: ${reuse_groups[*]:-(none)}"
 
+      - name: Plan system package bundle reuse
+        id: system_pkg_plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          source scripts/system-package-groups.sh
+
+          PREV_TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 | awk '{print $1}' | head -1 || true)"
+          PREV_MANIFEST=""
+          if [[ -n "$PREV_TAG" ]]; then
+            mkdir -p /tmp/prev-release-system-pkgs
+            if gh release download "$PREV_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern system-packages-manifest.txt \
+              --dir /tmp/prev-release-system-pkgs 2>/dev/null; then
+              PREV_MANIFEST="/tmp/prev-release-system-pkgs/system-packages-manifest.txt"
+            fi
+          fi
+
+          build_groups=()
+          reuse_groups=()
+          while IFS= read -r group; do
+            current_digest="$(awk -F'|' -v g="$group" '$1=="group" && $2==g {print $4}' system-packages-manifest.txt)"
+            prev_digest=""
+            if [[ -n "$PREV_MANIFEST" ]]; then
+              prev_digest="$(awk -F'|' -v g="$group" '$1=="group" && $2==g {print $4}' "$PREV_MANIFEST")"
+            fi
+
+            if [[ -n "$PREV_TAG" && -n "$prev_digest" && "$prev_digest" == "$current_digest" ]]; then
+              reuse_groups+=("$group")
+            else
+              build_groups+=("$group")
+            fi
+          done < <(system_package_bundle_groups)
+
+          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
+          echo "build_groups=$(IFS=,; echo "${build_groups[*]}")" >> "$GITHUB_OUTPUT"
+          echo "reuse_groups=$(IFS=,; echo "${reuse_groups[*]}")" >> "$GITHUB_OUTPUT"
+          echo "Build system package groups: ${build_groups[*]:-(none)}"
+          echo "Reuse system package groups: ${reuse_groups[*]:-(none)}"
+
       - name: Build changed Docker bundles
         if: steps.docker_plan.outputs.build_groups != ''
         run: |
@@ -216,11 +319,50 @@ jobs:
               --build-groups "$(IFS=,; echo "${fallback_groups[*]}")"
           fi
 
+      - name: Build changed system package bundles
+        if: steps.system_pkg_plan.outputs.build_groups != ''
+        run: |
+          set -euo pipefail
+          bash scripts/build-system-package-bundles.sh \
+            --manifest-out system-packages-manifest.txt \
+            --build-groups "${{ steps.system_pkg_plan.outputs.build_groups }}"
+
+      - name: Reuse unchanged system package bundles
+        if: steps.system_pkg_plan.outputs.reuse_groups != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          source scripts/system-package-groups.sh
+
+          fallback_groups=()
+          IFS=',' read -r -a reuse_groups <<< "${{ steps.system_pkg_plan.outputs.reuse_groups }}"
+          for group in "${reuse_groups[@]}"; do
+            [[ -n "$group" ]] || continue
+            asset="$(system_package_bundle_asset_name "$group")"
+            if gh release download "${{ steps.system_pkg_plan.outputs.prev_tag }}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "$asset" \
+              --dir .; then
+              echo "Reused $asset from ${{ steps.system_pkg_plan.outputs.prev_tag }}"
+            else
+              echo "Reuse failed for $asset; rebuilding locally"
+              fallback_groups+=("$group")
+            fi
+          done
+
+          if (( ${#fallback_groups[@]} > 0 )); then
+            bash scripts/build-system-package-bundles.sh \
+              --manifest-out system-packages-manifest.txt \
+              --build-groups "$(IFS=,; echo "${fallback_groups[*]}")"
+          fi
+
       - name: Verify release assets
         run: |
           set -euo pipefail
           source scripts/docker-image-groups.sh
           [[ -f installer-gui-wheels.tar.gz ]]
+          [[ -f installer-gui-wheels-manifest.txt ]]
           [[ -f vpn-infra.tar.gz ]]
           [[ -f docker-bundles-manifest.txt ]]
           [[ -f system-packages-manifest.txt ]]
@@ -251,6 +393,7 @@ jobs:
             --notes "${{ steps.notes.outputs.notes }}" \
             --latest \
             installer-gui-wheels.tar.gz \
+            installer-gui-wheels-manifest.txt \
             vpn-infra.tar.gz \
             docker-bundles-manifest.txt \
             system-packages-manifest.txt \
@@ -275,8 +418,10 @@ jobs:
           import os
 
           current_tag = os.environ["CURRENT_TAG"]
+          previous_tag = None
           target_names = {
               "installer-gui-wheels.tar.gz",
+              "installer-gui-wheels-manifest.txt",
               "system-packages-manifest.txt",
               "docker-images.tar.gz",
               "docker-images-monitoring.tar.gz",
@@ -292,7 +437,14 @@ jobs:
               releases = json.load(fh)
 
           for release in releases:
+              if release["tag_name"] != current_tag:
+                  previous_tag = release["tag_name"]
+                  break
+
+          for release in releases:
               if release["tag_name"] == current_tag:
+                  continue
+              if previous_tag and release["tag_name"] == previous_tag:
                   continue
               for asset in release.get("assets", []):
                   if asset["name"] in target_names:

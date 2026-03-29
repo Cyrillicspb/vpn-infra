@@ -11,6 +11,7 @@ OUTPUT_DIR="${OUTPUT_DIR:-.}"
 WORK_DIR="${WORK_DIR:-system-packages-build}"
 MANIFEST_OUT="${MANIFEST_OUT:-system-packages-manifest.txt}"
 BUILD_GROUPS_CSV=""
+MANIFEST_ONLY=0
 
 usage() {
     cat <<'EOF'
@@ -22,6 +23,7 @@ Options:
   --work-dir DIR           Working directory for per-group .deb files
   --manifest-out PATH      Path to manifest file
   --build-groups CSV       Comma-separated group list to build
+  --manifest-only          Only write manifest, do not build archives
 EOF
 }
 
@@ -31,6 +33,7 @@ while [[ $# -gt 0 ]]; do
         --work-dir) WORK_DIR="$2"; shift 2 ;;
         --manifest-out) MANIFEST_OUT="$2"; shift 2 ;;
         --build-groups) BUILD_GROUPS_CSV="$2"; shift 2 ;;
+        --manifest-only) MANIFEST_ONLY=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
     esac
@@ -52,13 +55,27 @@ tmp_manifest="$(mktemp)"
 
 for group in "${TARGET_GROUPS[@]}"; do
     [[ -n "$group" ]] || continue
+    repo_kind="$(system_package_group_repo_kind "$group")"
+    asset="$(system_package_bundle_asset_name "$group")"
+    mapfile -t group_pkgs < <(system_package_group_names "$group")
+
+    group_lines=()
+    for pkg in "${group_pkgs[@]}"; do
+        [[ -n "$pkg" ]] || continue
+        group_lines+=("pkg|${group}|${repo_kind}|${pkg}")
+    done
+    printf '%s\n' "${group_lines[@]}" >> "$tmp_manifest"
+    group_digest="$(printf '%s\n' "${group_lines[@]}" | sha256sum | awk '{print $1}')"
+    echo "group|${group}|${asset}|${group_digest}" >> "$tmp_manifest"
+
+    if (( MANIFEST_ONLY == 1 )); then
+        continue
+    fi
+
     group_dir="${WORK_DIR}/${group}"
     rm -rf "$group_dir"
     mkdir -p "$group_dir"
-
-    repo_kind="$(system_package_group_repo_kind "$group")"
-    asset="$(system_package_bundle_asset_name "$group")"
-    pkgs="$(system_package_group_names "$group" | tr '\n' ' ')"
+    pkgs="$(printf '%s\n' "${group_pkgs[@]}" | tr '\n' ' ')"
 
     docker run --rm \
         -e DEBIAN_FRONTEND=noninteractive \
@@ -138,10 +155,7 @@ dpkg-scanpackages . /dev/null | gzip -9c > Packages.gz
             echo "deb|${group}|$(basename "$deb")|$(sha256sum "$deb" | awk '{print $1}')"
         done
     } >> "$tmp_manifest"
-
     tar -czf "${OUTPUT_DIR}/${asset}" -C "$group_dir" .
-    group_digest="$(sha256sum "${OUTPUT_DIR}/${asset}" | awk '{print $1}')"
-    echo "group|${group}|${asset}|${group_digest}" >> "$tmp_manifest"
 done
 
 mv "$tmp_manifest" "$MANIFEST_OUT"
