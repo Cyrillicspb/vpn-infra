@@ -58,7 +58,7 @@ if [[ $WITH_WHEELS -eq 1 ]]; then
         'textual>=0.47.0'
         'aiohttp==3.9.5' 'fastapi==0.111.0' 'uvicorn[standard]==0.29.0'
         'pydantic==2.7.1' 'slowapi==0.1.9' 'psutil==5.9.8'
-        'PyYAML==6.0.1' 'aiofiles==23.2.1' 'aggregate6'
+        'PyYAML==6.0.1' 'aiofiles==23.2.1'
     )
     FAIL=0
     for pkg in "${PACKAGES[@]}"; do

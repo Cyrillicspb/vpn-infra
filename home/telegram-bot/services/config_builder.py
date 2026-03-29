@@ -16,11 +16,14 @@ import logging
 import os
 import random
 import subprocess
+import base64
 from pathlib import Path
 from typing import Optional
 
 import re
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import x25519
 from jinja2 import Environment, FileSystemLoader, StrictUndefined, select_autoescape
 
 logger = logging.getLogger(__name__)
@@ -39,12 +42,23 @@ _DEVICE_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]{2,30}$')
 
 
 def wg_genkey() -> tuple[str, str]:
-    """Генерация пары ключей wg. Возвращает (private_key, public_key)."""
+    """Генерация пары ключей WireGuard без вызова внешнего `wg`."""
     try:
-        privkey = subprocess.check_output(["wg", "genkey"], text=True, timeout=5).strip()
-        pubkey  = subprocess.check_output(["wg", "pubkey"], input=privkey, text=True, timeout=5).strip()
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        logger.error("wg genkey failed: %s", exc)
+        private_key = x25519.X25519PrivateKey.generate()
+        public_key = private_key.public_key()
+        priv_bytes = private_key.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        pub_bytes = public_key.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        privkey = base64.b64encode(priv_bytes).decode("ascii")
+        pubkey = base64.b64encode(pub_bytes).decode("ascii")
+    except Exception as exc:
+        logger.error("WireGuard key generation failed: %s", exc)
         raise RuntimeError("Не удалось сгенерировать WireGuard ключ") from exc
     return privkey, pubkey
 

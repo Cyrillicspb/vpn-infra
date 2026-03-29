@@ -250,9 +250,13 @@ phase0() {
         step "Автоопределение сетевых параметров"
 
         # Установить необходимые инструменты сейчас
-        apt_quiet "Обновление списка пакетов" update -qq || true
-        apt_quiet "Установка сетевых утилит" install -y -qq \
-            sshpass wireguard-tools curl iproute2 traceroute || true
+        if has_bundled_package_group "home-core"; then
+            install_bundled_package_group "Установка системных пакетов из bundle" "home-core" || true
+        else
+            apt_quiet "Обновление списка пакетов" update -qq || true
+            apt_quiet "Установка сетевых утилит" install -y -qq \
+                sshpass wireguard-tools curl iproute2 traceroute || true
+        fi
 
         ETH_IFACE=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -1)
         GATEWAY_IP=$(ip route show default 2>/dev/null | awk '/default/ {print $3}' | head -1)

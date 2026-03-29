@@ -181,6 +181,24 @@ vps_copy() {
     scp $_SCP_OPTS "$@"
 }
 
+vps_stage_bundled_package_group() {
+    local group="$1"
+    local dir
+    dir="$(bundled_package_dir "$group")" || return 1
+    vps_exec "rm -rf /tmp/vpn-system-packages/${group} && mkdir -p /tmp/vpn-system-packages"
+    # shellcheck disable=SC2086
+    scp -r $_SCP_OPTS "$dir" "sysadmin@${VPS_IP}:/tmp/vpn-system-packages/"
+}
+
+vps_install_bundled_package_group() {
+    local label="$1"
+    local group="$2"
+    vps_stage_bundled_package_group "$group" || return 1
+    vps_exec_long_progress "$label" \
+        "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
+        bash -lc 'apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 install -y -qq /tmp/vpn-system-packages/${group}/*.deb'"
+}
+
 vps_root_exec() {
     # shellcheck disable=SC2086
     ssh $_SSH_OPTS "root@${VPS_IP}" "$@"
@@ -222,12 +240,18 @@ if is_done "step33_vps_update_packages"; then
 else
     step "Обновление системных пакетов на VPS"
 
-    vps_apt_quiet "Обновление списка пакетов на VPS" "update -qq"
-    vps_apt_quiet "Установка обновлений системы на VPS" "upgrade -y -qq"
+    if has_bundled_package_group "vps-core"; then
+        log_info "Локальный bundle для VPS найден — пропускаем apt update/upgrade"
+        vps_install_bundled_package_group "Установка системных пакетов на VPS" "vps-core" \
+            || die "Не удалось установить vps-core bundle"
+    else
+        vps_apt_quiet "Обновление списка пакетов на VPS" "update -qq"
+        vps_apt_quiet "Установка обновлений системы на VPS" "upgrade -y -qq"
 
-    vps_apt_quiet "Установка системных пакетов на VPS" "install -y -qq \
-        curl wget git jq wireguard-tools openssl gnupg2 ca-certificates \
-        python3 python3-pip net-tools mosh"
+        vps_apt_quiet "Установка системных пакетов на VPS" "install -y -qq \
+            curl wget git jq wireguard-tools openssl gnupg2 ca-certificates \
+            python3 python3-pip net-tools mosh"
+    fi
 
     log_ok "Пакеты на VPS обновлены"
     step_done "step33_vps_update_packages"
@@ -260,19 +284,24 @@ else
     if vps_exec "command -v docker &>/dev/null" 2>/dev/null; then
         log_info "Docker уже установлен на VPS"
     else
-        log_info "Установка Docker на VPS через APT + GPG..."
-        vps_exec "sudo install -m 0755 -d /etc/apt/keyrings && \
-            curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-                | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
-            sudo chmod a+r /etc/apt/keyrings/docker.gpg"
-        vps_exec ". /etc/os-release && \
-            echo \"deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-            https://download.docker.com/linux/ubuntu \${VERSION_CODENAME} stable\" \
-            | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null && \
-            ${_APT_WAIT} && sudo apt-get update -qq"
-        vps_apt_quiet "Установка Docker CE на VPS" "install -y -qq \
-            docker-ce docker-ce-cli containerd.io docker-compose-plugin" \
-            || die "Не удалось установить Docker на VPS"
+        if has_bundled_package_group "vps-docker"; then
+            vps_install_bundled_package_group "Установка Docker CE на VPS" "vps-docker" \
+                || die "Не удалось установить vps-docker bundle"
+        else
+            log_info "Установка Docker на VPS через APT + GPG..."
+            vps_exec "sudo install -m 0755 -d /etc/apt/keyrings && \
+                curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+                    | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
+                sudo chmod a+r /etc/apt/keyrings/docker.gpg"
+            vps_exec ". /etc/os-release && \
+                echo \"deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+                https://download.docker.com/linux/ubuntu \${VERSION_CODENAME} stable\" \
+                | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null && \
+                ${_APT_WAIT} && sudo apt-get update -qq"
+            vps_apt_quiet "Установка Docker CE на VPS" "install -y -qq \
+                docker-ce docker-ce-cli containerd.io docker-compose-plugin" \
+                || die "Не удалось установить Docker на VPS"
+        fi
         vps_exec "sudo systemctl enable docker && sudo systemctl start docker"
     fi
 
@@ -306,7 +335,9 @@ else
     log_info "Rate limiting: TCP/UDP 443 — 200/сек, burst 500 (защита Xray + Hysteria2)"
     log_info "Открытые порты: 22 (SSH), 443 (Xray/Hysteria2), 8022 (SSH аварийный)"
 
-    vps_apt_quiet "Установка nftables на VPS" "install -y -qq nftables"
+    if ! vps_exec "dpkg -l nftables 2>/dev/null | grep -q '^ii'" 2>/dev/null; then
+        vps_apt_quiet "Установка nftables на VPS" "install -y -qq nftables"
+    fi
 
     vps_exec "cat << 'NFTEOF' | sudo tee /etc/nftables-vps.conf > /dev/null
 #!/usr/sbin/nft -f
@@ -389,7 +420,9 @@ else
     log_info "Домашний сервер форвардит DNS заблокированных доменов на 10.177.2.2:53."
     log_info "Устанавливаем dnsmasq на VPS — слушает на tun0, форвардит в 1.1.1.1/8.8.8.8."
 
-    vps_apt_quiet "Установка dnsmasq на VPS" "install -y -qq dnsmasq"
+    if ! vps_exec "dpkg -l dnsmasq 2>/dev/null | grep -q '^ii'" 2>/dev/null; then
+        vps_apt_quiet "Установка dnsmasq на VPS" "install -y -qq dnsmasq"
+    fi
 
     vps_exec "cat << 'DNSEOF' | sudo tee /etc/dnsmasq.d/vpn-tier2.conf > /dev/null
 # DNS-форвардер для Tier-2 туннеля
@@ -414,7 +447,9 @@ if is_done "step37_vps_fail2ban"; then
 else
     step "Настройка fail2ban на VPS"
 
-    vps_apt_quiet "Установка fail2ban на VPS" "install -y -qq fail2ban"
+    if ! vps_exec "dpkg -l fail2ban 2>/dev/null | grep -q '^ii'" 2>/dev/null; then
+        vps_apt_quiet "Установка fail2ban на VPS" "install -y -qq fail2ban"
+    fi
     # ignoreip: loopback + VPN subnets (static) + home server external IP
     F2B_IGNOREIP="127.0.0.1/8 ::1 10.177.0.0/16 ${EXTERNAL_IP}"
     vps_exec "printf '[DEFAULT]\nbantime = 86400\nfindtime = 300\nmaxretry = 3\nbackend = systemd\nignoreip = ${F2B_IGNOREIP}\n\n[sshd]\nenabled = true\nport = 22,8022\nfilter = sshd\nmode = aggressive\nmaxretry = 3\n' | \

@@ -7,12 +7,6 @@ LABEL git-hash=$GIT_HASH
 
 WORKDIR /app
 
-# Системные зависимости: wireguard-tools для wg genkey/pubkey
-RUN apt-get update -qq && apt-get install -y -qq \
-    curl \
-    wireguard-tools \
-    && rm -rf /var/lib/apt/lists/*
-
 # Python зависимости
 COPY requirements.txt ./
 COPY wheels/ ./wheels/

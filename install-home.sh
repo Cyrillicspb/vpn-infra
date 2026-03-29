@@ -32,8 +32,12 @@ if is_done "step09_apt_update"; then
     step_skip "step09_apt_update"
 else
     step "Обновление системных пакетов"
-    apt_quiet "Обновление списка пакетов" update -qq
-    apt_quiet "Установка обновлений системы" upgrade -y -qq
+    if has_bundled_package_group "home-core"; then
+        log_info "Локальный bundle найден — пропускаем apt update/upgrade"
+    else
+        apt_quiet "Обновление списка пакетов" update -qq
+        apt_quiet "Установка обновлений системы" upgrade -y -qq
+    fi
     log_ok "Система обновлена"
     step_done "step09_apt_update"
 fi
@@ -44,19 +48,22 @@ if is_done "step10_install_packages"; then
     step_skip "step10_install_packages"
 else
     step "Установка системных пакетов"
-    apt_quiet "Установка системных пакетов" install -y -qq \
-        curl wget git jq rsync unzip \
-        nftables dnsmasq \
-        python3 python3-pip python3-venv python3-cryptography \
-        wireguard-tools iproute2 \
-        sqlite3 net-tools conntrack traceroute \
-        fail2ban unattended-upgrades apt-transport-https \
-        logrotate cron gnupg2 ca-certificates \
-        sshpass autossh ncat tmux \
-        uuid-runtime openssl dkms build-essential \
-        iperf3
-    pip3 install --quiet --break-system-packages aggregate6 2>/dev/null \
-        || pip3 install --break-system-packages aggregate6
+    if has_bundled_package_group "home-core"; then
+        install_bundled_package_group "Установка системных пакетов" "home-core" \
+            || die "Не удалось установить home-core bundle"
+    else
+        apt_quiet "Установка системных пакетов" install -y -qq \
+            curl wget git jq rsync unzip \
+            nftables dnsmasq \
+            python3 python3-pip python3-venv python3-cryptography \
+            wireguard-tools iproute2 \
+            sqlite3 net-tools conntrack traceroute \
+            fail2ban unattended-upgrades apt-transport-https \
+            logrotate cron gnupg2 ca-certificates \
+            sshpass autossh ncat tmux \
+            uuid-runtime openssl dkms build-essential \
+            iperf3
+    fi
     log_ok "Системные пакеты установлены"
     step_done "step10_install_packages"
 fi
@@ -255,22 +262,27 @@ else
     step "Установка Docker CE"
 
     if ! command -v docker &>/dev/null; then
-        install -m 0755 -d /etc/apt/keyrings
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-            | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-        chmod a+r /etc/apt/keyrings/docker.gpg
+        if has_bundled_package_group "home-docker"; then
+            install_bundled_package_group "Установка Docker CE" "home-docker" \
+                || die "Не удалось установить home-docker bundle"
+        else
+            install -m 0755 -d /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+                | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            chmod a+r /etc/apt/keyrings/docker.gpg
 
-        # shellcheck disable=SC1091
-        source /etc/os-release
-        echo \
-            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-            https://download.docker.com/linux/ubuntu \
-            ${VERSION_CODENAME} stable" \
-            | tee /etc/apt/sources.list.d/docker.list > /dev/null
+            # shellcheck disable=SC1091
+            source /etc/os-release
+            echo \
+                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+                https://download.docker.com/linux/ubuntu \
+                ${VERSION_CODENAME} stable" \
+                | tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-        apt_quiet "Обновление APT для Docker" update -qq
-        apt_quiet "Установка Docker CE" install -y -qq \
-            docker-ce docker-ce-cli containerd.io docker-compose-plugin
+            apt_quiet "Обновление APT для Docker" update -qq
+            apt_quiet "Установка Docker CE" install -y -qq \
+                docker-ce docker-ce-cli containerd.io docker-compose-plugin
+        fi
         log_ok "Docker CE установлен"
     else
         log_info "Docker уже установлен: $(docker --version)"
@@ -363,7 +375,12 @@ ig==
 -----END PGP PUBLIC KEY BLOCK-----
 AMNEZIA_KEY_EOF
 
-    if [[ -s /usr/share/keyrings/amnezia-ppa.gpg ]]; then
+    if has_bundled_package_group "home-awg"; then
+        if install_bundled_package_group "Установка AmneziaWG" "home-awg"; then
+            AWG_INSTALLED=1
+            log_ok "AmneziaWG установлен из локального bundle"
+        fi
+    elif [[ -s /usr/share/keyrings/amnezia-ppa.gpg ]]; then
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/amnezia-ppa.gpg] \
 https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu noble main" \
             > /etc/apt/sources.list.d/amnezia.list
@@ -376,9 +393,7 @@ https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu noble main" \
     fi
 
     if [[ $AWG_INSTALLED -eq 0 ]]; then
-        log_warn "AmneziaWG не удалось установить автоматически."
-        log_warn "Установите вручную: https://github.com/amnezia-vpn/amneziawg-linux-kernel-module"
-        log_warn "Продолжаем установку — AmneziaWG можно добавить позже."
+        die "AmneziaWG не удалось установить автоматически"
     fi
 
     step_done "step16_install_amneziawg"
@@ -672,8 +687,13 @@ else
 
     # Установить nmap если нет (не добавляем в шаг 10 — нужен только здесь)
     if ! command -v nmap &>/dev/null; then
-        log_info "Устанавливаем nmap..."
-        apt_quiet "Установка nmap" install -y -qq nmap
+        if has_bundled_package_group "home-core"; then
+            install_bundled_package_group "Установка nmap из bundle" "home-core" \
+                || die "Не удалось доустановить nmap из home-core bundle"
+        else
+            log_info "Устанавливаем nmap..."
+            apt_quiet "Установка nmap" install -y -qq nmap
+        fi
     fi
 
     # Тестируем через LAN IP (не loopback) — пакеты проходят через nftables INPUT
@@ -1672,8 +1692,13 @@ else
 
     # netcat-openbsd нужен для nc -X 5 (SOCKS5 ProxyCommand)
     if ! dpkg -l netcat-openbsd 2>/dev/null | grep -q "^ii"; then
-        log_info "Установка netcat-openbsd..."
-        apt_quiet "Установка netcat-openbsd" install -y -qq netcat-openbsd
+        if has_bundled_package_group "home-core"; then
+            install_bundled_package_group "Установка netcat-openbsd из bundle" "home-core" \
+                || die "Не удалось доустановить netcat-openbsd из home-core bundle"
+        else
+            log_info "Установка netcat-openbsd..."
+            apt_quiet "Установка netcat-openbsd" install -y -qq netcat-openbsd
+        fi
     fi
     log_ok "netcat-openbsd установлен"
 

@@ -42,6 +42,54 @@ log_ok()    { _log_emit "${GREEN}"  "[OK]"   "$*"; }
 log_warn()  { _log_emit "${YELLOW}" "[WARN]" "$*"; }
 log_error() { _log_emit "${RED}"    "[ERR]"  "$*" >&2; }
 
+bundled_package_root() {
+    local candidates=()
+    [[ -n "${BUNDLED_PACKAGE_ROOT:-}" ]] && candidates+=("${BUNDLED_PACKAGE_ROOT}")
+    [[ -n "${REPO_DIR:-}" ]] && candidates+=("${REPO_DIR}/system-packages")
+    candidates+=("/opt/vpn/system-packages")
+
+    local root
+    for root in "${candidates[@]}"; do
+        [[ -d "$root" ]] && { printf '%s\n' "$root"; return 0; }
+    done
+    return 1
+}
+
+bundled_package_dir() {
+    local group="$1"
+    local root
+    root="$(bundled_package_root)" || return 1
+    [[ -d "${root}/${group}" ]] || return 1
+    printf '%s\n' "${root}/${group}"
+}
+
+has_bundled_package_group() {
+    local group="$1"
+    local dir
+    dir="$(bundled_package_dir "$group")" || return 1
+    find "$dir" -maxdepth 1 -type f -name '*.deb' | grep -q .
+}
+
+install_bundled_package_group() {
+    local label="$1"
+    local group="$2"
+    local dir
+    dir="$(bundled_package_dir "$group")" || return 1
+
+    mapfile -t _bundle_debs < <(find "$dir" -maxdepth 1 -type f -name '*.deb' | sort)
+    [[ ${#_bundle_debs[@]} -gt 0 ]] || return 1
+
+    log_info "${label}: локальный .deb bundle (${group})"
+    if [[ -n "$COMPACT_OUTPUT" ]]; then
+        env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
+            apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 \
+            install -y "${_bundle_debs[@]}"
+    else
+        env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
+            apt-get install -y "${_bundle_debs[@]}"
+    fi
+}
+
 format_duration() {
     local total="${1:-0}"
     local hours=$(( total / 3600 ))

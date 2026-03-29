@@ -173,7 +173,8 @@ if ! $_repo_ok; then
 fi
 
 chmod +x "${OPT_VPN}/setup.sh" "${OPT_VPN}/install-home.sh" \
-    "${OPT_VPN}/scripts/docker-load-cache.sh" "${OPT_VPN}/dev/save-docker-images.sh" 2>/dev/null || true
+    "${OPT_VPN}/scripts/docker-load-cache.sh" "${OPT_VPN}/dev/save-docker-images.sh" \
+    "${OPT_VPN}/scripts/build-system-package-bundles.sh" "${OPT_VPN}/dev/save-system-packages.sh" 2>/dev/null || true
 
 _install_version="$(read_install_version "${OPT_VPN}/version" || true)"
 if [[ -n "${_install_version}" ]]; then
@@ -198,6 +199,43 @@ if ! ls "${_installer_wheels_dir}"/*.whl >/dev/null 2>&1; then
     else
         warn "installer-gui-wheels.tar.gz не найден в релизе"
     fi
+fi
+
+# ── 3.5. System package bundles из GitHub Releases ───────────────────────────
+_system_pkg_dir="${OPT_VPN}/system-packages"
+if [[ -f "${OPT_VPN}/scripts/system-package-groups.sh" ]]; then
+    # shellcheck source=scripts/system-package-groups.sh
+    source "${OPT_VPN}/scripts/system-package-groups.sh"
+    mapfile -t _system_assets < <(
+        while IFS= read -r _group; do
+            system_package_bundle_asset_name "$_group"
+        done < <(system_package_bundle_groups)
+    )
+    info "Скачиваем system package bundles..."
+    mkdir -p "$_system_pkg_dir"
+    for _asset in "${_system_assets[@]}"; do
+        _pkg_url="$(release_asset_url "$_release_json" "$_asset")"
+        [[ -n "$_pkg_url" ]] || { err "${_asset} не найден в релизе"; exit 1; }
+        case "$_asset" in
+            system-packages-home-core.tar.gz) _extract_dir="home-core" ;;
+            system-packages-home-docker.tar.gz) _extract_dir="home-docker" ;;
+            system-packages-home-awg.tar.gz) _extract_dir="home-awg" ;;
+            system-packages-vps-core.tar.gz) _extract_dir="vps-core" ;;
+            system-packages-vps-docker.tar.gz) _extract_dir="vps-docker" ;;
+            *) err "Неизвестный system package asset: ${_asset}"; exit 1 ;;
+        esac
+        mkdir -p "${_system_pkg_dir}/${_extract_dir}"
+        info "Скачиваем ${_asset}..."
+        if download_with_progress "$_pkg_url" "/tmp/${_asset}" "${_asset}"; then
+            tar xzf "/tmp/${_asset}" -C "${_system_pkg_dir}/${_extract_dir}" \
+                --no-same-permissions --no-same-owner --overwrite 2>/dev/null || true
+            rm -f "/tmp/${_asset}"
+            ok "${_asset} скачан и распакован"
+        else
+            err "Не удалось скачать ${_asset}"
+            exit 1
+        fi
+    done
 fi
 
 # ── 4. Docker-образы из GitHub Releases ───────────────────────────────────────
