@@ -253,27 +253,27 @@ jobs:
           set -euo pipefail
           gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > /tmp/releases.json
           python3 - <<'PY' > /tmp/stale-assets.txt
-import json
-import os
+          import json
+          import os
 
-current_tag = os.environ["CURRENT_TAG"]
-target_names = {
-    "installer-gui-wheels.tar.gz",
-    "docker-images.tar.gz",
-    "docker-images-monitoring.tar.gz",
-    "docker-images-vps.tar.gz",
-}
+          current_tag = os.environ["CURRENT_TAG"]
+          target_names = {
+              "installer-gui-wheels.tar.gz",
+              "docker-images.tar.gz",
+              "docker-images-monitoring.tar.gz",
+              "docker-images-vps.tar.gz",
+          }
 
-with open("/tmp/releases.json", "r", encoding="utf-8") as fh:
-    releases = json.load(fh)
+          with open("/tmp/releases.json", "r", encoding="utf-8") as fh:
+              releases = json.load(fh)
 
-for release in releases:
-    if release["tag_name"] == current_tag:
-        continue
-    for asset in release.get("assets", []):
-        if asset["name"] in target_names:
-            print(f'{release["tag_name"]}|{asset["id"]}|{asset["name"]}')
-PY
+          for release in releases:
+              if release["tag_name"] == current_tag:
+                  continue
+              for asset in release.get("assets", []):
+                  if asset["name"] in target_names:
+                      print(f'{release["tag_name"]}|{asset["id"]}|{asset["name"]}')
+          PY
 
           while IFS='|' read -r tag asset_id asset_name; do
             [[ -n "$asset_id" ]] || continue
