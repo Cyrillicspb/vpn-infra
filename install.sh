@@ -147,7 +147,10 @@ else
         fi
     done
 
-    _img_count=$(ls "${DOCKER_IMAGES_DIR}"/*.tar.gz 2>/dev/null | wc -l || echo 0)
+    shopt -s nullglob
+    _docker_archives=("${DOCKER_IMAGES_DIR}"/*.tar.gz)
+    shopt -u nullglob
+    _img_count=${#_docker_archives[@]}
     if [[ "$_downloaded" -gt 0 && "$_img_count" -gt 0 ]]; then
         ok "Docker-образы готовы: ${_img_count} файлов"
     else
