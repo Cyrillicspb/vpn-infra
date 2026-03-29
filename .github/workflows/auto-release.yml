@@ -98,12 +98,6 @@ jobs:
           chmod +x tools/tun2socks-linux-amd64 tools/tun2socks-linux-arm64
           ls -lh tools/
 
-      - name: Build self-extracting installer
-        run: |
-          pip install --quiet pip --upgrade
-          bash installers/build-installer.sh --output install.sh
-          ls -lh install.sh
-
       - name: Build repo archive
         run: |
           tar -czf /tmp/vpn-infra.tar.gz \
@@ -156,7 +150,6 @@ jobs:
             --title "v$NEXT" \
             --notes "${{ steps.notes.outputs.notes }}" \
             --latest \
-            install.sh \
             vpn-infra.tar.gz \
             docker-images.tar.gz \
             docker-images-monitoring.tar.gz \

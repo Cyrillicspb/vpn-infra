@@ -1,18 +1,72 @@
-name: Release
-
-# Этот воркфлоу срабатывает только при ручном создании тега (git tag vX.Y.Z.W + git push --tags).
-# При обычных пушах в master релизы создаёт auto-release.yml.
+name: Release Assets
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to rebuild/upload release assets for
+        required: true
+        type: string
 
 jobs:
-  check:
+  rebuild-assets:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
-      - name: Skip if tag was created by Auto Release
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify tag exists
         run: |
-          echo "Tag push detected: ${{ github.ref }}"
-          echo "Auto Release создаёт релиз самостоятельно. Этот воркфлоу не делает дублирующих действий."
+          git rev-parse --verify "refs/tags/${{ inputs.tag }}"
+
+      - name: Build repo archive
+        run: |
+          tar -czf /tmp/vpn-infra.tar.gz \
+            --exclude='.git' --exclude='*.pyc' --exclude='__pycache__' \
+            --exclude='*/venv/*' --exclude='node_modules' \
+            --exclude='*.log' --exclude='.env' \
+            -C . .
+          mv /tmp/vpn-infra.tar.gz vpn-infra.tar.gz
+          echo "Размер архива: $(du -sh vpn-infra.tar.gz | cut -f1)"
+
+      - name: Build Docker image bundles
+        run: |
+          set -euo pipefail
+          source scripts/docker-image-groups.sh
+
+          mkdir -p docker-images
+          mapfile -t ALL_IMAGES < <(docker_image_group_names all)
+          for img in "${ALL_IMAGES[@]}"; do
+            fname="$(docker_image_to_archive_name "$img")"
+            echo "Pull: $img"
+            docker pull "$img"
+            echo "Save: docker-images/${fname}"
+            docker save "$img" | gzip > "docker-images/${fname}"
+          done
+
+          while IFS= read -r group; do
+            archive="$(docker_image_bundle_asset_name "$group")"
+            members=()
+            while IFS= read -r img; do
+              members+=("docker-images/$(docker_image_to_archive_name "$img")")
+            done < <(docker_image_group_names "$group")
+            tar -czf "$archive" "${members[@]}"
+            echo "Bundle ${archive}: $(du -sh "$archive" | cut -f1)"
+          done < <(docker_image_bundle_groups)
+
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ inputs.tag }}" \
+            --clobber \
+            vpn-infra.tar.gz \
+            docker-images.tar.gz \
+            docker-images-monitoring.tar.gz \
+            docker-images-vps.tar.gz

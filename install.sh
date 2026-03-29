@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — однострочный установщик vpn-infra
+# install.sh — официальный однострочный bootstrap vpn-infra
 #
 # Запуск на чистом Ubuntu-сервере:
 #   curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install.sh | sudo bash
@@ -11,6 +11,7 @@
 #   4. Запускает setup.sh (TUI или консольный режим)
 #
 # Идемпотентен: повторный запуск не сломает уже установленное.
+# Это единственный поддерживаемый путь старта установки.
 
 set -uo pipefail
 export DEBIAN_FRONTEND=noninteractive

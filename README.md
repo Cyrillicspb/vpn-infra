@@ -198,15 +198,11 @@ DPI видит поток пакетов, по которому невозмож
 
 ```bash
 # На домашнем сервере (Ubuntu 24.04, под root или через sudo)
-curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/setup.sh -o setup.sh
-sudo bash setup.sh
+curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install.sh | sudo bash
 ```
 
 Скрипт запросит данные (VPS IP, Telegram токен и т.д.) на фазе 0, затем выполнит установку автоматически.
-
-**Windows**: запустите `installers/windows/install.bat` — он подключится к серверу по SSH и запустит скрипт.
-
-**macOS**: запустите `installers/macos/install.command` — аналогично.
+Поддерживаемый путь установки один: запуск непосредственно на домашнем сервере. Клиентские launcher-скрипты для Windows/macOS/Linux больше не считаются основным способом установки.
 
 ---
 

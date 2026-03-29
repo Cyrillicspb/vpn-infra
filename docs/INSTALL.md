@@ -101,31 +101,14 @@ systemd-detect-virt
 
 ## 2. Запуск установки
 
-### Windows
-
-1. Скачайте файл `installers/windows/install.bat` из репозитория.
-2. Дважды щёлкните по файлу — откроется командная строка.
-3. Введите IP домашнего сервера и данные для SSH-подключения.
-4. Скрипт подключится к серверу по SSH и запустит установку автоматически.
-
-### macOS
-
-1. Скачайте файл `installers/macos/install.command` из репозитория.
-2. Откройте Терминал и выполните:
-   ```bash
-   chmod +x ~/Downloads/install.command
-   ~/Downloads/install.command
-   ```
-3. Скрипт подключится к серверу по SSH и запустит установку.
-
-### Linux / напрямую на сервере
+Установка выполняется непосредственно на домашнем сервере. Это единственный поддерживаемый путь старта: он проще, стабильнее и не зависит от SSH-launcher скриптов с пользовательских компьютеров.
 
 ```bash
 # Подключитесь к домашнему серверу по SSH или откройте терминал локально
-# Скачайте и запустите скрипт:
-curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/setup.sh -o setup.sh
-sudo bash setup.sh
+curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install.sh | sudo bash
 ```
+
+`install.sh` — bootstrap-скрипт. Он сам подтянет репозиторий и release-артефакты, после чего запустит основной установщик `setup.sh`.
 
 ### Идемпотентность
 
