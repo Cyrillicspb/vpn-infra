@@ -131,6 +131,26 @@ ask() {
     export "${var?}"
 }
 
+ensure_wireguard_tools() {
+    if command -v wg >/dev/null 2>&1; then
+        return 0
+    fi
+
+    log_warn "Команда wg недоступна. Восстанавливаем wireguard-tools..."
+
+    if has_bundled_package_group "home-core"; then
+        install_bundled_package_group "Повторная установка home-core bundle" "home-core" \
+            || log_warn "Повторная установка home-core bundle завершилась с ошибкой"
+    else
+        apt_quiet "Обновление списка пакетов" update -qq \
+            || log_warn "apt update завершился с ошибкой при восстановлении wg"
+        apt_quiet "Установка wireguard-tools" install -y -qq wireguard-tools \
+            || log_warn "apt install wireguard-tools завершился с ошибкой"
+    fi
+
+    command -v wg >/dev/null 2>&1
+}
+
 # ── Баннер ───────────────────────────────────────────────────────────────────
 
 print_banner() {
@@ -261,8 +281,8 @@ phase0() {
                 || die "Не удалось установить базовые сетевые утилиты на раннем bootstrap шаге."
         fi
 
-        command -v wg >/dev/null 2>&1 \
-            || die "wireguard-tools не установлены: команда wg недоступна после раннего bootstrap шага."
+        ensure_wireguard_tools \
+            || die "Не удалось восстановить wireguard-tools: команда wg недоступна после раннего bootstrap шага."
 
         ETH_IFACE=$(ip route show default 2>/dev/null | awk '/default/ {print $5}' | head -1)
         GATEWAY_IP=$(ip route show default 2>/dev/null | awk '/default/ {print $3}' | head -1)
@@ -919,6 +939,8 @@ for a in d.get('assets',[]):
         step "Генерация криптографических секретов"
 
         [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
+        ensure_wireguard_tools \
+            || die "Не удалось восстановить wireguard-tools перед генерацией ключей."
 
         # AmneziaWG ключи
         if [[ -z "${AWG_SERVER_PRIVATE_KEY:-}" ]]; then
