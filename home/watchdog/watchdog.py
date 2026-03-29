@@ -3071,16 +3071,16 @@ async def _manual_reassessment() -> None:
         async with _LOCK:
             await _do_switch(best_stack, "manual_reassessment")
         alert(
-            f"📊 Тест завершён:\n\n{report}\n\n"
-            f"🔄 Переключено на <b>{best_stack}</b> ({best_mbps:.1f} Mbps)"
+            f"📊 *Тест завершён*\n\n{report}\n\n"
+            f"🔄 Переключено на `{best_stack}` ({best_mbps:.1f} Mbps)"
         )
     elif best_stack:
         alert(
-            f"📊 Тест завершён:\n\n{report}\n\n"
-            f"✅ Текущий стек <b>{state.active_stack}</b> уже оптимален"
+            f"📊 *Тест завершён*\n\n{report}\n\n"
+            f"✅ Текущий стек `{state.active_stack}` уже оптимален"
         )
     else:
-        alert(f"📊 Тест завершён:\n\n{report}\n\n⚠️ Все стеки недоступны")
+        alert(f"📊 *Тест завершён*\n\n{report}\n\n⚠️ Все стеки недоступны")
 
     state.last_full_assessment = datetime.now()
 

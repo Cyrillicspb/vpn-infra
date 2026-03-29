@@ -107,7 +107,7 @@ def admin_monitor_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📉 Графики",         callback_data="adm:graph_menu"),
         ],
         [
-            InlineKeyboardButton(text="📋 Логи",            callback_data="adm:logs_menu"),
+            InlineKeyboardButton(text="📋 Логи",            callback_data="adm:logs_monitor"),
         ],
         [
             InlineKeyboardButton(text="◀️ Назад",           callback_data="adm:menu"),
@@ -145,7 +145,7 @@ def admin_system_menu() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🔃 Перезапуск",      callback_data="adm:restart_menu"),
-            InlineKeyboardButton(text="📋 Логи",            callback_data="adm:logs_menu"),
+            InlineKeyboardButton(text="📋 Логи",            callback_data="adm:logs_system"),
         ],
         [
             InlineKeyboardButton(text="🔑 Ротация ключей",  callback_data="adm:rotate_keys"),
@@ -209,7 +209,10 @@ def admin_restart_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_logs_menu() -> InlineKeyboardMarkup:
+def admin_logs_menu(
+    back_cb: str = "adm:system",
+    prefix: str = "adm:log:system:",
+) -> InlineKeyboardMarkup:
     services = [
         ("telegram-bot",  "telegram-bot"),
         ("watchdog",      "watchdog"),
@@ -223,13 +226,13 @@ def admin_logs_menu() -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []
     for name, svc in services:
-        row.append(InlineKeyboardButton(text=name, callback_data=f"adm:log:{svc}"))
+        row.append(InlineKeyboardButton(text=name, callback_data=f"{prefix}{svc}"))
         if len(row) == 2:
             rows.append(row)
             row = []
     if row:
         rows.append(row)
-    rows.append(_nav_row("adm:system"))
+    rows.append(_nav_row(back_cb))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -339,6 +342,33 @@ def admin_clients_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="◀️ Назад", callback_data="adm:menu"),
         ],
     ])
+
+
+def admin_admins_menu(admins: list[dict], is_root: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if is_root:
+        rows.append([InlineKeyboardButton(text="➕ Создать admin-инвайт", callback_data="adm:admin_invite")])
+    for admin in admins:
+        name = _visible(admin.get("first_name", "")) or _visible(admin.get("username", "")) or str(admin["chat_id"])
+        label = f"👤 {name}"
+        if admin.get("username"):
+            label = f"👤 @{admin['username']}"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"adm:admin:{admin['chat_id']}")])
+    rows.append(_nav_row("adm:clients"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_admin_actions_kb(chat_id: str, can_demote: bool) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="🔢 Лимит устройств", callback_data=f"adm:cl_lim:{chat_id}"),
+            InlineKeyboardButton(text="🔄 Реконнект",       callback_data=f"adm:cl_reconnect:{chat_id}"),
+        ],
+    ]
+    if can_demote:
+        rows.append([InlineKeyboardButton(text="➖ Снять права администратора", callback_data=f"adm:admin_rm:{chat_id}")])
+    rows.append(_nav_row("adm:admin_list", home_cb="adm:menu"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def admin_clients_list_kb(clients: list[dict]) -> InlineKeyboardMarkup:

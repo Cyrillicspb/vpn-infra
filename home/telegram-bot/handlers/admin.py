@@ -37,6 +37,8 @@ from aiogram.types import (
 from config import config
 from database import Database
 from handlers.keyboards import (
+    admin_admin_actions_kb,
+    admin_admins_menu,
     admin_client_actions_kb,
     admin_clients_list_kb,
     admin_clients_menu,
@@ -1490,6 +1492,14 @@ async def _edit_or_answer(cb: CallbackQuery, text: str, kb=None) -> None:
         pass
 
 
+def _log_result_kb(origin: str) -> InlineKeyboardMarkup:
+    back_cb = "adm:logs_monitor" if origin == "monitor" else "adm:logs_system"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ К логам", callback_data=back_cb)],
+        [InlineKeyboardButton(text="🏠 Меню", callback_data="adm:menu")],
+    ])
+
+
 @router.callback_query(F.data == "adm:menu")
 async def cb_adm_menu(cb: CallbackQuery, **kw):
     await _edit_or_answer(cb, "<b>Меню администратора</b>", admin_main_menu())
@@ -1508,6 +1518,16 @@ async def cb_adm_system(cb: CallbackQuery, **kw):
 @router.callback_query(F.data == "adm:monitor")
 async def cb_adm_monitor(cb: CallbackQuery, **kw):
     await _edit_or_answer(cb, "📊 <b>Мониторинг</b>", admin_monitor_menu())
+
+
+@router.callback_query(F.data == "adm:logs_system")
+async def cb_adm_logs_system(cb: CallbackQuery, **kw):
+    await _edit_or_answer(cb, "📋 <b>Логи</b> — выберите сервис:", admin_logs_menu("adm:system", "adm:log:system:"))
+
+
+@router.callback_query(F.data == "adm:logs_monitor")
+async def cb_adm_logs_monitor(cb: CallbackQuery, **kw):
+    await _edit_or_answer(cb, "📋 <b>Логи</b> — выберите сервис:", admin_logs_menu("adm:monitor", "adm:log:monitor:"))
 
 
 @router.callback_query(F.data == "adm:dashboard")
@@ -2277,10 +2297,10 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
 
 @router.callback_query(F.data == "adm:admin_list")
 async def cb_adm_admin_list(cb: CallbackQuery, **kw):
-    await cb.answer()
     db: Database = kw.get("db")
     bot = kw.get("bot")
     root_id = str(config.admin_chat_id)
+    is_root = str(cb.from_user.id) == root_id
     try:
         root_chat = await bot.get_chat(int(root_id))
         root_name = f"@{root_chat.username}" if root_chat.username else (root_chat.first_name or root_id)
@@ -2298,7 +2318,82 @@ async def cb_adm_admin_list(cb: CallbackQuery, **kw):
             lines.append(f"• {name} — добавил <code>{added_by}</code> ({date})")
     else:
         lines.append("\n<i>Дополнительных администраторов нет</i>")
-    await cb.message.answer("\n".join(lines), reply_markup=back_to_admin_menu(), parse_mode="HTML")
+    if is_root:
+        lines.append("\n<i>Создание и снятие прав доступны только root.</i>")
+    await _edit_or_answer(cb, "\n".join(lines), admin_admins_menu(extra_admins, is_root))
+
+
+@router.callback_query(F.data == "adm:admin_invite")
+async def cb_adm_admin_invite(cb: CallbackQuery, **kw):
+    await cb.answer()
+    if str(cb.from_user.id) != str(config.admin_chat_id):
+        await cb.message.answer("❌ Только root-администратор может создавать admin-инвайты.", reply_markup=back_to_admin_menu())
+        return
+    db: Database = kw.get("db")
+    code = await db.create_invite_code(str(cb.from_user.id), grants_admin=True)
+    await cb.message.answer(
+        f"👥 <b>Admin-инвайт создан</b>\n\nКод: <code>{code}</code>\nДействителен: 24 часа",
+        reply_markup=back_to_admin_menu(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.startswith("adm:admin:"))
+async def cb_adm_admin_card(cb: CallbackQuery, **kw):
+    chat_id = cb.data[len("adm:admin:"):]
+    db: Database = kw.get("db")
+    client = await db.get_client(chat_id)
+    if not client or not client.get("is_admin"):
+        await cb.answer("Администратор не найден", show_alert=True)
+        return
+    name = _display_name(client, chat_id)
+    devices = await db.get_devices(chat_id)
+    added_by = client.get("admin_added_by") or "root/bootstrap"
+    created_at = (client.get("created_at") or "")[:16]
+    is_root_target = str(chat_id) == str(config.admin_chat_id)
+    can_demote = str(cb.from_user.id) == str(config.admin_chat_id) and not is_root_target
+    role = "👑 Root-администратор" if is_root_target else "👥 Дополнительный администратор"
+    text = (
+        f"{role}\n\n"
+        f"Имя: <b>{name}</b>\n"
+        f"ID: <code>{chat_id}</code>\n"
+        f"Статус: {'🚫 отключён' if client.get('is_disabled') else '✅ активен'}\n"
+        f"Устройств: {len(devices)} / {client.get('device_limit', 5)}\n"
+        f"Выдал права: <code>{added_by}</code>\n"
+        f"Создан: {created_at or 'неизвестно'}"
+    )
+    await _edit_or_answer(cb, text, admin_admin_actions_kb(chat_id, can_demote))
+
+
+@router.callback_query(F.data.startswith("adm:admin_rm:"))
+async def cb_adm_admin_remove(cb: CallbackQuery, **kw):
+    chat_id = cb.data[len("adm:admin_rm:"):]
+    if str(cb.from_user.id) != str(config.admin_chat_id):
+        await cb.answer("Только root", show_alert=True)
+        return
+    if str(chat_id) == str(config.admin_chat_id):
+        await cb.answer("Нельзя снять права у root", show_alert=True)
+        return
+    await _edit_or_answer(
+        cb,
+        f"⚠️ <b>Снять права администратора</b> у <code>{chat_id}</code>?",
+        confirm_kb(f"adm:admin_rm_ok:{chat_id}", f"adm:admin:{chat_id}"),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:admin_rm_ok:"))
+async def cb_adm_admin_remove_ok(cb: CallbackQuery, **kw):
+    chat_id = cb.data[len("adm:admin_rm_ok:"):]
+    if str(cb.from_user.id) != str(config.admin_chat_id):
+        await cb.answer("Только root", show_alert=True)
+        return
+    if str(chat_id) == str(config.admin_chat_id):
+        await cb.answer("Нельзя снять права у root", show_alert=True)
+        return
+    db: Database = kw.get("db")
+    changed = await db.set_admin(chat_id, False, None)
+    text = f"✅ У пользователя <code>{chat_id}</code> сняты права администратора." if changed else "❌ Пользователь не найден."
+    await _edit_or_answer(cb, text, back_to_admin_menu())
 
 
 @router.callback_query(F.data == "adm:clients_list")
@@ -2601,12 +2696,19 @@ async def cb_adm_diagnose_menu(cb: CallbackQuery, **kw):
 
 @router.callback_query(F.data == "adm:logs_menu")
 async def cb_adm_logs_menu(cb: CallbackQuery, **kw):
-    await _edit_or_answer(cb, "📋 <b>Логи</b> — выберите сервис:", admin_logs_menu())
+    await _edit_or_answer(cb, "📋 <b>Логи</b> — выберите сервис:", admin_logs_menu("adm:system", "adm:log:system:"))
 
 
 @router.callback_query(F.data.startswith("adm:log:"))
 async def cb_adm_log(cb: CallbackQuery, **kw):
-    service = cb.data[len("adm:log:"):]
+    payload = cb.data[len("adm:log:"):]
+    origin = "system"
+    service = payload
+    if ":" in payload:
+        maybe_origin, maybe_service = payload.split(":", 1)
+        if maybe_origin in {"system", "monitor"}:
+            origin = maybe_origin
+            service = maybe_service
     await cb.answer(f"Загружаю логи {service}...")
     allowed_docker = {"telegram-bot", "xray-client-vision", "xray-client-xhttp", "cloudflared", "node-exporter"}
     try:
@@ -2623,12 +2725,13 @@ async def cb_adm_log(cb: CallbackQuery, **kw):
             await cb.message.answer_document(
                 BufferedInputFile(text.encode(), filename=f"{service}.log"),
                 caption=f"Логи `{service}`",
+                reply_markup=_log_result_kb(origin),
             )
         else:
             await cb.message.answer(f"*Логи {service}:*\n```\n{text[-3900:]}\n```",
-                                    reply_markup=back_to_admin_menu())
+                                    reply_markup=_log_result_kb(origin))
     except Exception as e:
-        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+        await cb.message.answer(f"❌ {e}", reply_markup=_log_result_kb(origin))
 
 
 # ---------------------------------------------------------------------------
@@ -2876,6 +2979,22 @@ async def cb_adm_client(cb: CallbackQuery, **kw):
         )
 
     devs_text = "\n".join(dev_lines) if dev_lines else "нет"
+    if client.get("is_admin"):
+        added_by = client.get("admin_added_by") or "root/bootstrap"
+        is_root_target = str(chat_id) == str(config.admin_chat_id)
+        can_demote = str(cb.from_user.id) == str(config.admin_chat_id) and not is_root_target
+        role = "👑 Root-администратор" if is_root_target else "👥 Дополнительный администратор"
+        text = (
+            f"{role}\n\n"
+            f"Имя: <b>{name}</b>\n"
+            f"ID: <code>{chat_id}</code>\n"
+            f"Статус: {'🚫 отключён' if client.get('is_disabled') else '✅ активен'}\n"
+            f"Устройств: {len(devices)} / {client.get('device_limit', 5)}\n"
+            f"Выдал права: <code>{added_by}</code>\n\n"
+            f"<b>Устройства:</b>\n{devs_text}"
+        )
+        await _edit_or_answer(cb, text, admin_admin_actions_kb(chat_id, can_demote))
+        return
     text = (
         f"👤 <b>{name}</b>\n"
         f"ID: <code>{chat_id}</code>\n"
@@ -2890,6 +3009,10 @@ async def cb_adm_client(cb: CallbackQuery, **kw):
 async def cb_adm_client_disable(cb: CallbackQuery, **kw):
     chat_id = cb.data[len("adm:cl_dis:"):]
     db: Database = kw.get("db")
+    client = await db.get_client(chat_id)
+    if client and client.get("is_admin"):
+        await cb.answer("Сначала снимите права администратора", show_alert=True)
+        return
     await db.set_client_disabled(chat_id, True)
     await cb.answer("Отключён")
     await cb.message.edit_text(f"🚫 Клиент `{chat_id}` отключён.")
@@ -2907,6 +3030,11 @@ async def cb_adm_client_enable(cb: CallbackQuery, **kw):
 @router.callback_query(F.data.startswith("adm:cl_kick:"))
 async def cb_adm_client_kick(cb: CallbackQuery, **kw):
     chat_id = cb.data[len("adm:cl_kick:"):]
+    db: Database = kw.get("db")
+    client = await db.get_client(chat_id) if db else None
+    if client and client.get("is_admin"):
+        await cb.answer("Для администратора сначала снимите права", show_alert=True)
+        return
     await cb.answer()
     await _edit_or_answer(
         cb,
