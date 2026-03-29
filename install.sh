@@ -13,6 +13,15 @@
 # Идемпотентен: повторный запуск не сломает уже установленное.
 # Это единственный поддерживаемый путь старта установки.
 
+# Если install.sh запущен через stdin (curl | bash), материализуем его во временный
+# файл и перезапускаем как обычный script file. Это убирает проблемы pipe/stdin/tty.
+if [[ -z "${BASH_SOURCE[0]:-}" && "${0:-}" == "bash" ]]; then
+    _self_tmp="$(mktemp /tmp/vpn-bootstrap.XXXXXX.sh)"
+    cat >"$_self_tmp"
+    chmod 700 "$_self_tmp"
+    exec bash "$_self_tmp" "$@"
+fi
+
 set -uo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
@@ -71,12 +80,18 @@ info "vpn-infra bootstrap install"
 
 # ── 1. Минимальные зависимости ────────────────────────────────────────────────
 info "Проверка базовых зависимостей (curl, git)..."
-apt-get update -qq 2>/dev/null || true
+_missing_pkgs=()
 for pkg in curl git; do
     if ! command -v "$pkg" &>/dev/null; then
-        apt-get install -y -qq "$pkg" 2>/dev/null || true
+        _missing_pkgs+=("$pkg")
     fi
 done
+
+if (( ${#_missing_pkgs[@]} > 0 )); then
+    info "Не хватает пакетов: ${_missing_pkgs[*]}"
+    apt-get update -qq 2>/dev/null || true
+    apt-get install -y -qq "${_missing_pkgs[@]}" 2>/dev/null || true
+fi
 ok "Базовые зависимости готовы"
 
 # ── 2. Получение репозитория ──────────────────────────────────────────────────
