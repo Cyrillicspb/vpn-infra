@@ -98,6 +98,19 @@ jobs:
           chmod +x tools/tun2socks-linux-amd64 tools/tun2socks-linux-arm64
           ls -lh tools/
 
+      - name: Build installer GUI wheel bundle
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/installer-gui-wheels
+          python3 -m pip download \
+            --dest /tmp/installer-gui-wheels \
+            --only-binary=:all: \
+            virtualenv \
+            pip \
+            -r installers/gui/requirements.txt
+          tar -czf installer-gui-wheels.tar.gz -C /tmp/installer-gui-wheels .
+          echo "Размер wheel bundle: $(du -sh installer-gui-wheels.tar.gz | cut -f1)"
+
       - name: Build repo archive
         run: |
           tar -czf /tmp/vpn-infra.tar.gz \
@@ -201,6 +214,7 @@ jobs:
         run: |
           set -euo pipefail
           source scripts/docker-image-groups.sh
+          [[ -f installer-gui-wheels.tar.gz ]]
           [[ -f vpn-infra.tar.gz ]]
           [[ -f docker-bundles-manifest.txt ]]
           while IFS= read -r group; do
@@ -224,6 +238,7 @@ jobs:
             --title "v$NEXT" \
             --notes "${{ steps.notes.outputs.notes }}" \
             --latest \
+            installer-gui-wheels.tar.gz \
             vpn-infra.tar.gz \
             docker-bundles-manifest.txt \
             docker-images.tar.gz \
@@ -243,6 +258,7 @@ import os
 
 current_tag = os.environ["CURRENT_TAG"]
 target_names = {
+    "installer-gui-wheels.tar.gz",
     "docker-images.tar.gz",
     "docker-images-monitoring.tar.gz",
     "docker-images-vps.tar.gz",

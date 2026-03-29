@@ -35,6 +35,18 @@ jobs:
           mv /tmp/vpn-infra.tar.gz vpn-infra.tar.gz
           echo "Размер архива: $(du -sh vpn-infra.tar.gz | cut -f1)"
 
+      - name: Build installer GUI wheel bundle
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/installer-gui-wheels
+          python3 -m pip download \
+            --dest /tmp/installer-gui-wheels \
+            --only-binary=:all: \
+            virtualenv \
+            pip \
+            -r installers/gui/requirements.txt
+          tar -czf installer-gui-wheels.tar.gz -C /tmp/installer-gui-wheels .
+
       - name: Build Docker image bundles
         run: |
           set -euo pipefail
@@ -47,6 +59,7 @@ jobs:
         run: |
           gh release upload "${{ inputs.tag }}" \
             --clobber \
+            installer-gui-wheels.tar.gz \
             vpn-infra.tar.gz \
             docker-bundles-manifest.txt \
             docker-images.tar.gz \

@@ -52,6 +52,13 @@ count_tar_archives() {
     printf '%d' "${#files[@]}"
 }
 
+release_asset_url() {
+    local release_json="$1" asset_name="$2"
+    printf '%s' "$release_json" \
+        | grep -o "\"browser_download_url\": *\"[^\"]*${asset_name}\"" \
+        | grep -o 'https://[^"]*' | head -1 || true
+}
+
 download_with_progress() {
     local url="$1" dest="$2" label="$3"
     local progress_log
@@ -139,7 +146,29 @@ fi
 chmod +x "${OPT_VPN}/setup.sh" "${OPT_VPN}/install-home.sh" \
     "${OPT_VPN}/scripts/docker-load-cache.sh" "${OPT_VPN}/dev/save-docker-images.sh" 2>/dev/null || true
 
-# ── 3. Docker-образы из GitHub Releases ───────────────────────────────────────
+_release_json="$(curl -sf --max-time 20 "$RELEASE_API" 2>/dev/null || true)"
+
+# ── 3. TUI wheels из GitHub Releases ──────────────────────────────────────────
+_installer_wheels_dir="${OPT_VPN}/installers/gui/wheels"
+if ! ls "${_installer_wheels_dir}"/*.whl >/dev/null 2>&1; then
+    _wheels_url="$(release_asset_url "$_release_json" "installer-gui-wheels.tar.gz")"
+    if [[ -n "$_wheels_url" ]]; then
+        info "Скачиваем installer-gui-wheels.tar.gz..."
+        mkdir -p "$_installer_wheels_dir"
+        if download_with_progress "$_wheels_url" /tmp/installer-gui-wheels.tar.gz installer-gui-wheels.tar.gz; then
+            tar xzf /tmp/installer-gui-wheels.tar.gz -C "$_installer_wheels_dir" \
+                --no-same-permissions --no-same-owner --overwrite 2>/dev/null || true
+            rm -f /tmp/installer-gui-wheels.tar.gz
+            ok "TUI wheels скачаны"
+        else
+            warn "Не удалось скачать TUI wheel bundle"
+        fi
+    else
+        warn "installer-gui-wheels.tar.gz не найден в релизе"
+    fi
+fi
+
+# ── 4. Docker-образы из GitHub Releases ───────────────────────────────────────
 # Основной архив: docker-images.tar.gz (home phase 1).
 # Дополнительные архивы monitoring/VPS скачиваются opportunistically.
 _img_count="$(count_tar_archives "${DOCKER_IMAGES_DIR}")"
@@ -161,14 +190,11 @@ else
     fi
 
     info "Поиск архивов Docker-образов в GitHub Releases..."
-    _release_json=$(curl -sf --max-time 20 "$RELEASE_API" 2>/dev/null || true)
     mkdir -p "$DOCKER_IMAGES_DIR"
     _downloaded=0
 
     for _asset in "${_bundle_assets[@]}"; do
-        _docker_url=$(printf '%s' "$_release_json" \
-            | grep -o "\"browser_download_url\": *\"[^\"]*${_asset}\"" \
-            | grep -o 'https://[^"]*' | head -1 || true)
+        _docker_url="$(release_asset_url "$_release_json" "$_asset")"
 
         if [[ -z "$_docker_url" ]]; then
             warn "${_asset} не найден в релизе"

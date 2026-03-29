@@ -46,10 +46,29 @@ if [[ -z "${VPN_NONINTERACTIVE:-}" ]] && [[ "${1:-}" != "--from-export" ]]; then
     fi
 
     if [[ -n "$_TUI" ]] && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
-        if python3 -c 'import textual' 2>/dev/null; then
+        _INSTALLER_VENV="/opt/vpn/.installer-venv"
+        if [[ -x "${_INSTALLER_VENV}/bin/python" ]] \
+            && "${_INSTALLER_VENV}/bin/python" -c 'import textual' 2>/dev/null; then
+            exec "${_INSTALLER_VENV}/bin/python" "$_TUI"
+        elif python3 -c 'import textual' 2>/dev/null; then
             exec python3 "$_TUI"
+        elif [[ -d "${REPO_DIR}/installers/gui/wheels" ]] && ls "${REPO_DIR}/installers/gui/wheels"/*.whl >/dev/null 2>&1; then
+            echo "[INFO] Подготавливаем isolated installer venv из локальных wheel..." >&2
+            _VIRTUALENV_WHL="$(ls "${REPO_DIR}/installers/gui/wheels"/virtualenv-*.whl 2>/dev/null | sort | tail -1)"
+            if [[ -n "${_VIRTUALENV_WHL:-}" ]] \
+                && PYTHONPATH="${_VIRTUALENV_WHL}${PYTHONPATH:+:${PYTHONPATH}}" \
+                    python3 -m virtualenv --no-periodic-update "${_INSTALLER_VENV}" >/dev/null 2>&1 \
+                && "${_INSTALLER_VENV}/bin/pip" install --no-index \
+                    --find-links "${REPO_DIR}/installers/gui/wheels" \
+                    -r "${REPO_DIR}/installers/gui/requirements.txt" \
+                    --disable-pip-version-check --quiet >/dev/null 2>&1 \
+                && "${_INSTALLER_VENV}/bin/python" -c 'import textual' 2>/dev/null; then
+                exec "${_INSTALLER_VENV}/bin/python" "$_TUI"
+            else
+                echo "[WARN] Не удалось подготовить installer venv из локальных wheel — запускаем консольный установщик" >&2
+            fi
         else
-            echo "[WARN] textual не установлен — запускаем консольный установщик" >&2
+            echo "[WARN] textual не установлен и wheel bundle отсутствует — запускаем консольный установщик" >&2
         fi
     fi
 fi
