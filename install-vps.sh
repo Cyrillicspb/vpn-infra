@@ -144,7 +144,11 @@ vps_exec_long_progress() {
 
     local _exit=1
     local start_ts=$SECONDS
-    local last_emit=-10
+    local last_emit=-30
+    local last_diag=""
+    local last_log_size=""
+    local stagnant_since=$SECONDS
+    local last_stall_warn=-300
     while true; do
         if $_ssh "[[ -f $done_file ]]" 2>/dev/null; then
             _exit=$($_ssh "cat $done_file" 2>/dev/null || echo 1)
@@ -152,8 +156,30 @@ vps_exec_long_progress() {
         fi
 
         local elapsed=$(( SECONDS - start_ts ))
-        if (( elapsed >= 5 && elapsed - last_emit >= 10 )); then
-            log_info "${label}... $(format_duration "$elapsed")"
+        if (( elapsed >= 15 && elapsed - last_emit >= 30 )); then
+            emit_compact_progress_status "$label"
+
+            local remote_size
+            remote_size="$($_ssh "wc -c < '$log' 2>/dev/null || echo 0" 2>/dev/null | tr -d '[:space:]' || echo 0)"
+            if [[ -n "$remote_size" && "$remote_size" != "$last_log_size" ]]; then
+                stagnant_since=$SECONDS
+                last_log_size="$remote_size"
+
+                local remote_diag
+                remote_diag="$($_ssh "grep -v '^[[:space:]]*$' '$log' 2>/dev/null | tail -n 1" 2>/dev/null | tr -d '\r' || true)"
+                if [[ -n "$remote_diag" && "$remote_diag" != "$last_diag" ]]; then
+                    log_info "VPS: ${remote_diag}"
+                    last_diag="$remote_diag"
+                fi
+            fi
+
+            local stagnant_elapsed=$(( SECONDS - stagnant_since ))
+            if (( stagnant_elapsed >= 300 && stagnant_elapsed - last_stall_warn >= 300 )); then
+                log_warn "${label}: нет нового вывода с VPS уже ${stagnant_elapsed} сек"
+                $_ssh "tail -n 5 '$log' 2>/dev/null" 2>/dev/null || true
+                last_stall_warn=$stagnant_elapsed
+            fi
+
             last_emit=$elapsed
         fi
 
@@ -196,7 +222,7 @@ vps_install_bundled_package_group() {
     vps_stage_bundled_package_group "$group" || return 1
     vps_exec_long_progress "$label" \
         "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
-        bash -lc 'apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 install -y -qq /tmp/vpn-system-packages/${group}/*.deb'"
+        bash -lc 'apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 install --no-download -y -qq /tmp/vpn-system-packages/${group}/*.deb'"
 }
 
 vps_root_exec() {

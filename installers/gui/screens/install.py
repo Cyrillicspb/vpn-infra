@@ -22,6 +22,7 @@ def _find_setup_sh() -> Path:
 SETUP_SH = _find_setup_sh()
 # Regex для парсинга маркеров прогресса из common.sh
 _RE_PROGRESS = re.compile(r"^##PROGRESS:(\d+):(\d+):([^:]+):(\w*)$")
+_RE_STATUS = re.compile(r"^##STATUS:([^:]+):([^:]+):(.*)$")
 # Regex для очистки ANSI escape-кодов
 _RE_ANSI = re.compile(r"\x1b\[[0-9;]*[mKHJAB]")
 _RE_DECORATIVE = re.compile(r"^[\s═━─╔╗╚╝║╠╣]+$")
@@ -81,7 +82,7 @@ class InstallScreen(Screen):
             id="install-header-row",
         )
         yield Static("Готов к установке.", id="install-status")
-        yield ProgressBar(total=61, show_eta=False, id="install-progress")
+        yield ProgressBar(total=61, show_eta=True, id="install-progress")
         yield Static("", id="install-step")
         yield RichLog(
             highlight=False,
@@ -156,13 +157,27 @@ class InstallScreen(Screen):
             if os.getuid() == 0
             else ["sudo", "-E", "bash", str(SETUP_SH)]
         )
-        env = {**os.environ, **self.app.state.to_env()}
+        env = {**os.environ, **self.app.state.to_env(), "VPN_TUI": "1"}
 
         log.write("")
         log.write(f"$ {' '.join(cmd[:2])} {SETUP_SH.name}")
         log.write("-" * 50)
 
         last_step_name: str = ""
+        current_step_number: int = 0
+        current_total_steps: int = 0
+
+        def update_live_status(message: str, elapsed: str, remaining: str) -> None:
+            prefix = (
+                f"Шаг {current_step_number}/{current_total_steps}: "
+                if current_step_number and current_total_steps
+                else ""
+            )
+            tail = f" · прошло {elapsed}"
+            if remaining and remaining != "?":
+                tail += f" · осталось ~{remaining}"
+            status.update(f"{prefix}{message}{tail}")
+            step_lbl.update(f"  ⟳ {message}")
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -182,6 +197,8 @@ class InstallScreen(Screen):
                     current, total, name, flag = (
                         int(m[1]), int(m[2]), m[3], m[4]
                     )
+                    current_step_number = current
+                    current_total_steps = total
                     if pbar.total != total:
                         pbar.total = total
 
@@ -195,6 +212,12 @@ class InstallScreen(Screen):
                         last_step_name = name
                         status.update(f"Шаг {current}/{total}: {name[:55]}")
                         step_lbl.update(f"  ⟳ {name}")
+                    continue
+
+                m = _RE_STATUS.match(line)
+                if m:
+                    elapsed, remaining, message = m[1], m[2], m[3]
+                    update_live_status(message[:55], elapsed, remaining)
                     continue
 
                 clean = self._normalize_log_line(line)

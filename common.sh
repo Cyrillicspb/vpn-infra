@@ -26,6 +26,9 @@ TOTAL_STEPS=61
 STATE_FILE="/opt/vpn/.setup-state"
 ENV_FILE="/opt/vpn/.env"
 COMPACT_OUTPUT="${VPN_COMPACT_OUTPUT:-${VPN_NONINTERACTIVE:-}}"
+TUI_OUTPUT="${VPN_TUI:-}"
+INSTALL_RUN_STARTED_AT="${INSTALL_RUN_STARTED_AT:-$(date +%s)}"
+export INSTALL_RUN_STARTED_AT
 
 # ── Логирование ───────────────────────────────────────────────────────────────
 _log_emit() {
@@ -83,10 +86,10 @@ install_bundled_package_group() {
     if [[ -n "$COMPACT_OUTPUT" ]]; then
         env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
             apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Dpkg::Progress-Fancy=0 \
-            install -y "${_bundle_debs[@]}"
+            install --no-download -y "${_bundle_debs[@]}"
     else
         env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a APT_LISTCHANGES_FRONTEND=none \
-            apt-get install -y "${_bundle_debs[@]}"
+            apt-get install --no-download -y "${_bundle_debs[@]}"
     fi
 }
 
@@ -115,6 +118,54 @@ _compact_emit_failure_log() {
     fi
 }
 
+install_elapsed_seconds() {
+    local now
+    now="$(date +%s)"
+    printf '%d\n' $(( now - INSTALL_RUN_STARTED_AT ))
+}
+
+estimate_remaining_seconds() {
+    local elapsed_total="${1:-0}"
+    local completed_steps=$(( STEP > 0 ? STEP - 1 : 0 ))
+    if (( completed_steps <= 0 || TOTAL_STEPS <= completed_steps )); then
+        printf '?\n'
+        return 0
+    fi
+
+    printf '%d\n' $(( elapsed_total * (TOTAL_STEPS - completed_steps) / completed_steps ))
+}
+
+emit_status() {
+    local elapsed="${1:-?}"
+    local remaining="${2:-?}"
+    local message="${3:-unknown}"
+    message="${message//$'\n'/ }"
+    message="${message//$'\r'/ }"
+    printf '##STATUS:%s:%s:%s\n' "$elapsed" "$remaining" "$message"
+}
+
+emit_compact_progress_status() {
+    local label="$1"
+    local elapsed_total remaining_seconds remaining_text elapsed_text
+    elapsed_total="$(install_elapsed_seconds)"
+    remaining_seconds="$(estimate_remaining_seconds "$elapsed_total")"
+    elapsed_text="$(format_duration "$elapsed_total")"
+    if [[ "$remaining_seconds" == "?" ]]; then
+        remaining_text="?"
+    else
+        remaining_text="$(format_duration "$remaining_seconds")"
+    fi
+
+    emit_status "$elapsed_text" "$remaining_text" "$label"
+    if [[ -z "$TUI_OUTPUT" ]]; then
+        if [[ "$remaining_text" == "?" ]]; then
+            log_info "${label}... ${elapsed_text}"
+        else
+            log_info "${label}... ${elapsed_text}, осталось ~${remaining_text}"
+        fi
+    fi
+}
+
 run_with_compact_progress() {
     local label="$1"; shift
 
@@ -126,19 +177,20 @@ run_with_compact_progress() {
     local log_file
     log_file="$(mktemp /tmp/vpn-install-step.XXXXXX.log)"
     log_info "${label}..."
+    emit_compact_progress_status "$label"
 
     set +e
     "$@" >"$log_file" 2>&1 &
     local pid=$!
     local start_ts=$SECONDS
-    local last_emit=-10
+    local last_emit=-30
 
     while kill -0 "$pid" 2>/dev/null; do
         sleep 2
         kill -0 "$pid" 2>/dev/null || break
         local elapsed=$(( SECONDS - start_ts ))
-        if (( elapsed >= 5 && elapsed - last_emit >= 10 )); then
-            log_info "${label}... $(format_duration "$elapsed")"
+        if (( elapsed >= 15 && elapsed - last_emit >= 30 )); then
+            emit_compact_progress_status "$label"
             last_emit=$elapsed
         fi
     done
