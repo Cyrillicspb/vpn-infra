@@ -53,6 +53,12 @@ jobs:
           bash scripts/build-docker-bundles.sh \
             --manifest-out docker-bundles-manifest.txt
 
+      - name: Build system package bundles
+        run: |
+          set -euo pipefail
+          bash scripts/build-system-package-bundles.sh \
+            --manifest-out system-packages-manifest.txt
+
       - name: Upload assets to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -62,6 +68,12 @@ jobs:
             installer-gui-wheels.tar.gz \
             vpn-infra.tar.gz \
             docker-bundles-manifest.txt \
+            system-packages-manifest.txt \
             docker-images.tar.gz \
             docker-images-monitoring.tar.gz \
-            docker-images-vps.tar.gz
+            docker-images-vps.tar.gz \
+            system-packages-home-core.tar.gz \
+            system-packages-home-docker.tar.gz \
+            system-packages-home-awg.tar.gz \
+            system-packages-vps-core.tar.gz \
+            system-packages-vps-docker.tar.gz

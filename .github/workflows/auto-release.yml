@@ -128,6 +128,12 @@ jobs:
             --manifest-out docker-bundles-manifest.txt \
             --manifest-only
 
+      - name: Build system package bundles
+        run: |
+          set -euo pipefail
+          bash scripts/build-system-package-bundles.sh \
+            --manifest-out system-packages-manifest.txt
+
       - name: Plan Docker bundle reuse
         id: docker_plan
         env:
@@ -217,10 +223,16 @@ jobs:
           [[ -f installer-gui-wheels.tar.gz ]]
           [[ -f vpn-infra.tar.gz ]]
           [[ -f docker-bundles-manifest.txt ]]
+          [[ -f system-packages-manifest.txt ]]
           while IFS= read -r group; do
             asset="$(docker_image_bundle_asset_name "$group")"
             [[ -f "$asset" ]] || { echo "Missing release asset: $asset" >&2; exit 1; }
           done < <(docker_image_bundle_groups)
+          source scripts/system-package-groups.sh
+          while IFS= read -r group; do
+            asset="$(system_package_bundle_asset_name "$group")"
+            [[ -f "$asset" ]] || { echo "Missing release asset: $asset" >&2; exit 1; }
+          done < <(system_package_bundle_groups)
 
       - name: Create tag and release
         env:
@@ -241,9 +253,15 @@ jobs:
             installer-gui-wheels.tar.gz \
             vpn-infra.tar.gz \
             docker-bundles-manifest.txt \
+            system-packages-manifest.txt \
             docker-images.tar.gz \
             docker-images-monitoring.tar.gz \
-            docker-images-vps.tar.gz
+            docker-images-vps.tar.gz \
+            system-packages-home-core.tar.gz \
+            system-packages-home-docker.tar.gz \
+            system-packages-home-awg.tar.gz \
+            system-packages-vps-core.tar.gz \
+            system-packages-vps-docker.tar.gz
 
       - name: Delete old Docker bundle assets
         env:
@@ -259,9 +277,15 @@ jobs:
           current_tag = os.environ["CURRENT_TAG"]
           target_names = {
               "installer-gui-wheels.tar.gz",
+              "system-packages-manifest.txt",
               "docker-images.tar.gz",
               "docker-images-monitoring.tar.gz",
               "docker-images-vps.tar.gz",
+              "system-packages-home-core.tar.gz",
+              "system-packages-home-docker.tar.gz",
+              "system-packages-home-awg.tar.gz",
+              "system-packages-vps-core.tar.gz",
+              "system-packages-vps-docker.tar.gz",
           }
 
           with open("/tmp/releases.json", "r", encoding="utf-8") as fh:
