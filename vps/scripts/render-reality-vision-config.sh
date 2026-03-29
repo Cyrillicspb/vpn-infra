@@ -2,14 +2,14 @@
 set -euo pipefail
 
 ENV_FILE="/opt/vpn/.env"
-if [[ ! -f "$ENV_FILE" ]]; then
+if ! sudo test -f "$ENV_FILE"; then
     echo "ERROR: $ENV_FILE not found" >&2
     exit 1
 fi
 
 set -o allexport
 # shellcheck disable=SC1090
-source "$ENV_FILE"
+source <(sudo cat "$ENV_FILE")
 set +o allexport
 
 XRAY_VISION_UUID="${XRAY_VISION_UUID:-${XRAY_XHTTP_UUID:-${XRAY_GRPC_UUID:-}}}"

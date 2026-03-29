@@ -14,10 +14,10 @@ set -euo pipefail
 
 # ── Загрузка .env ─────────────────────────────────────────────────────────────
 ENV_FILE="/opt/vpn/.env"
-if [[ -f "$ENV_FILE" ]]; then
+if sudo test -f "$ENV_FILE"; then
     set -o allexport
     # shellcheck disable=SC1090
-    source "$ENV_FILE"
+    source <(sudo cat "$ENV_FILE")
     set +o allexport
 fi
 
