@@ -238,6 +238,15 @@ else
     warn "DNS blocked test domain" "не найден server=/... в /etc/dnsmasq.d/vpn-force.conf или vpn-domains.conf"
 fi
 
+if [[ "${SERVER_MODE:-hosted}" == "gateway" && -n "${LAN_IFACE:-}" ]]; then
+    check "send_redirects default = 0" \
+        "[[ \"$(sysctl -n net.ipv4.conf.default.send_redirects 2>/dev/null)\" == \"0\" ]]" \
+        "иначе новые интерфейсы могут раздавать ICMP redirects и обходить home-server"
+    check "send_redirects ${LAN_IFACE} = 0" \
+        "[[ \"$(sysctl -n net.ipv4.conf.${LAN_IFACE}.send_redirects 2>/dev/null)\" == \"0\" ]]" \
+        "LAN-клиенты могут получить ICMP redirect на upstream router и обойти gateway policy"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 section "5. Docker контейнеры (домашний сервер)"
 # ═══════════════════════════════════════════════════════════════════════════════
