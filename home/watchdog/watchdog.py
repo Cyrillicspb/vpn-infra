@@ -2024,10 +2024,17 @@ def _get_stack_socks_port(stack_name: str) -> int:
 
 
 def _write_vpn_state_files(stack_name: str) -> None:
-    """Атомарно записывает /var/run/vpn-active-{socks-port,stack}.
+    """Атомарно записывает /var/run/vpn-active-{socks-port,stack,tun}.
     Используется ssh-proxy.sh для адаптивного туннелирования SSH.
     """
     socks_port = _get_stack_socks_port(stack_name)
+    plugin = plugins.get(stack_name)
+    tun_name = ""
+    if plugin and not plugin.meta.get("direct_mode"):
+        candidate = plugin.meta.get("tun_name", f"tun-{stack_name}")
+        if (Path("/sys/class/net") / candidate).exists():
+            tun_name = candidate
+
     for path, content in (
         ("/var/run/vpn-active-socks-port", str(socks_port)),
         ("/var/run/vpn-active-stack",      stack_name),
@@ -2039,6 +2046,17 @@ def _write_vpn_state_files(stack_name: str) -> None:
             os.replace(tmp, path)
         except Exception as e:
             logger.warning(f"Не удалось записать {path}: {e}")
+
+    tun_path = Path("/var/run/vpn-active-tun")
+    try:
+        if tun_name:
+            tmp = tun_path.with_suffix(".tmp")
+            tmp.write_text(tun_name)
+            os.replace(tmp, tun_path)
+        else:
+            tun_path.unlink(missing_ok=True)
+    except Exception as e:
+        logger.warning(f"Не удалось обновить {tun_path}: {e}")
 
 
 async def _set_marked_route_for_stack(stack_name: str) -> bool:
@@ -3868,6 +3886,7 @@ async def on_startup() -> None:
         # от того, поднимали ли мы tun сами или он уже существовал.
         if active_plugin:
             if await _set_marked_route_for_stack(state.active_stack):
+                _write_vpn_state_files(state.active_stack)
                 logger.info(f"Маршрут table marked восстановлен для стека {state.active_stack}")
             else:
                 await _set_marked_route_unreachable()

@@ -972,6 +972,9 @@ EOF
 [Unit]
 Description=Hysteria2 VPN Client
 After=network.target
+ConditionPathExists=/etc/hysteria/config.yaml
+StartLimitBurst=5
+StartLimitIntervalSec=60
 
 [Service]
 Type=simple

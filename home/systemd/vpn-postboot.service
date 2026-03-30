@@ -4,8 +4,6 @@ Documentation=https://github.com/Cyrillicspb/vpn-infra/blob/main/docs/ARCHITECTU
 # Запускается после полного старта системы
 After=network-online.target watchdog.service docker.service dnsmasq.service
 Wants=network-online.target
-# Только один раз при старте, не рестартовать
-Type=oneshot
 
 [Service]
 Type=oneshot

@@ -5,18 +5,18 @@ After=network-online.target vpn-routes.service
 Wants=network-online.target
 # Hysteria2 запускается до watchdog — watchdog использует его в failover
 Before=watchdog.service
+# Не стартовать если конфиг ещё не создан (генерируется в phase3/step48 после VPS-установки)
+ConditionPathExists=/etc/hysteria/config.yaml
+StartLimitBurst=5
+StartLimitIntervalSec=60
 
 [Service]
 Type=simple
 User=root
-# Не стартовать если конфиг ещё не создан (генерируется в phase3/step48 после VPS-установки)
-ConditionPathExists=/etc/hysteria/config.yaml
 ExecStart=/usr/local/bin/hysteria client --config /etc/hysteria/config.yaml --log-level warn
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
-StartLimitBurst=5
-StartLimitIntervalSec=60
 
 # Ограничения безопасности
 NoNewPrivileges=no

@@ -83,7 +83,7 @@ WATCHDOG_URL    = os.getenv("WATCHDOG_URL", "http://localhost:8080")
 VPS_TUNNEL_IP   = os.getenv("VPS_TUNNEL_IP", "10.177.2.2")
 
 # ── Константы ─────────────────────────────────────────────────────────────────
-MAX_CIDR_ALLOWED_IPS = 500    # Лимит записей AllowedIPs (для QR: ≤50)
+MAX_CIDR_ALLOWED_IPS = 1000   # Практический лимит записей AllowedIPs для импортируемых клиентских конфигов
 ALERT_CACHE_AGE_DAYS = 3      # Алерт если кэш старше N дней
 MAX_DELTA_PCT        = 50     # Максимальная дельта изменений (%)
 FETCH_TIMEOUT        = 45     # Таймаут загрузки источника (сек)
@@ -1098,10 +1098,18 @@ def main() -> None:
     # ── Агрегация: AllowedIPs (combined.cidr) ─────────────────────────────────
     # Используем только CIDR-based источники (не /32 IP-листы) чтобы не раздувать маски.
     # Индивидуальные IP идут только в nft blocked_static (точная маршрутизация на сервере).
-    # Лимит 500 НЕ применяется — WireGuard обрабатывает тысячи записей через trie в ядре.
-    # Лимит 50 — только для QR-кодов (QR физически не вмещает больше).
-    log.info("Агрегация AllowedIPs (только CIDR-источники, без лимита на кол-во)...")
+    # Для server-side nft blocked_static лимит не нужен, но клиентские конфиги с тысячами
+    # AllowedIPs непрактичны: импорт на мобильных клиентах деградирует, QR недоступен,
+    # а регенерация начинает ломать ожидаемый UX split tunneling.
+    log.info("Агрегация AllowedIPs (только CIDR-источники, с лимитом для клиентских конфигов)...")
     allowed_networks = aggregate_networks(cidr_networks)
+    if len(allowed_networks) > MAX_CIDR_ALLOWED_IPS:
+        before = len(allowed_networks)
+        allowed_networks = reduce_to_limit(allowed_networks, MAX_CIDR_ALLOWED_IPS)
+        log.warning(
+            "AllowedIPs сокращены: %s → %s (лимит=%s)",
+            before, len(allowed_networks), MAX_CIDR_ALLOWED_IPS,
+        )
     log.info(f"AllowedIPs: {len(allowed_networks)} записей")
 
     if len(allowed_networks) > 50:

@@ -4,6 +4,8 @@ Documentation=https://github.com/Cyrillicspb/vpn-infra/blob/main/docs/ARCHITECTU
 After=network-online.target vpn-routes.service
 Wants=network-online.target
 # SSH-туннель как fallback — запускается watchdog при необходимости
+StartLimitBurst=5
+StartLimitIntervalSec=120
 
 [Service]
 Type=simple
@@ -33,8 +35,6 @@ ExecStart=/usr/bin/autossh -M 0 \
 
 Restart=on-failure
 RestartSec=10
-StartLimitBurst=5
-StartLimitIntervalSec=120
 
 StandardOutput=journal
 StandardError=journal
