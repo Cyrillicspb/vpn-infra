@@ -309,6 +309,17 @@ if [[ -f /run/vpn-active-tun ]]; then
     fi
 fi
 
+if [[ -n "${VPS_IP:-}" ]]; then
+    OUTPUT_CHAIN="$(nft list chain inet vpn output 2>/dev/null || true)"
+    PREROUTING_CHAIN="$(nft list chain inet vpn prerouting 2>/dev/null || true)"
+    if grep -q 'ip daddr @control_direct_ips accept' <<<"$OUTPUT_CHAIN" && \
+       grep -q 'iifname "br-vpn" ip daddr @control_direct_ips accept' <<<"$PREROUTING_CHAIN"; then
+        ok "VPS control-plane route"
+    else
+        fail "VPS control-plane route" "нет nft bypass для control_direct_ips → возможен self-tunneling loop к VPS"
+    fi
+fi
+
 if [[ -x /usr/local/bin/nfqws ]]; then
     ok "zapret/nfqws binary"
 else
