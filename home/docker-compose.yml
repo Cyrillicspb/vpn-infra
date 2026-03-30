@@ -100,7 +100,7 @@ services:
       socket-proxy:
         condition: service_started
     healthcheck:
-      test: ["CMD", "python", "-c", "import sqlite3; sqlite3.connect('/app/data/vpn_bot.db').close()"]
+      test: ["CMD", "python", "-c", "import socket, sqlite3; sqlite3.connect('/app/data/vpn_bot.db').close(); socket.getaddrinfo('api.telegram.org', 443)"]
       interval: 60s
       timeout: 10s
       retries: 3

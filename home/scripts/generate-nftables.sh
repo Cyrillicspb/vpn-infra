@@ -58,10 +58,16 @@ TMP_CONF="$(mktemp /tmp/nftables-gw-XXXXXX.conf)"
 trap "rm -f '$TMP_CONF'" EXIT
 
 python3 - "$NFTABLES_BASE" "$TMP_CONF" "$LAN_IFACE" "$LAN_SUBNET" "$ROUTER_EXTERNAL_IP" << 'PYEOF'
+import ipaddress
 import sys
 import re
 
 src_file, dst_file, lan_iface, lan_subnet, router_ip = sys.argv[1:]
+
+try:
+    lan_subnet = str(ipaddress.ip_network(lan_subnet, strict=False))
+except ValueError as exc:
+    raise SystemExit(f"Invalid LAN_SUBNET {lan_subnet!r}: {exc}")
 
 with open(src_file) as f:
     content = f.read()
