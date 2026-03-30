@@ -346,6 +346,15 @@ if [[ -n "${VPS_IP:-}" ]]; then
     fi
 fi
 
+if [[ "${SERVER_MODE:-hosted}" == "gateway" && -n "${LAN_IFACE:-}" && -n "${LAN_SUBNET:-}" ]]; then
+    POSTROUTING_CHAIN="$(nft list chain inet vpn postrouting 2>/dev/null || true)"
+    if grep -q "ip saddr ${LAN_SUBNET} ip daddr != ${LAN_SUBNET} oifname \"${LAN_IFACE}\" masquerade" <<<"$POSTROUTING_CHAIN"; then
+        ok "LAN direct masquerade"
+    else
+        fail "LAN direct masquerade" "direct LAN egress останется асимметричным и обойдёт stateful path home-server"
+    fi
+fi
+
 if [[ -x /usr/local/bin/nfqws ]]; then
     ok "zapret/nfqws binary"
 else

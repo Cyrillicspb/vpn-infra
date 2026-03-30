@@ -163,6 +163,10 @@ lan_input_dns = f"""
 
 # 6. LAN masquerade в postrouting (вставляется перед закрывающей } chain postrouting)
 lan_postrouting = f"""
+        # Gateway Mode: masquerade LAN direct traffic через upstream router.
+        # Без этого direct internet для LAN становится асимметричным:
+        # запросы идут через home-server, а ответы возвращаются клиенту мимо него.
+        ip saddr {lan_subnet} ip daddr != {lan_subnet} oifname "{lan_iface}" masquerade
         # Gateway Mode: masquerade LAN трафик через tun (заблокированное → VPS)
         ip saddr {lan_subnet} oifname "tun*" masquerade
 """
