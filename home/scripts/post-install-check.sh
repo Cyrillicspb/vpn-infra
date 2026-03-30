@@ -221,6 +221,23 @@ check_warn "DNS заблокированный"    "dig @127.0.0.1 youtube.com +
 DNS_RESP=$(dig @127.0.0.1 google.com +short +time=3 2>/dev/null | head -1 || echo "—")
 log_info "google.com → ${DNS_RESP}"
 
+BLOCKED_TEST_DOMAIN="$(
+    awk -F'/' '/^server=\// {print $2; exit}' /etc/dnsmasq.d/vpn-force.conf /etc/dnsmasq.d/vpn-domains.conf 2>/dev/null
+)"
+if [[ -n "$BLOCKED_TEST_DOMAIN" ]]; then
+    log_info "blocked DNS test domain: ${BLOCKED_TEST_DOMAIN}"
+    check_warn "DNS blocked @127.0.0.1 → ${BLOCKED_TEST_DOMAIN}" \
+        "dig @127.0.0.1 ${BLOCKED_TEST_DOMAIN} +short +time=5 | grep -q '\\.'" \
+        "dnsmasq не смог резолвить blocked domain через tier-2/VPS DNS"
+    if [[ -n "${VPS_TUNNEL_IP:-}" ]]; then
+        check_warn "DNS Tier-2 @${VPS_TUNNEL_IP} → ${BLOCKED_TEST_DOMAIN}" \
+            "dig @${VPS_TUNNEL_IP} ${BLOCKED_TEST_DOMAIN} +short +time=5 | grep -q '\\.'" \
+            "DNS на VPS tunnel endpoint не отвечает для blocked domain"
+    fi
+else
+    warn "DNS blocked test domain" "не найден server=/... в /etc/dnsmasq.d/vpn-force.conf или vpn-domains.conf"
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 section "5. Docker контейнеры (домашний сервер)"
 # ═══════════════════════════════════════════════════════════════════════════════
