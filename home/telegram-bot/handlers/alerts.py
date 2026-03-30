@@ -35,6 +35,19 @@ _SEVERITY_ICON = {
 }
 
 
+async def _send_alert_message(bot: "Bot", chat_id: str | int, message: str) -> None:
+    """Сначала пробует Markdown, при parse error повторяет plain text."""
+    try:
+        await bot.send_message(chat_id, message, parse_mode="Markdown")
+        return
+    except Exception as exc:
+        if "can't parse entities" not in str(exc).lower():
+            raise
+        logger.warning("Markdown parse failed for alert, fallback to plain text: %s", exc)
+
+    await bot.send_message(chat_id, message)
+
+
 # ---------------------------------------------------------------------------
 # Аутентификация
 # ---------------------------------------------------------------------------
@@ -121,7 +134,7 @@ async def _handle_notify(request: web.Request) -> web.Response:
 
         from config import config
         try:
-            await bot.send_message(config.admin_chat_id, message, parse_mode="Markdown")
+            await _send_alert_message(bot, config.admin_chat_id, message)
         except Exception as exc:
             logger.warning("Alertmanager алерт→admin: %s", exc)
         return web.json_response({"status": "ok"})
@@ -136,7 +149,7 @@ async def _handle_notify(request: web.Request) -> web.Response:
     if target == "admin":
         from config import config
         try:
-            await bot.send_message(config.admin_chat_id, message, parse_mode="Markdown")
+            await _send_alert_message(bot, config.admin_chat_id, message)
         except Exception as exc:
             logger.warning("Алерт→admin: %s", exc)
 
@@ -146,7 +159,7 @@ async def _handle_notify(request: web.Request) -> web.Response:
         for c in clients:
             if not c.get("is_disabled"):
                 try:
-                    await bot.send_message(c["chat_id"], message, parse_mode="Markdown")
+                    await _send_alert_message(bot, c["chat_id"], message)
                     sent += 1
                 except Exception:
                     pass
@@ -154,7 +167,7 @@ async def _handle_notify(request: web.Request) -> web.Response:
 
     else:
         try:
-            await bot.send_message(str(target), message, parse_mode="Markdown")
+            await _send_alert_message(bot, str(target), message)
         except Exception as exc:
             logger.warning("Алерт→%s: %s", target, exc)
 
