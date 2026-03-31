@@ -317,9 +317,15 @@ async def _complete_bootstrap_registration(
     )
     await state.clear()
 
-    autodist: "AutoDist" = kw.get("autodist")
-    if autodist and device:
-        asyncio.create_task(autodist.send_to_device(chat_id, device, "Регистрация"))
+    # Bootstrap-reuse: не пересылаем конфиг повторно.
+    # Вместо этого фиксируем текущую config_version, чтобы AutoDist не считал
+    # устройство "необслуженным" и не отправлял тот же .conf ещё раз.
+    if device:
+        builder = ConfigBuilder()
+        excludes_raw = await db.get_excludes(device["id"])
+        excludes = [e["subnet"] for e in excludes_raw]
+        _, _, version = await builder.build(device, excludes)
+        await db.update_config_version(device["id"], version)
 
 
 # ---------------------------------------------------------------------------
