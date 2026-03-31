@@ -2578,9 +2578,9 @@ async def cb_adm_vps_migrate(cb: CallbackQuery, state: FSMContext, **kw):
 async def cb_adm_rotate_keys(cb: CallbackQuery, **kw):
     await cb.answer()
     await cb.message.answer(
-        "⚠️ Ротация ключей сбросит все клиентские конфиги.\n"
-        "Функция реализуется через deploy.sh --rotate-keys\n"
-        "Запустите: `/deploy`",
+        "⚠️ Ротация ключей из бота пока не реализована.\n"
+        "Нужен отдельный watchdog API/path для управляемой ротации и рассылки конфигов.\n"
+        "Сейчас действие намеренно заблокировано.",
         reply_markup=back_to_admin_menu(),
     )
 
