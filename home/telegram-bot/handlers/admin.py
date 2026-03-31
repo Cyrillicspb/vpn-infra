@@ -83,6 +83,20 @@ def _installed_version_label() -> str:
     return "неизвестно"
 
 
+async def _cleanup_bootstrap_peers(
+    wdc: "WatchdogClient",
+    awg_peer_id: str = "",
+    wg_peer_id: str = "",
+) -> None:
+    for peer_id, iface in ((awg_peer_id, "wg0"), (wg_peer_id, "wg1")):
+        if not peer_id:
+            continue
+        try:
+            await wdc.remove_peer(peer_id, interface=iface)
+        except Exception as exc:
+            logger.warning("bootstrap cleanup failed for %s/%s: %s", iface, peer_id, exc)
+
+
 def _dpi_status_summary(st: dict) -> tuple[str, str, str]:
     enabled = st.get("enabled", False)
     zapret = st.get("zapret_running", False)
@@ -799,6 +813,8 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
     # Это позволяет получить конфиги заранее и переслать их через любой мессенджер
     # (нужно для пользователей у которых Telegram заблокирован и нет VPN-доступа).
     wdc = WatchdogClient(config.watchdog_url, config.watchdog_token)
+    awg_pubkey = ""
+    wg_pubkey = ""
     try:
         from services.config_builder import ConfigBuilder, wg_genkey
         builder = ConfigBuilder()
@@ -890,6 +906,7 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
         return
 
     except Exception as e:
+        await _cleanup_bootstrap_peers(wdc, awg_pubkey, wg_pubkey)
         logger.warning(f"/invite: bootstrap не удался ({e}), создаём обычный инвайт")
 
     # Fallback: обычный инвайт без предсозданных пиров (watchdog недоступен)
@@ -2237,6 +2254,8 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
     # Имитируем поведение cmd_invite: сообщения отправляем через cb.message.answer
     db: Database = kw.get("db")
     wdc = WatchdogClient(config.watchdog_url, config.watchdog_token)
+    awg_pubkey = ""
+    wg_pubkey = ""
     try:
         from services.config_builder import ConfigBuilder, wg_genkey
         builder = ConfigBuilder()
@@ -2293,6 +2312,7 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
             await cb.message.answer_photo(BufferedInputFile(wg_qr, filename="wg-qr.png"))
         return
     except Exception as e:
+        await _cleanup_bootstrap_peers(wdc, awg_pubkey, wg_pubkey)
         logger.warning(f"cb_adm_invite: bootstrap не удался ({e}), создаём обычный инвайт")
     code = await db.create_invite_code(str(cb.from_user.id))
     me = await bot.get_me()

@@ -18,6 +18,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from aiogram import Bot, Dispatcher, Router
@@ -38,6 +39,16 @@ from services.autodist import AutoDist
 from services.config_builder import ConfigBuilder
 
 _log_level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
+
+
+def _installed_version_label() -> str:
+    try:
+        version = Path("/opt/vpn/version").read_text(encoding="utf-8").strip()
+        if version and all(ch.isdigit() or ch == "." for ch in version):
+            return f"v{version}"
+    except Exception:
+        pass
+    return "неизвестно"
 logging.basicConfig(
     level=_log_level,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -230,7 +241,11 @@ async def on_startup(bot: Bot, dp: Dispatcher, db: Database, autodist: AutoDist)
     bot._autodist = autodist
 
     try:
-        await bot.send_message(config.admin_chat_id, "✅ *Бот запущен* и готов к работе.")
+        version_label = _installed_version_label()
+        await bot.send_message(
+            config.admin_chat_id,
+            f"✅ *Бот запущен* и готов к работе.\nВерсия: `{version_label}`",
+        )
     except Exception as e:
         logger.warning(f"Не удалось уведомить администратора: {e}")
 
