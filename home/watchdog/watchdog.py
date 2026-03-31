@@ -574,6 +574,10 @@ class WatchdogState:
         self.health_score: float = 0.0          # последний расчитанный score
         self.health_report: dict = {}           # полный last report
         self.post_deploy_until: float = 0.0     # timestamp конца post-deploy watch
+        self.bot_runtime_drift: bool = False
+        self.bot_runtime_drift_detail: str = ""
+        self.bot_runtime_drift_since: float = 0.0
+        self.bot_selfheal_last_ts: float = 0.0
 
     @property
     def active_vps(self) -> Optional[dict]:
@@ -605,6 +609,10 @@ class WatchdogState:
             "dpi_enabled": self.dpi_enabled,
             "dpi_services": self.dpi_services,
             "rotation_log": self.rotation_log[-20:],
+            "bot_runtime_drift": self.bot_runtime_drift,
+            "bot_runtime_drift_detail": self.bot_runtime_drift_detail,
+            "bot_runtime_drift_since": self.bot_runtime_drift_since,
+            "bot_selfheal_last_ts": self.bot_selfheal_last_ts,
         }
 
     def save(self) -> None:
@@ -880,6 +888,20 @@ def _wg_quick_tool(iface: str) -> str:
 # ---------------------------------------------------------------------------
 PEER_STALE_REPEAT_INTERVAL = 3600  # повторный алерт о stale peer — не чаще раза в час
 BOT_DB_PATH = Path("/opt/vpn/telegram-bot/data/vpn_bot.db")
+BOT_SOURCE_DIR = Path("/opt/vpn/telegram-bot")
+BOT_RUNTIME_FILES = (
+    "bot.py",
+    "config.py",
+    "database.py",
+    "handlers/admin.py",
+    "handlers/client.py",
+    "handlers/alerts.py",
+    "handlers/keyboards.py",
+    "services/config_builder.py",
+    "services/watchdog_client.py",
+)
+BOT_DRIFT_CONFIRM_SECONDS = int(os.getenv("BOT_DRIFT_CONFIRM_SECONDS", "300"))
+BOT_SELFHEAL_COOLDOWN_SECONDS = int(os.getenv("BOT_SELFHEAL_COOLDOWN_SECONDS", "1800"))
 
 
 def _lookup_peer_device(pubkey: str) -> str:
@@ -909,6 +931,99 @@ def _lookup_peer_device(pubkey: str) -> str:
     except Exception:
         pass
     return ""
+
+
+def _telegram_bot_host_hashes() -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    import hashlib as _hashlib
+    for rel_path in BOT_RUNTIME_FILES:
+        src = BOT_SOURCE_DIR / rel_path
+        if not src.exists():
+            hashes[rel_path] = "missing"
+            continue
+        hashes[rel_path] = _hashlib.sha256(src.read_bytes()).hexdigest()
+    return hashes
+
+
+async def _telegram_bot_container_hashes() -> tuple[dict[str, str], str]:
+    quoted = " ".join(f'"{rel_path}"' for rel_path in BOT_RUNTIME_FILES)
+    rc, out, err = await run_cmd(
+        ["docker", "exec", "telegram-bot", "sh", "-lc", f"cd /app && sha256sum {quoted}"],
+        timeout=20,
+    )
+    if rc != 0:
+        return {}, err.strip() or out.strip() or f"docker exec rc={rc}"
+    hashes: dict[str, str] = {}
+    for line in out.strip().splitlines():
+        parts = line.strip().split(maxsplit=1)
+        if len(parts) != 2:
+            continue
+        hashes[parts[1].lstrip("*")] = parts[0]
+    return hashes, ""
+
+
+async def selfheal_telegram_bot_runtime() -> bool:
+    logger.warning("Обнаружен drift telegram-bot runtime → source, запускаю self-heal rebuild")
+    alert("⚠️ *telegram-bot runtime drift* — запускаю self-heal rebuild")
+    rc, out, err = await run_cmd(
+        ["bash", "-lc", "cd /opt/vpn && docker compose up -d --build telegram-bot"],
+        timeout=900,
+    )
+    state.bot_selfheal_last_ts = time.time()
+    if rc != 0:
+        detail = (err or out or f"rc={rc}").strip()[:300]
+        state.bot_runtime_drift_detail = f"self-heal failed: {detail}"
+        alert(f"🚨 *telegram-bot self-heal failed*: `{detail}`")
+        return False
+    await check_containers()
+    container_hashes, detail = await _telegram_bot_container_hashes()
+    host_hashes = _telegram_bot_host_hashes()
+    if container_hashes and container_hashes == host_hashes:
+        state.bot_runtime_drift = False
+        state.bot_runtime_drift_since = 0.0
+        state.bot_runtime_drift_detail = ""
+        alert("✅ *telegram-bot self-heal completed* — runtime снова синхронизирован")
+        return True
+    mismatch = detail or "hash mismatch after rebuild"
+    state.bot_runtime_drift = True
+    state.bot_runtime_drift_detail = mismatch[:300]
+    alert(f"🚨 *telegram-bot self-heal incomplete*: `{state.bot_runtime_drift_detail}`")
+    return False
+
+
+async def check_telegram_bot_runtime_sync() -> None:
+    """Проверить, что live container собран из актуального bot source, и при drift выполнить self-heal."""
+    if state.docker_health.get("telegram-bot") != 1:
+        state.bot_runtime_drift = False
+        state.bot_runtime_drift_since = 0.0
+        state.bot_runtime_drift_detail = "telegram-bot container not healthy"
+        return
+
+    host_hashes = _telegram_bot_host_hashes()
+    container_hashes, detail = await _telegram_bot_container_hashes()
+    now = time.time()
+    if container_hashes and container_hashes == host_hashes:
+        if state.bot_runtime_drift:
+            logger.info("telegram-bot runtime снова синхронизирован с /opt/vpn/telegram-bot")
+        state.bot_runtime_drift = False
+        state.bot_runtime_drift_since = 0.0
+        state.bot_runtime_drift_detail = ""
+        return
+
+    if not state.bot_runtime_drift:
+        state.bot_runtime_drift_since = now
+    state.bot_runtime_drift = True
+    if container_hashes:
+        mismatched = sorted(rel for rel, digest in host_hashes.items() if container_hashes.get(rel) != digest)
+        state.bot_runtime_drift_detail = ", ".join(mismatched[:4]) or "hash mismatch"
+    else:
+        state.bot_runtime_drift_detail = detail[:300] if detail else "container hashes unavailable"
+
+    if now - state.bot_runtime_drift_since < BOT_DRIFT_CONFIRM_SECONDS:
+        return
+    if now - state.bot_selfheal_last_ts < BOT_SELFHEAL_COOLDOWN_SECONDS:
+        return
+    await selfheal_telegram_bot_runtime()
 
 
 async def check_wg_peers() -> None:
@@ -1535,13 +1650,24 @@ async def _health_quick_checks() -> list[CheckResult]:
     else:
         results.append(CheckResult("telegram_bot", "warn", "статус ещё не проверялся", weight=5))
 
-    # 6. wg1
+    # 6. telegram-bot runtime sync
+    if state.bot_runtime_drift:
+        age = int(max(0, now - state.bot_runtime_drift_since)) if state.bot_runtime_drift_since > 0 else 0
+        status = "fail" if age >= BOT_DRIFT_CONFIRM_SECONDS else "warn"
+        detail = state.bot_runtime_drift_detail or "runtime drift"
+        if age > 0:
+            detail = f"{detail} ({age}s)"
+        results.append(CheckResult("telegram_bot_runtime_sync", status, detail, weight=5))
+    else:
+        results.append(CheckResult("telegram_bot_runtime_sync", "ok", weight=5))
+
+    # 7. wg1
     if state.wg1_up:
         results.append(CheckResult("wg1_active", "ok", weight=3))
     else:
         results.append(CheckResult("wg1_active", "warn", "wg1 не найден (нет WG клиентов?)", weight=3))
 
-    # 7. xray-client* (хотя бы один)
+    # 8. xray-client* (хотя бы один)
     xray = [k for k in state.docker_health if "xray-client" in k]
     xray_ok = sum(1 for c in xray if state.docker_health.get(c) == 1)
     if xray and xray_ok > 0:
@@ -2524,6 +2650,7 @@ async def monitoring_loop() -> None:
             if tick % 60 == 0:
                 await check_wg_peers()
                 await check_containers()
+                await check_telegram_bot_runtime_sync()
 
             # Каждые 30 мин: проверка эффективности DPI bypass
             if tick % 180 == 0:
