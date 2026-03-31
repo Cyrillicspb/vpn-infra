@@ -303,6 +303,9 @@ fi
 check "watchdog KillMode != process" \
     "! systemctl cat watchdog 2>/dev/null | grep -q '^KillMode=process$'" \
     "watchdog stop/restart будет оставлять tun2socks/nfqws как left-over процессы"
+check "watchdog ExecStopPost cleanup" \
+    "systemctl cat watchdog 2>/dev/null | grep -q '^ExecStopPost=/opt/vpn/scripts/watchdog-stop-cleanup.sh$'" \
+    "после stop останутся stale vpn-active/pid файлы и старый route table marked"
 
 ACTIVE_STACK=""
 if [[ -n "$WATCHDOG_STATUS_JSON" ]]; then

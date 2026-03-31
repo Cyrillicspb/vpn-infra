@@ -27,6 +27,7 @@ ExecStart=/opt/vpn/watchdog/venv/bin/python watchdog.py
 
 # Перезагрузка плагинов без полного рестарта
 ExecReload=/bin/kill -HUP $MAINPID
+ExecStopPost=/opt/vpn/scripts/watchdog-stop-cleanup.sh
 
 # Управлять всем cgroup watchdog, иначе tun2socks/nfqws остаются left-over
 # после stop/restart и следующий запуск стартует поверх грязного runtime.
