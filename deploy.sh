@@ -754,7 +754,12 @@ do_deploy() {
 
     # Синхронизация кода из home/ в рабочие директории (repo структура vs. deployment)
     log_info "Синхронизация home/ → deployment директории..."
+    rsync -a "$REPO_DIR/home/docker-compose.yml" "$REPO_DIR/docker-compose.yml" 2>/dev/null || true
     rsync -a --exclude="data/" "$REPO_DIR/home/telegram-bot/" "$REPO_DIR/telegram-bot/" 2>/dev/null || true
+    rsync -a "$REPO_DIR/home/prometheus/" "$REPO_DIR/prometheus/" 2>/dev/null || true
+    rsync -a "$REPO_DIR/home/grafana/" "$REPO_DIR/grafana/" 2>/dev/null || true
+    rsync -a "$REPO_DIR/home/alertmanager/" "$REPO_DIR/alertmanager/" 2>/dev/null || true
+    rsync -a "$REPO_DIR/home/nginx/" "$REPO_DIR/nginx/" 2>/dev/null || true
     rsync -a "$REPO_DIR/home/watchdog/watchdog.py" "$REPO_DIR/watchdog/watchdog.py" 2>/dev/null || true
     rsync -a "$REPO_DIR/home/watchdog/plugins/" "$REPO_DIR/watchdog/plugins/" 2>/dev/null || true
     rsync -a "$REPO_DIR/home/scripts/" "$REPO_DIR/scripts/" 2>/dev/null && chmod +x "$REPO_DIR/scripts/"*.sh 2>/dev/null || true

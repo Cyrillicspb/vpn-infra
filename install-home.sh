@@ -1432,30 +1432,25 @@ else
     SAVED_IMAGES_DIR="/opt/vpn/docker-images"
     _telegram_bot_ready=0
 
-    # Копируем docker-compose.yml из home/ если его нет в корне /opt/vpn/
-    if [[ ! -f "$COMPOSE_FILE" ]]; then
-        if [[ -f "${REPO_DIR}/home/docker-compose.yml" ]]; then
-            cp "${REPO_DIR}/home/docker-compose.yml" "$COMPOSE_FILE"
-            log_ok "docker-compose.yml скопирован из home/"
-        fi
+    # Всегда синхронизируем runtime compose из home/ — иначе новые mounts и сервисы
+    # могут не доехать до /opt/vpn/docker-compose.yml после первой установки.
+    if [[ -f "${REPO_DIR}/home/docker-compose.yml" ]]; then
+        rsync -a "${REPO_DIR}/home/docker-compose.yml" "$COMPOSE_FILE"
+        log_ok "docker-compose.yml синхронизирован из home/"
     fi
 
-    # Копируем поддиректории из home/ которые нужны docker-compose.yml
-    declare -A subdir_key=(
-        [telegram-bot]="Dockerfile"
-        [prometheus]="prometheus.yml"
-        [grafana]="provisioning"
-        [alertmanager]="alertmanager.yml"
-        [nginx]="grafana.conf"
-    )
+    # Синхронизируем поддиректории, от которых зависит runtime compose.
     for subdir in telegram-bot prometheus grafana alertmanager nginx; do
-        key="${subdir_key[$subdir]}"
         src="${REPO_DIR}/home/${subdir}"
         dst="/opt/vpn/${subdir}"
-        if [[ -d "$src" && ! -e "${dst}/${key}" ]]; then
+        if [[ -d "$src" ]]; then
             mkdir -p "$dst"
-            cp -r "${src}/." "$dst/"
-            log_ok "${subdir}/ скопирован из home/"
+            if [[ "$subdir" == "telegram-bot" ]]; then
+                rsync -a --exclude="data/" "${src}/" "${dst}/"
+            else
+                rsync -a "${src}/" "${dst}/"
+            fi
+            log_ok "${subdir}/ синхронизирован из home/"
         fi
     done
 
