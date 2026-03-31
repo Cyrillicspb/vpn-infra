@@ -5,6 +5,222 @@
 
 -----
 
+## Разделить home-ingress DDNS и VPS hostname
+
+**Приоритет: высокий**
+
+Сейчас в установке и `.env` есть только один `DDNS_DOMAIN`, и исторически его слишком легко трактовать двусмысленно:
+- как домен для клиентского `WG/AWG Endpoint`;
+- как домен/alias для VPS или миграции между VPS.
+
+Это приводит к архитектурной ошибке: клиентский `Endpoint` должен всегда указывать на home ingress, тогда как VPS-адресация и миграция должны жить отдельно.
+
+**Что уже зафиксировано:**
+- `WG_HOST` и клиентский `Endpoint` относятся только к home ingress;
+- `ROUTER_EXTERNAL_IP` в `gateway` mode тоже относится только к home ingress;
+- `VPS_IP` остаётся отдельным source of truth для внешних стеков, SSH, backup и операционных задач;
+- DDNS updater должен публиковать WAN IP домашнего роутера, а не VPS egress IP.
+
+**Что нужно сделать дальше:**
+- Добавить в install flow явное разделение двух сущностей:
+  - `HOME_DDNS_DOMAIN` / `WG_HOST` для клиентского ingress;
+  - отдельный `VPS_HOSTNAME` или `VPS_MIGRATION_HOSTNAME` только для операционных сценариев, если он вообще нужен.
+- Пересмотреть `.env`, TUI installer и `setup.sh`, чтобы второй hostname не мог случайно переопределить `WG_HOST`.
+- Явно описать в docs, какой hostname используется:
+  - для генерации AWG/WG client config;
+  - для VPS migration / operator access;
+  - для backup/restore и mirror.
+- Если отдельный VPS hostname реально вводится:
+  - не использовать его в `config_builder.py`;
+  - не использовать его в hairpin logic;
+  - не использовать его в `router_external_ips`.
+
+**Критерий готовности:**
+- installer задаёт правильные вопросы без двусмысленности;
+- клиентский `Endpoint` нельзя случайно направить на VPS;
+- отдельный VPS hostname, если нужен, не влияет на AWG/WG client config generation.
+
+-----
+
+## CIDR Aggregation & Routing Intelligence
+
+**Приоритет: высокий**
+
+### Цель
+
+Повысить точность `combined.cidr`, уменьшить over-inclusion, сохранить стабильность и адаптировать routing под разные типы клиентов.
+
+### PHASE 1 — SAFETY BASELINE
+
+#### 1. Ограничение агрегации
+
+- [ ] Запретить автоматическую агрегацию `/8`
+- [ ] Запретить автоматическую агрегацию `/7`
+- [ ] Разрешать `/9` и `/10` только через whitelist
+- [ ] Ввести глобальный параметр `MAX_AGGREGATION_PREFIX=/12`
+
+#### 2. Expansion ratio check
+
+- [ ] Добавить расчёт `expansion_ratio = merged_size / original_size`
+- [ ] Ввести пороги: `<=4` → OK
+- [ ] Ввести пороги: `<=8` → допустимо
+- [ ] Ввести пороги: `>8` → запрещено
+
+#### 3. Базовая нормализация списка
+
+- [ ] Найти и удалить явно избыточные CIDR
+- [ ] Разбить слишком широкие диапазоны
+- [ ] Проверить отсутствие `/8` в итоговом списке
+
+### PHASE 2 — CLASS-BASED MODEL
+
+#### 4. Ввести классы маршрутов
+
+- [ ] `CLASS_A (critical)`
+- [ ] `CLASS_B (observed)`
+- [ ] `CLASS_C (candidate)`
+- [ ] `CLASS_D (excluded)`
+
+#### 5. Источники данных
+
+- [ ] `CLASS_A`: `vpn-force.conf`
+- [ ] `CLASS_A`: ручной список доменов
+- [ ] `CLASS_B`: DNS logs
+- [ ] `CLASS_B`: реальные подключения
+- [ ] `CLASS_C`: единичные наблюдения
+- [ ] `CLASS_D`: control-plane IP
+- [ ] `CLASS_D`: LAN
+- [ ] `CLASS_D`: management
+
+#### 6. Разделить генерацию
+
+- [ ] Генерация CIDR по классам отдельно
+- [ ] Разные правила агрегации для каждого класса
+
+### PHASE 3 — TRAFFIC OBSERVATION
+
+#### 7. Сбор наблюдений
+
+- [ ] Логировать DNS → IP
+- [ ] Логировать частоту появления
+- [ ] Логировать время жизни
+- [ ] Хранить `first_seen`
+- [ ] Хранить `last_seen`
+- [ ] Хранить `hit_count`
+
+#### 8. Confidence scoring
+
+- [ ] Ввести score по частоте
+- [ ] Ввести score по повторяемости
+- [ ] Ввести score по количеству клиентов
+- [ ] Ввести threshold для promotion
+- [ ] Ввести threshold для demotion
+
+#### 9. Candidate pipeline
+
+- [ ] Candidate-список отдельно от production
+- [ ] Candidate не влияет напрямую на `combined.cidr`
+
+### PHASE 4 — PROMOTION / DEMOTION
+
+#### 10. Promotion logic
+
+- [ ] Перевод `candidate → observed` только при достижении threshold
+- [ ] Перевод `observed → stable` только при долгосрочной стабильности
+
+#### 11. Demotion logic
+
+- [ ] Ввести TTL для downgrade
+- [ ] Не удалять сразу: сначала переводить в `stale`
+
+### PHASE 5 — DEVICE PROFILES
+
+#### 12. Ввести профили клиентов
+
+- [ ] `mobile_legacy`
+- [ ] `mobile_modern`
+- [ ] `desktop`
+- [ ] `power`
+
+#### 13. Ограничения профилей
+
+- [ ] `mobile_legacy`: минимальный список
+- [ ] `mobile_legacy`: больше агрегации
+- [ ] `mobile_modern`: баланс
+- [ ] `desktop`: больше точности
+
+#### 14. Генерация per-profile
+
+- [ ] Один `base list`
+- [ ] Разные финальные `AllowedIPs`
+
+### PHASE 6 — RUNTIME VALIDATION
+
+#### 15. Проверка over-inclusion
+
+- [ ] Измерять процент трафика, который лишне идёт через VPN
+- [ ] Порог `<5%` → OK
+- [ ] Порог `>15%` → требует оптимизации
+
+#### 16. Проверка coverage
+
+- [ ] Проверять, что нужные домены реально обходятся
+- [ ] Тестировать blocked domains
+- [ ] Тестировать API endpoints
+
+### PHASE 7 — HEALTH INTEGRATION
+
+#### 17. Улучшить health-check
+
+- [ ] Убрать ложные warnings для unused `dpi_direct`
+- [ ] Убрать ложные warnings для `nfqws inactive`, если стек не используется
+- [ ] Добавить `CIDR quality score`
+- [ ] Добавить `over-inclusion score`
+
+### PHASE 8 — OPTIONAL
+
+#### 18. ASN-aware aggregation
+
+- [ ] Проверять ASN consistency при merge
+- [ ] Не агрегировать разные ASN
+
+#### 19. Smart merge strategy
+
+- [ ] Ограничить merge только внутри однородных сетей
+
+#### 20. Simulation mode
+
+- [ ] Генерировать `current vs optimized CIDR`
+- [ ] Сравнивать размер
+- [ ] Сравнивать покрытие
+- [ ] Сравнивать лишний трафик
+
+### Definition of Done
+
+- [ ] Нет `/8` и `/7`
+- [ ] Агрегация ограничена
+- [ ] Список воспроизводим
+- [ ] Нет массового лишнего трафика
+- [ ] Клиенты стабильно работают
+- [ ] Поддерживаются разные device profiles
+
+### Критические замечания
+
+#### Не делать сразу
+
+- [ ] Не внедрять полный auto self-learning
+- [ ] Не внедрять агрессивный auto-merge
+- [ ] Не внедрять полную per-user сегрегацию
+
+#### Делать поэтапно
+
+- [ ] Сначала ограничения агрегации
+- [ ] Потом классы
+- [ ] Потом профили
+- [ ] Потом наблюдения
+
+-----
+
 ## Email fallback для алертов при недоступности Telegram
 
 **Приоритет: низкий**

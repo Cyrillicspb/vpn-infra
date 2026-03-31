@@ -21,7 +21,7 @@ update-routes.py — Обновление маршрутов из баз РКН/
 
 Выходные файлы:
   /etc/nftables-blocked-static.conf   — атомарное обновление nft set
-  /etc/vpn-routes/combined.cidr       — агрегированные CIDR для AllowedIPs (≤500)
+  /etc/vpn-routes/combined.cidr       — нормализованные CIDR для AllowedIPs (временно ≤12000)
   /etc/dnsmasq.d/vpn-domains.conf     — nftset= + server= для баз РКН
   /etc/dnsmasq.d/vpn-force.conf       — nftset= + server= для manual-vpn.txt
 
@@ -83,13 +83,17 @@ WATCHDOG_URL    = os.getenv("WATCHDOG_URL", "http://localhost:8080")
 VPS_TUNNEL_IP   = os.getenv("VPS_TUNNEL_IP", "10.177.2.2")
 
 # ── Константы ─────────────────────────────────────────────────────────────────
-MAX_CIDR_ALLOWED_IPS = 1000   # Практический лимит записей AllowedIPs для импортируемых клиентских конфигов
+MAX_CIDR_ALLOWED_IPS = 12_000  # Временный безопасный лимит: correctness важнее компактности
 ALERT_CACHE_AGE_DAYS = 3      # Алерт если кэш старше N дней
 MAX_DELTA_PCT        = 50     # Максимальная дельта изменений (%)
 FETCH_TIMEOUT        = 45     # Таймаут загрузки источника (сек)
 FETCH_TIMEOUT_ZIP    = 180    # Таймаут для ZIP (ZIP архив ~15 MB)
 FETCH_WORKERS        = 6      # Параллельные загрузки
 ZAPRET_MAX_LINES     = 500_000  # Лимит строк из всех dump-*.csv
+FORBIDDEN_ALLOWED_PREFIXES = frozenset({7, 8})
+CONDITIONAL_ALLOWED_PREFIXES = frozenset({9, 10})
+EXPANSION_RATIO_OK = 4.0
+EXPANSION_RATIO_WARN = 8.0
 
 # ── TLD которые всегда идут напрямую (не через VPN) ───────────────────────────
 # .рф в punycode = xn--p1acf
@@ -795,34 +799,63 @@ def aggregate_networks(networks: set[ipaddress.IPv4Network]) -> list[ipaddress.I
     return sorted(ipaddress.collapse_addresses(networks))
 
 
-def reduce_to_limit(
-    networks: list[ipaddress.IPv4Network], limit: int
-) -> list[ipaddress.IPv4Network]:
+def prefix_distribution(networks: list[ipaddress.IPv4Network]) -> dict[int, int]:
+    counts: dict[int, int] = {}
+    for net in networks:
+        counts[net.prefixlen] = counts.get(net.prefixlen, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def total_address_count(networks: list[ipaddress.IPv4Network]) -> int:
+    return sum(net.num_addresses for net in networks)
+
+
+def expansion_ratio(
+    original_networks: list[ipaddress.IPv4Network],
+    merged_networks: list[ipaddress.IPv4Network],
+) -> float:
+    original_size = total_address_count(original_networks)
+    if original_size == 0:
+        return 1.0
+    return total_address_count(merged_networks) / original_size
+
+
+def normalize_allowed_networks(
+    networks: set[ipaddress.IPv4Network],
+) -> tuple[list[ipaddress.IPv4Network], dict[str, int | float | dict[int, int]]]:
+    """Временная нормализация AllowedIPs без агрессивного минимизатора.
+
+    Правила:
+    - не оставляем /7 и /8;
+    - /9 и /10 временно допускаем только как exact-coverage после collapse, без
+      дополнительного расширения адресного пространства;
+    - если после нормализации список всё ещё слишком большой, лучше зафейлить
+      обновление, чем снова размыть маршрутизацию.
     """
-    Прогрессивная агрегация для AllowedIPs (≤ limit записей).
-    Расширяем маски шагами /32→/24→/22→/20→/18→/16...
-    """
-    if len(networks) <= limit:
-        return networks
+    exact_collapsed = aggregate_networks(networks)
+    normalized: list[ipaddress.IPv4Network] = []
+    split_count = 0
 
-    log.info(f"Прогрессивная агрегация: {len(networks)} → ≤{limit}")
-    thresholds = [24, 22, 20, 18, 16, 14, 12, 10, 8]
+    for net in exact_collapsed:
+        if net.prefixlen in FORBIDDEN_ALLOWED_PREFIXES:
+            subnets = list(net.subnets(new_prefix=9))
+            normalized.extend(subnets)
+            split_count += len(subnets) - 1
+        else:
+            normalized.append(net)
 
-    for min_prefix in thresholds:
-        promoted: set[ipaddress.IPv4Network] = set()
-        for net in networks:
-            if net.prefixlen > min_prefix:
-                promoted.add(net.supernet(new_prefix=min_prefix))
-            else:
-                promoted.add(net)
-        collapsed = sorted(ipaddress.collapse_addresses(promoted))
-        log.info(f"  Порог /{min_prefix}: {len(collapsed)} записей")
-        if len(collapsed) <= limit:
-            return collapsed
-        networks = collapsed
-
-    log.warning(f"Не удалось сократить до {limit}, берём топ {limit} по размеру")
-    return sorted(networks, key=lambda n: n.prefixlen)[:limit]
+    normalized = sorted(set(normalized))
+    stats: dict[str, int | float | dict[int, int]] = {
+        "before_count": len(exact_collapsed),
+        "after_count": len(normalized),
+        "split_count": split_count,
+        "before_distribution": prefix_distribution(exact_collapsed),
+        "after_distribution": prefix_distribution(normalized),
+        "expansion_ratio": expansion_ratio(exact_collapsed, normalized),
+        "forbidden_count": sum(1 for net in normalized if net.prefixlen in FORBIDDEN_ALLOWED_PREFIXES),
+        "conditional_count": sum(1 for net in normalized if net.prefixlen in CONDITIONAL_ALLOWED_PREFIXES),
+    }
+    return normalized, stats
 
 
 # =============================================================================
@@ -948,7 +981,7 @@ def write_dnsmasq_config(
 # =============================================================================
 # Запись vpn-direct.conf — прямые TLD (.ru, .рф)
 # =============================================================================
-def write_dnsmasq_direct() -> None:
+def render_dnsmasq_direct() -> str:
     """
     vpn-direct.conf: .ru и .рф всегда резолвятся через Яндекс DNS напрямую.
     server=/.ru/77.88.8.8 — явный upstream, НЕ пустой.
@@ -975,8 +1008,13 @@ def write_dnsmasq_direct() -> None:
         "server=/.xn--p1acf/77.88.8.1",
         "",
     ]
+    return "\n".join(lines)
+
+
+def write_dnsmasq_direct() -> None:
+    content = render_dnsmasq_direct()
     DNSMASQ_DIRECT.parent.mkdir(parents=True, exist_ok=True)
-    DNSMASQ_DIRECT.write_text("\n".join(lines), encoding="utf-8")
+    DNSMASQ_DIRECT.write_text(content, encoding="utf-8")
     log.info("vpn-direct.conf: .ru/.рф → прямое подключение (локальный DNS)")
 
 
@@ -1054,6 +1092,32 @@ def normalize_generated_text(text: str) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def build_stable_hash_payload(
+    allowed_cidrs: list[str],
+    nft_cidrs: list[str],
+    dnsmasq_domains_content: str,
+    dnsmasq_force_content: str,
+    dnsmasq_direct_content: str,
+) -> str:
+    """Возвращает стабильный payload для HASH_FILE.
+
+    Должен менять hash при изменении любого реально применяемого артефакта, но
+    игнорировать volatile заголовки с timestamp.
+    """
+    return json.dumps(
+        {
+            "allowed_ips": allowed_cidrs,
+            "nft_blocked_static": nft_cidrs,
+            "dnsmasq_domains": normalize_generated_text(dnsmasq_domains_content),
+            "dnsmasq_force": normalize_generated_text(dnsmasq_force_content),
+            "dnsmasq_direct": normalize_generated_text(dnsmasq_direct_content),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -1109,21 +1173,52 @@ def main() -> None:
     nft_networks = aggregate_networks(all_networks)
     log.info(f"nft blocked_static: {len(all_networks)} → {len(nft_networks)} после агрегации")
 
-    # ── Агрегация: AllowedIPs (combined.cidr) ─────────────────────────────────
-    # Используем только CIDR-based источники (не /32 IP-листы) чтобы не раздувать маски.
-    # Индивидуальные IP идут только в nft blocked_static (точная маршрутизация на сервере).
-    # Для server-side nft blocked_static лимит не нужен, но клиентские конфиги с тысячами
-    # AllowedIPs непрактичны: импорт на мобильных клиентах деградирует, QR недоступен,
-    # а регенерация начинает ломать ожидаемый UX split tunneling.
-    log.info("Агрегация AllowedIPs (только CIDR-источники, с лимитом для клиентских конфигов)...")
-    allowed_networks = aggregate_networks(cidr_networks)
-    if len(allowed_networks) > MAX_CIDR_ALLOWED_IPS:
-        before = len(allowed_networks)
-        allowed_networks = reduce_to_limit(allowed_networks, MAX_CIDR_ALLOWED_IPS)
+    # ── Нормализация: AllowedIPs (combined.cidr) ──────────────────────────────
+    # Используем только CIDR-based источники (не /32 IP-листы), но больше не
+    # аггрегируем список агрессивно под маленький лимит. Для клиентского routing
+    # correctness важнее компактности; временно запрещаем только /7 и /8.
+    # /9 и /10 допускаем как exact-coverage после collapse, без дальнейшего merge.
+    log.info("Нормализация AllowedIPs (temporary safety policy, correctness-first)...")
+    allowed_networks, allowed_stats = normalize_allowed_networks(cidr_networks)
+    log.info(
+        "AllowedIPs normalized: %s → %s (split=%s, expansion_ratio=%.2f)",
+        allowed_stats["before_count"],
+        allowed_stats["after_count"],
+        allowed_stats["split_count"],
+        allowed_stats["expansion_ratio"],
+    )
+    log.info("AllowedIPs prefixes before: %s", allowed_stats["before_distribution"])
+    log.info("AllowedIPs prefixes after:  %s", allowed_stats["after_distribution"])
+
+    if allowed_stats["forbidden_count"]:
+        log.error("AllowedIPs still contain forbidden /7-/8 prefixes after normalization")
+        sys.exit(1)
+    if allowed_stats["conditional_count"]:
         log.warning(
-            "AllowedIPs сокращены: %s → %s (лимит=%s)",
-            before, len(allowed_networks), MAX_CIDR_ALLOWED_IPS,
+            "AllowedIPs contain conditional /9-/10 prefixes: %s",
+            allowed_stats["conditional_count"],
         )
+    if float(allowed_stats["expansion_ratio"]) > EXPANSION_RATIO_WARN:
+        log.error(
+            "AllowedIPs expansion_ratio too high: %.2f > %.2f",
+            allowed_stats["expansion_ratio"],
+            EXPANSION_RATIO_WARN,
+        )
+        sys.exit(1)
+    if float(allowed_stats["expansion_ratio"]) > EXPANSION_RATIO_OK:
+        log.warning(
+            "AllowedIPs expansion_ratio elevated: %.2f > %.2f",
+            allowed_stats["expansion_ratio"],
+            EXPANSION_RATIO_OK,
+        )
+    if len(allowed_networks) > MAX_CIDR_ALLOWED_IPS:
+        log.error(
+            "AllowedIPs exceed safe temporary limit: %s > %s",
+            len(allowed_networks),
+            MAX_CIDR_ALLOWED_IPS,
+        )
+        sys.exit(1)
+
     log.info(f"AllowedIPs: {len(allowed_networks)} записей")
 
     if len(allowed_networks) > 50:
@@ -1163,17 +1258,17 @@ def main() -> None:
         header_comment="manual-vpn.txt (добавлены через /vpn add)",
         exclude_domains=dpi_domains,
     )
+    dnsmasq_direct_content = render_dnsmasq_direct()
+    nft_cidr_lines = [str(n) for n in nft_networks]
     normalized_dnsmasq_domains = normalize_generated_text(dnsmasq_domains_content)
     normalized_dnsmasq_force = normalize_generated_text(dnsmasq_force_content)
-    stable_hash_payload = json.dumps(
-        {
-            "allowed_ips": new_cidr_lines,
-            "dnsmasq_domains": normalized_dnsmasq_domains,
-            "dnsmasq_force": normalized_dnsmasq_force,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+    normalized_dnsmasq_direct = normalize_generated_text(dnsmasq_direct_content)
+    stable_hash_payload = build_stable_hash_payload(
+        allowed_cidrs=new_cidr_lines,
+        nft_cidrs=nft_cidr_lines,
+        dnsmasq_domains_content=dnsmasq_domains_content,
+        dnsmasq_force_content=dnsmasq_force_content,
+        dnsmasq_direct_content=dnsmasq_direct_content,
     )
     new_hash = content_hash(stable_hash_payload)
     combined_content = (
@@ -1190,10 +1285,14 @@ def main() -> None:
     current_dnsmasq_force = normalize_generated_text(
         DNSMASQ_FORCE.read_text(encoding="utf-8")
     ) if DNSMASQ_FORCE.exists() else ""
+    current_dnsmasq_direct = normalize_generated_text(
+        DNSMASQ_DIRECT.read_text(encoding="utf-8")
+    ) if DNSMASQ_DIRECT.exists() else ""
     changed = (
         new_hash != old_hash
         or normalized_dnsmasq_domains != current_dnsmasq_domains
         or normalized_dnsmasq_force != current_dnsmasq_force
+        or normalized_dnsmasq_direct != current_dnsmasq_direct
     )
 
     if not changed and not force:
@@ -1219,7 +1318,8 @@ def main() -> None:
     DNSMASQ_FORCE.write_text(dnsmasq_force_content, encoding="utf-8")
     log.info(f"{DNSMASQ_FORCE.name}: конфиг записан")
 
-    write_dnsmasq_direct()
+    DNSMASQ_DIRECT.write_text(dnsmasq_direct_content, encoding="utf-8")
+    log.info(f"{DNSMASQ_DIRECT.name}: конфиг записан")
 
     # Логируем итоговые счётчики после записи, чтобы было видно исключение DPI-доменов.
     _, dnsmasq_written, dnsmasq_excluded = render_dnsmasq_config(

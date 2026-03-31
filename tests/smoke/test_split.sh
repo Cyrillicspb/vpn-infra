@@ -105,16 +105,29 @@ fi
 # 10. /etc/vpn-routes/combined.cidr существует и непустой
 CIDR_FILE="/etc/vpn-routes/combined.cidr"
 if [[ -f "$CIDR_FILE" ]]; then
-    CIDR_COUNT=$(wc -l < "$CIDR_FILE" 2>/dev/null || echo 0)
+    CIDR_COUNT=$(grep -vc '^\s*#' "$CIDR_FILE" 2>/dev/null || echo 0)
     if (( CIDR_COUNT > 100 )); then
         pass "combined.cidr содержит $CIDR_COUNT записей"
     else
         warn "combined.cidr содержит только $CIDR_COUNT записей"
     fi
-    if (( CIDR_COUNT <= 500 )); then
-        pass "combined.cidr ≤500 записей (в пределах лимита WireGuard)"
+    if (( CIDR_COUNT <= 12000 )); then
+        pass "combined.cidr ≤12000 записей (temporary correctness-first limit)"
     else
-        warn "combined.cidr содержит $CIDR_COUNT > 500 записей (возможны проблемы с QR)"
+        fail "combined.cidr содержит $CIDR_COUNT > 12000 записей"
+    fi
+
+    WIDE_78=$(awk -F/ 'NF==2 && ($2==7 || $2==8) {c++} END{print c+0}' "$CIDR_FILE")
+    WIDE_910=$(awk -F/ 'NF==2 && ($2==9 || $2==10) {c++} END{print c+0}' "$CIDR_FILE")
+    if (( WIDE_78 == 0 )); then
+        pass "combined.cidr не содержит /7 и /8"
+    else
+        fail "combined.cidr содержит /7 или /8: $WIDE_78"
+    fi
+    if (( WIDE_910 == 0 )); then
+        pass "combined.cidr не содержит /9 и /10"
+    else
+        warn "combined.cidr содержит /9 или /10: $WIDE_910"
     fi
 else
     warn "combined.cidr не найден (маршруты не обновлялись)"
