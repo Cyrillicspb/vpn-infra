@@ -78,6 +78,23 @@ check_warn() {
     fi
 }
 
+check_sync_pair() {
+    local name="$1" src="$2" dst="$3" hint="${4:-}"
+    if [[ ! -f "$src" ]]; then
+        warn "$name" "source отсутствует: $src"
+        return
+    fi
+    if [[ ! -f "$dst" ]]; then
+        fail "$name" "${hint:-target отсутствует: $dst}"
+        return
+    fi
+    if cmp -s "$src" "$dst"; then
+        ok "$name"
+    else
+        fail "$name" "$hint"
+    fi
+}
+
 # ── Отправка в Telegram ───────────────────────────────────────────────────────
 
 send_telegram() {
@@ -154,6 +171,70 @@ log_info "Внешний IP: $(curl -sf --max-time 5 https://api.ipify.org 2>/de
 
 REPORT_LINES+=("🔍 *Post-Install отчёт* — $(hostname)")
 REPORT_LINES+=("$(date '+%Y-%m-%d %H:%M:%S') | Ядро: $(uname -r)")
+
+section "0. Source Of Truth"
+
+if [[ -d /opt/vpn/.git ]]; then
+    check "repo HEAD attached" \
+        "git -C /opt/vpn symbolic-ref --quiet HEAD" \
+        "detached HEAD маскирует drift и ломает воспроизводимый deploy/reinstall"
+    check_warn "repo tracked source clean" \
+        "! git -C /opt/vpn status --porcelain --untracked-files=no -- \
+            home/scripts home/systemd home/watchdog install-home.sh install-vps.sh setup.sh deploy.sh restore.sh \
+            home/docker-compose.yml home/nftables/nftables.conf | grep -q '.'" \
+        "tracked source tree в /opt/vpn dirty — live runtime и installer могут разойтись"
+else
+    warn "repo git metadata" "/opt/vpn/.git отсутствует"
+fi
+
+check_sync_pair "runtime sync: post-install-check.sh" \
+    "/opt/vpn/home/scripts/post-install-check.sh" \
+    "/opt/vpn/scripts/post-install-check.sh" \
+    "active /opt/vpn/scripts/post-install-check.sh отстаёт от source tree"
+check_sync_pair "runtime sync: generate-nftables.sh" \
+    "/opt/vpn/home/scripts/generate-nftables.sh" \
+    "/opt/vpn/scripts/generate-nftables.sh" \
+    "active generate-nftables.sh не совпадает с source tree"
+check_sync_pair "runtime sync: update-routes.py" \
+    "/opt/vpn/home/scripts/update-routes.py" \
+    "/opt/vpn/scripts/update-routes.py" \
+    "active update-routes.py не совпадает с source tree"
+check_sync_pair "runtime sync: watchdog-stop-cleanup.sh" \
+    "/opt/vpn/home/scripts/watchdog-stop-cleanup.sh" \
+    "/opt/vpn/scripts/watchdog-stop-cleanup.sh" \
+    "active watchdog-stop-cleanup.sh не совпадает с source tree"
+check_sync_pair "runtime sync: watchdog.py" \
+    "/opt/vpn/home/watchdog/watchdog.py" \
+    "/opt/vpn/watchdog/watchdog.py" \
+    "active watchdog.py не совпадает с source tree"
+check_sync_pair "runtime sync: watchdog base.py" \
+    "/opt/vpn/home/watchdog/plugins/base.py" \
+    "/opt/vpn/watchdog/plugins/base.py" \
+    "active watchdog base.py не совпадает с source tree"
+check_sync_pair "runtime sync: zapret client.py" \
+    "/opt/vpn/home/watchdog/plugins/zapret/client.py" \
+    "/opt/vpn/watchdog/plugins/zapret/client.py" \
+    "active zapret client.py не совпадает с source tree"
+check_sync_pair "runtime sync: zapret probe.py" \
+    "/opt/vpn/home/watchdog/plugins/zapret/probe.py" \
+    "/opt/vpn/watchdog/plugins/zapret/probe.py" \
+    "active zapret probe.py не совпадает с source tree"
+check_sync_pair "runtime sync: watchdog.service" \
+    "/opt/vpn/home/systemd/watchdog.service" \
+    "/etc/systemd/system/watchdog.service" \
+    "installed watchdog.service не совпадает с source tree"
+check_sync_pair "runtime sync: hysteria2.service" \
+    "/opt/vpn/home/systemd/hysteria2.service" \
+    "/etc/systemd/system/hysteria2.service" \
+    "installed hysteria2.service не совпадает с source tree"
+check_sync_pair "runtime sync: autossh-vpn.service" \
+    "/opt/vpn/home/systemd/autossh-vpn.service" \
+    "/etc/systemd/system/autossh-vpn.service" \
+    "installed autossh-vpn.service не совпадает с source tree"
+check_sync_pair "runtime sync: vpn-postboot.service" \
+    "/opt/vpn/home/systemd/vpn-postboot.service" \
+    "/etc/systemd/system/vpn-postboot.service" \
+    "installed vpn-postboot.service не совпадает с source tree"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 section "1. Системные сервисы"
