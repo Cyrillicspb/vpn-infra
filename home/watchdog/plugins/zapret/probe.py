@@ -21,6 +21,15 @@ import time
 from pathlib import Path
 from datetime import datetime
 
+SYSTEMD_NOTIFY_ENV_KEYS = ("NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID")
+
+
+def child_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in SYSTEMD_NOTIFY_ENV_KEYS:
+        env.pop(key, None)
+    return env
+
 # ---------------------------------------------------------------------------
 # Конфиг
 # ---------------------------------------------------------------------------
@@ -343,6 +352,7 @@ probe_state = ProbeState()
 async def run_cmd(cmd: list, timeout: int = 30) -> tuple[int, str, str]:
     proc = await asyncio.create_subprocess_exec(
         *cmd,
+        env=child_env(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -429,6 +439,7 @@ async def _add_nft_probe_rules() -> None:
 
     proc = await asyncio.create_subprocess_exec(
         "nft", "-f", "-",
+        env=child_env(),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

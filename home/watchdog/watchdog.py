@@ -166,6 +166,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("watchdog")
 
+SYSTEMD_NOTIFY_ENV_KEYS = ("NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID")
+
+
+def _child_env() -> dict[str, str]:
+    """Среда без sd_notify-переменных для дочерних процессов."""
+    env = os.environ.copy()
+    for key in SYSTEMD_NOTIFY_ENV_KEYS:
+        env.pop(key, None)
+    return env
+
 
 def installed_version_label() -> str:
     try:
@@ -185,6 +195,7 @@ async def run_cmd(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
+            env=_child_env(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -2823,6 +2834,7 @@ async def _peer_add_task(req: PeerAddRequest) -> None:
             privkey = privkey.strip()
             proc = await asyncio.create_subprocess_exec(
                 "wg", "pubkey",
+                env=_child_env(),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
             )
@@ -3412,6 +3424,7 @@ async def _run_vps_install(ip: str, password: str, ssh_port: int) -> None:
     try:
         proc = await asyncio.create_subprocess_exec(
             "/bin/bash", "/opt/vpn/add-vps.sh", ip, password, str(ssh_port),
+            env=_child_env(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )

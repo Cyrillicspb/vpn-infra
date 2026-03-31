@@ -38,7 +38,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from base import BasePlugin
+from base import BasePlugin, child_env
 
 # ---------------------------------------------------------------------------
 NFQWS_BIN   = "/usr/local/bin/nfqws"
@@ -128,6 +128,7 @@ table inet zapret_main {{
 """
         proc = await asyncio.create_subprocess_exec(
             "nft", "-f", "-",
+            env=child_env(),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

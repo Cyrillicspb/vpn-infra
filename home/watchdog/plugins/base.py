@@ -11,6 +11,16 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+SYSTEMD_NOTIFY_ENV_KEYS = ("NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID")
+
+
+def child_env() -> dict[str, str]:
+    """Среда для дочерних процессов без sd_notify переменных systemd."""
+    env = os.environ.copy()
+    for key in SYSTEMD_NOTIFY_ENV_KEYS:
+        env.pop(key, None)
+    return env
+
 
 class BasePlugin(ABC):
     """ABC для всех плагинов стеков."""
@@ -53,6 +63,7 @@ class BasePlugin(ABC):
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                env=child_env(),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -88,6 +99,7 @@ class BasePlugin(ABC):
         try:
             proc = subprocess.Popen(
                 cmd,
+                env=child_env(),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,

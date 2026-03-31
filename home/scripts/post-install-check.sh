@@ -306,6 +306,9 @@ check "watchdog KillMode != process" \
 check "watchdog ExecStopPost cleanup" \
     "systemctl cat watchdog 2>/dev/null | grep -q '^ExecStopPost=/opt/vpn/scripts/watchdog-stop-cleanup.sh$'" \
     "после stop останутся stale vpn-active/pid файлы и старый route table marked"
+check_warn "watchdog sd_notify noise" \
+    "! journalctl -u watchdog -n 10 --no-pager | grep -q 'Got notification message from PID'" \
+    "дочерние процессы watchdog всё ещё наследуют NOTIFY_SOCKET/WATCHDOG_*"
 
 ACTIVE_STACK=""
 if [[ -n "$WATCHDOG_STATUS_JSON" ]]; then
