@@ -2456,6 +2456,38 @@ async def _regen_dpi_dnsmasq() -> None:
     logger.info(f"[DPI] dpi-domains.conf обновлён ({len(enabled)} сервисов), dnsmasq SIGHUP rc={rc}")
 
 
+async def _dpi_warmup_domains(domains: list[str]) -> None:
+    """Прогреть dnsmasq по активным DPI-доменам, чтобы nft set dpi_direct наполнился сразу."""
+    unique_domains: list[str] = []
+    seen: set[str] = set()
+    for domain in domains:
+        d = (domain or "").strip().lower().strip(".")
+        if not d or d in seen:
+            continue
+        seen.add(d)
+        unique_domains.append(d)
+
+    warmed = 0
+    for domain in unique_domains[:100]:
+        rc, _, _ = await run_cmd(["dig", "+short", "@127.0.0.1", domain, "A"], timeout=5)
+        if rc == 0:
+            warmed += 1
+        await asyncio.sleep(0.05)
+
+    logger.info("[DPI] dns warmup completed for %s/%s domains", warmed, len(unique_domains[:100]))
+
+
+async def _dpi_sync_active_domains() -> None:
+    """Синхронизировать dnsmasq + сразу прогреть активные DPI-домены."""
+    await _regen_dpi_dnsmasq()
+    await _dpi_warmup_domains([
+        domain
+        for svc in state.dpi_services
+        if svc.get("enabled")
+        for domain in svc.get("domains", [])
+    ])
+
+
 async def _dpi_apply_routing() -> None:
     """Применить ip rule fwmark 0x2 → table 201 и маршрут в table 201."""
     rc, out, _ = await run_cmd(["ip", "rule", "show"], timeout=5)
@@ -2497,6 +2529,12 @@ async def _dpi_enable_impl() -> None:
             await zp.start()
         await zp.activate()   # добавить NFQUEUE-правила в nftables (inet zapret_main)
     await _regen_dpi_dnsmasq()
+    await _dpi_warmup_domains([
+        domain
+        for svc in state.dpi_services
+        if svc.get("enabled")
+        for domain in svc.get("domains", [])
+    ])
     enabled_names = [s["display"] for s in state.dpi_services if s.get("enabled")]
     alert(
         f"⚡ *DPI bypass включён*\n"
@@ -3781,7 +3819,7 @@ async def post_dpi_service_add(request: Request, req: DpiServiceRequest,
     })
     state.save()
     if state.dpi_enabled:
-        asyncio.create_task(_regen_dpi_dnsmasq())
+        asyncio.create_task(_dpi_sync_active_domains())
     return {"status": "added", "name": name, "domains": domains}
 
 
@@ -3795,7 +3833,7 @@ async def post_dpi_service_remove(request: Request, req: DpiServiceRequest,
         raise HTTPException(404, f"Сервис '{req.name}' не найден")
     state.save()
     if state.dpi_enabled:
-        asyncio.create_task(_regen_dpi_dnsmasq())
+        asyncio.create_task(_dpi_sync_active_domains())
     return {"status": "removed", "name": req.name}
 
 
@@ -3808,7 +3846,7 @@ async def post_dpi_service_toggle(request: Request, req: DpiToggleRequest,
             svc["enabled"] = req.enabled
             state.save()
             if state.dpi_enabled:
-                asyncio.create_task(_regen_dpi_dnsmasq())
+                asyncio.create_task(_dpi_sync_active_domains())
             return {"status": "toggled", "name": req.name, "enabled": req.enabled}
     raise HTTPException(404, f"Сервис '{req.name}' не найден")
 
