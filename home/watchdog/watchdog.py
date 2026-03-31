@@ -587,6 +587,11 @@ class WatchdogState:
         self.watchdog_runtime_drift_detail: str = ""
         self.watchdog_runtime_drift_since: float = 0.0
         self.watchdog_selfheal_last_ts: float = 0.0
+        self.server_repo_drift: bool = False
+        self.server_repo_drift_detail: str = ""
+        self.server_repo_drift_since: float = 0.0
+        self.server_repo_last_fetch_ts: float = 0.0
+        self.server_repo_alert_last_ts: float = 0.0
         self.peer_reconcile_last_ts: float = 0.0
 
     @property
@@ -632,6 +637,11 @@ class WatchdogState:
             "watchdog_runtime_drift_detail": self.watchdog_runtime_drift_detail,
             "watchdog_runtime_drift_since": self.watchdog_runtime_drift_since,
             "watchdog_selfheal_last_ts": self.watchdog_selfheal_last_ts,
+            "server_repo_drift": self.server_repo_drift,
+            "server_repo_drift_detail": self.server_repo_drift_detail,
+            "server_repo_drift_since": self.server_repo_drift_since,
+            "server_repo_last_fetch_ts": self.server_repo_last_fetch_ts,
+            "server_repo_alert_last_ts": self.server_repo_alert_last_ts,
             "peer_reconcile_last_ts": self.peer_reconcile_last_ts,
         }
 
@@ -669,6 +679,11 @@ class WatchdogState:
                 self.watchdog_runtime_drift_detail = data.get("watchdog_runtime_drift_detail", "")
                 self.watchdog_runtime_drift_since = float(data.get("watchdog_runtime_drift_since", 0.0) or 0.0)
                 self.watchdog_selfheal_last_ts = float(data.get("watchdog_selfheal_last_ts", 0.0) or 0.0)
+                self.server_repo_drift = data.get("server_repo_drift", False)
+                self.server_repo_drift_detail = data.get("server_repo_drift_detail", "")
+                self.server_repo_drift_since = float(data.get("server_repo_drift_since", 0.0) or 0.0)
+                self.server_repo_last_fetch_ts = float(data.get("server_repo_last_fetch_ts", 0.0) or 0.0)
+                self.server_repo_alert_last_ts = float(data.get("server_repo_alert_last_ts", 0.0) or 0.0)
                 self.peer_reconcile_last_ts = float(data.get("peer_reconcile_last_ts", 0.0) or 0.0)
                 if self.active_stack not in STACK_ORDER:
                     self.active_stack = DEFAULT_STACK
@@ -944,6 +959,10 @@ WATCHDOG_SOURCE_FILE = Path("/opt/vpn/home/watchdog/watchdog.py")
 WATCHDOG_RUNTIME_FILE = Path("/opt/vpn/watchdog/watchdog.py")
 WATCHDOG_DRIFT_CONFIRM_SECONDS = int(os.getenv("WATCHDOG_DRIFT_CONFIRM_SECONDS", "300"))
 WATCHDOG_SELFHEAL_COOLDOWN_SECONDS = int(os.getenv("WATCHDOG_SELFHEAL_COOLDOWN_SECONDS", "1800"))
+SERVER_REPO_DIR = Path("/opt/vpn")
+REPO_SYNC_CONFIRM_SECONDS = int(os.getenv("REPO_SYNC_CONFIRM_SECONDS", "600"))
+REPO_SYNC_FETCH_COOLDOWN_SECONDS = int(os.getenv("REPO_SYNC_FETCH_COOLDOWN_SECONDS", "1800"))
+REPO_SYNC_ALERT_COOLDOWN_SECONDS = int(os.getenv("REPO_SYNC_ALERT_COOLDOWN_SECONDS", "3600"))
 
 
 def _sha256_file(path: Path) -> str:
@@ -963,6 +982,11 @@ def _sha256_paths(paths: list[Path]) -> str:
             continue
         digest.update(path.read_bytes())
     return digest.hexdigest()
+
+
+def _sha256_bytes(data: bytes) -> str:
+    import hashlib as _hashlib
+    return _hashlib.sha256(data).hexdigest()
 
 
 def _dnsmasq_config_paths() -> list[Path]:
@@ -1335,6 +1359,119 @@ async def check_watchdog_runtime_sync() -> None:
     if now - state.watchdog_selfheal_last_ts < WATCHDOG_SELFHEAL_COOLDOWN_SECONDS:
         return
     await schedule_watchdog_runtime_selfheal()
+
+
+async def _git_show_hash(repo_dir: Path, ref: str, rel_path: str) -> tuple[str, str]:
+    rc, out, err = await run_cmd(
+        ["git", "-C", str(repo_dir), "show", f"{ref}:{rel_path}"],
+        timeout=30,
+    )
+    if rc != 0:
+        return "", (err or out or f"git show rc={rc}").strip()[:300]
+    return _sha256_bytes(out.encode()), ""
+
+
+async def check_server_repo_sync() -> None:
+    """Проверить, что server source tree не отстал от origin/master.
+
+    Ничего не чинит автоматически: только fetch + detect + alert.
+    """
+    if not SERVER_REPO_DIR.exists():
+        state.server_repo_drift = False
+        state.server_repo_drift_since = 0.0
+        state.server_repo_drift_detail = "repo missing"
+        return
+
+    now = time.time()
+    if now - state.server_repo_last_fetch_ts >= REPO_SYNC_FETCH_COOLDOWN_SECONDS:
+        rc_f, out_f, err_f = await run_cmd(
+            ["git", "-C", str(SERVER_REPO_DIR), "fetch", "origin", "master"],
+            timeout=120,
+        )
+        state.server_repo_last_fetch_ts = now
+        if rc_f != 0:
+            detail = (err_f or out_f or f"git fetch rc={rc_f}").strip()[:300]
+            if not state.server_repo_drift:
+                state.server_repo_drift_since = now
+            state.server_repo_drift = True
+            state.server_repo_drift_detail = f"git fetch failed: {detail}"
+            return
+
+    critical_files = {
+        "watchdog": ("home/watchdog/watchdog.py", WATCHDOG_SOURCE_FILE),
+        "compose": ("home/docker-compose.yml", COMPOSE_SOURCE_FILE),
+    }
+    for rel_path in BOT_RUNTIME_FILES:
+        critical_files[f"telegram-bot:{rel_path}"] = (
+            f"home/telegram-bot/{rel_path}",
+            BOT_SOURCE_DIR / rel_path,
+        )
+
+    repo_rel_paths = [item[0] for item in critical_files.values()]
+    rc_dirty, out_dirty, err_dirty = await run_cmd(
+        ["git", "-C", str(SERVER_REPO_DIR), "status", "--porcelain", "--", *repo_rel_paths],
+        timeout=30,
+    )
+    dirty_entries: list[str] = []
+    if rc_dirty == 0:
+        for line in out_dirty.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            dirty_entries.append(line[3:] if len(line) > 3 else line)
+    else:
+        detail = (err_dirty or out_dirty or f"git status rc={rc_dirty}").strip()[:300]
+        if not state.server_repo_drift:
+            state.server_repo_drift_since = now
+        state.server_repo_drift = True
+        state.server_repo_drift_detail = f"git status failed: {detail}"
+        return
+
+    stale_labels: list[str] = []
+    show_errors: list[str] = []
+    for label, (repo_rel, local_path) in critical_files.items():
+        local_hash = _sha256_file(local_path)
+        origin_hash, detail = await _git_show_hash(SERVER_REPO_DIR, "origin/master", repo_rel)
+        if detail:
+            show_errors.append(f"{label}: {detail}")
+            continue
+        if local_hash != origin_hash:
+            stale_labels.append(label)
+
+    problems: list[str] = []
+    if dirty_entries:
+        problems.append("dirty worktree: " + ", ".join(dirty_entries[:6]))
+    if stale_labels:
+        problems.append("stale vs origin/master: " + ", ".join(stale_labels[:6]))
+    if show_errors:
+        problems.append("git show: " + "; ".join(show_errors[:3]))
+
+    if not problems:
+        if state.server_repo_drift:
+            logger.info("server source tree снова синхронизирован с origin/master")
+        state.server_repo_drift = False
+        state.server_repo_drift_since = 0.0
+        state.server_repo_drift_detail = ""
+        return
+
+    if not state.server_repo_drift:
+        state.server_repo_drift_since = now
+    state.server_repo_drift = True
+    state.server_repo_drift_detail = " | ".join(problems)[:300]
+
+    if now - state.server_repo_drift_since < REPO_SYNC_CONFIRM_SECONDS:
+        return
+    if now - state.server_repo_alert_last_ts < REPO_SYNC_ALERT_COOLDOWN_SECONDS:
+        return
+
+    state.server_repo_alert_last_ts = now
+    logger.warning("server repo drift detected: %s", state.server_repo_drift_detail)
+    alert(
+        "⚠️ *server repo drift detected*\n"
+        "Рабочий `/opt/vpn` отстаёт от `origin/master` или содержит локальные изменения.\n"
+        f"Детали: `{state.server_repo_drift_detail}`\n"
+        "Авто-pull отключён: нужен controlled deploy."
+    )
 
 
 async def reconcile_wg_runtime_from_db() -> None:
@@ -2063,6 +2200,16 @@ async def _health_quick_checks() -> list[CheckResult]:
     else:
         results.append(CheckResult("watchdog_runtime_sync", "ok", weight=3))
 
+    if state.server_repo_drift:
+        age = int(max(0, now - state.server_repo_drift_since)) if state.server_repo_drift_since > 0 else 0
+        status = "fail" if age >= REPO_SYNC_CONFIRM_SECONDS else "warn"
+        detail = state.server_repo_drift_detail or "repo drift"
+        if age > 0:
+            detail = f"{detail} ({age}s)"
+        results.append(CheckResult("server_repo_sync", status, detail, weight=3))
+    else:
+        results.append(CheckResult("server_repo_sync", "ok", weight=3))
+
     # 9. wg1
     if state.wg1_up:
         results.append(CheckResult("wg1_active", "ok", weight=3))
@@ -2632,6 +2779,12 @@ async def _startup_reconcile() -> None:
         failures.append(f"watchdog-runtime: {exc}")
 
     try:
+        await check_server_repo_sync()
+        actions.append("server-repo-sync")
+    except Exception as exc:
+        failures.append(f"server-repo-sync: {exc}")
+
+    try:
         await reconcile_wg_runtime_from_db()
         actions.append("wg-peer-reconcile")
     except Exception as exc:
@@ -3174,6 +3327,7 @@ async def monitoring_loop() -> None:
     await check_telegram_bot_runtime_sync()
     await check_compose_runtime_sync()
     await check_watchdog_runtime_sync()
+    await check_server_repo_sync()
     state.last_monitoring_tick = time.time()
     await health_checker.run_quick()
 
@@ -3227,6 +3381,7 @@ async def monitoring_loop() -> None:
                 await check_telegram_bot_runtime_sync()
                 await check_compose_runtime_sync()
                 await check_watchdog_runtime_sync()
+                await check_server_repo_sync()
                 await check_dnsmasq_config_sync()
                 await reconcile_wg_runtime_from_db()
                 await _ensure_dpi_dataplane_active("monitoring-10min")
