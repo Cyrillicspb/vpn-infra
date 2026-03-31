@@ -210,7 +210,7 @@ class OptionsScreen(WizardScreen):
 
                 # ── DDNS (DuckDNS) ────────────────────────────────────────
                 with Horizontal(classes="opt-row"):
-                    yield Label("DDNS (DuckDNS):", classes="opt-label")
+                    yield Label("DDNS (home ingress):", classes="opt-label")
                     yield Button(
                         "Да" if ddns_on else "Нет",
                         id="btn-ddns",
@@ -218,7 +218,7 @@ class OptionsScreen(WizardScreen):
                         classes="toggle-btn selected" if ddns_on else "toggle-btn",
                     )
                 yield Static(
-                    "Нужен при динамическом IP роутера",
+                    "Нужен для клиентского Endpoint при динамическом IP роутера",
                     classes="opt-hint",
                 )
                 with Vertical(

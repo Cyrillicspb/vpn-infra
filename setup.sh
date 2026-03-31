@@ -517,7 +517,7 @@ phase0() {
         ask USE_DDNS "Настроить DDNS? (y/N)"
         if [[ "${USE_DDNS,,}" == "y" ]]; then
             ask DDNS_PROVIDER "Провайдер DDNS (duckdns/noip/cloudflare)"
-            ask DDNS_DOMAIN "DDNS домен (например: myhome.duckdns.org)"
+            ask DDNS_DOMAIN "DDNS домен для клиентского Endpoint / home ingress (например: myhome.duckdns.org)"
             ask DDNS_TOKEN "DDNS токен (для DuckDNS: UUID с сайта duckdns.org, напр. a1b2c3d4-...)" yes
             WG_HOST="${DDNS_DOMAIN}"
         else

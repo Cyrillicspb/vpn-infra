@@ -1098,13 +1098,33 @@ async def check_dnsmasq() -> None:
 # ---------------------------------------------------------------------------
 # Мониторинг: внешний IP + DDNS
 # ---------------------------------------------------------------------------
+async def _detect_public_ip(*, direct: bool = False) -> str:
+    """Определить внешний IPv4.
+
+    В gateway mode plain curl может выйти через активный VPS-стек и вернуть
+    egress IP VPS. Для клиентского ingress и DDNS нужен реальный WAN IP роутера,
+    поэтому прямой режим принудительно идёт через LAN/WAN интерфейс.
+    """
+    urls = (
+        "https://api.ipify.org",
+        "https://ifconfig.me",
+        "https://ipv4.icanhazip.com",
+    )
+    for url in urls:
+        cmd = ["curl", "-4", "-fsS", "--max-time", "10"]
+        if direct and NET_INTERFACE:
+            cmd += ["--interface", NET_INTERFACE]
+        cmd.append(url)
+        rc, out, _ = await run_cmd(cmd, timeout=15)
+        ip = out.strip()
+        if rc == 0 and ip:
+            return ip
+    return ""
+
+
 async def check_external_ip() -> None:
-    try:
-        async with aiohttp.ClientSession() as s:
-            async with s.get("https://api.ipify.org", timeout=aiohttp.ClientTimeout(total=10)) as r:
-                new_ip = (await r.text()).strip()
-    except Exception:
-        return
+    direct = os.getenv("SERVER_MODE") == "gateway"
+    new_ip = await _detect_public_ip(direct=direct)
 
     if not new_ip or new_ip == state.external_ip:
         return

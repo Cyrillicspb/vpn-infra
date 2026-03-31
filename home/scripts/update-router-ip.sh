@@ -32,8 +32,8 @@ FORCE="${1:-}"
 # ── Получить текущий внешний IP ───────────────────────────────────────────────
 
 CURRENT_IP=""
-for endpoint in "https://icanhazip.com" "https://api4.my-ip.io/ip" "https://ipv4.icanhazip.com"; do
-    CURRENT_IP=$(curl -sf --max-time 5 "$endpoint" 2>/dev/null | tr -d '[:space:]' || true)
+for endpoint in "https://api.ipify.org" "https://ifconfig.me" "https://ipv4.icanhazip.com"; do
+    CURRENT_IP=$(curl -4 -sf --max-time 8 --interface "${NET_INTERFACE:-}" "$endpoint" 2>/dev/null | tr -d '[:space:]' || true)
     [[ -n "$CURRENT_IP" ]] && break
 done
 
