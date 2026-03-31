@@ -1,15 +1,15 @@
 """
 handlers/admin.py — Все команды администратора
 
-Команды (из CLAUDE.md):
+Команды:
   /status /tunnel /ip /docker /speed /logs /graph
   /switch /restart /upgrade /deploy /rollback
   /invite /clients /broadcast /requests
   /vpn add|remove   /direct add|remove   /list vpn|direct   /check
-  /routes update    /vps list|add|remove  /migrate-vps
+  /routes update    /vps list|add|remove  /migrate_vps
   /dpi [on|off|add|remove|toggle]
   /client disable|enable|kick|limit
-  /rotate-keys  /renew-cert  /renew-ca
+  /rotate_keys  /renew_cert  /renew_ca
   /diagnose     /reboot      /menu
 """
 from __future__ import annotations
@@ -1371,6 +1371,7 @@ async def cmd_vps(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 # /migrate-vps <IP> [--from-backup]
 # ---------------------------------------------------------------------------
+@router.message(Command("migrate-vps"), StateFilter("*"))
 @router.message(Command("migrate_vps"), StateFilter("*"))
 async def cmd_migrate_vps(message: Message, state: FSMContext, **kw):
     if not await _is_admin(message, db=kw.get("db")):
@@ -1414,23 +1415,25 @@ async def cb_migrate_cancel(cb: CallbackQuery, state: FSMContext, **kw):
 
 
 # ---------------------------------------------------------------------------
-# /rotate-keys
+# /rotate_keys
 # ---------------------------------------------------------------------------
+@router.message(Command("rotate-keys"), StateFilter("*"))
 @router.message(Command("rotate_keys"), StateFilter("*"))
 async def cmd_rotate_keys(message: Message, state: FSMContext, **kw):
     if not await _is_admin(message, db=kw.get("db")):
         return
     await state.clear()
     await message.answer(
-        "⚠️ Ротация ключей сбросит все клиентские конфиги.\n"
-        "Функция реализуется через deploy.sh --rotate-keys\n"
-        "Запустите: `/deploy`"
+        "⚠️ Ротация ключей из бота пока не реализована.\n"
+        "Нужен отдельный watchdog API/path для управляемой ротации и рассылки конфигов.\n"
+        "Сейчас не запускается, чтобы не делать частичное или опасное действие."
     )
 
 
 # ---------------------------------------------------------------------------
-# /renew-cert / /renew-ca
+# /renew_cert / /renew_ca
 # ---------------------------------------------------------------------------
+@router.message(Command("renew-cert"), StateFilter("*"))
 @router.message(Command("renew_cert"), StateFilter("*"))
 async def cmd_renew_cert(message: Message, state: FSMContext, **kw):
     if not await _is_admin(message, db=kw.get("db")):
@@ -1448,6 +1451,7 @@ async def cmd_renew_cert(message: Message, state: FSMContext, **kw):
     )
 
 
+@router.message(Command("renew-ca"), StateFilter("*"))
 @router.message(Command("renew_ca"), StateFilter("*"))
 async def cmd_renew_ca(message: Message, state: FSMContext, **kw):
     if not await _is_admin(message, db=kw.get("db")):

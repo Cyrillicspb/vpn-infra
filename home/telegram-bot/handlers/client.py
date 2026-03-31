@@ -963,7 +963,8 @@ async def cmd_help(message: Message, state: FSMContext, **kw):
         "/exclude add|remove|list <подсеть> — исключения\n"
         "/report <текст> — сообщить о проблеме\n"
         "/status — статус VPN\n"
-        "/help — эта справка",
+        "/help — эта справка\n"
+        "/menu — кнопочное меню",
         reply_markup=client_main_menu(),
     )
 

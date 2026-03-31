@@ -89,6 +89,9 @@ def admin_tunnel_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="⚡ DPI bypass",      callback_data="adm:dpi"),
         ],
         [
+            InlineKeyboardButton(text="🌍 Внешний IP",      callback_data="adm:ip"),
+        ],
+        [
             InlineKeyboardButton(text="◀️ Назад",           callback_data="adm:menu"),
         ],
     ])
@@ -99,11 +102,12 @@ def admin_tunnel_menu() -> InlineKeyboardMarkup:
 def admin_monitor_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
+            InlineKeyboardButton(text="📟 Status",         callback_data="adm:status"),
             InlineKeyboardButton(text="❤️ Health",         callback_data="adm:health"),
             InlineKeyboardButton(text="🐳 Docker",          callback_data="adm:docker"),
         ],
+        [InlineKeyboardButton(text="📊 Трафик клиентов", callback_data="adm:stats")],
         [
-            InlineKeyboardButton(text="📊 Трафик клиентов", callback_data="adm:stats"),
             InlineKeyboardButton(text="⚡ Спидтест",        callback_data="adm:speedtest"),
             InlineKeyboardButton(text="📉 Графики",         callback_data="adm:graph_menu"),
         ],
@@ -149,7 +153,6 @@ def admin_system_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📋 Логи",            callback_data="adm:logs_system"),
         ],
         [
-            InlineKeyboardButton(text="🔑 Ротация ключей",  callback_data="adm:rotate_keys"),
             InlineKeyboardButton(text="📜 Сертификат mTLS", callback_data="adm:renew_cert"),
         ],
         [
@@ -337,6 +340,9 @@ def admin_clients_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🩺 Диагностика",          callback_data="adm:diagnose_menu"),
         ],
         [
+            InlineKeyboardButton(text="📣 Рассылка",            callback_data="adm:broadcast"),
+        ],
+        [
             InlineKeyboardButton(text="👥 Администраторы",       callback_data="adm:admin_list"),
         ],
         [
@@ -468,11 +474,19 @@ def client_main_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="➕ Добавить устройство",  callback_data="cl:adddevice"),
         ],
         [
+            InlineKeyboardButton(text="📥 Получить конфиг",     callback_data="cl:myconfig"),
+            InlineKeyboardButton(text="🔄 Обновить конфиги",    callback_data="cl:update"),
+        ],
+        [
             InlineKeyboardButton(text="🌐 Сайты через VPN",     callback_data="cl:sites"),
         ],
         [
             InlineKeyboardButton(text="🔍 Не работает сайт?",   callback_data="cl:checksite"),
             InlineKeyboardButton(text="🚫 Исключения",           callback_data="cl:excludes"),
+        ],
+        [
+            InlineKeyboardButton(text="📶 Статус VPN",          callback_data="cl:status"),
+            InlineKeyboardButton(text="ℹ️ Помощь",              callback_data="cl:help"),
         ],
         [
             InlineKeyboardButton(text="🆘 Сообщить о проблеме", callback_data="cl:report"),
