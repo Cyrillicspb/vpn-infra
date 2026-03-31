@@ -2991,6 +2991,12 @@ async def monitoring_loop() -> None:
     # значения по умолчанию после рестарта watchdog.
     await check_wg_interfaces()
     await probe_vps_reachability()
+    await check_containers()
+    await check_telegram_bot_runtime_sync()
+    await check_compose_runtime_sync()
+    await check_watchdog_runtime_sync()
+    state.last_monitoring_tick = time.time()
+    await health_checker.run_quick()
 
     while True:
         try:
