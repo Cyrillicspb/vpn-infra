@@ -300,6 +300,10 @@ else
     warn "watchdog API" "WATCHDOG_API_TOKEN не задан"
 fi
 
+check "watchdog KillMode != process" \
+    "! systemctl cat watchdog 2>/dev/null | grep -q '^KillMode=process$'" \
+    "watchdog stop/restart будет оставлять tun2socks/nfqws как left-over процессы"
+
 ACTIVE_STACK=""
 if [[ -n "$WATCHDOG_STATUS_JSON" ]]; then
     ACTIVE_STACK=$(echo "$WATCHDOG_STATUS_JSON" | python3 -c \
