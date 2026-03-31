@@ -108,13 +108,21 @@ DPI_FWMARK       = "0x2"
 DPI_TABLE        = 201
 DPI_DNSMASQ_CONF = Path("/etc/dnsmasq.d/aaa-dpi.conf")  # aaa < vpn = загружается первым, nftset dpi_direct выигрывает
 DPI_VPS_DNS      = os.getenv("VPS_TUNNEL_IP", "10.177.2.2")
+DPI_PRESETS_FILE = Path("/etc/vpn/dpi-presets.json")
+DPI_PRESETS_FALLBACK = Path("/opt/vpn/home/dpi/presets-default.json")
 
-DPI_SERVICE_PRESETS: dict[str, dict] = {
+DPI_SERVICE_PRESETS_DEFAULT: dict[str, dict] = {
     "youtube": {
         "display": "YouTube",
         "domains": [
-            "youtube.com", "googlevideo.com", "ytimg.com",
-            "yt3.ggpht.com", "youtu.be",
+            "youtube.com",
+            "googlevideo.com",
+            "ytimg.com",
+            "ggpht.com",
+            "youtu.be",
+            "youtube-nocookie.com",
+            "youtube.googleapis.com",
+            "youtubei.googleapis.com",
         ],
     },
     "instagram": {
@@ -153,6 +161,63 @@ DPI_SERVICE_PRESETS: dict[str, dict] = {
     },
 }
 
+DPI_SERVICE_PRESETS: dict[str, dict] = {}
+
+
+def _normalize_domain_name(value: str) -> str:
+    domain = str(value or "").strip().lower().lstrip("*.")
+    return domain.strip(".")
+
+
+def _is_domain_like(value: str) -> bool:
+    value = _normalize_domain_name(value)
+    if not value or "." not in value or value.startswith("@"):
+        return False
+    return re.match(r"^[a-z0-9.-]+\.[a-z0-9-]+$", value) is not None
+
+
+def _dedupe_domain_suffixes(domains: list[str]) -> list[str]:
+    normalized = sorted({_normalize_domain_name(d) for d in domains if _is_domain_like(d)})
+    result: list[str] = []
+    for domain in normalized:
+        if any(domain == parent or domain.endswith(f".{parent}") for parent in result):
+            continue
+        result.append(domain)
+    return result
+
+
+def _canonicalize_preset_map(raw: dict[str, Any]) -> dict[str, dict]:
+    presets: dict[str, dict] = {}
+    for name, spec in raw.items():
+        if not isinstance(spec, dict):
+            continue
+        display = str(spec.get("display") or name)
+        domains = _dedupe_domain_suffixes(list(spec.get("domains") or []))
+        if not domains:
+            continue
+        presets[str(name)] = {"display": display, "domains": domains}
+    return presets
+
+
+def _load_dpi_presets() -> dict[str, dict]:
+    for path in (DPI_PRESETS_FILE, DPI_PRESETS_FALLBACK):
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                presets = _canonicalize_preset_map(data)
+                if presets:
+                    logger.info("DPI presets loaded from %s (%s services)", path, len(presets))
+                    return presets
+        except Exception as exc:
+            logger.warning("Failed to load DPI presets from %s: %s", path, exc)
+    return _canonicalize_preset_map(DPI_SERVICE_PRESETS_DEFAULT)
+
+
+def _reload_dpi_presets() -> dict[str, dict]:
+    global DPI_SERVICE_PRESETS
+    DPI_SERVICE_PRESETS = _load_dpi_presets()
+    return DPI_SERVICE_PRESETS
+
 # ---------------------------------------------------------------------------
 # Логирование
 # ---------------------------------------------------------------------------
@@ -165,6 +230,7 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("watchdog")
+_reload_dpi_presets()
 
 SYSTEMD_NOTIFY_ENV_KEYS = ("NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID")
 
@@ -2612,6 +2678,57 @@ async def _regen_dpi_dnsmasq() -> None:
     logger.info(f"[DPI] dpi-domains.conf обновлён ({len(enabled)} сервисов), dnsmasq SIGHUP rc={rc}")
 
 
+_DPI_ROUTES_REFRESH_LOCK = asyncio.Lock()
+
+
+def _sync_preset_backed_dpi_services() -> bool:
+    """Обновить активные services из актуальных preset-ов."""
+    changed = False
+    for svc in state.dpi_services:
+        preset_name = str(svc.get("preset") or svc.get("name") or "")
+        if not preset_name or svc.get("source") == "locked":
+            continue
+        preset = DPI_SERVICE_PRESETS.get(preset_name)
+        if not preset:
+            continue
+        new_display = preset["display"]
+        new_domains = list(preset["domains"])
+        if (
+            svc.get("display") != new_display
+            or list(svc.get("domains") or []) != new_domains
+            or svc.get("source") != "preset"
+            or svc.get("preset") != preset_name
+        ):
+            svc["display"] = new_display
+            svc["domains"] = new_domains
+            svc["source"] = "preset"
+            svc["preset"] = preset_name
+            changed = True
+    if changed:
+        state.save()
+    return changed
+
+
+async def _refresh_vpn_domains_for_dpi(reason: str) -> None:
+    """Пересобрать vpn-domains.conf, чтобы DPI-домены ушли из blocked_dynamic."""
+    async with _DPI_ROUTES_REFRESH_LOCK:
+        logger.info("[DPI] refresh vpn-domains via update-routes.py (%s)", reason)
+        rc, out, err = await run_cmd(
+            [sys.executable, "/opt/vpn/scripts/update-routes.py", "--force"],
+            timeout=900,
+        )
+        if rc != 0:
+            detail = (err or out or f"rc={rc}").strip()[:300]
+            logger.error("[DPI] update-routes failed after %s: %s", reason, detail)
+            alert(
+                f"🚨 *DPI route refresh failed*\n"
+                f"Причина: `{reason}`\n"
+                f"Детали: `{detail}`"
+            )
+            return
+        logger.info("[DPI] vpn-domains refreshed after %s", reason)
+
+
 async def _dpi_warmup_domains(domains: list[str]) -> None:
     """Прогреть dnsmasq по активным DPI-доменам, чтобы nft set dpi_direct наполнился сразу."""
     unique_domains: list[str] = []
@@ -2642,6 +2759,11 @@ async def _dpi_sync_active_domains() -> None:
         if svc.get("enabled")
         for domain in svc.get("domains", [])
     ])
+
+
+async def _apply_dpi_service_changes(reason: str) -> None:
+    await _dpi_sync_active_domains()
+    await _refresh_vpn_domains_for_dpi(reason)
 
 
 async def _dpi_apply_routing() -> None:
@@ -2684,13 +2806,7 @@ async def _dpi_enable_impl() -> None:
         if not (await zp.test(timeout=5))[0]:
             await zp.start()
         await zp.activate()   # добавить NFQUEUE-правила в nftables (inet zapret_main)
-    await _regen_dpi_dnsmasq()
-    await _dpi_warmup_domains([
-        domain
-        for svc in state.dpi_services
-        if svc.get("enabled")
-        for domain in svc.get("domains", [])
-    ])
+    await _apply_dpi_service_changes("dpi-enable")
     enabled_names = [s["display"] for s in state.dpi_services if s.get("enabled")]
     alert(
         f"⚡ *DPI bypass включён*\n"
@@ -2840,6 +2956,7 @@ async def _dpi_disable_impl() -> None:
     state.save()
     await _dpi_remove_routing()
     await _regen_dpi_dnsmasq()
+    await _refresh_vpn_domains_for_dpi("dpi-disable")
     alert("⚡ *DPI bypass выключен*\nВесь трафик идёт через VPN-туннель.")
     logger.info("[DPI] выключен")
 
@@ -4097,12 +4214,16 @@ async def post_dpi_disable(request: Request, _: bool = Depends(_auth)):
 @limiter.limit("10/second")
 async def post_dpi_service_add(request: Request, req: DpiServiceRequest,
                                _: bool = Depends(_auth)):
+    source = "locked"
+    preset_name = ""
     if req.preset:
         if req.preset not in DPI_SERVICE_PRESETS:
             raise HTTPException(400, f"Неизвестный пресет: {req.preset}. "
                                 f"Доступны: {list(DPI_SERVICE_PRESETS)}")
         preset = DPI_SERVICE_PRESETS[req.preset]
         name, display, domains = req.preset, preset["display"], preset["domains"]
+        source = "preset"
+        preset_name = req.preset
     else:
         if not req.name or not req.domains:
             raise HTTPException(400, "Требуется name + domains, или preset")
@@ -4116,10 +4237,12 @@ async def post_dpi_service_add(request: Request, req: DpiServiceRequest,
     state.dpi_services.append({
         "name": name, "display": display,
         "domains": domains, "enabled": True,
+        "source": source,
+        "preset": preset_name,
     })
     state.save()
     if state.dpi_enabled:
-        asyncio.create_task(_dpi_sync_active_domains())
+        asyncio.create_task(_apply_dpi_service_changes(f"dpi-service-add:{name}"))
     return {"status": "added", "name": name, "domains": domains}
 
 
@@ -4133,7 +4256,7 @@ async def post_dpi_service_remove(request: Request, req: DpiServiceRequest,
         raise HTTPException(404, f"Сервис '{req.name}' не найден")
     state.save()
     if state.dpi_enabled:
-        asyncio.create_task(_dpi_sync_active_domains())
+        asyncio.create_task(_apply_dpi_service_changes(f"dpi-service-remove:{req.name}"))
     return {"status": "removed", "name": req.name}
 
 
@@ -4146,9 +4269,23 @@ async def post_dpi_service_toggle(request: Request, req: DpiToggleRequest,
             svc["enabled"] = req.enabled
             state.save()
             if state.dpi_enabled:
-                asyncio.create_task(_dpi_sync_active_domains())
+                asyncio.create_task(_apply_dpi_service_changes(f"dpi-service-toggle:{req.name}"))
             return {"status": "toggled", "name": req.name, "enabled": req.enabled}
     raise HTTPException(404, f"Сервис '{req.name}' не найден")
+
+
+@app.post("/dpi/presets/reload")
+@limiter.limit("5/minute")
+async def post_dpi_presets_reload(request: Request, _: bool = Depends(_auth)):
+    presets = _reload_dpi_presets()
+    changed = _sync_preset_backed_dpi_services()
+    if state.dpi_enabled:
+        asyncio.create_task(_apply_dpi_service_changes("dpi-presets-reload"))
+    return {
+        "status": "reloaded",
+        "preset_count": len(presets),
+        "services_updated": changed,
+    }
 
 
 @app.post("/graph")

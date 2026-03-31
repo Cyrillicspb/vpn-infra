@@ -934,6 +934,7 @@ else
     if [[ -n "$SYSTEMD_SRC" ]]; then
         for unit in vpn-routes.service vpn-sets-restore.service hysteria2.service \
                     watchdog.service vpn-postboot.service \
+                    vpn-dpi-presets-update.service vpn-dpi-presets-update.timer \
                     "tun2socks@.service" autossh-vpn.service; do
             [[ -f "${SYSTEMD_SRC}/${unit}" ]] && \
                 cp "${SYSTEMD_SRC}/${unit}" "/etc/systemd/system/${unit}"
@@ -1064,7 +1065,7 @@ EOF
     chmod 644 /etc/cron.d/vpn-watchdog-failsafe
 
     systemctl daemon-reload
-    systemctl enable vpn-routes vpn-sets-restore 2>/dev/null || true
+    systemctl enable vpn-routes vpn-sets-restore vpn-dpi-presets-update.timer 2>/dev/null || true
     systemctl start vpn-routes 2>/dev/null || true
 
     log_ok "Policy routing и systemd-юниты настроены"
@@ -1359,6 +1360,15 @@ EOF
         log_ok "Базы маршрутов загружены ($(wc -l < /etc/vpn-routes/combined.cidr) записей)"
     else
         log_warn "Загрузка баз маршрутов завершилась с ошибкой — проверьте /var/log/vpn-routes.log"
+    fi
+
+    if [[ -f /opt/vpn/scripts/update-dpi-presets.py ]]; then
+        log_info "Первичная загрузка DPI preset-ов..."
+        if python3 /opt/vpn/scripts/update-dpi-presets.py --reload-watchdog >> /var/log/vpn-routes.log 2>&1; then
+            log_ok "DPI preset-ы обновлены"
+        else
+            log_warn "Загрузка DPI preset-ов завершилась с ошибкой — проверьте /var/log/vpn-routes.log"
+        fi
     fi
 
     # Прогрев DNS-кэша (заполнить blocked_dynamic через dnsmasq)
