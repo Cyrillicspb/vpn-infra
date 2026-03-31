@@ -23,3 +23,6 @@ Follow the existing git history: concise imperative subjects such as `fix: resta
 
 ## Security & Operations Notes
 Never commit real secrets. Assume production is active. Preserve `.env` ownership and permissions, avoid ad-hoc server edits, and prefer safe reruns by clearing the relevant `.setup-state` marker and re-executing the script.
+
+## Local Operator Notes
+Before any SSH/server diagnostics or live changes, check the local-only file `.codex-local/ssh-access.md` if it exists. This file is excluded from git and may contain current hostnames, users, passwords, jump-host notes, and other session-critical operational access details.
