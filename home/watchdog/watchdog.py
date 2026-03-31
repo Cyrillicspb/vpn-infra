@@ -431,6 +431,106 @@ def alert(text: str, chat_id: str = "") -> None:
             tg.enqueue(msg, cid)
 
 
+PLANNED_DISRUPTION_AUTO_RECOVER_MAX_SECONDS = 600
+
+
+def _format_disruption_scope(scope: str | list[str] | tuple[str, ...]) -> str:
+    if isinstance(scope, str):
+        items = [scope]
+    else:
+        items = [str(item).strip() for item in scope if str(item).strip()]
+    return ", ".join(items) if items else "не указано"
+
+
+def begin_planned_disruption(
+    key: str,
+    title: str,
+    scope: str | list[str] | tuple[str, ...],
+    expected_seconds: int,
+    reason: str = "",
+    *,
+    auto_recover_on_start: bool = False,
+) -> None:
+    state.planned_disruptions[key] = {
+        "title": title,
+        "scope": _format_disruption_scope(scope),
+        "reason": reason,
+        "expected_seconds": max(1, int(expected_seconds)),
+        "started_at": time.time(),
+        "auto_recover_on_start": bool(auto_recover_on_start),
+    }
+    state.save()
+    lines = [
+        "⚠️ *Плановое переключение / self-heal*",
+        f"Что: *{title}*",
+        f"Затронет: `{state.planned_disruptions[key]['scope']}`",
+        f"Ожидаемая длительность: `~{expected_seconds}s`",
+    ]
+    if reason:
+        lines.append(f"Причина: `{reason}`")
+    alert("\n".join(lines))
+
+
+def complete_planned_disruption(key: str, success: bool, detail: str = "") -> None:
+    item = state.planned_disruptions.pop(key, None)
+    state.save()
+    if not item:
+        return
+    duration = int(max(0, time.time() - float(item.get("started_at", time.time()))))
+    title = str(item.get("title") or key)
+    scope = str(item.get("scope") or "не указано")
+    if success:
+        lines = [
+            "✅ *Работоспособность восстановлена*",
+            f"Что: *{title}*",
+            f"Контур: `{scope}`",
+            f"Длительность: `{duration}s`",
+        ]
+        if detail:
+            lines.append(f"Проверка: `{detail[:220]}`")
+        alert("\n".join(lines))
+        return
+    lines = [
+        "🚨 *Плановое переключение завершилось с ошибкой*",
+        f"Что: *{title}*",
+        f"Контур: `{scope}`",
+        f"Через: `{duration}s`",
+    ]
+    if detail:
+        lines.append(f"Детали: `{detail[:220]}`")
+    alert("\n".join(lines))
+
+
+def recover_planned_disruptions_on_startup() -> None:
+    if not state.planned_disruptions:
+        return
+    now = time.time()
+    recovered: list[tuple[str, dict[str, Any]]] = []
+    stale: list[str] = []
+    for key, item in list(state.planned_disruptions.items()):
+        started_at = float(item.get("started_at", 0.0) or 0.0)
+        age = max(0, int(now - started_at)) if started_at else 0
+        if not item.get("auto_recover_on_start"):
+            stale.append(key)
+            continue
+        if age > PLANNED_DISRUPTION_AUTO_RECOVER_MAX_SECONDS:
+            stale.append(key)
+            continue
+        recovered.append((key, item))
+    for key, item in recovered:
+        state.planned_disruptions.pop(key, None)
+        alert(
+            "✅ *Работоспособность восстановлена после рестарта*\n"
+            f"Что: *{item.get('title', key)}*\n"
+            f"Контур: `{item.get('scope', 'не указано')}`\n"
+            f"Длительность: `{int(max(0, now - float(item.get('started_at', now) or now)))}s`"
+        )
+    for key in stale:
+        state.planned_disruptions.pop(key, None)
+    if recovered or stale:
+        state.save()
+
+
 # ---------------------------------------------------------------------------
 # Plugin Manager
 # ---------------------------------------------------------------------------
@@ -659,6 +759,7 @@ class WatchdogState:
         self.server_repo_last_fetch_ts: float = 0.0
         self.server_repo_alert_last_ts: float = 0.0
         self.peer_reconcile_last_ts: float = 0.0
+        self.planned_disruptions: dict[str, dict[str, Any]] = {}
 
     @property
     def active_vps(self) -> Optional[dict]:
@@ -709,6 +810,7 @@ class WatchdogState:
             "server_repo_last_fetch_ts": self.server_repo_last_fetch_ts,
             "server_repo_alert_last_ts": self.server_repo_alert_last_ts,
             "peer_reconcile_last_ts": self.peer_reconcile_last_ts,
+            "planned_disruptions": self.planned_disruptions,
         }
 
     def save(self) -> None:
@@ -751,6 +853,7 @@ class WatchdogState:
                 self.server_repo_last_fetch_ts = float(data.get("server_repo_last_fetch_ts", 0.0) or 0.0)
                 self.server_repo_alert_last_ts = float(data.get("server_repo_alert_last_ts", 0.0) or 0.0)
                 self.peer_reconcile_last_ts = float(data.get("peer_reconcile_last_ts", 0.0) or 0.0)
+                self.planned_disruptions = data.get("planned_disruptions", {}) or {}
                 if self.active_stack not in STACK_ORDER:
                     self.active_stack = DEFAULT_STACK
                     self.is_first_run = True
@@ -1180,7 +1283,13 @@ async def _telegram_bot_container_hashes() -> tuple[dict[str, str], str]:
 
 async def selfheal_telegram_bot_runtime() -> bool:
     logger.warning("Обнаружен drift telegram-bot runtime → source, запускаю self-heal rebuild")
-    alert("⚠️ *telegram-bot runtime drift* — запускаю self-heal rebuild")
+    begin_planned_disruption(
+        "telegram-bot-selfheal",
+        "telegram-bot rebuild",
+        ["telegram-bot", "docker compose"],
+        120,
+        "telegram-bot runtime drift",
+    )
     rc, out, err = await run_cmd(
         ["bash", "-lc", "cd /opt/vpn && docker compose up -d --build telegram-bot"],
         timeout=900,
@@ -1190,7 +1299,7 @@ async def selfheal_telegram_bot_runtime() -> bool:
         detail = (err or out or f"rc={rc}").strip()[:300]
         state.bot_runtime_drift_detail = f"self-heal failed: {detail}"
         logger.error("telegram-bot self-heal failed: %s", detail)
-        alert(f"🚨 *telegram-bot self-heal failed*: `{detail}`")
+        complete_planned_disruption("telegram-bot-selfheal", False, detail)
         return False
     await check_containers()
     container_hashes, detail = await _telegram_bot_container_hashes()
@@ -1200,13 +1309,13 @@ async def selfheal_telegram_bot_runtime() -> bool:
         state.bot_runtime_drift_since = 0.0
         state.bot_runtime_drift_detail = ""
         logger.info("telegram-bot self-heal completed successfully")
-        alert("✅ *telegram-bot self-heal completed* — runtime снова синхронизирован")
+        complete_planned_disruption("telegram-bot-selfheal", True, "runtime снова синхронизирован")
         return True
     mismatch = detail or "hash mismatch after rebuild"
     state.bot_runtime_drift = True
     state.bot_runtime_drift_detail = mismatch[:300]
     logger.error("telegram-bot self-heal incomplete: %s", state.bot_runtime_drift_detail)
-    alert(f"🚨 *telegram-bot self-heal incomplete*: `{state.bot_runtime_drift_detail}`")
+    complete_planned_disruption("telegram-bot-selfheal", False, state.bot_runtime_drift_detail)
     return False
 
 
@@ -1256,48 +1365,59 @@ async def check_dnsmasq_config_sync() -> None:
     if current_hash == state.dnsmasq_config_hash:
         return
 
-    logger.warning("Обнаружен drift dnsmasq config → runtime, запускаю reload")
-    alert("⚠️ *dnsmasq config drift* — запускаю reload")
     rc, out, err = await run_cmd(["dnsmasq", "--test"], timeout=15)
     if rc != 0:
         detail = (err or out or f"rc={rc}").strip()[:300]
         logger.error("dnsmasq self-heal aborted, invalid config: %s", detail)
         alert(f"🚨 *dnsmasq self-heal failed*: `{detail}`")
         return
+    logger.warning("Обнаружен drift dnsmasq config → runtime, запускаю reload")
+    begin_planned_disruption(
+        "dnsmasq-config-selfheal",
+        "dnsmasq reload",
+        ["dnsmasq", "DNS"],
+        5,
+        "dnsmasq config drift",
+    )
 
     rc, out, err = await run_cmd(["systemctl", "reload", "dnsmasq"], timeout=20)
     if rc != 0:
         detail = (err or out or f"rc={rc}").strip()[:300]
         logger.warning("dnsmasq reload failed, fallback to restart: %s", detail)
-        alert(f"⚠️ *dnsmasq reload failed* — fallback to restart: `{detail}`")
         rc, out, err = await run_cmd(["systemctl", "restart", "dnsmasq"], timeout=30)
         if rc != 0:
             detail = (err or out or f"rc={rc}").strip()[:300]
             logger.error("dnsmasq self-heal failed after restart: %s", detail)
-            alert(f"🚨 *dnsmasq self-heal failed*: `{detail}`")
+            complete_planned_disruption("dnsmasq-config-selfheal", False, detail)
             return
 
     rc, out, _ = await run_cmd(["dig", "@127.0.0.1", "google.com", "+short", "+time=3"], timeout=10)
     if rc == 0 and out.strip():
         state.dnsmasq_config_hash = current_hash
         logger.info("dnsmasq config self-heal completed successfully")
-        alert("✅ *dnsmasq self-heal completed* — конфиг перезагружен")
+        complete_planned_disruption("dnsmasq-config-selfheal", True, "dnsmasq отвечает")
         state.dnsmasq_up = 1
         return
 
     logger.error("dnsmasq self-heal verification failed after reload")
-    alert("🚨 *dnsmasq self-heal incomplete* — после reload DNS не отвечает")
+    complete_planned_disruption("dnsmasq-config-selfheal", False, "после reload DNS не отвечает")
 
 
 async def selfheal_compose_runtime() -> bool:
     logger.warning("Обнаружен drift docker-compose runtime → source, запускаю controlled recreate")
-    alert("⚠️ *docker-compose runtime drift* — запускаю controlled recreate")
+    begin_planned_disruption(
+        "compose-selfheal",
+        "docker compose recreate",
+        ["docker compose"],
+        60,
+        "docker-compose runtime drift",
+    )
     state.compose_selfheal_last_ts = time.time()
     if not COMPOSE_SOURCE_FILE.exists():
         detail = f"source missing: {COMPOSE_SOURCE_FILE}"
         state.compose_runtime_drift_detail = detail
         logger.error("compose self-heal failed: %s", detail)
-        alert(f"🚨 *docker-compose self-heal failed*: `{detail}`")
+        complete_planned_disruption("compose-selfheal", False, detail)
         return False
 
     rc, out, err = await run_cmd(["cp", str(COMPOSE_SOURCE_FILE), str(COMPOSE_RUNTIME_FILE)], timeout=15)
@@ -1305,7 +1425,7 @@ async def selfheal_compose_runtime() -> bool:
         detail = (err or out or f"rc={rc}").strip()[:300]
         state.compose_runtime_drift_detail = detail
         logger.error("compose self-heal copy failed: %s", detail)
-        alert(f"🚨 *docker-compose self-heal failed*: `{detail}`")
+        complete_planned_disruption("compose-selfheal", False, detail)
         return False
 
     rc, out, err = await run_cmd(
@@ -1316,7 +1436,7 @@ async def selfheal_compose_runtime() -> bool:
         detail = (err or out or f"rc={rc}").strip()[:300]
         state.compose_runtime_drift_detail = detail
         logger.error("compose self-heal recreate failed: %s", detail)
-        alert(f"🚨 *docker-compose self-heal failed*: `{detail}`")
+        complete_planned_disruption("compose-selfheal", False, detail)
         return False
 
     if _sha256_file(COMPOSE_SOURCE_FILE) == _sha256_file(COMPOSE_RUNTIME_FILE):
@@ -1324,13 +1444,13 @@ async def selfheal_compose_runtime() -> bool:
         state.compose_runtime_drift_since = 0.0
         state.compose_runtime_drift_detail = ""
         logger.info("docker-compose self-heal completed successfully")
-        alert("✅ *docker-compose self-heal completed* — runtime снова синхронизирован")
+        complete_planned_disruption("compose-selfheal", True, "runtime снова синхронизирован")
         return True
 
     state.compose_runtime_drift = True
     state.compose_runtime_drift_detail = "hash mismatch after recreate"
     logger.error("docker-compose self-heal incomplete: %s", state.compose_runtime_drift_detail)
-    alert(f"🚨 *docker-compose self-heal incomplete*: `{state.compose_runtime_drift_detail}`")
+    complete_planned_disruption("compose-selfheal", False, state.compose_runtime_drift_detail)
     return False
 
 
@@ -1372,7 +1492,14 @@ async def schedule_watchdog_runtime_selfheal() -> bool:
         return False
 
     logger.warning("Обнаружен drift watchdog runtime → source, планирую self-heal restart")
-    alert("⚠️ *watchdog runtime drift* — планирую self-heal restart")
+    begin_planned_disruption(
+        "watchdog-selfheal",
+        "watchdog restart",
+        ["watchdog", "watchdog API"],
+        10,
+        "watchdog runtime drift",
+        auto_recover_on_start=True,
+    )
     state.watchdog_selfheal_last_ts = time.time()
     state.save()
     try:
@@ -1393,7 +1520,7 @@ async def schedule_watchdog_runtime_selfheal() -> bool:
         detail = str(exc)[:300]
         state.watchdog_runtime_drift_detail = detail
         logger.error("watchdog self-heal schedule failed: %s", detail)
-        alert(f"🚨 *watchdog self-heal failed*: `{detail}`")
+        complete_planned_disruption("watchdog-selfheal", False, detail)
         return False
 
 
@@ -1767,15 +1894,21 @@ async def check_dnsmasq() -> None:
     if rc != 0 or not out.strip():
         state.dnsmasq_up = 0
         logger.error("dnsmasq не отвечает, перезапуск")
-        alert("⚠️ dnsmasq не отвечает — перезапуск")
+        begin_planned_disruption(
+            "dnsmasq-restart",
+            "dnsmasq restart",
+            ["dnsmasq", "DNS"],
+            10,
+            "dnsmasq не отвечает",
+        )
         rc2, out2, err2 = await run_cmd(["systemctl", "restart", "dnsmasq"], timeout=30)
         if rc2 == 0:
             logger.info("dnsmasq restart completed")
-            alert("✅ *dnsmasq self-heal completed* — сервис перезапущен")
+            complete_planned_disruption("dnsmasq-restart", True, "dnsmasq перезапущен")
         else:
             detail = (err2 or out2 or f"rc={rc2}").strip()[:300]
             logger.error("dnsmasq restart failed: %s", detail)
-            alert(f"🚨 *dnsmasq self-heal failed*: `{detail}`")
+            complete_planned_disruption("dnsmasq-restart", False, detail)
     else:
         state.dnsmasq_up = 1
 
@@ -2064,6 +2197,13 @@ async def check_nftables_integrity() -> None:
     logger.warning(f"check_nftables_integrity: расхождения: {details}")
 
     # Восстановить правила
+    begin_planned_disruption(
+        "nftables-restore",
+        "nftables restore",
+        ["nftables", "routing", "LAN transit"],
+        15,
+        "nftables drift detected",
+    )
     rc_r, _, err = await run_cmd(["nft", "-f", "/etc/nftables.conf"], timeout=15)
     if rc_r == 0:
         # Восстановить blocked_static (blocked_dynamic и dpi_direct — self-healing через dnsmasq после warmup)
@@ -2076,8 +2216,10 @@ async def check_nftables_integrity() -> None:
             f"Проблемы: `{details}`\n\n"
             f"✅ Правила восстановлены из `/etc/nftables.conf`, DNS warmup запущен"
         )
+        complete_planned_disruption("nftables-restore", True, "правила восстановлены")
         logger.info("check_nftables_integrity: правила восстановлены")
     else:
+        complete_planned_disruption("nftables-restore", False, err.strip())
         alert(
             f"🔥 *nftables: правила изменены или сброшены!*\n\n"
             f"Проблемы: `{details}`\n\n"
@@ -2653,6 +2795,13 @@ async def _run_zapret_probe() -> None:
 # ---------------------------------------------------------------------------
 async def _regen_dpi_dnsmasq() -> None:
     """Перегенерировать dpi-domains.conf + SIGHUP dnsmasq."""
+    begin_planned_disruption(
+        "dpi-dnsmasq-reload",
+        "dnsmasq reload for DPI",
+        ["dnsmasq", "DPI routing"],
+        5,
+        "обновление dpi preset-ов/сервисов",
+    )
     enabled = [s for s in state.dpi_services if s.get("enabled")]
     if not enabled:
         DPI_DNSMASQ_CONF.parent.mkdir(parents=True, exist_ok=True)
@@ -2676,6 +2825,11 @@ async def _regen_dpi_dnsmasq() -> None:
 
     rc, _, _ = await run_cmd(["pkill", "-HUP", "dnsmasq"], timeout=5)
     logger.info(f"[DPI] dpi-domains.conf обновлён ({len(enabled)} сервисов), dnsmasq SIGHUP rc={rc}")
+    complete_planned_disruption(
+        "dpi-dnsmasq-reload",
+        rc == 0,
+        "dnsmasq SIGHUP applied" if rc == 0 else f"pkill -HUP rc={rc}",
+    )
 
 
 _DPI_ROUTES_REFRESH_LOCK = asyncio.Lock()
@@ -3922,13 +4076,20 @@ async def post_routes_update(request: Request, bg: BackgroundTasks, _: bool = De
 
 async def _routes_update_task() -> None:
     logger.info("Обновление маршрутов...")
+    begin_planned_disruption(
+        "routes-update",
+        "routes update",
+        ["dnsmasq", "routing", "AllowedIPs"],
+        60,
+        "manual routes update",
+    )
     rc, _, err = await run_cmd(
         [sys.executable, "/opt/vpn/scripts/update-routes.py"], timeout=600
     )
     if rc == 0:
-        alert("✅ Маршруты обновлены")
+        complete_planned_disruption("routes-update", True, "маршруты обновлены")
     else:
-        alert(f"⚠️ Ошибка обновления маршрутов:\n`{err[:300]}`")
+        complete_planned_disruption("routes-update", False, err[:300])
 
 
 @app.post("/service/restart")
@@ -3938,7 +4099,30 @@ async def post_service_restart(request: Request, req: ServiceRestartRequest, _: 
                "awg-quick@wg0", "wg-quick@wg1"}
     if req.service not in allowed:
         raise HTTPException(status_code=400, detail=f"Сервис '{req.service}' не разрешён")
+    if req.service == "watchdog":
+        begin_planned_disruption(
+            "watchdog-manual-restart",
+            "watchdog restart",
+            ["watchdog", "watchdog API"],
+            10,
+            "manual service restart",
+            auto_recover_on_start=True,
+        )
+    else:
+        begin_planned_disruption(
+            f"service-restart:{req.service}",
+            f"{req.service} restart",
+            [req.service],
+            15,
+            "manual service restart",
+        )
     rc, _, err = await run_cmd(["systemctl", "restart", req.service], timeout=30)
+    if req.service != "watchdog":
+        complete_planned_disruption(
+            f"service-restart:{req.service}",
+            rc == 0,
+            "service restarted" if rc == 0 else err.strip()[:200],
+        )
     return {"status": "ok" if rc == 0 else "error", "service": req.service,
             "error": err.strip() if rc != 0 else None}
 
@@ -3952,6 +4136,13 @@ async def post_service_update(request: Request, req: ServiceUpdateRequest,
 
 
 async def _service_update_task(service: str) -> None:
+    begin_planned_disruption(
+        f"service-update:{service}",
+        f"{service} update",
+        ["docker compose", service],
+        60,
+        "manual service update",
+    )
     if service == "all":
         rc, _, err = await run_cmd(
             ["docker", "compose", "-f", "/opt/vpn/docker-compose.yml", "pull"], timeout=300
@@ -3960,9 +4151,9 @@ async def _service_update_task(service: str) -> None:
             await run_cmd(
                 ["docker", "compose", "-f", "/opt/vpn/docker-compose.yml", "up", "-d"], timeout=120
             )
-            alert("✅ Docker образы обновлены")
+            complete_planned_disruption(f"service-update:{service}", True, "docker compose updated")
         else:
-            alert(f"⚠️ Ошибка обновления образов:\n`{err[:300]}`")
+            complete_planned_disruption(f"service-update:{service}", False, err[:300])
     else:
         compose = ["-f", "/opt/vpn/docker-compose.yml"]
         rc, _, err = await run_cmd(
@@ -3972,7 +4163,11 @@ async def _service_update_task(service: str) -> None:
             rc, _, err = await run_cmd(
                 ["docker", "compose", *compose, "up", "-d", service], timeout=60
             )
-        alert(f"{'✅' if rc == 0 else '⚠️'} Обновление *{service}*: {'OK' if rc == 0 else err[:200]}")
+        complete_planned_disruption(
+            f"service-update:{service}",
+            rc == 0,
+            "service updated" if rc == 0 else err[:200],
+        )
 
 
 @app.post("/deploy")
@@ -4911,6 +5106,7 @@ async def on_startup() -> None:
 
     # Загружаем состояние
     state.load()
+    recover_planned_disruptions_on_startup()
 
     # Обновляем state files для ssh-proxy.sh на основе загруженного состояния
     _write_vpn_state_files(state.active_stack)
