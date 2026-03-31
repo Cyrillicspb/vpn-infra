@@ -1433,26 +1433,32 @@ async def check_nftset_counts() -> None:
 # Мониторинг: nfqws реально обрабатывает пакеты (standard health check)
 # ---------------------------------------------------------------------------
 async def check_nfqws_counter() -> None:
-    """Читает /proc/net/netfilter/nfnetlink_queue — queue_total > 0 означает трафик."""
+    """Проверяет что основная NFQUEUE 200 привязана к userspace consumer.
+
+    В /proc/net/netfilter/nfnetlink_queue поле queue_total — это не "сколько
+    пакетов было обработано", а текущая длина очереди. Для исправно работающего
+    nfqws оно как раз часто равно 0, поэтому использовать его как health
+    indicator нельзя.
+    """
     nfq_file = Path("/proc/net/netfilter/nfnetlink_queue")
     if not nfq_file.exists():
         state.nfqws_ok = False
         return
     try:
         content = nfq_file.read_text()
-        # Формат: queue_num peer_portid queue_total ... (пробелы)
         lines = [l for l in content.splitlines() if l.strip()]
         if not lines:
             state.nfqws_ok = False
             return
-        # Берём первую активную очередь, поле 3 = queue_total (пакетов прошло)
         for line in lines:
             parts = line.split()
-            if len(parts) >= 3:
+            if len(parts) >= 2:
                 try:
-                    total = int(parts[2])
-                    state.nfqws_ok = total > 0
-                    return
+                    queue_num = int(parts[0])
+                    peer_portid = int(parts[1])
+                    if queue_num == 200 and peer_portid > 0:
+                        state.nfqws_ok = True
+                        return
                 except ValueError:
                     pass
         state.nfqws_ok = False
@@ -1531,9 +1537,11 @@ async def _health_quick_checks() -> list[CheckResult]:
 async def _health_standard_checks() -> list[CheckResult]:
     """Standard tier: nftables, стеки, сертификаты, диск, heartbeat."""
     results: list[CheckResult] = []
+    enabled_dpi_services = [s for s in state.dpi_services if s.get("enabled", True)]
+    dpi_lane_active = state.dpi_enabled and bool(enabled_dpi_services)
 
-    # 8–10. nft sets non-empty
-    for set_name, w in [("blocked_static", 5), ("blocked_dynamic", 3), ("dpi_direct", 3)]:
+    # 8–9. nft sets non-empty
+    for set_name, w in [("blocked_static", 5), ("blocked_dynamic", 3)]:
         count = state.nftset_counts.get(set_name, -2)
         if count > 0:
             results.append(CheckResult(f"nft_{set_name}_nonempty", "ok", f"{count} элементов", weight=w, tier="standard"))
@@ -1541,6 +1549,17 @@ async def _health_standard_checks() -> list[CheckResult]:
             results.append(CheckResult(f"nft_{set_name}_nonempty", "warn", "set пустой — dns-warmup?", weight=w, tier="standard"))
         else:
             results.append(CheckResult(f"nft_{set_name}_nonempty", "warn", "ещё не проверялось", weight=w, tier="standard"))
+
+    # 10. dpi_direct — имеет смысл только когда DPI bypass реально включён
+    dpi_count = state.nftset_counts.get("dpi_direct", -2)
+    if not dpi_lane_active:
+        results.append(CheckResult("nft_dpi_direct_nonempty", "ok", "DPI bypass выключен", weight=0, tier="standard"))
+    elif dpi_count > 0:
+        results.append(CheckResult("nft_dpi_direct_nonempty", "ok", f"{dpi_count} элементов", weight=3, tier="standard"))
+    elif dpi_count == 0:
+        results.append(CheckResult("nft_dpi_direct_nonempty", "warn", "set пустой — dns-warmup или нет резолвов DPI-доменов", weight=3, tier="standard"))
+    else:
+        results.append(CheckResult("nft_dpi_direct_nonempty", "warn", "ещё не проверялось", weight=3, tier="standard"))
 
     # 11. Kill switch
     if state.nftables_ok:
@@ -1550,13 +1569,19 @@ async def _health_standard_checks() -> list[CheckResult]:
     else:
         results.append(CheckResult("kill_switch_rules", "fail", "правила расходятся с эталоном", weight=10, tier="standard"))
 
-    # 12. nfqws
-    if state.nfqws_ok is True:
-        results.append(CheckResult("nfqws_processing", "ok", "nfqueue активен", weight=3, tier="standard"))
-    elif state.nfqws_ok is False:
-        results.append(CheckResult("nfqws_processing", "warn", "nfqueue counter=0 или очередь не создана", weight=3, tier="standard"))
+    # 12. nfqws / NFQUEUE dataplane
+    if not dpi_lane_active:
+        results.append(CheckResult("nfqws_processing", "ok", "DPI bypass выключен; zapret standby допустим", weight=0, tier="standard"))
     else:
-        results.append(CheckResult("nfqws_processing", "warn", "ещё не проверялось", weight=3, tier="standard"))
+        rc_zp, _, _ = await run_cmd(["nft", "list", "table", "inet", "zapret_main"], timeout=5)
+        if rc_zp != 0:
+            results.append(CheckResult("nfqws_processing", "warn", "NFQUEUE dataplane не активирован", weight=3, tier="standard"))
+        elif state.nfqws_ok is True:
+            results.append(CheckResult("nfqws_processing", "ok", "очередь 200 привязана, NFQUEUE dataplane активен", weight=3, tier="standard"))
+        elif state.nfqws_ok is False:
+            results.append(CheckResult("nfqws_processing", "warn", "очередь 200 не привязана к nfqws", weight=3, tier="standard"))
+        else:
+            results.append(CheckResult("nfqws_processing", "warn", "ещё не проверялось", weight=3, tier="standard"))
 
     # 13. Cert expiry
     for label, days in state.cert_days.items():
