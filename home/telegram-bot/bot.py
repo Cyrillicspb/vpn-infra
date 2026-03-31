@@ -64,6 +64,19 @@ FSM_TIMEOUT = config.fsm_timeout_minutes * 60   # 600 сек
 POLLING_RETRY_DELAY = int(os.getenv("POLLING_RETRY_DELAY", "10"))
 
 
+async def _notify_selfheal(text: str) -> None:
+    logger.info("SELFHEAL: %s", text)
+    try:
+        from services.watchdog_client import WatchdogClient
+        await WatchdogClient(config.watchdog_url, config.watchdog_token).post(
+            "/admin-notify",
+            {"text": text},
+            timeout=15,
+        )
+    except Exception as exc:
+        logger.warning("self-heal notify failed: %s", exc)
+
+
 # ---------------------------------------------------------------------------
 # FSM Control Middleware
 # ---------------------------------------------------------------------------
@@ -178,17 +191,16 @@ async def reminder_loop(autodist: AutoDist) -> None:
 
 
 async def _bootstrap_cleanup_loop(db: "Database") -> None:
-    """Каждый час удаляем истёкшие bootstrap-инвайты (пиры + DB-записи)."""
+    """Каждый час удаляем истёкшие и осиротевшие bootstrap-инвайты/peer'ы."""
     from services.watchdog_client import WatchdogClient
     from config import config as _cfg
     try:
         while True:
             await asyncio.sleep(3600)
             try:
-                expired = await db.get_expired_bootstrap_invites()
-                if not expired:
-                    continue
                 wdc = WatchdogClient(_cfg.watchdog_url, _cfg.watchdog_token)
+                expired = await db.get_expired_bootstrap_invites()
+                expired_removed = 0
                 for inv in expired:
                     for peer_id, iface in [
                         (inv.get("awg_peer_id"), "wg0"),
@@ -197,11 +209,68 @@ async def _bootstrap_cleanup_loop(db: "Database") -> None:
                         if peer_id:
                             try:
                                 await wdc.remove_peer(peer_id, interface=iface)
+                                expired_removed += 1
                             except Exception:
                                 pass
                 removed = await db.delete_expired_bootstrap_invites()
                 if removed:
                     logger.info(f"bootstrap_cleanup: удалено {removed} истёкших инвайтов")
+                    await _notify_selfheal(
+                        f"🧹 *bootstrap cleanup* — удалено {removed} истёкших invite-кодов, peer'ов очищено: {expired_removed}"
+                    )
+
+                active = await db.get_active_bootstrap_invites()
+                known_device_keys = await db.get_known_device_public_keys()
+                peers_info = await wdc.get_peers()
+                runtime_peers = {
+                    p.get("public_key"): p for p in (peers_info or {}).get("peers", []) if p.get("public_key")
+                }
+
+                active_bootstrap_keys: set[str] = set()
+                incomplete_invites: list[str] = []
+                for inv in active:
+                    code = inv.get("code", "")
+                    awg_peer_id = inv.get("awg_peer_id", "")
+                    wg_peer_id = inv.get("wg_peer_id", "")
+                    active_bootstrap_keys.update(pk for pk in (awg_peer_id, wg_peer_id) if pk)
+                    if (awg_peer_id and awg_peer_id not in runtime_peers) or (wg_peer_id and wg_peer_id not in runtime_peers):
+                        for peer_id, iface in ((awg_peer_id, "wg0"), (wg_peer_id, "wg1")):
+                            if peer_id and peer_id in runtime_peers:
+                                try:
+                                    await wdc.remove_peer(peer_id, interface=iface)
+                                except Exception:
+                                    pass
+                        if code:
+                            await db.delete_invite_code(code)
+                            logger.warning("bootstrap_cleanup: удалён invite %s без полного peer набора", code[:8])
+                            incomplete_invites.append(code[:8])
+
+                if incomplete_invites:
+                    await _notify_selfheal(
+                        "🧹 *bootstrap cleanup* — удалены invite-коды без полного набора peer'ов: "
+                        + ", ".join(incomplete_invites[:10])
+                    )
+
+                orphan_removed: list[str] = []
+                for peer in runtime_peers.values():
+                    pubkey = peer.get("public_key", "")
+                    iface = peer.get("interface", "")
+                    if iface not in {"wg0", "wg1"}:
+                        continue
+                    if pubkey in known_device_keys or pubkey in active_bootstrap_keys:
+                        continue
+                    if int(peer.get("last_handshake", 0) or 0) > 0:
+                        continue
+                    try:
+                        await wdc.remove_peer(pubkey, interface=iface)
+                        logger.warning("bootstrap_cleanup: удалён orphan peer %s [%s]", pubkey[:12], iface)
+                        orphan_removed.append(f"{pubkey[:12]}[{iface}]")
+                    except Exception:
+                        pass
+                if orphan_removed:
+                    await _notify_selfheal(
+                        "🧹 *bootstrap cleanup* — удалены orphan peer'ы: " + ", ".join(orphan_removed[:12])
+                    )
             except Exception as exc:
                 logger.error(f"bootstrap_cleanup_loop: {exc}")
     except asyncio.CancelledError:

@@ -513,6 +513,39 @@ class Database:
             finally:
                 conn.close()
 
+    async def get_active_bootstrap_invites(self) -> list[dict]:
+        """Вернуть ещё действующие bootstrap-инвайты, не завершённые регистрацией."""
+        conn = self._conn()
+        try:
+            rows = conn.execute("""
+                SELECT * FROM invite_codes
+                WHERE is_bootstrap = 1
+                  AND used_by IS NULL
+                  AND datetime(expires_at) > datetime('now')
+            """).fetchall()
+            return [self._decrypt_invite(dict(r)) for r in rows]
+        finally:
+            conn.close()
+
+    async def delete_invite_code(self, code: str) -> None:
+        async with self._lock:
+            conn = self._conn()
+            try:
+                conn.execute("DELETE FROM invite_codes WHERE code = ?", (code,))
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def get_known_device_public_keys(self) -> set[str]:
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT public_key FROM devices WHERE public_key IS NOT NULL AND public_key != ''"
+            ).fetchall()
+            return {r["public_key"] for r in rows if r["public_key"]}
+        finally:
+            conn.close()
+
     async def reserve_invite_code(self, code: str, reserved_by: str) -> bool:
         async with self._lock:
             conn = self._conn()

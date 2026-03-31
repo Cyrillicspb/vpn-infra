@@ -578,6 +578,16 @@ class WatchdogState:
         self.bot_runtime_drift_detail: str = ""
         self.bot_runtime_drift_since: float = 0.0
         self.bot_selfheal_last_ts: float = 0.0
+        self.dnsmasq_config_hash: str = ""
+        self.compose_runtime_drift: bool = False
+        self.compose_runtime_drift_detail: str = ""
+        self.compose_runtime_drift_since: float = 0.0
+        self.compose_selfheal_last_ts: float = 0.0
+        self.watchdog_runtime_drift: bool = False
+        self.watchdog_runtime_drift_detail: str = ""
+        self.watchdog_runtime_drift_since: float = 0.0
+        self.watchdog_selfheal_last_ts: float = 0.0
+        self.peer_reconcile_last_ts: float = 0.0
 
     @property
     def active_vps(self) -> Optional[dict]:
@@ -613,6 +623,16 @@ class WatchdogState:
             "bot_runtime_drift_detail": self.bot_runtime_drift_detail,
             "bot_runtime_drift_since": self.bot_runtime_drift_since,
             "bot_selfheal_last_ts": self.bot_selfheal_last_ts,
+            "dnsmasq_config_hash": self.dnsmasq_config_hash,
+            "compose_runtime_drift": self.compose_runtime_drift,
+            "compose_runtime_drift_detail": self.compose_runtime_drift_detail,
+            "compose_runtime_drift_since": self.compose_runtime_drift_since,
+            "compose_selfheal_last_ts": self.compose_selfheal_last_ts,
+            "watchdog_runtime_drift": self.watchdog_runtime_drift,
+            "watchdog_runtime_drift_detail": self.watchdog_runtime_drift_detail,
+            "watchdog_runtime_drift_since": self.watchdog_runtime_drift_since,
+            "watchdog_selfheal_last_ts": self.watchdog_selfheal_last_ts,
+            "peer_reconcile_last_ts": self.peer_reconcile_last_ts,
         }
 
     def save(self) -> None:
@@ -636,6 +656,20 @@ class WatchdogState:
                 self.dpi_enabled    = data.get("dpi_enabled", False)
                 self.dpi_services   = data.get("dpi_services", [])
                 self.rotation_log   = data.get("rotation_log", [])
+                self.bot_runtime_drift = data.get("bot_runtime_drift", False)
+                self.bot_runtime_drift_detail = data.get("bot_runtime_drift_detail", "")
+                self.bot_runtime_drift_since = float(data.get("bot_runtime_drift_since", 0.0) or 0.0)
+                self.bot_selfheal_last_ts = float(data.get("bot_selfheal_last_ts", 0.0) or 0.0)
+                self.dnsmasq_config_hash = data.get("dnsmasq_config_hash", "")
+                self.compose_runtime_drift = data.get("compose_runtime_drift", False)
+                self.compose_runtime_drift_detail = data.get("compose_runtime_drift_detail", "")
+                self.compose_runtime_drift_since = float(data.get("compose_runtime_drift_since", 0.0) or 0.0)
+                self.compose_selfheal_last_ts = float(data.get("compose_selfheal_last_ts", 0.0) or 0.0)
+                self.watchdog_runtime_drift = data.get("watchdog_runtime_drift", False)
+                self.watchdog_runtime_drift_detail = data.get("watchdog_runtime_drift_detail", "")
+                self.watchdog_runtime_drift_since = float(data.get("watchdog_runtime_drift_since", 0.0) or 0.0)
+                self.watchdog_selfheal_last_ts = float(data.get("watchdog_selfheal_last_ts", 0.0) or 0.0)
+                self.peer_reconcile_last_ts = float(data.get("peer_reconcile_last_ts", 0.0) or 0.0)
                 if self.active_stack not in STACK_ORDER:
                     self.active_stack = DEFAULT_STACK
                     self.is_first_run = True
@@ -902,6 +936,98 @@ BOT_RUNTIME_FILES = (
 )
 BOT_DRIFT_CONFIRM_SECONDS = int(os.getenv("BOT_DRIFT_CONFIRM_SECONDS", "300"))
 BOT_SELFHEAL_COOLDOWN_SECONDS = int(os.getenv("BOT_SELFHEAL_COOLDOWN_SECONDS", "1800"))
+COMPOSE_SOURCE_FILE = Path("/opt/vpn/home/docker-compose.yml")
+COMPOSE_RUNTIME_FILE = Path("/opt/vpn/docker-compose.yml")
+COMPOSE_DRIFT_CONFIRM_SECONDS = int(os.getenv("COMPOSE_DRIFT_CONFIRM_SECONDS", "300"))
+COMPOSE_SELFHEAL_COOLDOWN_SECONDS = int(os.getenv("COMPOSE_SELFHEAL_COOLDOWN_SECONDS", "1800"))
+WATCHDOG_SOURCE_FILE = Path("/opt/vpn/home/watchdog/watchdog.py")
+WATCHDOG_RUNTIME_FILE = Path("/opt/vpn/watchdog/watchdog.py")
+WATCHDOG_DRIFT_CONFIRM_SECONDS = int(os.getenv("WATCHDOG_DRIFT_CONFIRM_SECONDS", "300"))
+WATCHDOG_SELFHEAL_COOLDOWN_SECONDS = int(os.getenv("WATCHDOG_SELFHEAL_COOLDOWN_SECONDS", "1800"))
+
+
+def _sha256_file(path: Path) -> str:
+    import hashlib as _hashlib
+    if not path.exists():
+        return ""
+    return _hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _sha256_paths(paths: list[Path]) -> str:
+    import hashlib as _hashlib
+    digest = _hashlib.sha256()
+    for path in sorted(paths, key=lambda p: str(p)):
+        digest.update(str(path).encode())
+        if not path.exists():
+            digest.update(b"missing")
+            continue
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _dnsmasq_config_paths() -> list[Path]:
+    paths = [Path("/etc/dnsmasq.conf")]
+    conf_dir = Path("/etc/dnsmasq.d")
+    if conf_dir.exists():
+        paths.extend(sorted(conf_dir.glob("*.conf")))
+    return [p for p in paths if p.exists()]
+
+
+def _read_expected_device_peers() -> list[dict[str, str]]:
+    if not BOT_DB_PATH.exists():
+        return []
+    try:
+        import sqlite3 as _sqlite3
+        with _sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=5) as conn:
+            rows = conn.execute(
+                """
+                SELECT device_name, protocol, public_key, ip_address
+                FROM devices
+                WHERE public_key IS NOT NULL AND public_key != ''
+                  AND ip_address IS NOT NULL AND ip_address != ''
+                """
+            ).fetchall()
+        return [
+            {
+                "device_name": row[0] or "",
+                "protocol": (row[1] or "").lower(),
+                "public_key": row[2] or "",
+                "ip_address": row[3] or "",
+            }
+            for row in rows
+            if row[2] and row[3]
+        ]
+    except Exception as exc:
+        logger.warning("Не удалось прочитать expected peers из БД бота: %s", exc)
+        return []
+
+
+async def _runtime_peer_dump() -> list[dict[str, Any]]:
+    combined_out = ""
+    for tool in ("awg", "wg"):
+        rc, out, _ = await run_cmd([tool, "show", "all", "dump"], timeout=10)
+        if rc == 0:
+            combined_out += out
+    peers: list[dict[str, Any]] = []
+    for line in combined_out.strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) != 9:
+            continue
+        iface, pubkey, _psk, endpoint, allowed_ips, handshake_ts, rx, tx, _ka = parts
+        try:
+            hs_int = int(handshake_ts)
+        except ValueError:
+            continue
+        peers.append({
+            "interface": iface,
+            "public_key": pubkey,
+            "endpoint": endpoint if endpoint != "(none)" else None,
+            "allowed_ips": allowed_ips,
+            "last_handshake": hs_int,
+            "rx_bytes": int(rx) if rx.isdigit() else 0,
+            "tx_bytes": int(tx) if tx.isdigit() else 0,
+        })
+    return peers
 
 
 def _lookup_peer_device(pubkey: str) -> str:
@@ -973,6 +1099,7 @@ async def selfheal_telegram_bot_runtime() -> bool:
     if rc != 0:
         detail = (err or out or f"rc={rc}").strip()[:300]
         state.bot_runtime_drift_detail = f"self-heal failed: {detail}"
+        logger.error("telegram-bot self-heal failed: %s", detail)
         alert(f"🚨 *telegram-bot self-heal failed*: `{detail}`")
         return False
     await check_containers()
@@ -982,11 +1109,13 @@ async def selfheal_telegram_bot_runtime() -> bool:
         state.bot_runtime_drift = False
         state.bot_runtime_drift_since = 0.0
         state.bot_runtime_drift_detail = ""
+        logger.info("telegram-bot self-heal completed successfully")
         alert("✅ *telegram-bot self-heal completed* — runtime снова синхронизирован")
         return True
     mismatch = detail or "hash mismatch after rebuild"
     state.bot_runtime_drift = True
     state.bot_runtime_drift_detail = mismatch[:300]
+    logger.error("telegram-bot self-heal incomplete: %s", state.bot_runtime_drift_detail)
     alert(f"🚨 *telegram-bot self-heal incomplete*: `{state.bot_runtime_drift_detail}`")
     return False
 
@@ -1024,6 +1153,237 @@ async def check_telegram_bot_runtime_sync() -> None:
     if now - state.bot_selfheal_last_ts < BOT_SELFHEAL_COOLDOWN_SECONDS:
         return
     await selfheal_telegram_bot_runtime()
+
+
+async def check_dnsmasq_config_sync() -> None:
+    paths = _dnsmasq_config_paths()
+    if not paths:
+        return
+    current_hash = _sha256_paths(paths)
+    if not state.dnsmasq_config_hash:
+        state.dnsmasq_config_hash = current_hash
+        return
+    if current_hash == state.dnsmasq_config_hash:
+        return
+
+    logger.warning("Обнаружен drift dnsmasq config → runtime, запускаю reload")
+    alert("⚠️ *dnsmasq config drift* — запускаю reload")
+    rc, out, err = await run_cmd(["dnsmasq", "--test"], timeout=15)
+    if rc != 0:
+        detail = (err or out or f"rc={rc}").strip()[:300]
+        logger.error("dnsmasq self-heal aborted, invalid config: %s", detail)
+        alert(f"🚨 *dnsmasq self-heal failed*: `{detail}`")
+        return
+
+    rc, out, err = await run_cmd(["systemctl", "reload", "dnsmasq"], timeout=20)
+    if rc != 0:
+        detail = (err or out or f"rc={rc}").strip()[:300]
+        logger.warning("dnsmasq reload failed, fallback to restart: %s", detail)
+        alert(f"⚠️ *dnsmasq reload failed* — fallback to restart: `{detail}`")
+        rc, out, err = await run_cmd(["systemctl", "restart", "dnsmasq"], timeout=30)
+        if rc != 0:
+            detail = (err or out or f"rc={rc}").strip()[:300]
+            logger.error("dnsmasq self-heal failed after restart: %s", detail)
+            alert(f"🚨 *dnsmasq self-heal failed*: `{detail}`")
+            return
+
+    rc, out, _ = await run_cmd(["dig", "@127.0.0.1", "google.com", "+short", "+time=3"], timeout=10)
+    if rc == 0 and out.strip():
+        state.dnsmasq_config_hash = current_hash
+        logger.info("dnsmasq config self-heal completed successfully")
+        alert("✅ *dnsmasq self-heal completed* — конфиг перезагружен")
+        state.dnsmasq_up = 1
+        return
+
+    logger.error("dnsmasq self-heal verification failed after reload")
+    alert("🚨 *dnsmasq self-heal incomplete* — после reload DNS не отвечает")
+
+
+async def selfheal_compose_runtime() -> bool:
+    logger.warning("Обнаружен drift docker-compose runtime → source, запускаю controlled recreate")
+    alert("⚠️ *docker-compose runtime drift* — запускаю controlled recreate")
+    state.compose_selfheal_last_ts = time.time()
+    if not COMPOSE_SOURCE_FILE.exists():
+        detail = f"source missing: {COMPOSE_SOURCE_FILE}"
+        state.compose_runtime_drift_detail = detail
+        logger.error("compose self-heal failed: %s", detail)
+        alert(f"🚨 *docker-compose self-heal failed*: `{detail}`")
+        return False
+
+    rc, out, err = await run_cmd(["cp", str(COMPOSE_SOURCE_FILE), str(COMPOSE_RUNTIME_FILE)], timeout=15)
+    if rc != 0:
+        detail = (err or out or f"rc={rc}").strip()[:300]
+        state.compose_runtime_drift_detail = detail
+        logger.error("compose self-heal copy failed: %s", detail)
+        alert(f"🚨 *docker-compose self-heal failed*: `{detail}`")
+        return False
+
+    rc, out, err = await run_cmd(
+        ["docker", "compose", "-f", str(COMPOSE_RUNTIME_FILE), "up", "-d"],
+        timeout=300,
+    )
+    if rc != 0:
+        detail = (err or out or f"rc={rc}").strip()[:300]
+        state.compose_runtime_drift_detail = detail
+        logger.error("compose self-heal recreate failed: %s", detail)
+        alert(f"🚨 *docker-compose self-heal failed*: `{detail}`")
+        return False
+
+    if _sha256_file(COMPOSE_SOURCE_FILE) == _sha256_file(COMPOSE_RUNTIME_FILE):
+        state.compose_runtime_drift = False
+        state.compose_runtime_drift_since = 0.0
+        state.compose_runtime_drift_detail = ""
+        logger.info("docker-compose self-heal completed successfully")
+        alert("✅ *docker-compose self-heal completed* — runtime снова синхронизирован")
+        return True
+
+    state.compose_runtime_drift = True
+    state.compose_runtime_drift_detail = "hash mismatch after recreate"
+    logger.error("docker-compose self-heal incomplete: %s", state.compose_runtime_drift_detail)
+    alert(f"🚨 *docker-compose self-heal incomplete*: `{state.compose_runtime_drift_detail}`")
+    return False
+
+
+async def check_compose_runtime_sync() -> None:
+    if not COMPOSE_SOURCE_FILE.exists() or not COMPOSE_RUNTIME_FILE.exists():
+        state.compose_runtime_drift = False
+        state.compose_runtime_drift_since = 0.0
+        state.compose_runtime_drift_detail = "compose file missing"
+        return
+
+    src_hash = _sha256_file(COMPOSE_SOURCE_FILE)
+    runtime_hash = _sha256_file(COMPOSE_RUNTIME_FILE)
+    now = time.time()
+    if src_hash == runtime_hash:
+        if state.compose_runtime_drift:
+            logger.info("docker-compose runtime снова синхронизирован с /opt/vpn/home/docker-compose.yml")
+        state.compose_runtime_drift = False
+        state.compose_runtime_drift_since = 0.0
+        state.compose_runtime_drift_detail = ""
+        return
+
+    if not state.compose_runtime_drift:
+        state.compose_runtime_drift_since = now
+    state.compose_runtime_drift = True
+    state.compose_runtime_drift_detail = "docker-compose.yml hash mismatch"
+    if now - state.compose_runtime_drift_since < COMPOSE_DRIFT_CONFIRM_SECONDS:
+        return
+    if now - state.compose_selfheal_last_ts < COMPOSE_SELFHEAL_COOLDOWN_SECONDS:
+        return
+    await selfheal_compose_runtime()
+
+
+async def schedule_watchdog_runtime_selfheal() -> bool:
+    if not WATCHDOG_SOURCE_FILE.exists():
+        detail = f"source missing: {WATCHDOG_SOURCE_FILE}"
+        state.watchdog_runtime_drift_detail = detail
+        logger.error("watchdog self-heal failed: %s", detail)
+        alert(f"🚨 *watchdog self-heal failed*: `{detail}`")
+        return False
+
+    logger.warning("Обнаружен drift watchdog runtime → source, планирую self-heal restart")
+    alert("⚠️ *watchdog runtime drift* — планирую self-heal restart")
+    state.watchdog_selfheal_last_ts = time.time()
+    state.save()
+    try:
+        subprocess.Popen(
+            [
+                "bash",
+                "-lc",
+                f"sleep 2 && cp {WATCHDOG_SOURCE_FILE} {WATCHDOG_RUNTIME_FILE} && systemctl restart watchdog.service",
+            ],
+            env=_child_env(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        logger.info("watchdog self-heal restart scheduled")
+        return True
+    except Exception as exc:
+        detail = str(exc)[:300]
+        state.watchdog_runtime_drift_detail = detail
+        logger.error("watchdog self-heal schedule failed: %s", detail)
+        alert(f"🚨 *watchdog self-heal failed*: `{detail}`")
+        return False
+
+
+async def check_watchdog_runtime_sync() -> None:
+    if not WATCHDOG_SOURCE_FILE.exists() or not WATCHDOG_RUNTIME_FILE.exists():
+        state.watchdog_runtime_drift = False
+        state.watchdog_runtime_drift_since = 0.0
+        state.watchdog_runtime_drift_detail = "watchdog file missing"
+        return
+
+    src_hash = _sha256_file(WATCHDOG_SOURCE_FILE)
+    runtime_hash = _sha256_file(WATCHDOG_RUNTIME_FILE)
+    now = time.time()
+    if src_hash == runtime_hash:
+        if state.watchdog_runtime_drift:
+            logger.info("watchdog runtime снова синхронизирован с /opt/vpn/home/watchdog/watchdog.py")
+            alert("✅ *watchdog self-heal completed* — runtime снова синхронизирован")
+        state.watchdog_runtime_drift = False
+        state.watchdog_runtime_drift_since = 0.0
+        state.watchdog_runtime_drift_detail = ""
+        return
+
+    if not state.watchdog_runtime_drift:
+        state.watchdog_runtime_drift_since = now
+    state.watchdog_runtime_drift = True
+    state.watchdog_runtime_drift_detail = "watchdog.py hash mismatch"
+    if now - state.watchdog_runtime_drift_since < WATCHDOG_DRIFT_CONFIRM_SECONDS:
+        return
+    if now - state.watchdog_selfheal_last_ts < WATCHDOG_SELFHEAL_COOLDOWN_SECONDS:
+        return
+    await schedule_watchdog_runtime_selfheal()
+
+
+async def reconcile_wg_runtime_from_db() -> None:
+    devices = _read_expected_device_peers()
+    if not devices:
+        state.peer_reconcile_last_ts = time.time()
+        return
+    runtime_peers = {p.get("public_key", ""): p for p in await _runtime_peer_dump() if p.get("public_key")}
+    fixes = 0
+    for device in devices:
+        pubkey = device["public_key"]
+        expected_ip = device["ip_address"]
+        expected_iface = "wg0" if device["protocol"] == "awg" else "wg1"
+        peer = runtime_peers.get(pubkey)
+        if not peer or peer.get("interface") != expected_iface:
+            continue
+        current_allowed = {part.strip() for part in str(peer.get("allowed_ips", "")).split(",") if part.strip()}
+        expected_allowed = {f"{expected_ip}/32"}
+        if current_allowed == expected_allowed:
+            continue
+        device_label = device["device_name"] or pubkey[:12]
+        logger.warning(
+            "Обнаружен peer drift для %s [%s]: %s -> %s",
+            device_label,
+            expected_iface,
+            ",".join(sorted(current_allowed)) or "(empty)",
+            f"{expected_ip}/32",
+        )
+        alert(
+            f"⚠️ *peer drift* `{device_label}` [{expected_iface}] — "
+            f"`{','.join(sorted(current_allowed)) or '(empty)'}` → `{expected_ip}/32`"
+        )
+        wg = _wg_tool(expected_iface)
+        rc, out, err = await run_cmd(
+            [wg, "set", expected_iface, "peer", pubkey, "allowed-ips", f"{expected_ip}/32"],
+            timeout=15,
+        )
+        if rc != 0:
+            detail = (err or out or f"rc={rc}").strip()[:300]
+            logger.error("peer drift self-heal failed for %s: %s", device_label, detail)
+            alert(f"🚨 *peer self-heal failed* `{device_label}`: `{detail}`")
+            continue
+        await run_cmd([_wg_quick_tool(expected_iface), "save", expected_iface], timeout=15)
+        logger.info("peer drift self-heal completed for %s [%s]", device_label, expected_iface)
+        alert(f"✅ *peer self-heal completed* `{device_label}` [{expected_iface}]")
+        fixes += 1
+    if fixes:
+        logger.info("peer reconcile completed: %s fixes applied", fixes)
+    state.peer_reconcile_last_ts = time.time()
 
 
 async def check_wg_peers() -> None:
@@ -1205,7 +1565,14 @@ async def check_dnsmasq() -> None:
         state.dnsmasq_up = 0
         logger.error("dnsmasq не отвечает, перезапуск")
         alert("⚠️ dnsmasq не отвечает — перезапуск")
-        await run_cmd(["systemctl", "restart", "dnsmasq"])
+        rc2, out2, err2 = await run_cmd(["systemctl", "restart", "dnsmasq"], timeout=30)
+        if rc2 == 0:
+            logger.info("dnsmasq restart completed")
+            alert("✅ *dnsmasq self-heal completed* — сервис перезапущен")
+        else:
+            detail = (err2 or out2 or f"rc={rc2}").strip()[:300]
+            logger.error("dnsmasq restart failed: %s", detail)
+            alert(f"🚨 *dnsmasq self-heal failed*: `{detail}`")
     else:
         state.dnsmasq_up = 1
 
@@ -1661,13 +2028,35 @@ async def _health_quick_checks() -> list[CheckResult]:
     else:
         results.append(CheckResult("telegram_bot_runtime_sync", "ok", weight=5))
 
-    # 7. wg1
+    # 7. docker-compose runtime sync
+    if state.compose_runtime_drift:
+        age = int(max(0, now - state.compose_runtime_drift_since)) if state.compose_runtime_drift_since > 0 else 0
+        status = "fail" if age >= COMPOSE_DRIFT_CONFIRM_SECONDS else "warn"
+        detail = state.compose_runtime_drift_detail or "runtime drift"
+        if age > 0:
+            detail = f"{detail} ({age}s)"
+        results.append(CheckResult("compose_runtime_sync", status, detail, weight=3))
+    else:
+        results.append(CheckResult("compose_runtime_sync", "ok", weight=3))
+
+    # 8. watchdog runtime sync
+    if state.watchdog_runtime_drift:
+        age = int(max(0, now - state.watchdog_runtime_drift_since)) if state.watchdog_runtime_drift_since > 0 else 0
+        status = "fail" if age >= WATCHDOG_DRIFT_CONFIRM_SECONDS else "warn"
+        detail = state.watchdog_runtime_drift_detail or "runtime drift"
+        if age > 0:
+            detail = f"{detail} ({age}s)"
+        results.append(CheckResult("watchdog_runtime_sync", status, detail, weight=3))
+    else:
+        results.append(CheckResult("watchdog_runtime_sync", "ok", weight=3))
+
+    # 9. wg1
     if state.wg1_up:
         results.append(CheckResult("wg1_active", "ok", weight=3))
     else:
         results.append(CheckResult("wg1_active", "warn", "wg1 не найден (нет WG клиентов?)", weight=3))
 
-    # 8. xray-client* (хотя бы один)
+    # 10. xray-client* (хотя бы один)
     xray = [k for k in state.docker_health if "xray-client" in k]
     xray_ok = sum(1 for c in xray if state.docker_health.get(c) == 1)
     if xray and xray_ok > 0:
@@ -2651,6 +3040,10 @@ async def monitoring_loop() -> None:
                 await check_wg_peers()
                 await check_containers()
                 await check_telegram_bot_runtime_sync()
+                await check_compose_runtime_sync()
+                await check_watchdog_runtime_sync()
+                await check_dnsmasq_config_sync()
+                await reconcile_wg_runtime_from_db()
 
             # Каждые 30 мин: проверка эффективности DPI bypass
             if tick % 180 == 0:
