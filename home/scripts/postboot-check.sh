@@ -10,6 +10,7 @@ source /opt/vpn/.env 2>/dev/null || true
 log() { echo "[$(date '+%H:%M:%S')] POSTBOOT: $*"; }
 PASS=0
 FAIL=0
+WARN=0
 REPORT=""
 
 check() {
@@ -26,6 +27,13 @@ check() {
     fi
 }
 
+warn() {
+    local name="$1"
+    log "WARN: $name"
+    ((WARN++))
+    REPORT+="⚠️ $name\n"
+}
+
 log "=== Post-boot проверка ==="
 
 # Ждём поднятия сервисов
@@ -40,6 +48,16 @@ check "wg0 (AWG)" "ip link show wg0"
 check "wg1 (WG)" "ip link show wg1"
 check "DNS резолвинг" "dig @127.0.0.1 google.com +short +time=5"
 check "nft blocked_static" "nft list set inet vpn blocked_static"
+if nft list set inet vpn blocked_dynamic > /dev/null 2>&1; then
+    check "nft blocked_dynamic" "nft list set inet vpn blocked_dynamic"
+else
+    warn "nft blocked_dynamic отсутствует"
+fi
+if nft list set inet vpn dpi_direct > /dev/null 2>&1; then
+    check "nft dpi_direct" "nft list set inet vpn dpi_direct"
+else
+    warn "nft dpi_direct отсутствует"
+fi
 check "DKMS awg" "dkms status | grep -q 'amneziawg'"
 check "telegram-bot" "docker inspect --format '{{.State.Running}}' telegram-bot | grep -q true"
 
@@ -67,7 +85,7 @@ HOSTNAME=$(hostname)
 STATUS_EMOJI=$([[ $FAIL -eq 0 ]] && echo "✅" || echo "⚠️")
 MESSAGE="${STATUS_EMOJI} *Post-boot отчёт* (${HOSTNAME})
 
-Прошло: ${PASS}, Не прошло: ${FAIL}
+Прошло: ${PASS}, Предупреждения: ${WARN}, Не прошло: ${FAIL}
 
 $(echo -e "$REPORT")
 Ядро: \`${CURRENT_KERNEL}\`
@@ -87,12 +105,30 @@ WD_PORT="${WATCHDOG_PORT:-8080}"
 WD_TOKEN="${WATCHDOG_API_TOKEN:-}"
 for i in {1..9}; do
     sleep 10
-    AUTH=""
-    [[ -n "$WD_TOKEN" ]] && AUTH="-H \"Authorization: Bearer ${WD_TOKEN}\""
-    if curl -sf --max-time 5 ${AUTH} "http://127.0.0.1:${WD_PORT}/status" > /dev/null 2>&1; then
+    if curl -sf --max-time 5 -H "Authorization: Bearer ${WD_TOKEN}" "http://127.0.0.1:${WD_PORT}/status" > /dev/null 2>&1; then
         log "Watchdog API доступен (попытка ${i})"
         break
     fi
 done
+
+if HEALTH_JSON="$(curl -sf --max-time 10 -H "Authorization: Bearer ${WD_TOKEN}" "http://127.0.0.1:${WD_PORT}/health" 2>/dev/null)"; then
+    HEALTH_SUMMARY="$(printf '%s' "$HEALTH_JSON" | python3 - <<'PY'
+import json, sys
+h = json.load(sys.stdin)
+s = h.get("summary", {})
+print(f"✅ {s.get('ok', 0)}  ⚠️ {s.get('warn', 0)}  ❌ {s.get('fail', 0)}")
+for check in h.get("checks", []):
+    if check.get("status") == "fail":
+        detail = check.get("detail", "") or check.get("details", "")
+        print(f"FAIL {check.get('name', '?')} {detail}".strip())
+PY
+)"
+    HEALTH_MESSAGE="🩺 *Watchdog recovery health* (${HOSTNAME})\n\n${HEALTH_SUMMARY}"
+    if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_ADMIN_CHAT_ID:-}" ]]; then
+        curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_ADMIN_CHAT_ID}&text=${HEALTH_MESSAGE}&parse_mode=Markdown" \
+            > /dev/null || true
+    fi
+fi
 
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1

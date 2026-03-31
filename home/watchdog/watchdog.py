@@ -2544,6 +2544,85 @@ async def _dpi_enable_impl() -> None:
     logger.info("[DPI] включён")
 
 
+async def _startup_reconcile() -> None:
+    """Агрессивное восстановление runtime сразу после загрузки/рестарта."""
+    actions: list[str] = []
+    failures: list[str] = []
+
+    try:
+        await check_dnsmasq()
+        actions.append("dnsmasq")
+    except Exception as exc:
+        failures.append(f"dnsmasq: {exc}")
+
+    try:
+        await check_dnsmasq_config_sync()
+        actions.append("dnsmasq-config")
+    except Exception as exc:
+        failures.append(f"dnsmasq-config: {exc}")
+
+    try:
+        await check_telegram_bot_runtime_sync()
+        actions.append("telegram-bot-runtime")
+    except Exception as exc:
+        failures.append(f"telegram-bot-runtime: {exc}")
+
+    try:
+        await check_compose_runtime_sync()
+        actions.append("compose-runtime")
+    except Exception as exc:
+        failures.append(f"compose-runtime: {exc}")
+
+    try:
+        await check_watchdog_runtime_sync()
+        actions.append("watchdog-runtime")
+    except Exception as exc:
+        failures.append(f"watchdog-runtime: {exc}")
+
+    try:
+        await reconcile_wg_runtime_from_db()
+        actions.append("wg-peer-reconcile")
+    except Exception as exc:
+        failures.append(f"wg-peer-reconcile: {exc}")
+
+    try:
+        await check_nftset_counts()
+        actions.append("nftset-counts")
+    except Exception as exc:
+        failures.append(f"nftset-counts: {exc}")
+
+    try:
+        await check_nfqws_counter()
+        actions.append("nfqws")
+    except Exception as exc:
+        failures.append(f"nfqws: {exc}")
+
+    try:
+        await check_containers()
+        actions.append("containers")
+    except Exception as exc:
+        failures.append(f"containers: {exc}")
+
+    report = await health_checker.run_quick()
+    summary = report.get("summary", {})
+    if failures:
+        logger.warning("startup reconcile completed with failures: %s", "; ".join(failures))
+        alert(
+            "⚠️ *startup reconcile completed with issues*\n"
+            f"Actions: `{', '.join(actions)}`\n"
+            f"Health: ✅ {summary.get('ok', 0)}  ⚠️ {summary.get('warn', 0)}  ❌ {summary.get('fail', 0)}\n"
+            + "\n".join(f"• `{item[:180]}`" for item in failures[:8])
+        )
+        return
+
+    logger.info("startup reconcile completed successfully: %s", ", ".join(actions))
+    alert(
+        "✅ *startup reconcile completed*\n"
+        f"Actions: `{', '.join(actions)}`\n"
+        f"Health: ✅ {summary.get('ok', 0)}  ⚠️ {summary.get('warn', 0)}  ❌ {summary.get('fail', 0)}"
+    )
+
+
 async def _dpi_disable_impl() -> None:
     """Выключить DPI bypass: routing убрать, dnsmasq очистить."""
     state.dpi_enabled = False
@@ -4535,7 +4614,7 @@ async def on_startup() -> None:
         zp_restore = plugins.get("zapret")
         if zp_restore:
             await zp_restore.activate()   # добавить NFQUEUE-правила (nfqws уже запущен выше)
-        await _regen_dpi_dnsmasq()
+        await _dpi_sync_active_domains()
         logger.info("[DPI] DPI bypass восстановлен при старте (NFQUEUE активирован)")
 
     # Consistency recovery
@@ -4552,6 +4631,7 @@ async def on_startup() -> None:
     asyncio.create_task(decision_loop(),       name="decision-loop")
     asyncio.create_task(monitoring_loop(),     name="monitoring-loop")
     asyncio.create_task(_run_tier2_proxy(),    name="tier2-proxy")
+    asyncio.create_task(_startup_reconcile(),  name="startup-reconcile")
 
     _notify_systemd(b"READY=1")
     logger.info(f"Watchdog готов. Стек: {state.active_stack}, degraded={state.degraded_mode}")
