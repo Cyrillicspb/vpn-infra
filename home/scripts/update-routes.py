@@ -1040,6 +1040,20 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def normalize_generated_text(text: str) -> str:
+    """Нормализует автогенерированный текст для change-detection.
+
+    Убирает только volatile header-поля вроде timestamp, чтобы повторный no-op
+    прогон не выглядел как изменение.
+    """
+    lines = []
+    for line in text.splitlines():
+        if line.startswith("# Обновлено:"):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip() + "\n"
+
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -1135,15 +1149,6 @@ def main() -> None:
         log.info(f"  Удалены:   {', '.join(diff['removed'][:5])}{'...' if diff['removed_total'] > 5 else ''}")
 
     # ── Проверяем изменился ли результат ──────────────────────────────────────
-    combined_content = (
-        f"# combined.cidr — AllowedIPs для WireGuard клиентов\n"
-        f"# Обновлено: {datetime.now(timezone.utc).isoformat()}\n"
-        f"# Записей: {len(allowed_networks)}\n"
-        f"# nft blocked_static: {len(nft_networks)} (полный)\n"
-        + "\n".join(new_cidr_lines)
-        + "\n"
-    )
-    new_hash = content_hash(combined_content)
     dnsmasq_domains_content, _, _ = render_dnsmasq_config(
         list(all_domains),
         DNSMASQ_DOMAINS.name,
@@ -1158,12 +1163,37 @@ def main() -> None:
         header_comment="manual-vpn.txt (добавлены через /vpn add)",
         exclude_domains=dpi_domains,
     )
-    current_dnsmasq_domains = DNSMASQ_DOMAINS.read_text(encoding="utf-8") if DNSMASQ_DOMAINS.exists() else ""
-    current_dnsmasq_force = DNSMASQ_FORCE.read_text(encoding="utf-8") if DNSMASQ_FORCE.exists() else ""
+    normalized_dnsmasq_domains = normalize_generated_text(dnsmasq_domains_content)
+    normalized_dnsmasq_force = normalize_generated_text(dnsmasq_force_content)
+    stable_hash_payload = json.dumps(
+        {
+            "allowed_ips": new_cidr_lines,
+            "dnsmasq_domains": normalized_dnsmasq_domains,
+            "dnsmasq_force": normalized_dnsmasq_force,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    new_hash = content_hash(stable_hash_payload)
+    combined_content = (
+        f"# combined.cidr — AllowedIPs для WireGuard клиентов\n"
+        f"# Обновлено: {datetime.now(timezone.utc).isoformat()}\n"
+        f"# Записей: {len(allowed_networks)}\n"
+        f"# nft blocked_static: {len(nft_networks)} (полный)\n"
+        + "\n".join(new_cidr_lines)
+        + "\n"
+    )
+    current_dnsmasq_domains = normalize_generated_text(
+        DNSMASQ_DOMAINS.read_text(encoding="utf-8")
+    ) if DNSMASQ_DOMAINS.exists() else ""
+    current_dnsmasq_force = normalize_generated_text(
+        DNSMASQ_FORCE.read_text(encoding="utf-8")
+    ) if DNSMASQ_FORCE.exists() else ""
     changed = (
         new_hash != old_hash
-        or dnsmasq_domains_content != current_dnsmasq_domains
-        or dnsmasq_force_content != current_dnsmasq_force
+        or normalized_dnsmasq_domains != current_dnsmasq_domains
+        or normalized_dnsmasq_force != current_dnsmasq_force
     )
 
     if not changed and not force:
