@@ -1980,7 +1980,11 @@ async def _health_quick_checks() -> list[CheckResult]:
     # 1. Event loop alive
     loop_age = now - state.last_monitoring_tick if state.last_monitoring_tick > 0 else -1
     if loop_age < 0:
-        results.append(CheckResult("watchdog_event_loop", "warn", "ещё не запущен", weight=10))
+        warmup_age = int(max(0, now - state.started_at.timestamp()))
+        if warmup_age <= 60:
+            results.append(CheckResult("watchdog_event_loop", "ok", "startup warmup", weight=10))
+        else:
+            results.append(CheckResult("watchdog_event_loop", "warn", "ещё не запущен", weight=10))
     elif loop_age < 90:
         results.append(CheckResult("watchdog_event_loop", "ok", f"tick {loop_age:.0f}s назад", weight=10))
     else:

@@ -76,11 +76,50 @@ router = Router()
 def _installed_version_label() -> str:
     try:
         version = Path("/opt/vpn/version").read_text(encoding="utf-8").strip()
+        version = version[1:] if version.startswith("v") else version
         if version and all(ch.isdigit() or ch == "." for ch in version):
             return f"v{version}"
     except Exception:
         pass
     return "неизвестно"
+
+
+def _render_health_html(h: dict) -> str:
+    score  = h.get("score", 0)
+    status = h.get("status", "unknown")
+    tier   = h.get("tier", "?")
+    ts     = h.get("timestamp", "")
+    pdw    = h.get("post_deploy_watch", False)
+    summary = h.get("summary", {})
+
+    if score >= 80:
+        score_emoji = "✅"
+    elif score >= 50:
+        score_emoji = "⚠️"
+    else:
+        score_emoji = "🔴"
+
+    lines = [
+        f"{score_emoji} <b>Health Score: {score:.0f}/100</b> — {status}",
+        f"Tier: {tier} | {ts}",
+    ]
+    if pdw:
+        lines.append("🔍 <i>Post-deploy watch активен</i>")
+    lines.append(
+        f"✅ {summary.get('ok', 0)}  ⚠️ {summary.get('warn', 0)}  ❌ {summary.get('fail', 0)}"
+    )
+    lines.append("")
+
+    icon_map = {"ok": "✅", "warn": "⚠️", "fail": "❌"}
+    for check in h.get("checks", []):
+        icon   = icon_map.get(check.get("status", "warn"), "❓")
+        name   = check.get("name", "?")
+        detail = check.get("detail", "")
+        line   = f"{icon} <code>{name}</code>"
+        if detail:
+            line += f" — {detail}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 async def _cleanup_bootstrap_peers(
@@ -291,43 +330,7 @@ async def cmd_health(message: Message, state: FSMContext, **kw):
     except Exception as e:
         await message.answer(f"❌ Watchdog недоступен: {e}")
         return
-
-    score  = h.get("score", 0)
-    status = h.get("status", "unknown")
-    tier   = h.get("tier", "?")
-    ts     = h.get("timestamp", "")
-    pdw    = h.get("post_deploy_watch", False)
-    summary = h.get("summary", {})
-
-    if score >= 80:
-        score_emoji = "✅"
-    elif score >= 50:
-        score_emoji = "⚠️"
-    else:
-        score_emoji = "🔴"
-
-    lines = [
-        f"{score_emoji} <b>Health Score: {score:.0f}/100</b> — {status}",
-        f"Tier: {tier} | {ts}",
-    ]
-    if pdw:
-        lines.append("🔍 <i>Post-deploy watch активен</i>")
-    lines.append(
-        f"✅ {summary.get('ok', 0)}  ⚠️ {summary.get('warn', 0)}  ❌ {summary.get('fail', 0)}"
-    )
-    lines.append("")
-
-    icon_map = {"ok": "✅", "warn": "⚠️", "fail": "❌"}
-    for check in h.get("checks", []):
-        icon   = icon_map.get(check.get("status", "warn"), "❓")
-        name   = check.get("name", "?")
-        detail = check.get("detail", "")
-        line   = f"{icon} <code>{name}</code>"
-        if detail:
-            line += f" — {detail}"
-        lines.append(line)
-
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await message.answer(_render_health_html(h), parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------
@@ -1547,6 +1550,17 @@ async def cb_adm_system(cb: CallbackQuery, **kw):
 @router.callback_query(F.data == "adm:monitor")
 async def cb_adm_monitor(cb: CallbackQuery, **kw):
     await _edit_or_answer(cb, "📊 <b>Мониторинг</b>", admin_monitor_menu())
+
+
+@router.callback_query(F.data == "adm:health")
+async def cb_adm_health(cb: CallbackQuery, **kw):
+    await cb.answer("Обновляю health...")
+    try:
+        h = await _wc().get_health()
+    except Exception as e:
+        await _edit_or_answer(cb, f"❌ Watchdog недоступен: {e}", admin_monitor_menu())
+        return
+    await _edit_or_answer(cb, _render_health_html(h), admin_monitor_menu())
 
 
 @router.callback_query(F.data == "adm:logs_system")

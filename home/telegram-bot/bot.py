@@ -44,10 +44,13 @@ _log_level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.IN
 def _installed_version_label() -> str:
     env_version = os.getenv("APP_VERSION", "").strip()
     if env_version:
-        return env_version if env_version.startswith("v") else f"v{env_version}"
+        version = env_version[1:] if env_version.startswith("v") else env_version
+        if version and all(ch.isdigit() or ch == "." for ch in version):
+            return f"v{version}"
     for path_str in ("/opt/vpn/version", "/app/version"):
         try:
             version = Path(path_str).read_text(encoding="utf-8").strip()
+            version = version[1:] if version.startswith("v") else version
             if version and all(ch.isdigit() or ch == "." for ch in version):
                 return f"v{version}"
         except Exception:

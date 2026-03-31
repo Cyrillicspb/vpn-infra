@@ -99,10 +99,11 @@ def admin_tunnel_menu() -> InlineKeyboardMarkup:
 def admin_monitor_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
+            InlineKeyboardButton(text="❤️ Health",         callback_data="adm:health"),
             InlineKeyboardButton(text="🐳 Docker",          callback_data="adm:docker"),
-            InlineKeyboardButton(text="📊 Трафик клиентов", callback_data="adm:stats"),
         ],
         [
+            InlineKeyboardButton(text="📊 Трафик клиентов", callback_data="adm:stats"),
             InlineKeyboardButton(text="⚡ Спидтест",        callback_data="adm:speedtest"),
             InlineKeyboardButton(text="📉 Графики",         callback_data="adm:graph_menu"),
         ],
