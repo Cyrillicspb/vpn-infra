@@ -139,13 +139,16 @@ async def _cleanup_bootstrap_peers(
 def _dpi_status_summary(st: dict) -> tuple[str, str, str]:
     enabled = st.get("enabled", False)
     zapret = st.get("zapret_running", False)
+    traffic_active = st.get("traffic_active", False)
     services = st.get("services", [])
     active_services = [svc for svc in services if svc.get("enabled")]
 
-    if enabled and zapret and active_services:
+    if enabled and zapret and traffic_active and active_services:
         return "✅ ВКЛЮЧЁН", "🟢", ""
     if enabled and not active_services:
         return "⚠️ НЕТ СЕРВИСОВ", "🔴", "Добавь хотя бы один сервис через /dpi add"
+    if enabled and zapret and not traffic_active:
+        return "⚠️ STANDBY", "🟡", "nfqws запущен, но NFQUEUE dataplane не активирован"
     if enabled and not zapret:
         return "⚠️ НЕАКТИВЕН", "🔴", "zapret/nfqws не запущен"
     return "❌ ВЫКЛЮЧЕН", "🔴", ""

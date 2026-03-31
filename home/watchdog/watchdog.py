@@ -1969,6 +1969,15 @@ async def check_nfqws_counter() -> None:
         state.nfqws_ok = False
 
 
+async def _dpi_dataplane_active() -> bool:
+    """Проверить, что DPI lane реально активирован, а не только запущен в standby."""
+    rc_zp, _, _ = await run_cmd(["nft", "list", "table", "inet", "zapret_main"], timeout=5)
+    if rc_zp != 0:
+        return False
+    await check_nfqws_counter()
+    return state.nfqws_ok is True
+
+
 # ---------------------------------------------------------------------------
 # Health Check — check helper functions
 # ---------------------------------------------------------------------------
@@ -2544,6 +2553,49 @@ async def _dpi_enable_impl() -> None:
     logger.info("[DPI] включён")
 
 
+async def _ensure_dpi_dataplane_active(reason: str, notify: bool = True) -> bool:
+    """Довести DPI bypass до реально активного NFQUEUE dataplane."""
+    enabled_services = [svc for svc in state.dpi_services if svc.get("enabled")]
+    if not (state.dpi_enabled and enabled_services):
+        return True
+    if await _dpi_dataplane_active():
+        return True
+
+    zp = plugins.get("zapret")
+    if not zp:
+        logger.warning("[DPI] dataplane inactive (%s): zapret plugin not loaded", reason)
+        return False
+
+    ok_test, _ = await zp.test(timeout=5)
+    if not ok_test:
+        await zp.start()
+    activated = await zp.activate()
+    active_now = await _dpi_dataplane_active()
+    service_names = ", ".join(s.get("display", s["name"]) for s in enabled_services)
+
+    if activated and active_now:
+        msg = (
+            f"♻️ *DPI dataplane self-heal*\n"
+            f"Причина: `{reason}`\n"
+            f"Сервисы: {service_names}\n"
+            "NFQUEUE dataplane был в standby и был активирован заново."
+        )
+        logger.warning("[DPI] dataplane self-healed (%s)", reason)
+        if notify:
+            alert(msg)
+        return True
+
+    logger.warning("[DPI] dataplane remains inactive after heal attempt (%s)", reason)
+    if notify:
+        alert(
+            f"⚠️ *DPI dataplane heal failed*\n"
+            f"Причина: `{reason}`\n"
+            f"Сервисы: {service_names}\n"
+            "zapret запущен, но NFQUEUE dataplane не активировался."
+        )
+    return False
+
+
 async def _startup_reconcile() -> None:
     """Агрессивное восстановление runtime сразу после загрузки/рестарта."""
     actions: list[str] = []
@@ -2596,6 +2648,12 @@ async def _startup_reconcile() -> None:
         actions.append("nfqws")
     except Exception as exc:
         failures.append(f"nfqws: {exc}")
+
+    try:
+        await _ensure_dpi_dataplane_active("startup-reconcile")
+        actions.append("dpi-dataplane-heal")
+    except Exception as exc:
+        failures.append(f"dpi-dataplane-heal: {exc}")
 
     try:
         await check_containers()
@@ -3171,6 +3229,7 @@ async def monitoring_loop() -> None:
                 await check_watchdog_runtime_sync()
                 await check_dnsmasq_config_sync()
                 await reconcile_wg_runtime_from_db()
+                await _ensure_dpi_dataplane_active("monitoring-10min")
 
             # Каждые 30 мин: проверка эффективности DPI bypass
             if tick % 180 == 0:
@@ -3844,14 +3903,21 @@ async def get_dpi_status(_: bool = Depends(_auth)):
     ip_count = len(_re.findall(r'\d+\.\d+\.\d+\.\d+', out)) if rc == 0 else 0
     zp = plugins.get("zapret")
     zapret_ok = False
+    traffic_active = False
     if zp:
         try:
             zapret_ok, _ = await zp.test(timeout=5)
         except Exception as exc:
             logger.debug("zapret test failed: %s", exc)
+    if zapret_ok:
+        try:
+            traffic_active = await _dpi_dataplane_active()
+        except Exception as exc:
+            logger.debug("dpi dataplane status failed: %s", exc)
     return {
         "enabled": state.dpi_enabled,
         "zapret_running": zapret_ok,
+        "traffic_active": traffic_active,
         "services": state.dpi_services,
         "presets": list(DPI_SERVICE_PRESETS.keys()),
         "dpi_direct_ip_count": ip_count,
