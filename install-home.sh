@@ -813,7 +813,7 @@ EOF
 
     chmod 600 /etc/wireguard/wg0.conf /etc/wireguard/wg1.conf
     log_ok "Конфиги wg0 (AWG) и wg1 (WG) созданы"
-    # Примечание: wg-quick@wg0 и wg1 запускаются после Tier-2 в phase3 (шаг 46)
+    # Примечание: awg-quick@wg0 и wg-quick@wg1 запускаются после Tier-2 в phase3 (шаг 46)
     step_done "step22_wireguard_configs"
 fi
 

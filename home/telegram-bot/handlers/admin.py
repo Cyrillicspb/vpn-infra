@@ -137,7 +137,7 @@ MANUAL_VPN    = Path("/etc/vpn-routes/manual-vpn.txt")
 MANUAL_DIRECT = Path("/etc/vpn-routes/manual-direct.txt")
 ALLOWED_SERVICES = {
     "dnsmasq", "watchdog", "hysteria2", "docker",
-    "wg-quick@wg0", "wg-quick@wg1", "nftables",
+    "awg-quick@wg0", "wg-quick@wg1", "nftables",
 }
 
 

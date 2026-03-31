@@ -1,7 +1,7 @@
 [Unit]
 Description=VPN Policy Routing (fwmark + table 200/100)
 Documentation=https://github.com/Cyrillicspb/vpn-infra/blob/main/docs/ARCHITECTURE.md
-After=network-online.target nftables.service wg-quick@wg0.service wg-quick@wg1.service
+After=network-online.target nftables.service awg-quick@wg0.service wg-quick@wg1.service
 Wants=network-online.target
 Before=watchdog.service docker.service dnsmasq.service
 

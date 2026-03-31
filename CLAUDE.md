@@ -299,7 +299,7 @@ Git pull через VPS-зеркало (ssh-proxy.sh → активный SOCKS5
 
 ## SYSTEMD — ПОРЯДОК ЗАГРУЗКИ
 
-1. nftables → 2. vpn-sets-restore → 3. wg-quick@wg0/wg1 → 4. vpn-routes → 5. dnsmasq → 6. hysteria2 → 7. watchdog → 8. docker → 9. vpn-postboot
+1. nftables → 2. vpn-sets-restore → 3. awg-quick@wg0 + wg-quick@wg1 → 4. vpn-routes → 5. dnsmasq → 6. hysteria2 → 7. watchdog → 8. docker → 9. vpn-postboot
 
 nftables: БЕЗ ExecStop flush.
 

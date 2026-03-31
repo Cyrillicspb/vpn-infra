@@ -73,11 +73,9 @@ else
     warn "table 200 default маршрут отсутствует (стек не поднят)"
 fi
 
-# 7. awg-quick@wg0 сервис (AmneziaWG Tier-2 туннель)
+# 7. awg-quick@wg0 сервис (клиентский AmneziaWG ingress)
 if systemctl is-active --quiet "awg-quick@wg0"; then
     pass "awg-quick@wg0 активен"
-elif systemctl is-active --quiet "wg-quick@wg0"; then
-    pass "wg-quick@wg0 активен"
 else
     fail "awg-quick@wg0 не запущен"
 fi

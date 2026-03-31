@@ -5,7 +5,7 @@ Documentation=https://github.com/Cyrillicspb/vpn-infra/blob/main/docs/ARCHITECTU
 # и ДО dnsmasq (dnsmasq при старте начнёт добавлять в blocked_dynamic,
 # static должен быть уже загружен)
 After=nftables.service
-Before=dnsmasq.service vpn-routes.service wg-quick@wg0.service wg-quick@wg1.service
+Before=dnsmasq.service vpn-routes.service awg-quick@wg0.service wg-quick@wg1.service
 
 [Service]
 Type=oneshot

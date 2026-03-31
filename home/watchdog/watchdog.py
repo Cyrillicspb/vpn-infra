@@ -2957,7 +2957,7 @@ async def _routes_update_task() -> None:
 @limiter.limit("10/second")
 async def post_service_restart(request: Request, req: ServiceRestartRequest, _: bool = Depends(_auth)):
     allowed = {"dnsmasq", "watchdog", "hysteria2", "nftables", "docker",
-               "wg-quick@wg0", "wg-quick@wg1"}
+               "awg-quick@wg0", "wg-quick@wg1"}
     if req.service not in allowed:
         raise HTTPException(status_code=400, detail=f"Сервис '{req.service}' не разрешён")
     rc, _, err = await run_cmd(["systemctl", "restart", req.service], timeout=30)

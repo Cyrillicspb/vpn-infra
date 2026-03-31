@@ -192,7 +192,7 @@ def admin_restart_menu() -> InlineKeyboardMarkup:
         ("watchdog",  "watchdog"),
         ("hysteria2", "hysteria2"),
         ("docker",    "docker"),
-        ("wg0",       "wg-quick@wg0"),
+        ("wg0",       "awg-quick@wg0"),
         ("wg1",       "wg-quick@wg1"),
         ("nftables",  "nftables"),
     ]

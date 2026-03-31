@@ -5,7 +5,7 @@
 #   table 200 (marked): fwmark 0x1 → заблокированный трафик → tun (VPS)
 #   table 100 (vpn):    VPN-клиенты без fwmark → незаблокированное → eth0 (прямой)
 #
-# Запускается как vpn-routes.service (After=wg-quick@wg0 wg-quick@wg1)
+# Запускается как vpn-routes.service (After=awg-quick@wg0 wg-quick@wg1)
 # При смене активного tun: watchdog вызывает этот скрипт повторно с аргументом TUN_IFACE
 #
 # Использование:

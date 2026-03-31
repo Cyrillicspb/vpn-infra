@@ -57,7 +57,7 @@ for wg_iface in wg0 wg1; do
     fi
 done
 
-for svc in "awg-quick@wg0" "awg-quick@wg1" "wg-quick@wg0" "wg-quick@wg1"; do
+for svc in "awg-quick@wg0" "wg-quick@wg1"; do
     systemctl stop    "$svc" 2>/dev/null || true
     systemctl disable "$svc" 2>/dev/null || true
 done
@@ -229,8 +229,6 @@ VPN_SERVICES=(
     vpn-sets-restore
     vpn-postboot
     awg-quick@wg0
-    awg-quick@wg1
-    wg-quick@wg0
     wg-quick@wg1
 )
 

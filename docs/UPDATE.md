@@ -257,7 +257,7 @@ sudo bash restore.sh --component database  vpn-backup-LATEST.tar.gz.gpg
 # DKMS слетел после обновления ядра:
 sudo apt install linux-headers-$(uname -r)
 sudo dkms install amneziawg -v $(dkms status | grep amneziawg | awk '{print $2}' | tr -d ',')
-sudo systemctl restart wg-quick@wg0 wg-quick@wg1
+sudo systemctl restart awg-quick@wg0 wg-quick@wg1
 ```
 
 ---
