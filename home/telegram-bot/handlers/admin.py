@@ -1102,6 +1102,7 @@ async def cb_dev_approve(cb: CallbackQuery, **kw):
                         device["device_name"],
                         device["protocol"],
                         device["public_key"],
+                        device.get("ip_address", ""),
                     )
                 except Exception:
                     pass
