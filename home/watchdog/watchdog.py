@@ -71,6 +71,13 @@ STATE_FILE   = Path("/opt/vpn/watchdog/state.json")
 PLUGINS_DIR  = Path("/opt/vpn/watchdog/plugins")
 ROUTES_DIR   = Path("/etc/vpn-routes")
 LOG_FILE     = "/var/log/vpn-watchdog.log"
+FUNCTIONAL_MODE_OFF = "off"
+FUNCTIONAL_MODE_STAGED = "staged"
+FUNCTIONAL_MODE_ACTIVE = "active"
+FUNCTIONAL_EXEC_DISABLED = "disabled"
+FUNCTIONAL_EXEC_HEALTHY = "healthy"
+FUNCTIONAL_EXEC_DEGRADED = "degraded"
+FUNCTIONAL_EXEC_AUTO_DISABLED = "auto_disabled"
 FUNCTIONAL_SCENARIOS_CANDIDATES = [
     Path("/opt/vpn/home/health/functional-scenarios.yaml"),
     Path("/opt/vpn/health/functional-scenarios.yaml"),
@@ -1055,6 +1062,11 @@ class WatchdogState:
         self.server_repo_alert_last_ts: float = 0.0
         self.peer_reconcile_last_ts: float = 0.0
         self.planned_disruptions: dict[str, dict[str, Any]] = {}
+        self.functional_mode: str = FUNCTIONAL_MODE_STAGED
+        self.functional_execution_status: str = FUNCTIONAL_EXEC_DISABLED
+        self.functional_execution_last_error: str = ""
+        self.functional_execution_auto_disabled_reason: str = ""
+        self.functional_infra_checks: list[dict[str, Any]] = []
         self.functional_results: dict[str, dict[str, Any]] = {}
         self.functional_summary: dict[str, Any] = {}
         self.last_functional_run_by_tier: dict[str, float] = {}
@@ -1112,6 +1124,11 @@ class WatchdogState:
             "server_repo_alert_last_ts": self.server_repo_alert_last_ts,
             "peer_reconcile_last_ts": self.peer_reconcile_last_ts,
             "planned_disruptions": self.planned_disruptions,
+            "functional_mode": self.functional_mode,
+            "functional_execution_status": self.functional_execution_status,
+            "functional_execution_last_error": self.functional_execution_last_error,
+            "functional_execution_auto_disabled_reason": self.functional_execution_auto_disabled_reason,
+            "functional_infra_checks": self.functional_infra_checks,
             "functional_results": self.functional_results,
             "functional_summary": self.functional_summary,
             "last_functional_run_by_tier": self.last_functional_run_by_tier,
@@ -1161,6 +1178,24 @@ class WatchdogState:
                 self.server_repo_alert_last_ts = float(data.get("server_repo_alert_last_ts", 0.0) or 0.0)
                 self.peer_reconcile_last_ts = float(data.get("peer_reconcile_last_ts", 0.0) or 0.0)
                 self.planned_disruptions = data.get("planned_disruptions", {}) or {}
+                self.functional_mode = str(data.get("functional_mode") or FUNCTIONAL_MODE_STAGED).strip().lower()
+                if self.functional_mode not in {FUNCTIONAL_MODE_OFF, FUNCTIONAL_MODE_STAGED, FUNCTIONAL_MODE_ACTIVE}:
+                    self.functional_mode = FUNCTIONAL_MODE_STAGED
+                self.functional_execution_status = str(
+                    data.get("functional_execution_status") or FUNCTIONAL_EXEC_DISABLED
+                ).strip().lower()
+                if self.functional_execution_status not in {
+                    FUNCTIONAL_EXEC_DISABLED,
+                    FUNCTIONAL_EXEC_HEALTHY,
+                    FUNCTIONAL_EXEC_DEGRADED,
+                    FUNCTIONAL_EXEC_AUTO_DISABLED,
+                }:
+                    self.functional_execution_status = FUNCTIONAL_EXEC_DISABLED
+                self.functional_execution_last_error = str(data.get("functional_execution_last_error") or "")
+                self.functional_execution_auto_disabled_reason = str(
+                    data.get("functional_execution_auto_disabled_reason") or ""
+                )
+                self.functional_infra_checks = data.get("functional_infra_checks", []) or []
                 self.functional_results = data.get("functional_results", {}) or {}
                 self.functional_summary = data.get("functional_summary", {}) or {}
                 self.last_functional_run_by_tier = data.get("last_functional_run_by_tier", {}) or {}
@@ -1187,6 +1222,92 @@ class WatchdogState:
 
 
 state = WatchdogState()
+
+
+def _functional_mode() -> str:
+    mode = str(state.functional_mode or FUNCTIONAL_MODE_STAGED).strip().lower()
+    if mode not in {FUNCTIONAL_MODE_OFF, FUNCTIONAL_MODE_STAGED, FUNCTIONAL_MODE_ACTIVE}:
+        return FUNCTIONAL_MODE_STAGED
+    return mode
+
+
+def _functional_active() -> bool:
+    return _functional_mode() == FUNCTIONAL_MODE_ACTIVE
+
+
+def _set_functional_disabled_summary(status: str, reason: str, tier: str) -> None:
+    state.functional_results = {}
+    state.functional_evidence_store = {}
+    state.last_functional_run_by_tier[tier] = time.time()
+    state.functional_summary = {
+        "status": status,
+        "reason": reason,
+        "tier": tier,
+        "mode": _functional_mode(),
+        "execution_status": state.functional_execution_status,
+    }
+
+
+def _functional_infra_check(name: str, ok: bool, detail: str = "") -> dict[str, Any]:
+    return {
+        "name": name,
+        "status": "ok" if ok else "fail",
+        "detail": detail,
+    }
+
+
+async def _functional_preflight_checks() -> list[dict[str, Any]]:
+    checks: list[dict[str, Any]] = []
+    manifest_path = _functional_manifest_path()
+    checks.append(
+        _functional_infra_check(
+            "manifest",
+            manifest_path is not None and manifest_path.exists(),
+            str(manifest_path) if manifest_path else "missing",
+        )
+    )
+    for unit in ("dnsmasq", "nftables", "vpn-routes", "ssh"):
+        rc, out, err = await run_cmd(["systemctl", "is-active", unit], timeout=8)
+        detail = (out or err).strip() or "unknown"
+        checks.append(_functional_infra_check(f"systemd:{unit}", rc == 0 and detail == "active", detail))
+    rc, _, _ = await run_cmd(["ss", "-ltn", "sport", "=", ":22"], timeout=5)
+    checks.append(_functional_infra_check("ssh-listen", rc == 0, "port 22"))
+    return checks
+
+
+def _set_functional_execution_failure(tier: str, reason: str, detail: str) -> list["CheckResult"]:
+    state.functional_execution_status = FUNCTIONAL_EXEC_AUTO_DISABLED
+    state.functional_execution_last_error = detail[:300]
+    state.functional_execution_auto_disabled_reason = reason
+    state.functional_infra_checks = [_functional_infra_check("execution", False, detail[:200])]
+    state.functional_results = {
+        "__execution__": {
+            "status": "fail",
+            "detail": detail[:200],
+            "weight": 10,
+        }
+    }
+    state.functional_evidence_store = {
+        "__execution__": {
+            "status": "fail",
+            "reason": reason,
+            "detail": detail[:300],
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        }
+    }
+    state.last_functional_run_by_tier[tier] = time.time()
+    state.functional_summary = {
+        "status": FUNCTIONAL_EXEC_AUTO_DISABLED,
+        "reason": reason,
+        "tier": tier,
+        "mode": _functional_mode(),
+        "execution_status": state.functional_execution_status,
+        "ok": 0,
+        "fail": 1,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    state.save()
+    return [CheckResult("functional_execution", "fail", detail[:200], weight=10, tier="functional")]
 
 
 # ---------------------------------------------------------------------------
@@ -2811,23 +2932,66 @@ async def _run_functional_scenario(scenario: FunctionalScenario) -> tuple[CheckR
 
 
 async def _run_functional_checks_for_tier(tier: str) -> list[CheckResult]:
+    mode = _functional_mode()
+    state.functional_infra_checks = await _functional_preflight_checks()
+    preflight_ok = all(check.get("status") == "ok" for check in state.functional_infra_checks)
+
+    if mode == FUNCTIONAL_MODE_OFF:
+        state.functional_execution_status = FUNCTIONAL_EXEC_DISABLED
+        state.functional_execution_last_error = ""
+        state.functional_execution_auto_disabled_reason = ""
+        _set_functional_disabled_summary("off", "functional_mode_off", tier)
+        state.save()
+        return []
+
     try:
         scenarios = [s for s in load_functional_scenarios() if s.enabled and tier in s.tiers]
     except Exception as exc:
         logger.error("Functional scenario loading failed: %s", exc)
+        state.functional_execution_status = FUNCTIONAL_EXEC_DEGRADED
+        state.functional_execution_last_error = str(exc)[:300]
+        state.functional_execution_auto_disabled_reason = ""
         state.functional_results = {}
         state.functional_evidence_store = {}
         state.last_functional_run_by_tier[tier] = time.time()
-        state.functional_summary = {"status": "error", "reason": str(exc)[:200], "tier": tier}
+        state.functional_summary = {
+            "status": "error",
+            "reason": str(exc)[:200],
+            "tier": tier,
+            "mode": mode,
+            "execution_status": state.functional_execution_status,
+        }
         state.save()
-        return [CheckResult("functional_manifest", "fail", str(exc)[:200], weight=5, tier="functional")]
+        return [CheckResult("functional_manifest", "fail", str(exc)[:200], weight=5, tier="functional")] if mode == FUNCTIONAL_MODE_ACTIVE else []
     if not scenarios:
-        state.functional_results = {}
-        state.functional_evidence_store = {}
-        state.last_functional_run_by_tier[tier] = time.time()
-        state.functional_summary = {"status": "disabled", "reason": "no_scenarios", "tier": tier}
+        if mode == FUNCTIONAL_MODE_ACTIVE:
+            return _set_functional_execution_failure(tier, "no_scenarios", "functional mode is active but no scenarios are enabled")
+        state.functional_execution_status = FUNCTIONAL_EXEC_DISABLED
+        state.functional_execution_last_error = ""
+        state.functional_execution_auto_disabled_reason = ""
+        _set_functional_disabled_summary("disabled", "no_scenarios", tier)
         state.save()
         return []
+
+    if mode == FUNCTIONAL_MODE_STAGED:
+        state.functional_execution_status = FUNCTIONAL_EXEC_DISABLED
+        state.functional_execution_last_error = ""
+        state.functional_execution_auto_disabled_reason = ""
+        _set_functional_disabled_summary("staged", "staged_mode", tier)
+        state.save()
+        return []
+
+    if state.functional_execution_status == FUNCTIONAL_EXEC_AUTO_DISABLED:
+        detail = state.functional_execution_last_error or "functional execution auto-disabled"
+        return _set_functional_execution_failure(tier, state.functional_execution_auto_disabled_reason or "auto_disabled", detail)
+
+    if not preflight_ok:
+        detail = "; ".join(
+            f"{check['name']}={check.get('detail', '')}".strip("=")
+            for check in state.functional_infra_checks
+            if check.get("status") != "ok"
+        ) or "functional preflight failed"
+        return _set_functional_execution_failure(tier, "preflight_failed", detail)
 
     results: list[CheckResult] = []
     evidence_store: dict[str, dict[str, Any]] = {}
@@ -2841,10 +3005,17 @@ async def _run_functional_checks_for_tier(tier: str) -> list[CheckResult]:
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
             }
             continue
-        result, evidence = await _run_functional_scenario(scenario)
+        try:
+            result, evidence = await _run_functional_scenario(scenario)
+        except Exception as exc:
+            logger.error("Functional execution failed for %s: %s", scenario.id, exc)
+            return _set_functional_execution_failure(tier, "scenario_execution_failed", f"{scenario.id}: {exc}")
         results.append(result)
         evidence_store[scenario.id] = evidence
 
+    state.functional_execution_status = FUNCTIONAL_EXEC_HEALTHY
+    state.functional_execution_last_error = ""
+    state.functional_execution_auto_disabled_reason = ""
     state.functional_results = {
         result.name.removeprefix("functional_"): {"status": result.status, "detail": result.detail, "weight": result.weight}
         for result in results
@@ -2856,12 +3027,16 @@ async def _run_functional_checks_for_tier(tier: str) -> list[CheckResult]:
         "ok": sum(1 for r in results if r.status == "ok"),
         "fail": sum(1 for r in results if r.status == "fail"),
         "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "mode": mode,
+        "execution_status": state.functional_execution_status,
     }
     state.save()
     return results
 
 
 def _cached_functional_check_results() -> list[CheckResult]:
+    if _functional_mode() != FUNCTIONAL_MODE_ACTIVE and state.functional_execution_status != FUNCTIONAL_EXEC_AUTO_DISABLED:
+        return []
     results: list[CheckResult] = []
     for scenario_id, payload in (state.functional_results or {}).items():
         results.append(
@@ -3228,6 +3403,9 @@ class HealthChecker:
                 "fail": sum(1 for r in results if r.status == "fail"),
             },
             "post_deploy_watch": time.time() < state.post_deploy_until,
+            "functional_mode": _functional_mode(),
+            "functional_execution_status": state.functional_execution_status,
+            "functional_infra_checks": state.functional_infra_checks,
             "functional_summary": state.functional_summary,
             "functional_results": state.functional_results,
             "functional_evidence": state.functional_evidence_store,
@@ -4167,7 +4345,8 @@ async def monitoring_loop() -> None:
     await check_watchdog_runtime_sync()
     await check_server_repo_sync()
     state.last_monitoring_tick = time.time()
-    asyncio.create_task(_run_functional_checks_for_tier("quick"), name="functional-warmup")
+    if _functional_mode() != FUNCTIONAL_MODE_OFF:
+        asyncio.create_task(_run_functional_checks_for_tier("quick"), name="functional-warmup")
     await health_checker.run_quick()
 
     while True:
@@ -4231,7 +4410,7 @@ async def monitoring_loop() -> None:
                 asyncio.create_task(_check_dpi_effectiveness())
 
             # Каждые 15 мин: lightweight functional health refresh
-            if tick % 90 == 0:
+            if tick % 90 == 0 and _functional_mode() != FUNCTIONAL_MODE_OFF:
                 asyncio.create_task(_run_functional_checks_for_tier("quick"), name="functional-quick")
 
             # Каждые 6 ч: large speedtest, кэш маршрутов, сертификаты, DKMS
@@ -4370,6 +4549,10 @@ class FunctionalRunRequest(BaseModel):
     tier: str = "standard"
 
 
+class FunctionalModeRequest(BaseModel):
+    mode: str = FUNCTIONAL_MODE_STAGED
+
+
 # ---------------------------------------------------------------------------
 # API Endpoints — GET
 # ---------------------------------------------------------------------------
@@ -4395,6 +4578,9 @@ async def get_status(_: bool = Depends(_auth)):
             "ram_percent": ram.percent,
             "cpu_percent": psutil.cpu_percent(interval=0.5),
         },
+        "functional_mode": _functional_mode(),
+        "functional_execution_status": state.functional_execution_status,
+        "functional_infra_checks": state.functional_infra_checks,
         "functional_summary": state.functional_summary,
     }
 
@@ -4514,11 +4700,40 @@ async def get_health(_: bool = Depends(_auth)):
 @app.get("/functional/status")
 async def get_functional_status(_: bool = Depends(_auth)):
     return {
+        "mode": _functional_mode(),
+        "execution_status": state.functional_execution_status,
+        "execution_last_error": state.functional_execution_last_error,
+        "execution_auto_disabled_reason": state.functional_execution_auto_disabled_reason,
+        "infra_checks": state.functional_infra_checks,
         "summary": state.functional_summary,
         "results": state.functional_results,
         "evidence": state.functional_evidence_store,
         "last_run_by_tier": state.last_functional_run_by_tier,
         "manifest_path": str(_functional_manifest_path()) if _functional_manifest_path() else None,
+    }
+
+
+@app.post("/functional/mode")
+async def post_functional_mode(request: Request, req: FunctionalModeRequest, _: bool = Depends(_auth)):
+    await audit_log(request, "functional.mode", {"mode": req.mode})
+    mode = str(req.mode or FUNCTIONAL_MODE_STAGED).strip().lower()
+    if mode not in {FUNCTIONAL_MODE_OFF, FUNCTIONAL_MODE_STAGED, FUNCTIONAL_MODE_ACTIVE}:
+        raise HTTPException(status_code=400, detail="mode must be off|staged|active")
+    state.functional_mode = mode
+    state.functional_execution_last_error = ""
+    state.functional_execution_auto_disabled_reason = ""
+    if mode == FUNCTIONAL_MODE_ACTIVE:
+        state.functional_execution_status = FUNCTIONAL_EXEC_DEGRADED
+    else:
+        state.functional_execution_status = FUNCTIONAL_EXEC_DISABLED
+    await _run_functional_checks_for_tier("quick")
+    report = await health_checker.run_quick()
+    return {
+        "mode": _functional_mode(),
+        "execution_status": state.functional_execution_status,
+        "functional_summary": state.functional_summary,
+        "functional_results": state.functional_results,
+        "health": report,
     }
 
 
@@ -4537,6 +4752,10 @@ async def post_functional_run(request: Request, req: FunctionalRunRequest, _: bo
         report = await health_checker.run_quick()
     return {
         "tier": tier,
+        "mode": _functional_mode(),
+        "execution_status": state.functional_execution_status,
+        "execution_last_error": state.functional_execution_last_error,
+        "infra_checks": state.functional_infra_checks,
         "functional_summary": state.functional_summary,
         "functional_results": state.functional_results,
         "health": report,

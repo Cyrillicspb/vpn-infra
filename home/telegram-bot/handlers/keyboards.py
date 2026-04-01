@@ -124,6 +124,11 @@ def admin_monitor_menu() -> InlineKeyboardMarkup:
 def admin_functional_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
+            InlineKeyboardButton(text="🟢 Active", callback_data="adm:functional:mode:active"),
+            InlineKeyboardButton(text="🟡 Staged", callback_data="adm:functional:mode:staged"),
+            InlineKeyboardButton(text="⚫ Off", callback_data="adm:functional:mode:off"),
+        ],
+        [
             InlineKeyboardButton(text="🔄 Quick", callback_data="adm:functional:run:quick"),
             InlineKeyboardButton(text="🔄 Standard", callback_data="adm:functional:run:standard"),
             InlineKeyboardButton(text="🔄 Deep", callback_data="adm:functional:run:deep"),

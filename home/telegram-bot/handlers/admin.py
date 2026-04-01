@@ -93,6 +93,8 @@ def _render_health_html(h: dict) -> str:
     pdw    = h.get("post_deploy_watch", False)
     summary = h.get("summary", {})
     functional = h.get("functional_summary", {})
+    functional_mode = h.get("functional_mode", "")
+    functional_execution = h.get("functional_execution_status", "")
 
     if score >= 80:
         score_emoji = "✅"
@@ -115,6 +117,8 @@ def _render_health_html(h: dict) -> str:
             "🧪 Functional: "
             f"✅ {functional.get('ok', 0)}  ❌ {functional.get('fail', 0)}"
             + (f" | {functional.get('status', '')}" if functional.get("status") else "")
+            + (f" | mode={functional_mode}" if functional_mode else "")
+            + (f" | exec={functional_execution}" if functional_execution else "")
         )
     lines.append("")
 
@@ -133,21 +137,38 @@ def _render_health_html(h: dict) -> str:
 def _render_functional_html(payload: dict) -> str:
     summary = payload.get("summary") or payload.get("functional_summary") or {}
     results = payload.get("results") or payload.get("functional_results") or {}
+    infra_checks = payload.get("infra_checks") or []
+    mode = payload.get("mode") or summary.get("mode") or "staged"
+    execution_status = payload.get("execution_status") or summary.get("execution_status") or "disabled"
+    last_error = payload.get("execution_last_error") or ""
     ts = summary.get("timestamp", "")
     ok = summary.get("ok", 0)
     fail = summary.get("fail", 0)
     tier = summary.get("tier", "?")
     status = summary.get("status", "")
     lines = [f"🧪 <b>Functional Health</b>"]
+    lines.append(f"Mode: <code>{mode}</code> | Exec: <code>{execution_status}</code>")
     if ts or tier != "?":
         lines.append(f"Tier: {tier} | {ts}")
     if status:
         lines.append(f"Статус: {status}")
     lines.append(f"✅ {ok}  ❌ {fail}")
+    if last_error:
+        lines.append(f"Ошибка: <code>{last_error[:180]}</code>")
+    failed_infra = [check for check in infra_checks if check.get("status") != "ok"]
+    if failed_infra:
+        lines.append("")
+        lines.append("<b>Infra</b>")
+        for check in failed_infra[:8]:
+            detail = check.get("detail", "")
+            line = f"❌ <code>{check.get('name', '?')}</code>"
+            if detail:
+                line += f" — {detail}"
+            lines.append(line)
     failing = [(name, data) for name, data in results.items() if data.get("status") == "fail"]
     if not results:
         lines.append("")
-        lines.append("Нет functional verdicts.")
+        lines.append("Нет active functional verdicts.")
         return "\n".join(lines)
     lines.append("")
     if failing:
@@ -366,6 +387,8 @@ async def cmd_status(message: Message, state: FSMContext, **kw):
                 "\n\n"
                 f"*Functional*: ✅ {functional.get('ok', 0)}  ❌ {functional.get('fail', 0)}"
                 + (f" | tier `{functional.get('tier')}`" if functional.get("tier") else "")
+                + (f" | mode `{s.get('functional_mode')}`" if s.get("functional_mode") else "")
+                + (f" | exec `{s.get('functional_execution_status')}`" if s.get("functional_execution_status") else "")
             )
     except WatchdogError as e:
         text = f"❌ Watchdog недоступен: {e}"
@@ -1659,6 +1682,28 @@ async def cb_adm_functional_run(cb: CallbackQuery, **kw):
         await _edit_or_answer(cb, f"❌ Watchdog недоступен: {e}", admin_functional_menu())
         return
     await _edit_or_answer(cb, _render_functional_html(data), admin_functional_menu())
+
+
+@router.callback_query(F.data.startswith("adm:functional:mode:"))
+async def cb_adm_functional_mode(cb: CallbackQuery, **kw):
+    mode = cb.data.rsplit(":", 1)[-1]
+    if mode not in {"off", "staged", "active"}:
+        await cb.answer("Неизвестный режим", show_alert=True)
+        return
+    await cb.answer(f"Переключаю functional mode → {mode}...")
+    try:
+        data = await _wc().set_functional_mode(mode)
+    except Exception as e:
+        await _edit_or_answer(cb, f"❌ Watchdog недоступен: {e}", admin_functional_menu())
+        return
+    payload = {
+        "mode": data.get("mode"),
+        "execution_status": data.get("execution_status"),
+        "functional_summary": data.get("functional_summary"),
+        "functional_results": data.get("functional_results"),
+        "infra_checks": (data.get("health") or {}).get("functional_infra_checks", []),
+    }
+    await _edit_or_answer(cb, _render_functional_html(payload), admin_functional_menu())
 
 
 @router.callback_query(F.data == "adm:logs_system")

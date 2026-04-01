@@ -97,6 +97,17 @@ SPEC.loader.exec_module(watchdog)
 
 
 class FunctionalHealthTests(unittest.TestCase):
+    def setUp(self) -> None:
+        watchdog.state.functional_mode = watchdog.FUNCTIONAL_MODE_STAGED
+        watchdog.state.functional_execution_status = watchdog.FUNCTIONAL_EXEC_DISABLED
+        watchdog.state.functional_execution_last_error = ""
+        watchdog.state.functional_execution_auto_disabled_reason = ""
+        watchdog.state.functional_results = {}
+        watchdog.state.functional_summary = {}
+        watchdog.state.functional_evidence_store = {}
+        watchdog.state.functional_infra_checks = []
+        watchdog.state.last_functional_run_by_tier = {}
+
     def test_load_functional_scenarios_reads_manifest(self) -> None:
         manifest = """
 scenarios:
@@ -147,6 +158,7 @@ scenarios:
 
     def test_cached_functional_results_affect_health_score(self) -> None:
         checker = watchdog.HealthChecker()
+        watchdog.state.functional_mode = watchdog.FUNCTIONAL_MODE_ACTIVE
         watchdog.state.functional_results = {
             "lan_direct_internet": {
                 "status": "fail",
@@ -170,14 +182,76 @@ scenarios:
             probe_type="dns_only",
             targets=[{"host": "youtube.com"}],
         )
+        watchdog.state.functional_mode = watchdog.FUNCTIONAL_MODE_ACTIVE
         watchdog.state.dpi_enabled = False
         watchdog.state.dpi_experimental_opt_in = False
         with mock.patch.object(watchdog, "load_functional_scenarios", return_value=[scenario]):
-            results = asyncio.run(watchdog._run_functional_checks_for_tier("quick"))
+            with mock.patch.object(watchdog, "_functional_preflight_checks", return_value=[]):
+                results = asyncio.run(watchdog._run_functional_checks_for_tier("quick"))
 
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].status, "ok")
         self.assertEqual(results[0].weight, 0)
+
+    def test_staged_mode_clears_results_and_does_not_run_scenarios(self) -> None:
+        scenario = watchdog.FunctionalScenario(
+            id="lan_direct",
+            enabled=True,
+            description="lan",
+            tiers=["quick"],
+            client_path="lan",
+            routing_expectation="direct",
+            probe_type="dns_only",
+            targets=[{"host": "example.com"}],
+        )
+        watchdog.state.functional_mode = watchdog.FUNCTIONAL_MODE_STAGED
+        with mock.patch.object(watchdog, "load_functional_scenarios", return_value=[scenario]):
+            with mock.patch.object(watchdog, "_functional_preflight_checks", return_value=[]):
+                results = asyncio.run(watchdog._run_functional_checks_for_tier("quick"))
+
+        self.assertEqual(results, [])
+        self.assertEqual(watchdog.state.functional_summary.get("status"), "staged")
+        self.assertEqual(watchdog.state.functional_results, {})
+
+    def test_cached_results_ignored_when_not_active(self) -> None:
+        watchdog.state.functional_mode = watchdog.FUNCTIONAL_MODE_STAGED
+        watchdog.state.functional_results = {
+            "lan_direct_internet": {"status": "fail", "detail": "cached fail", "weight": 10}
+        }
+        self.assertEqual(watchdog._cached_functional_check_results(), [])
+
+    def test_active_mode_preflight_failure_auto_disables_execution(self) -> None:
+        scenario = watchdog.FunctionalScenario(
+            id="lan_direct",
+            enabled=True,
+            description="lan",
+            tiers=["quick"],
+            client_path="lan",
+            routing_expectation="direct",
+            probe_type="dns_only",
+            targets=[{"host": "example.com"}],
+        )
+        watchdog.state.functional_mode = watchdog.FUNCTIONAL_MODE_ACTIVE
+        checks = [watchdog._functional_infra_check("manifest", False, "missing")]
+        with mock.patch.object(watchdog, "load_functional_scenarios", return_value=[scenario]):
+            with mock.patch.object(watchdog, "_functional_preflight_checks", return_value=checks):
+                results = asyncio.run(watchdog._run_functional_checks_for_tier("quick"))
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].name, "functional_execution")
+        self.assertEqual(results[0].status, "fail")
+        self.assertEqual(watchdog.state.functional_execution_status, watchdog.FUNCTIONAL_EXEC_AUTO_DISABLED)
+        self.assertEqual(watchdog.state.functional_results.get("__execution__", {}).get("status"), "fail")
+
+    def test_active_mode_without_scenarios_fails_execution(self) -> None:
+        watchdog.state.functional_mode = watchdog.FUNCTIONAL_MODE_ACTIVE
+        with mock.patch.object(watchdog, "load_functional_scenarios", return_value=[]):
+            with mock.patch.object(watchdog, "_functional_preflight_checks", return_value=[]):
+                results = asyncio.run(watchdog._run_functional_checks_for_tier("quick"))
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].status, "fail")
+        self.assertEqual(watchdog.state.functional_execution_status, watchdog.FUNCTIONAL_EXEC_AUTO_DISABLED)
 
 
 if __name__ == "__main__":

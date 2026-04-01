@@ -78,6 +78,9 @@ class WatchdogClient:
     async def run_functional(self, tier: str = "standard") -> dict:
         return await self._post("/functional/run", {"tier": tier}, timeout=90)
 
+    async def set_functional_mode(self, mode: str) -> dict:
+        return await self._post("/functional/mode", {"mode": mode}, timeout=60)
+
     async def get_metrics(self) -> str:
         data = await self._get("/metrics")
         return data.decode() if isinstance(data, bytes) else str(data)
