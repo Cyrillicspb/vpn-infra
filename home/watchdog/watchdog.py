@@ -1054,6 +1054,41 @@ async def speedtest_direct() -> float:
     return 0.0
 
 
+async def direct_uplink_available() -> bool:
+    """Проверить, есть ли прямой uplink через ISP.
+
+    Нужно отделять реальную деградацию VPN-стека от внешнего outage у провайдера.
+    В gateway mode при потере uplink failover между стекомами бесполезен, а
+    рестарты dnsmasq только добавляют churn и удлиняют восстановление.
+    """
+    iface = NET_INTERFACE or "eth0"
+
+    # Сначала быстрый L3-check до upstream gateway, если он известен.
+    if GATEWAY_IP:
+        rc, _, _ = await run_cmd(
+            ["ping", "-c", "1", "-W", "2", "-I", iface, GATEWAY_IP],
+            timeout=4,
+        )
+        if rc != 0:
+            return False
+
+    # Затем лёгкий HTTP-check напрямую через ISP, без VPN.
+    for url in DIRECT_TEST_SERVERS[:2]:
+        rc, out, _ = await run_cmd(
+            [
+                "curl", "-sL", "--max-time", "6",
+                "--interface", iface,
+                "-o", "/dev/null", "-w", "%{http_code}",
+                url,
+            ],
+            timeout=10,
+        )
+        if rc == 0 and out.strip() == "200":
+            return True
+
+    return False
+
+
 async def speedtest_iperf_vps() -> float:
     """Замер download-скорости от VPS через iperf3 (tier-2 туннель). Возвращает Mbps."""
     cmd = [
@@ -1893,6 +1928,9 @@ async def check_dnsmasq() -> None:
     rc, out, _ = await run_cmd(["dig", "@127.0.0.1", "google.com", "+short", "+time=3"], timeout=10)
     if rc != 0 or not out.strip():
         state.dnsmasq_up = 0
+        if not await direct_uplink_available():
+            logger.warning("dnsmasq upstream недоступен из-за ISP uplink outage, restart пропущен")
+            return
         logger.error("dnsmasq не отвечает, перезапуск")
         begin_planned_disruption(
             "dnsmasq-restart",
@@ -3549,6 +3587,13 @@ async def decision_loop() -> None:
                 logger.warning(f"Ping fail #{ping_fails}")
                 if ping_fails >= 3:
                     ping_fails = 0
+                    if not await direct_uplink_available():
+                        logger.warning("Прямой uplink через ISP недоступен, failover стеков пропущен")
+                        state.degraded_mode = True
+                        if state.all_stacks_down_since is None:
+                            state.all_stacks_down_since = datetime.now()
+                        await asyncio.sleep(20)
+                        continue
                     await _do_failover("ping_timeout")
 
             # Ротация (взаимоисключает с failover)

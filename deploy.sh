@@ -415,11 +415,27 @@ apply_system_configs() {
     local changed=false
 
     # nftables.conf
+    # В gateway mode нельзя копировать базовый home/nftables/nftables.conf напрямую:
+    # LAN DNS/forward/NAT правила добавляются generate-nftables.sh поверх базового шаблона.
     local src="$REPO_DIR/home/nftables/nftables.conf"
     local dst="/etc/nftables.conf"
+    local generate_nft="/opt/vpn/scripts/generate-nftables.sh"
+    local server_mode="${SERVER_MODE:-hosted}"
     if [[ -f "$src" ]] && ! sha256sum -c <(sha256sum "$dst" 2>/dev/null | awk '{print $1 "  '"$src"'"}') &>/dev/null; then
         log_info "nftables.conf изменился — применяем..."
-        if nft -c -f "$src" 2>/dev/null; then
+        if [[ "$server_mode" == "gateway" && -x "$generate_nft" ]]; then
+            if bash "$generate_nft" --check >/dev/null 2>&1; then
+                bash "$generate_nft" \
+                    && log_ok "nftables обновлён через generate-nftables.sh" \
+                    || log_warn "generate-nftables.sh завершился с ошибкой"
+                nft -f /etc/nftables-blocked-static.conf 2>/dev/null \
+                    && log_ok "blocked_static восстановлен" \
+                    || log_warn "blocked_static не найден — будет заполнен dnsmasq"
+                changed=true
+            else
+                log_warn "generate-nftables.sh --check завершился с ошибкой — пропускаем обновление nftables"
+            fi
+        elif nft -c -f "$src" 2>/dev/null; then
             cp "$src" "$dst"
             nft -f "$dst" && log_ok "nftables обновлён" || log_warn "nft -f завершился с ошибкой"
             # nftables.conf делает flush ruleset — восстанавливаем blocked_static
