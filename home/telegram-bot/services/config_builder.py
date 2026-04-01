@@ -17,6 +17,7 @@ import os
 import random
 import subprocess
 import base64
+import ipaddress
 from pathlib import Path
 from typing import Optional
 
@@ -67,7 +68,7 @@ def _rand32() -> int:
     return random.randint(1, 2 ** 32 - 1)
 
 
-def _load_allowed_ips(protocol: str, excludes: list[str]) -> list[str]:
+def _load_allowed_ips(protocol: str, excludes: list[str], server_routes: list[str]) -> list[str]:
     dns_entries = [
         "10.177.1.1/32" if protocol == "awg" else "10.177.3.1/32",
     ]
@@ -78,14 +79,30 @@ def _load_allowed_ips(protocol: str, excludes: list[str]) -> list[str]:
     lines = COMBINED_CIDR.read_text().splitlines()
     allowed = [ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")]
 
-    if excludes:
-        allowed = [ip for ip in allowed if ip not in excludes]
+    normalized_excludes = {_normalize_allowed_ip_entry(item) for item in excludes}
+    if normalized_excludes:
+        allowed = [ip for ip in allowed if _normalize_allowed_ip_entry(ip) not in normalized_excludes]
 
     result = dns_entries[:]
+    for route in server_routes:
+        normalized_route = _normalize_allowed_ip_entry(route)
+        if normalized_route not in result:
+            result.append(normalized_route)
     for ip in allowed:
-        if ip not in result:
-            result.append(ip)
+        normalized_ip = _normalize_allowed_ip_entry(ip)
+        if normalized_ip not in result:
+            result.append(normalized_ip)
     return result
+
+
+def _normalize_allowed_ip_entry(value: str) -> str:
+    raw = value.strip()
+    try:
+        addr = ipaddress.ip_address(raw)
+        return f"{addr}/32" if addr.version == 4 else f"{addr}/128"
+    except ValueError:
+        net = ipaddress.ip_network(raw, strict=False)
+        return str(net)
 
 
 def _render(device: dict, allowed_ips: list[str]) -> str:
@@ -414,6 +431,7 @@ class ConfigBuilder:
         self,
         device: dict,
         excludes: Optional[list[str]] = None,
+        server_routes: Optional[list[str]] = None,
     ) -> tuple[str, Optional[bytes], str]:
         """
         Возвращает (conf_text, qr_png_or_None, version_hash).
@@ -421,12 +439,13 @@ class ConfigBuilder:
         выполняется на сервере через nftables.
         """
         excludes   = excludes or []
+        server_routes = server_routes or []
         protocol   = device.get("protocol", "awg")
         if device.get("is_router"):
             dns = "10.177.1.1/32" if protocol == "awg" else "10.177.3.1/32"
             allowed = [dns, "0.0.0.0/0"]
         else:
-            allowed = _load_allowed_ips(protocol, excludes)
+            allowed = _load_allowed_ips(protocol, excludes, server_routes)
         conf_text  = _render(device, allowed)
         version    = _version(conf_text)
         qr: Optional[bytes] = _make_qr(conf_text) if len(allowed) <= QR_MAX_IPS else None

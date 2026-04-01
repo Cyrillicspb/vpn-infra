@@ -86,7 +86,7 @@ def admin_tunnel_menu() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🖥️ VPS",             callback_data="adm:vps"),
-            InlineKeyboardButton(text="⚡ DPI bypass",      callback_data="adm:dpi"),
+            InlineKeyboardButton(text="🧪 DPI experimental", callback_data="adm:dpi"),
         ],
         [
             InlineKeyboardButton(text="🌍 Внешний IP",      callback_data="adm:ip"),
@@ -263,7 +263,7 @@ def admin_routes_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔄 Обновить маршруты", callback_data="adm:routes_update"),
         ],
         [
-            InlineKeyboardButton(text="⚡ DPI bypass",      callback_data="adm:dpi"),
+            InlineKeyboardButton(text="🧪 DPI experimental", callback_data="adm:dpi"),
             InlineKeyboardButton(text="📊 Наборы IP",       callback_data="adm:nft_stats"),
         ],
         [
@@ -280,9 +280,9 @@ def admin_dpi_menu(enabled: bool, services: list[dict]) -> InlineKeyboardMarkup:
 
     # Глобальный вкл/выкл
     if enabled:
-        rows.append([InlineKeyboardButton(text="❌ Выключить DPI bypass", callback_data="adm:dpi_off")])
+        rows.append([InlineKeyboardButton(text="❌ Выключить DPI experimental", callback_data="adm:dpi_off")])
     else:
-        rows.append([InlineKeyboardButton(text="✅ Включить DPI bypass",  callback_data="adm:dpi_on")])
+        rows.append([InlineKeyboardButton(text="✅ Включить DPI experimental",  callback_data="adm:dpi_on")])
 
     # Пресеты (добавить если нет)
     preset_names = {s["name"] for s in services}
@@ -485,6 +485,9 @@ def client_main_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🚫 Исключения",           callback_data="cl:excludes"),
         ],
         [
+            InlineKeyboardButton(text="📍 Через сервер",         callback_data="cl:sroutes"),
+        ],
+        [
             InlineKeyboardButton(text="📶 Статус VPN",          callback_data="cl:status"),
             InlineKeyboardButton(text="ℹ️ Помощь",              callback_data="cl:help"),
         ],
@@ -526,6 +529,19 @@ def client_excludes_menu() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="➖ Удалить",         callback_data="cl:ex_remove"),
+        ],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="cl:menu")],
+    ])
+
+
+def client_server_routes_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📋 Список",         callback_data="cl:sr_list"),
+            InlineKeyboardButton(text="➕ Добавить",        callback_data="cl:sr_add"),
+        ],
+        [
+            InlineKeyboardButton(text="➖ Удалить",         callback_data="cl:sr_remove"),
         ],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="cl:menu")],
     ])
@@ -577,6 +593,8 @@ def device_detail_kb(device_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📥 Получить конфиг",    callback_data=f"cl:getconf:{device_id}")],
         [InlineKeyboardButton(text="🔄 Обновить конфиг",    callback_data=f"cl:upd1:{device_id}")],
+        [InlineKeyboardButton(text="🚫 Исключения",         callback_data=f"cl:devex:{device_id}")],
+        [InlineKeyboardButton(text="📍 Маршруты через сервер", callback_data=f"cl:devsr:{device_id}")],
         [InlineKeyboardButton(text="🗑 Удалить устройство", callback_data=f"cl:del:{device_id}")],
         _nav_row("cl:mydevices", home_cb="cl:menu"),
     ])
@@ -609,4 +627,66 @@ def excludes_inline_kb(excludes: list[dict], device_id: int) -> InlineKeyboardMa
         for e in excludes[:20]
     ]
     rows.append(_nav_row("cl:excludes", home_cb="cl:menu"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def device_excludes_menu(device_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📋 Список", callback_data=f"cl:devex_list:{device_id}"),
+            InlineKeyboardButton(text="➕ Добавить", callback_data=f"cl:devex_add:{device_id}"),
+        ],
+        [
+            InlineKeyboardButton(text="➖ Удалить", callback_data=f"cl:devex_remove:{device_id}"),
+        ],
+        _nav_row(f"cl:dev:{device_id}", home_cb="cl:menu"),
+    ])
+
+
+def device_excludes_inline_kb(excludes: list[dict], device_id: int) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(
+            text=f"❌ {item['subnet']}",
+            callback_data=f"cl:devex_del:{device_id}:{item['subnet'][:30]}",
+        )]
+        for item in excludes[:20]
+    ]
+    rows.append(_nav_row(f"cl:devex:{device_id}", home_cb=f"cl:dev:{device_id}"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def server_routes_inline_kb(routes: list[dict], device_id: int) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(
+            text=f"❌ {route['subnet']}",
+            callback_data=f"cl:sr_del:{device_id}:{route['subnet'][:30]}",
+        )]
+        for route in routes[:20]
+    ]
+    rows.append(_nav_row("cl:sroutes", home_cb="cl:menu"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def device_server_routes_menu(device_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📋 Список", callback_data=f"cl:devsr_list:{device_id}"),
+            InlineKeyboardButton(text="➕ Добавить", callback_data=f"cl:devsr_add:{device_id}"),
+        ],
+        [
+            InlineKeyboardButton(text="➖ Удалить", callback_data=f"cl:devsr_remove:{device_id}"),
+        ],
+        _nav_row(f"cl:dev:{device_id}", home_cb="cl:menu"),
+    ])
+
+
+def device_server_routes_inline_kb(routes: list[dict], device_id: int) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(
+            text=f"❌ {route['subnet']}",
+            callback_data=f"cl:devsr_del:{device_id}:{route['subnet'][:30]}",
+        )]
+        for route in routes[:20]
+    ]
+    rows.append(_nav_row(f"cl:devsr:{device_id}", home_cb=f"cl:dev:{device_id}"))
     return InlineKeyboardMarkup(inline_keyboard=rows)

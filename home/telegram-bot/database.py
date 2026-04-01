@@ -7,6 +7,7 @@ database.py — SQLite база данных бота (WAL mode)
   domain_requests — запросы на маршруты (vpn/direct)
   invite_codes   — одноразовые коды приглашений
   excludes       — исключения подсетей per device
+  server_routes  — подсети/IP per device, которые нужно вести через сервер
 """
 import asyncio
 import logging
@@ -127,6 +128,14 @@ class Database:
                         UNIQUE(device_id, subnet)
                     );
 
+                    CREATE TABLE IF NOT EXISTS server_routes (
+                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        device_id   INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                        subnet      TEXT    NOT NULL,
+                        created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+                        UNIQUE(device_id, subnet)
+                    );
+
                     CREATE INDEX IF NOT EXISTS idx_clients_chat_id
                         ON clients(chat_id);
                     CREATE INDEX IF NOT EXISTS idx_devices_client_id
@@ -135,6 +144,8 @@ class Database:
                         ON domain_requests(chat_id);
                     CREATE INDEX IF NOT EXISTS idx_domain_requests_status
                         ON domain_requests(status);
+                    CREATE INDEX IF NOT EXISTS idx_server_routes_device_id
+                        ON server_routes(device_id);
                 """)
                 conn.commit()
                 # Миграция: пересоздать clients если старая схема (device_name NOT NULL)
@@ -916,6 +927,44 @@ class Database:
         try:
             rows = conn.execute(
                 "SELECT subnet FROM excludes WHERE device_id = ?", (device_id,)
+            ).fetchall()
+            return [{"subnet": r["subnet"]} for r in rows]
+        finally:
+            conn.close()
+
+    # -----------------------------------------------------------------------
+    # Server routes
+    # -----------------------------------------------------------------------
+    async def add_server_route(self, device_id: int, subnet: str) -> None:
+        async with self._lock:
+            conn = self._conn()
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO server_routes (device_id, subnet) VALUES (?, ?)",
+                    (device_id, subnet),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def remove_server_route(self, device_id: int, subnet: str) -> None:
+        async with self._lock:
+            conn = self._conn()
+            try:
+                conn.execute(
+                    "DELETE FROM server_routes WHERE device_id = ? AND subnet = ?",
+                    (device_id, subnet),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    async def get_server_routes(self, device_id: int) -> list[dict]:
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                "SELECT subnet FROM server_routes WHERE device_id = ?",
+                (device_id,),
             ).fetchall()
             return [{"subnet": r["subnet"]} for r in rows]
         finally:

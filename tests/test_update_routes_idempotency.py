@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+import importlib.util
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+
+MODULE_PATH = Path(__file__).resolve().parents[1] / "home" / "scripts" / "update-routes.py"
+SPEC = importlib.util.spec_from_file_location("update_routes", MODULE_PATH)
+update_routes = importlib.util.module_from_spec(SPEC)
+assert SPEC.loader is not None
+SPEC.loader.exec_module(update_routes)
+
+
+class StableHashPayloadTests(unittest.TestCase):
+    def test_ignores_dnsmasq_timestamp_only_changes(self) -> None:
+        content_a = (
+            "# vpn-domains.conf — Автогенерировано update-routes.py\n"
+            "# Обновлено: 2026-03-31T00:00:00+00:00\n"
+            "# Доменов: 1\n\n"
+            "server=/example.com/10.177.2.2\n"
+            "nftset=/example.com/4#inet#vpn#blocked_dynamic\n"
+        )
+        content_b = content_a.replace(
+            "2026-03-31T00:00:00+00:00",
+            "2026-03-31T01:23:45+00:00",
+        )
+
+        payload_a = update_routes.build_stable_hash_payload(
+            allowed_cidrs=["1.1.1.0/24"],
+            nft_cidrs=["1.1.1.1/32"],
+            dnsmasq_domains_content=content_a,
+            dnsmasq_force_content="",
+            dnsmasq_direct_content="",
+        )
+        payload_b = update_routes.build_stable_hash_payload(
+            allowed_cidrs=["1.1.1.0/24"],
+            nft_cidrs=["1.1.1.1/32"],
+            dnsmasq_domains_content=content_b,
+            dnsmasq_force_content="",
+            dnsmasq_direct_content="",
+        )
+
+        self.assertEqual(payload_a, payload_b)
+
+    def test_detects_nft_only_changes(self) -> None:
+        payload_a = update_routes.build_stable_hash_payload(
+            allowed_cidrs=["1.1.1.0/24"],
+            nft_cidrs=["1.1.1.1/32"],
+            dnsmasq_domains_content="",
+            dnsmasq_force_content="",
+            dnsmasq_direct_content="",
+        )
+        payload_b = update_routes.build_stable_hash_payload(
+            allowed_cidrs=["1.1.1.0/24"],
+            nft_cidrs=["1.1.1.2/32"],
+            dnsmasq_domains_content="",
+            dnsmasq_force_content="",
+            dnsmasq_direct_content="",
+        )
+
+        self.assertNotEqual(payload_a, payload_b)
+
+    def test_detects_direct_dnsmasq_changes(self) -> None:
+        payload_a = update_routes.build_stable_hash_payload(
+            allowed_cidrs=["1.1.1.0/24"],
+            nft_cidrs=["1.1.1.1/32"],
+            dnsmasq_domains_content="",
+            dnsmasq_force_content="",
+            dnsmasq_direct_content="server=/.ru/77.88.8.8\n",
+        )
+        payload_b = update_routes.build_stable_hash_payload(
+            allowed_cidrs=["1.1.1.0/24"],
+            nft_cidrs=["1.1.1.1/32"],
+            dnsmasq_domains_content="",
+            dnsmasq_force_content="",
+            dnsmasq_direct_content="server=/.ru/77.88.8.1\n",
+        )
+
+        self.assertNotEqual(payload_a, payload_b)
+
+
+class DnsmasqDpiExclusionTests(unittest.TestCase):
+    def test_render_dnsmasq_config_excludes_dpi_subdomains(self) -> None:
+        content, written, excluded = update_routes.render_dnsmasq_config(
+            domains=[
+                "googlevideo.com",
+                "rr5---sn-a5meknzr.googlevideo.com",
+                "ytimg.com",
+                "i.ytimg.com",
+                "youtube.com.tr",
+                "example.com",
+            ],
+            out_name="vpn-domains.conf",
+            vps_dns="10.177.2.2",
+            exclude_domains={"googlevideo.com", "ytimg.com", "youtube.com"},
+        )
+
+        self.assertIn("server=/example.com/10.177.2.2", content)
+        self.assertNotIn("googlevideo.com", content)
+        self.assertNotIn("rr5---sn-a5meknzr.googlevideo.com", content)
+        self.assertNotIn("ytimg.com", content)
+        self.assertNotIn("i.ytimg.com", content)
+        self.assertNotIn("youtube.com.tr", content)
+        self.assertEqual(written, 1)
+        self.assertEqual(excluded, 5)
+
+    def test_load_active_dpi_domains_requires_experimental_opt_in(self) -> None:
+        payload = {
+            "dpi_enabled": True,
+            "dpi_experimental_opt_in": False,
+            "dpi_services": [
+                {"name": "youtube", "enabled": True, "domains": ["youtube.com", "googlevideo.com"]},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "state.json"
+            state_path.write_text(json.dumps(payload), encoding="utf-8")
+            with mock.patch.object(update_routes, "WATCHDOG_STATE", state_path):
+                self.assertEqual(update_routes.load_active_dpi_domains(), set())
+
+            payload["dpi_experimental_opt_in"] = True
+            state_path.write_text(json.dumps(payload), encoding="utf-8")
+            with mock.patch.object(update_routes, "WATCHDOG_STATE", state_path):
+                self.assertEqual(
+                    update_routes.load_active_dpi_domains(),
+                    {"youtube.com", "googlevideo.com"},
+                )
+
+
+if __name__ == "__main__":
+    unittest.main()

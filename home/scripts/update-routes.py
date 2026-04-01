@@ -454,6 +454,23 @@ def _is_direct_tld(domain: str) -> bool:
     return False
 
 
+def _matches_domain_or_parent(domain: str, patterns: set[str]) -> bool:
+    """True если domain совпадает с pattern, его поддоменом или ccTLD-вариантом."""
+    if not domain or not patterns:
+        return False
+    for pattern in patterns:
+        pattern = pattern.strip().lower().lstrip("*.")
+        if not pattern:
+            continue
+        if (
+            domain == pattern
+            or domain.endswith(f".{pattern}")
+            or domain.startswith(f"{pattern}.")
+        ):
+            return True
+    return False
+
+
 def _parse_bat_routes(content: str) -> set[ipaddress.IPv4Network]:
     """
     Парсинг Windows route commands → IPv4Network.
@@ -774,6 +791,8 @@ def load_active_dpi_domains() -> set[str]:
         return domains
     try:
         data = json.loads(WATCHDOG_STATE.read_text(encoding="utf-8"))
+        if not (data.get("dpi_enabled") and data.get("dpi_experimental_opt_in")):
+            return domains
         for svc in data.get("dpi_services", []):
             if not svc.get("enabled", True):
                 continue
@@ -940,7 +959,7 @@ def render_dnsmasq_config(
             continue
         if _is_direct_tld(domain):
             continue  # .ru/.рф → всегда прямое, не добавлять через VPS
-        if domain in exclude_domains:
+        if _matches_domain_or_parent(domain, exclude_domains):
             excluded += 1
             continue
         lines.append(f"server=/{domain}/{vps_dns}")

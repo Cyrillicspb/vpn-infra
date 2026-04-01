@@ -164,6 +164,14 @@ DPI_SERVICE_PRESETS_DEFAULT: dict[str, dict] = {
 DPI_SERVICE_PRESETS: dict[str, dict] = {}
 
 
+def _dpi_enabled_services() -> list[dict]:
+    return [svc for svc in state.dpi_services if svc.get("enabled", True)]
+
+
+def _dpi_lane_active() -> bool:
+    return state.dpi_enabled and state.dpi_experimental_opt_in and bool(_dpi_enabled_services())
+
+
 def _normalize_domain_name(value: str) -> str:
     domain = str(value or "").strip().lower().lstrip("*.")
     return domain.strip(".")
@@ -723,6 +731,7 @@ class WatchdogState:
         self.cached_peers: list[dict] = []      # последний дамп WG пиров
         # ── DPI bypass (zapret lane) ─────────────────────────────────────────
         self.dpi_enabled: bool = False          # глобальный on/off
+        self.dpi_experimental_opt_in: bool = False  # включается только явным действием админа
         self.dpi_services: list[dict] = []      # [{name, display, domains, enabled}]
         # ── Health Check ─────────────────────────────────────────────────────
         self.last_monitoring_tick: float = 0.0  # timestamp последнего тика мониторинга
@@ -789,6 +798,7 @@ class WatchdogState:
             "vps_list": self.vps_list,
             "active_vps_idx": self.active_vps_idx,
             "dpi_enabled": self.dpi_enabled,
+            "dpi_experimental_opt_in": self.dpi_experimental_opt_in,
             "dpi_services": self.dpi_services,
             "rotation_log": self.rotation_log[-20:],
             "bot_runtime_drift": self.bot_runtime_drift,
@@ -832,6 +842,7 @@ class WatchdogState:
                 self.degraded_mode  = data.get("degraded_mode", False)
                 self.is_first_run   = data.get("is_first_run", True)
                 self.dpi_enabled    = data.get("dpi_enabled", False)
+                self.dpi_experimental_opt_in = data.get("dpi_experimental_opt_in", False)
                 self.dpi_services   = data.get("dpi_services", [])
                 self.rotation_log   = data.get("rotation_log", [])
                 self.bot_runtime_drift = data.get("bot_runtime_drift", False)
@@ -865,6 +876,10 @@ class WatchdogState:
                     self.primary_stack = DEFAULT_STACK
                     self.degraded_mode = False
                     self.is_first_run = True
+                if self.dpi_enabled and not self.dpi_experimental_opt_in:
+                    logger.warning("DPI bypass migrated to experimental-off default; disabling historical active state")
+                    self.dpi_enabled = False
+                    self.save()
                 logger.info(f"Состояние загружено: стек={self.active_stack}, dpi={self.dpi_enabled}")
         except Exception as exc:
             logger.error(f"Не удалось загрузить состояние: {exc}")
@@ -1157,6 +1172,8 @@ BOT_DRIFT_CONFIRM_SECONDS = int(os.getenv("BOT_DRIFT_CONFIRM_SECONDS", "300"))
 BOT_SELFHEAL_COOLDOWN_SECONDS = int(os.getenv("BOT_SELFHEAL_COOLDOWN_SECONDS", "1800"))
 COMPOSE_SOURCE_FILE = Path("/opt/vpn/home/docker-compose.yml")
 COMPOSE_RUNTIME_FILE = Path("/opt/vpn/docker-compose.yml")
+SOURCE_ENV_FILE = Path("/opt/vpn/.env")
+SOURCE_ENV_LINK = Path("/opt/vpn/home/.env")
 COMPOSE_DRIFT_CONFIRM_SECONDS = int(os.getenv("COMPOSE_DRIFT_CONFIRM_SECONDS", "300"))
 COMPOSE_SELFHEAL_COOLDOWN_SECONDS = int(os.getenv("COMPOSE_SELFHEAL_COOLDOWN_SECONDS", "1800"))
 WATCHDOG_SOURCE_FILE = Path("/opt/vpn/home/watchdog/watchdog.py")
@@ -1299,6 +1316,39 @@ def _telegram_bot_host_hashes() -> dict[str, str]:
     return hashes
 
 
+def _source_env_link_ok() -> bool:
+    try:
+        return SOURCE_ENV_LINK.is_symlink() and SOURCE_ENV_LINK.resolve() == SOURCE_ENV_FILE.resolve()
+    except FileNotFoundError:
+        return False
+
+
+async def ensure_source_env_link() -> bool:
+    """Поддерживать /opt/vpn/home/.env как ссылку на runtime /opt/vpn/.env.
+
+    Это нужно для source-tree операций с `home/docker-compose.yml`: manual rebuild,
+    post-install проверки и controlled self-heal не должны падать из-за отсутствия
+    env_file рядом с source compose.
+    """
+    if not SOURCE_ENV_FILE.exists():
+        logger.warning("source env link self-heal skipped: %s missing", SOURCE_ENV_FILE)
+        return False
+    if _source_env_link_ok():
+        return True
+
+    try:
+        SOURCE_ENV_LINK.parent.mkdir(parents=True, exist_ok=True)
+        if SOURCE_ENV_LINK.exists() or SOURCE_ENV_LINK.is_symlink():
+            SOURCE_ENV_LINK.unlink()
+        SOURCE_ENV_LINK.symlink_to(SOURCE_ENV_FILE)
+        logger.warning("self-heal: восстановлена ссылка %s -> %s", SOURCE_ENV_LINK, SOURCE_ENV_FILE)
+        alert("♻️ *source env link self-heal* — `/opt/vpn/home/.env` восстановлен")
+        return True
+    except Exception as exc:
+        logger.error("source env link self-heal failed: %s", exc)
+        return False
+
+
 async def _telegram_bot_container_hashes() -> tuple[dict[str, str], str]:
     quoted = " ".join(f'"{rel_path}"' for rel_path in BOT_RUNTIME_FILES)
     rc, out, err = await run_cmd(
@@ -1318,6 +1368,7 @@ async def _telegram_bot_container_hashes() -> tuple[dict[str, str], str]:
 
 async def selfheal_telegram_bot_runtime() -> bool:
     logger.warning("Обнаружен drift telegram-bot runtime → source, запускаю self-heal rebuild")
+    await ensure_source_env_link()
     begin_planned_disruption(
         "telegram-bot-selfheal",
         "telegram-bot rebuild",
@@ -1440,6 +1491,7 @@ async def check_dnsmasq_config_sync() -> None:
 
 async def selfheal_compose_runtime() -> bool:
     logger.warning("Обнаружен drift docker-compose runtime → source, запускаю controlled recreate")
+    await ensure_source_env_link()
     begin_planned_disruption(
         "compose-selfheal",
         "docker compose recreate",
@@ -2448,7 +2500,7 @@ async def _health_quick_checks() -> list[CheckResult]:
 
     if state.server_repo_drift:
         age = int(max(0, now - state.server_repo_drift_since)) if state.server_repo_drift_since > 0 else 0
-        status = "fail" if age >= REPO_SYNC_CONFIRM_SECONDS else "warn"
+        status = "warn"
         detail = state.server_repo_drift_detail or "repo drift"
         if age > 0:
             detail = f"{detail} ({age}s)"
@@ -2478,8 +2530,7 @@ async def _health_quick_checks() -> list[CheckResult]:
 async def _health_standard_checks() -> list[CheckResult]:
     """Standard tier: nftables, стеки, сертификаты, диск, heartbeat."""
     results: list[CheckResult] = []
-    enabled_dpi_services = [s for s in state.dpi_services if s.get("enabled", True)]
-    dpi_lane_active = state.dpi_enabled and bool(enabled_dpi_services)
+    dpi_lane_active = _dpi_lane_active()
 
     # 8–9. nft sets non-empty
     for set_name, w in [("blocked_static", 5), ("blocked_dynamic", 3)]:
@@ -2840,11 +2891,11 @@ async def _regen_dpi_dnsmasq() -> None:
         5,
         "обновление dpi preset-ов/сервисов",
     )
-    enabled = [s for s in state.dpi_services if s.get("enabled")]
+    enabled = _dpi_enabled_services() if _dpi_lane_active() else []
     if not enabled:
         DPI_DNSMASQ_CONF.parent.mkdir(parents=True, exist_ok=True)
         DPI_DNSMASQ_CONF.write_text(
-            "# dpi-domains.conf — нет активных DPI-bypass сервисов (генерируется watchdog)\n"
+            "# dpi-domains.conf — DPI experimental выключен или нет активных сервисов (генерируется watchdog)\n"
         )
     else:
         lines = [
@@ -2947,8 +2998,7 @@ async def _dpi_sync_active_domains() -> None:
     await _regen_dpi_dnsmasq()
     await _dpi_warmup_domains([
         domain
-        for svc in state.dpi_services
-        if svc.get("enabled")
+        for svc in _dpi_enabled_services()
         for domain in svc.get("domains", [])
     ])
 
@@ -2991,6 +3041,7 @@ async def _dpi_remove_routing() -> None:
 async def _dpi_enable_impl() -> None:
     """Включить DPI bypass: routing + zapret start + dnsmasq."""
     state.dpi_enabled = True
+    state.dpi_experimental_opt_in = True
     state.save()
     await _dpi_apply_routing()
     zp = plugins.get("zapret")
@@ -2999,9 +3050,9 @@ async def _dpi_enable_impl() -> None:
             await zp.start()
         await zp.activate()   # добавить NFQUEUE-правила в nftables (inet zapret_main)
     await _apply_dpi_service_changes("dpi-enable")
-    enabled_names = [s["display"] for s in state.dpi_services if s.get("enabled")]
+    enabled_names = [s["display"] for s in _dpi_enabled_services()]
     alert(
-        f"⚡ *DPI bypass включён*\n"
+        f"🧪 *Experimental DPI bypass включён*\n"
         f"Сервисы: {', '.join(enabled_names) if enabled_names else 'нет (добавьте /dpi add)'}\n"
         f"Трафик к ним идёт напрямую через zapret, минуя VPS."
     )
@@ -3010,8 +3061,8 @@ async def _dpi_enable_impl() -> None:
 
 async def _ensure_dpi_dataplane_active(reason: str, notify: bool = True) -> bool:
     """Довести DPI bypass до реально активного NFQUEUE dataplane."""
-    enabled_services = [svc for svc in state.dpi_services if svc.get("enabled")]
-    if not (state.dpi_enabled and enabled_services):
+    enabled_services = _dpi_enabled_services()
+    if not _dpi_lane_active():
         return True
     if await _dpi_dataplane_active():
         return True
@@ -3145,17 +3196,18 @@ async def _startup_reconcile() -> None:
 async def _dpi_disable_impl() -> None:
     """Выключить DPI bypass: routing убрать, dnsmasq очистить."""
     state.dpi_enabled = False
+    state.dpi_experimental_opt_in = False
     state.save()
     await _dpi_remove_routing()
     await _regen_dpi_dnsmasq()
     await _refresh_vpn_domains_for_dpi("dpi-disable")
-    alert("⚡ *DPI bypass выключен*\nВесь трафик идёт через VPN-туннель.")
+    alert("🧪 *Experimental DPI bypass выключен*\nYouTube и другие домены вернулись в обычный VPN/VPS path.")
     logger.info("[DPI] выключен")
 
 
 async def _check_dpi_effectiveness() -> None:
     """Проверить что прямой канал не деградировал (каждые 30 мин при dpi_enabled)."""
-    if not state.dpi_enabled:
+    if not _dpi_lane_active():
         return
     eth = NET_INTERFACE or "eth0"
     rc, out, _ = await run_cmd(
@@ -3640,6 +3692,7 @@ async def monitoring_loop() -> None:
     await check_wg_interfaces()
     await probe_vps_reachability()
     await check_containers()
+    await ensure_source_env_link()
     await check_telegram_bot_runtime_sync()
     await check_compose_runtime_sync()
     await check_watchdog_runtime_sync()
@@ -3694,6 +3747,7 @@ async def monitoring_loop() -> None:
             if tick % 60 == 0:
                 await check_wg_peers()
                 await check_containers()
+                await ensure_source_env_link()
                 await check_telegram_bot_runtime_sync()
                 await check_compose_runtime_sync()
                 await check_watchdog_runtime_sync()
@@ -4421,13 +4475,16 @@ async def get_dpi_status(_: bool = Depends(_auth)):
             zapret_ok, _ = await zp.test(timeout=5)
         except Exception as exc:
             logger.debug("zapret test failed: %s", exc)
-    if zapret_ok:
+    if zapret_ok and _dpi_lane_active():
         try:
             traffic_active = await _dpi_dataplane_active()
         except Exception as exc:
             logger.debug("dpi dataplane status failed: %s", exc)
     return {
         "enabled": state.dpi_enabled,
+        "experimental": True,
+        "experimental_opt_in": state.dpi_experimental_opt_in,
+        "effective_enabled": _dpi_lane_active(),
         "zapret_running": zapret_ok,
         "traffic_active": traffic_active,
         "services": state.dpi_services,
@@ -4481,7 +4538,7 @@ async def post_dpi_service_add(request: Request, req: DpiServiceRequest,
         "preset": preset_name,
     })
     state.save()
-    if state.dpi_enabled:
+    if _dpi_lane_active():
         asyncio.create_task(_apply_dpi_service_changes(f"dpi-service-add:{name}"))
     return {"status": "added", "name": name, "domains": domains}
 
@@ -4495,7 +4552,7 @@ async def post_dpi_service_remove(request: Request, req: DpiServiceRequest,
     if len(state.dpi_services) == before:
         raise HTTPException(404, f"Сервис '{req.name}' не найден")
     state.save()
-    if state.dpi_enabled:
+    if _dpi_lane_active():
         asyncio.create_task(_apply_dpi_service_changes(f"dpi-service-remove:{req.name}"))
     return {"status": "removed", "name": req.name}
 
@@ -4508,7 +4565,7 @@ async def post_dpi_service_toggle(request: Request, req: DpiToggleRequest,
         if svc["name"] == req.name:
             svc["enabled"] = req.enabled
             state.save()
-            if state.dpi_enabled:
+            if _dpi_lane_active():
                 asyncio.create_task(_apply_dpi_service_changes(f"dpi-service-toggle:{req.name}"))
             return {"status": "toggled", "name": req.name, "enabled": req.enabled}
     raise HTTPException(404, f"Сервис '{req.name}' не найден")
@@ -4519,7 +4576,7 @@ async def post_dpi_service_toggle(request: Request, req: DpiToggleRequest,
 async def post_dpi_presets_reload(request: Request, _: bool = Depends(_auth)):
     presets = _reload_dpi_presets()
     changed = _sync_preset_backed_dpi_services()
-    if state.dpi_enabled:
+    if _dpi_lane_active():
         asyncio.create_task(_apply_dpi_service_changes("dpi-presets-reload"))
     return {
         "status": "reloaded",
@@ -4809,20 +4866,27 @@ class DpiTestRequest(BaseModel):
 @limiter.limit("5/minute")
 async def post_dpi_test(request: Request, req: DpiTestRequest, _: bool = Depends(_auth)):
     """Проверить что домены резолвятся в dpi_direct nft set."""
-    if not state.dpi_enabled:
+    if not _dpi_lane_active():
         return {"status": "disabled", "results": []}
 
-    # Домены для теста
-    test_domains: list[str] = []
-    if req.domains:
-        test_domains = req.domains
-    else:
-        for svc in state.dpi_services:
-            if svc.get("enabled") and svc.get("domains"):
-                test_domains.extend(svc["domains"][:1])  # первый домен каждого сервиса
-
     results = []
-    for domain in test_domains[:10]:
+    selected_domains: list[str] = []
+    if req.domains:
+        selected_domains = req.domains[:10]
+    else:
+        # Для автотеста выбираем первый домен сервиса, который реально резолвится через dnsmasq.
+        # Иначе устаревший/мертвый домен вроде ggpht.cn даёт ложный ❌ при рабочем DPI bypass.
+        for svc in state.dpi_services:
+            if not svc.get("enabled") or not svc.get("domains"):
+                continue
+            for domain in svc["domains"]:
+                rc, out, _ = await run_cmd(["dig", "+short", "@127.0.0.1", domain, "A"], timeout=5)
+                resolved_ips = [ln.strip() for ln in out.splitlines() if ln.strip() and not ln.startswith(";")]
+                if resolved_ips:
+                    selected_domains.append(domain)
+                    break
+
+    for domain in selected_domains[:10]:
         # 1. Резолвим через dnsmasq
         rc, out, _ = await run_cmd(["dig", "+short", "@127.0.0.1", domain, "A"], timeout=5)
         resolved_ips = [ln.strip() for ln in out.splitlines() if ln.strip() and not ln.startswith(";")]
@@ -5199,7 +5263,7 @@ async def on_startup() -> None:
             await _set_marked_route_unreachable()
 
     # Всегда запускать zapret (DPI bypass, независимо от активного VPN-стека)
-    # Activate только если dpi_enabled — иначе просто крутится в режиме standby
+    # Activate только если experimental DPI opt-in включён — иначе просто standby
     _zapret_already_started = (
         state.active_stack == "zapret" and active_plugin is None
     )
@@ -5208,13 +5272,13 @@ async def on_startup() -> None:
         if zp:
             logger.info("Запуск zapret (DPI bypass, standby)...")
             await zp.start()
-    if state.dpi_enabled and state.dpi_services:
+    if _dpi_lane_active():
         await _dpi_apply_routing()
         zp_restore = plugins.get("zapret")
         if zp_restore:
             await zp_restore.activate()   # добавить NFQUEUE-правила (nfqws уже запущен выше)
         await _dpi_sync_active_domains()
-        logger.info("[DPI] DPI bypass восстановлен при старте (NFQUEUE активирован)")
+        logger.info("[DPI] Experimental DPI bypass восстановлен при старте (NFQUEUE активирован)")
 
     # Consistency recovery
     ok, _ = await ping_vps()

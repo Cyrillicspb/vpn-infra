@@ -138,19 +138,23 @@ async def _cleanup_bootstrap_peers(
 
 def _dpi_status_summary(st: dict) -> tuple[str, str, str]:
     enabled = st.get("enabled", False)
+    effective_enabled = st.get("effective_enabled", enabled)
+    experimental = st.get("experimental", True)
     zapret = st.get("zapret_running", False)
     traffic_active = st.get("traffic_active", False)
     services = st.get("services", [])
     active_services = [svc for svc in services if svc.get("enabled")]
 
-    if enabled and zapret and traffic_active and active_services:
-        return "✅ ВКЛЮЧЁН", "🟢", ""
+    if effective_enabled and zapret and traffic_active and active_services:
+        return "✅ EXPERIMENTAL ON", "🟢", "Режим экспериментальный, production path идёт через VPS"
     if enabled and not active_services:
-        return "⚠️ НЕТ СЕРВИСОВ", "🔴", "Добавь хотя бы один сервис через /dpi add"
-    if enabled and zapret and not traffic_active:
-        return "⚠️ STANDBY", "🟡", "nfqws запущен, но NFQUEUE dataplane не активирован"
-    if enabled and not zapret:
-        return "⚠️ НЕАКТИВЕН", "🔴", "zapret/nfqws не запущен"
+        return "⚠️ EXPERIMENTAL EMPTY", "🔴", "Добавь хотя бы один сервис через /dpi add"
+    if effective_enabled and zapret and not traffic_active:
+        return "⚠️ EXPERIMENTAL STANDBY", "🟡", "nfqws запущен, но NFQUEUE dataplane не активирован"
+    if effective_enabled and not zapret:
+        return "⚠️ EXPERIMENTAL BROKEN", "🔴", "zapret/nfqws не запущен"
+    if experimental:
+        return "❌ EXPERIMENTAL OFF", "🔴", "Production path для YouTube и blocked-сервисов идёт через VPS"
     return "❌ ВЫКЛЮЧЕН", "🔴", ""
 
 
@@ -3345,9 +3349,9 @@ KNOWN_PRESETS = {"youtube", "twitch", "discord"}
 @router.message(Command("dpi"), StateFilter("*"))
 async def cmd_dpi(message: Message, state: FSMContext, **kw):
     """
-    /dpi                  — статус
-    /dpi on               — включить
-    /dpi off              — выключить
+    /dpi                  — статус experimental DPI
+    /dpi on               — включить experimental DPI
+    /dpi off              — выключить experimental DPI
     /dpi add <preset|домен> [домен2 ...]  — добавить сервис
     /dpi remove <name>    — удалить
     /dpi toggle <name>    — вкл/выкл конкретный сервис
@@ -3365,11 +3369,11 @@ async def cmd_dpi(message: Message, state: FSMContext, **kw):
     try:
         if sub == "on":
             await wc.dpi_enable()
-            await message.answer("⚡ DPI bypass включается...")
+            await message.answer("🧪 Experimental DPI bypass включается...")
 
         elif sub == "off":
             await wc.dpi_disable()
-            await message.answer("⚡ DPI bypass выключается...")
+            await message.answer("🧪 Experimental DPI bypass выключается...")
 
         elif sub == "add":
             if not arg:
@@ -3379,12 +3383,13 @@ async def cmd_dpi(message: Message, state: FSMContext, **kw):
                     "/dpi add twitch\n"
                     "/dpi add discord\n"
                     "/dpi add <домен> [домен2 ...] — произвольные домены\n\n"
-                    "Пресеты: youtube, twitch, discord"
+                    "Пресеты: youtube, twitch, discord\n\n"
+                    "⚠️ DPI bypass сейчас experimental и по умолчанию выключен."
                 )
                 return
             if arg.lower() in KNOWN_PRESETS:
                 await wc.dpi_add_service(preset=arg.lower())
-                await message.answer(f"✅ Сервис *{arg}* добавлен из пресета.")
+                await message.answer(f"✅ Experimental-сервис *{arg}* добавлен из пресета.")
             else:
                 # Произвольные домены
                 domains = [arg] + extra
@@ -3426,7 +3431,7 @@ async def cmd_dpi(message: Message, state: FSMContext, **kw):
             status_icon, zapret_icon, hint = _dpi_status_summary(st)
 
             lines = [
-                f"⚡ *DPI bypass: {status_icon}*",
+                f"🧪 *DPI bypass: {status_icon}*",
                 f"nfqws: {zapret_icon}  |  IP в dpi_direct: {ip_count}",
                 "",
             ]
@@ -3476,7 +3481,7 @@ async def _show_dpi_menu(cb: CallbackQuery):
     ip_count = st.get("dpi_direct_ip_count", 0)
     status_icon, zapret_icon, hint = _dpi_status_summary(st)
     text = (
-        f"⚡ <b>DPI bypass: {status_icon}</b>\n"
+        f"🧪 <b>DPI bypass: {status_icon}</b>\n"
         f"nfqws: {zapret_icon}  |  IP в dpi_direct: {ip_count}"
     )
     if hint:
@@ -3492,7 +3497,7 @@ async def cb_adm_dpi(cb: CallbackQuery, **kw):
 
 @router.callback_query(F.data == "adm:dpi_on")
 async def cb_adm_dpi_on(cb: CallbackQuery, **kw):
-    await cb.answer("Включаю DPI bypass...")
+    await cb.answer("Включаю experimental DPI...")
     try:
         await _wc().dpi_enable()
     except WatchdogError as e:
@@ -3503,7 +3508,7 @@ async def cb_adm_dpi_on(cb: CallbackQuery, **kw):
 
 @router.callback_query(F.data == "adm:dpi_off")
 async def cb_adm_dpi_off(cb: CallbackQuery, **kw):
-    await cb.answer("Выключаю DPI bypass...")
+    await cb.answer("Выключаю experimental DPI...")
     try:
         await _wc().dpi_disable()
     except WatchdogError as e:
@@ -3573,7 +3578,7 @@ async def cb_adm_nft_stats(cb: CallbackQuery, **kw):
             f"<b>📊 Статистика nft sets</b>\n\n"
             f"<b>blocked_static</b> (базы РКН + геоблок): <b>{blocked_static}</b> IP\n"
             f"<b>blocked_dynamic</b> (DNS кэш): <b>{blocked_dynamic}</b> IP\n"
-            f"<b>dpi_direct</b> (zapret): <b>{dpi_direct}</b> IP\n\n"
+            f"<b>dpi_direct</b> (zapret experimental): <b>{dpi_direct}</b> IP\n\n"
             f"<i>blocked_static</i> — обновляется раз в сутки:\n"
             f"  • antifilter.download — IP из реестра РКН\n"
             f"  • community.antifilter.download — сообщество\n"
@@ -3581,7 +3586,7 @@ async def cb_adm_nft_stats(cb: CallbackQuery, **kw):
             f"  • zapret-info/z-i — выгрузка Роскомнадзора\n"
             f"  • RockBlack-VPN — геоблок (230+ сервисов)\n\n"
             f"<i>blocked_dynamic</i> — наполняется dnsmasq при резолве заблокированных доменов (timeout 24ч)\n"
-            f"<i>dpi_direct</i> — IP из DPI bypass (zapret/nfqws)"
+            f"<i>dpi_direct</i> — IP из experimental DPI bypass (zapret/nfqws)"
         )
     except WatchdogError as e:
         text = f"❌ {e}"
@@ -3600,12 +3605,12 @@ async def cb_adm_dpi_test(cb: CallbackQuery, **kw):
         status = data.get("status", "?")
         results = data.get("results", [])
         if status == "disabled":
-            await cb.message.answer("⚡ DPI bypass выключен.", reply_markup=back_to_admin_menu())
+            await cb.message.answer("🧪 Experimental DPI bypass выключен.", reply_markup=back_to_admin_menu())
             return
         if not results:
             await cb.message.answer("Нет активных DPI сервисов для теста.", reply_markup=back_to_admin_menu())
             return
-        lines = [f"<b>🧪 Тест DPI bypass</b>\n"]
+        lines = [f"<b>🧪 Тест experimental DPI bypass</b>\n"]
         for r in results:
             icon = "✅" if r["ok"] else "❌"
             ips = ", ".join(r.get("resolved", [])[:2]) or "не резолвится"
@@ -3713,7 +3718,9 @@ async def cb_adm_broadcast_configs(cb: CallbackQuery, **kw):
                 chat_id = str(device["chat_id"])
                 excludes_raw = await db.get_excludes(device["id"])
                 excludes = [e["subnet"] for e in excludes_raw]
-                conf_text, qr_bytes, version = await builder.build(device, excludes)
+                routes_raw = await db.get_server_routes(device["id"])
+                server_routes = [r["subnet"] for r in routes_raw]
+                conf_text, qr_bytes, version = await builder.build(device, excludes, server_routes)
                 if version == device.get("config_version"):
                     continue  # не изменился
                 caption = (
