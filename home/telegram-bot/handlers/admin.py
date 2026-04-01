@@ -37,6 +37,7 @@ from aiogram.types import (
 from config import config
 from database import Database
 from handlers.keyboards import (
+    admin_functional_menu,
     admin_admin_actions_kb,
     admin_admins_menu,
     admin_client_actions_kb,
@@ -91,6 +92,7 @@ def _render_health_html(h: dict) -> str:
     ts     = h.get("timestamp", "")
     pdw    = h.get("post_deploy_watch", False)
     summary = h.get("summary", {})
+    functional = h.get("functional_summary", {})
 
     if score >= 80:
         score_emoji = "✅"
@@ -108,6 +110,12 @@ def _render_health_html(h: dict) -> str:
     lines.append(
         f"✅ {summary.get('ok', 0)}  ⚠️ {summary.get('warn', 0)}  ❌ {summary.get('fail', 0)}"
     )
+    if functional:
+        lines.append(
+            "🧪 Functional: "
+            f"✅ {functional.get('ok', 0)}  ❌ {functional.get('fail', 0)}"
+            + (f" | {functional.get('status', '')}" if functional.get("status") else "")
+        )
     lines.append("")
 
     icon_map = {"ok": "✅", "warn": "⚠️", "fail": "❌"}
@@ -119,6 +127,39 @@ def _render_health_html(h: dict) -> str:
         if detail:
             line += f" — {detail}"
         lines.append(line)
+    return "\n".join(lines)
+
+
+def _render_functional_html(payload: dict) -> str:
+    summary = payload.get("summary") or payload.get("functional_summary") or {}
+    results = payload.get("results") or payload.get("functional_results") or {}
+    ts = summary.get("timestamp", "")
+    ok = summary.get("ok", 0)
+    fail = summary.get("fail", 0)
+    tier = summary.get("tier", "?")
+    status = summary.get("status", "")
+    lines = [f"🧪 <b>Functional Health</b>"]
+    if ts or tier != "?":
+        lines.append(f"Tier: {tier} | {ts}")
+    if status:
+        lines.append(f"Статус: {status}")
+    lines.append(f"✅ {ok}  ❌ {fail}")
+    failing = [(name, data) for name, data in results.items() if data.get("status") == "fail"]
+    if not results:
+        lines.append("")
+        lines.append("Нет functional verdicts.")
+        return "\n".join(lines)
+    lines.append("")
+    if failing:
+        lines.append("<b>Проблемные сценарии</b>")
+        for name, data in failing[:10]:
+            detail = data.get("detail", "")
+            line = f"❌ <code>{name}</code>"
+            if detail:
+                line += f" — {detail}"
+            lines.append(line)
+    else:
+        lines.append("✅ Все functional scenarios зелёные")
     return "\n".join(lines)
 
 
@@ -319,6 +360,13 @@ async def cmd_status(message: Message, state: FSMContext, **kw):
             f"RAM: {sys.get('ram_percent', '?')}%  "
             f"Диск: {sys.get('disk_percent', '?')}%"
         )
+        functional = s.get("functional_summary") or {}
+        if functional:
+            text += (
+                "\n\n"
+                f"*Functional*: ✅ {functional.get('ok', 0)}  ❌ {functional.get('fail', 0)}"
+                + (f" | tier `{functional.get('tier')}`" if functional.get("tier") else "")
+            )
     except WatchdogError as e:
         text = f"❌ Watchdog недоступен: {e}"
     await message.answer(text)
@@ -338,6 +386,19 @@ async def cmd_health(message: Message, state: FSMContext, **kw):
         await message.answer(f"❌ Watchdog недоступен: {e}")
         return
     await message.answer(_render_health_html(h), parse_mode="HTML")
+
+
+@router.message(Command("functional"), StateFilter("*"))
+async def cmd_functional(message: Message, state: FSMContext, **kw):
+    if not await _is_admin(message, db=kw.get("db")):
+        return
+    await state.clear()
+    try:
+        data = await _wc().get_functional_status()
+    except Exception as e:
+        await message.answer(f"❌ Watchdog недоступен: {e}", reply_markup=back_to_admin_menu())
+        return
+    await message.answer(_render_functional_html(data), reply_markup=admin_functional_menu(), parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------
@@ -1572,6 +1633,32 @@ async def cb_adm_health(cb: CallbackQuery, **kw):
         await _edit_or_answer(cb, f"❌ Watchdog недоступен: {e}", admin_monitor_menu())
         return
     await _edit_or_answer(cb, _render_health_html(h), admin_monitor_menu())
+
+
+@router.callback_query(F.data == "adm:functional")
+async def cb_adm_functional(cb: CallbackQuery, **kw):
+    await cb.answer("Обновляю functional health...")
+    try:
+        data = await _wc().get_functional_status()
+    except Exception as e:
+        await _edit_or_answer(cb, f"❌ Watchdog недоступен: {e}", admin_monitor_menu())
+        return
+    await _edit_or_answer(cb, _render_functional_html(data), admin_functional_menu())
+
+
+@router.callback_query(F.data.startswith("adm:functional:run:"))
+async def cb_adm_functional_run(cb: CallbackQuery, **kw):
+    tier = cb.data.rsplit(":", 1)[-1]
+    if tier not in {"quick", "standard", "deep"}:
+        await cb.answer("Неизвестный tier", show_alert=True)
+        return
+    await cb.answer(f"Запускаю functional {tier}...")
+    try:
+        data = await _wc().run_functional(tier=tier)
+    except Exception as e:
+        await _edit_or_answer(cb, f"❌ Watchdog недоступен: {e}", admin_functional_menu())
+        return
+    await _edit_or_answer(cb, _render_functional_html(data), admin_functional_menu())
 
 
 @router.callback_query(F.data == "adm:logs_system")

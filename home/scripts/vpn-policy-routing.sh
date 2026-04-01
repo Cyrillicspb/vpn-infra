@@ -24,6 +24,7 @@ FWMARK_DPI=0x2
 AWG_SUBNET="10.177.1.0/24"
 WG_SUBNET="10.177.3.0/24"
 TIER2_SUBNET="10.177.2.0/30"
+FUNCTIONAL_NS_SUBNET="${FUNCTIONAL_NS_SUBNET:-172.21.0.0/24}"
 
 STATE_FILE="/run/vpn-active-tun"
 
@@ -71,14 +72,16 @@ route_exists() {
 }
 
 # Явные маршруты VPS через eth0 — предотвращают routing loop.
-# hysteria2 добавляет host route VPS_IP dev tun-hysteria2 в main table,
-# из-за чего xray-клиенты (reality-xhttp, cdn) уходят через tun → loop.
-# Маршрут с metric 1 ниже чем hysteria2 добавляет, поэтому побеждает.
+# hysteria2/маркировка могут уводить трафик к VPS не только через main,
+# но и через table 200/201, поэтому закрепляем host route во всех управляющих
+# таблицах. Иначе SSH control-plane может уйти в tun и повиснуть на banner exchange.
 ensure_vps_routes() {
     for vps_ip in ${VPS_IP:-} ${VPS_IP2:-} ${VPS_IP3:-}; do
         [[ -z "$vps_ip" ]] && continue
         ip route replace "$vps_ip" via "$GATEWAY" dev "$ETH_IFACE" metric 1
-        log "VPS route: $vps_ip via $GATEWAY dev $ETH_IFACE metric 1 (anti-loop)"
+        ip route replace "$vps_ip" via "$GATEWAY" dev "$ETH_IFACE" table $TABLE_MARKED
+        ip route replace "$vps_ip" via "$GATEWAY" dev "$ETH_IFACE" table $TABLE_DPI
+        log "VPS route: $vps_ip via $GATEWAY dev $ETH_IFACE (main + table $TABLE_MARKED/$TABLE_DPI, anti-loop)"
     done
 }
 
@@ -178,6 +181,12 @@ setup_routing() {
         fi
     fi
 
+    # Synthetic functional-health namespaces → table 100
+    if ! rule_exists "from $FUNCTIONAL_NS_SUBNET lookup $TABLE_VPN"; then
+        ip rule add from "$FUNCTIONAL_NS_SUBNET" lookup $TABLE_VPN priority 196
+        log "Rule: from $FUNCTIONAL_NS_SUBNET → table $TABLE_VPN (priority 196, functional namespaces)"
+    fi
+
     # Защита от routing loop: VPS IP всегда через eth0
     ensure_vps_routes
 
@@ -233,6 +242,7 @@ teardown_routing() {
         ip rule del from "$LAN_NET" lookup $TABLE_VPN priority 195 2>/dev/null || true
         log "Rule: from $LAN_NET → table $TABLE_VPN (priority 195) удалено"
     fi
+    ip rule del from "$FUNCTIONAL_NS_SUBNET" lookup $TABLE_VPN priority 196 2>/dev/null || true
 
     # Очищаем routing tables
     ip route flush table $TABLE_DPI    2>/dev/null || true

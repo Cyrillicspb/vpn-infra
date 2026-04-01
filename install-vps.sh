@@ -362,20 +362,20 @@ else
     step_done "step35_vps_install_docker"
 fi
 
-# ── Шаг 36: Настройка nftables на VPS (rate limiting TCP/UDP 443) ─────────────
+# ── Шаг 36: Настройка nftables на VPS (default deny + rate limiting) ──────────
 
 if is_done "step36_vps_nftables"; then
     step_skip "step36_vps_nftables"
 else
-    step "Настройка nftables на VPS (rate limiting + защита портов)"
+    step "Настройка nftables на VPS (default deny + защита портов)"
     log_info "Rate limiting: TCP/UDP 443 — 200/сек, burst 500 (защита Xray + Hysteria2)"
-    log_info "Открытые порты: 22 (SSH), 443 (Xray/Hysteria2), 8022 (SSH аварийный)"
+    log_info "Открытые порты: 22, 80, 443, 8022, 8080, 8443 и tier-2 сервисы"
 
     if ! vps_exec "dpkg -l nftables 2>/dev/null | grep -q '^ii'" 2>/dev/null; then
         vps_apt_quiet "Установка nftables на VPS" "install -y -qq nftables"
     fi
 
-    vps_exec "cat << 'NFTEOF' | sudo tee /etc/nftables-vps.conf > /dev/null
+    vps_exec "cat << 'NFTEOF' | sudo tee /etc/nftables.conf > /dev/null
 #!/usr/sbin/nft -f
 flush ruleset
 
@@ -397,6 +397,10 @@ table inet filter {
         # burst 30 защищает от brute-force при re-connect и обрывах.
         tcp dport { 22, 8022 } ct state new limit rate 10/minute burst 30 packets accept
 
+        # Nginx health endpoint и mTLS admin panel
+        tcp dport 80 accept
+        tcp dport 8443 ct state new limit rate 60/minute burst 120 packets accept
+
         # CDN-стек: Cloudflare Worker → VPS:8080 (VLESS+splithttp, защищён UUID)
         tcp dport 8080 ct state new limit rate 100/second burst 200 packets accept
 
@@ -411,6 +415,18 @@ table inet filter {
 
         # ICMP
         icmp type { echo-request, echo-reply, destination-unreachable } limit rate 10/second accept
+        icmpv6 type {
+            destination-unreachable,
+            packet-too-big,
+            time-exceeded,
+            parameter-problem,
+            echo-request,
+            echo-reply,
+            nd-router-solicit,
+            nd-router-advert,
+            nd-neighbor-solicit,
+            nd-neighbor-advert
+        } limit rate 10/second accept
 
         # Mosh — UDP порты для терминала (только от tier-2 туннеля)
         iifname "tun0" udp dport 60000-61000 accept
@@ -439,7 +455,8 @@ table inet filter {
 NFTEOF"
 
     vps_exec "sudo systemctl enable nftables && \
-        sudo nft -f /etc/nftables-vps.conf || true"
+        sudo nft -f /etc/nftables.conf && \
+        sudo systemctl restart nftables"
 
     log_ok "nftables настроен на VPS"
     step_done "step36_vps_nftables"
@@ -486,8 +503,21 @@ else
     if ! vps_exec "dpkg -l fail2ban 2>/dev/null | grep -q '^ii'" 2>/dev/null; then
         vps_apt_quiet "Установка fail2ban на VPS" "install -y -qq fail2ban"
     fi
-    # ignoreip: loopback + VPN subnets (static) + home server external IP
-    F2B_IGNOREIP="127.0.0.1/8 ::1 10.177.0.0/16 ${EXTERNAL_IP}"
+    # ignoreip: loopback + VPN subnets (static) + все известные адреса home-server.
+    # EXTERNAL_IP покрывает прямой выход home-server/VPS-mirror в интернет.
+    # HOME_SERVER_IP полезен как явный whitelist source-of-truth из .env и не вредит,
+    # даже если это RFC1918-адрес, который fail2ban на VPS никогда не увидит извне.
+    # 10.177.2.1 — служебный tier-2 endpoint home-server.
+    F2B_IGNOREIP="$(
+        printf '%s\n' \
+            '127.0.0.1/8' \
+            '::1' \
+            '10.177.0.0/16' \
+            '10.177.2.1/32' \
+            "${EXTERNAL_IP:-}" \
+            "${HOME_SERVER_IP:-}" \
+        | awk 'NF && !seen[$0]++ {printf "%s%s", sep, $0; sep=" "}'
+    )"
     vps_exec "printf '[DEFAULT]\nbantime = 86400\nfindtime = 300\nmaxretry = 3\nbackend = systemd\nignoreip = ${F2B_IGNOREIP}\n\n[sshd]\nenabled = true\nport = 22,8022\nfilter = sshd\nmode = aggressive\nmaxretry = 3\n' | \
         sudo tee /etc/fail2ban/jail.local > /dev/null"
     vps_exec "sudo systemctl enable fail2ban && sudo systemctl restart fail2ban"

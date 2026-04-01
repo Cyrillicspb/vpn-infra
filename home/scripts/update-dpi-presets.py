@@ -52,7 +52,10 @@ V2FLY_EXCLUDE_PREFIXES = ("api.", "auth.", "login.", "accounts.")
 EXCLUDED_DOMAINS = {
     "ggpht.cn",
 }
-V2FLY_MAX_DOMAINS_PER_SERVICE = 15
+V2FLY_MAX_DOMAINS_PER_SERVICE_DEFAULT = 15
+V2FLY_MAX_DOMAINS_PER_SERVICE = {
+    "youtube": 256,
+}
 HTTP_TIMEOUT = 30
 SERVICE_DOMAIN_FRAGMENTS = {
     "youtube": ("youtube", "youtu", "ytimg", "googlevideo", "ggpht"),
@@ -161,17 +164,22 @@ def _service_allows_domain(service: str, domain: str, core_domains: list[str]) -
     return any(fragment in domain for fragment in fragments)
 
 
-def _merge_service_domains(core: list[str], tier2: list[str]) -> list[str]:
+def _service_domain_limit(service: str) -> int:
+    return int(V2FLY_MAX_DOMAINS_PER_SERVICE.get(service, V2FLY_MAX_DOMAINS_PER_SERVICE_DEFAULT))
+
+
+def _merge_service_domains(service: str, core: list[str], tier2: list[str]) -> list[str]:
+    limit = _service_domain_limit(service)
     merged = list(_dedupe_domain_suffixes(core))
     for domain in tier2:
-        if len(merged) >= V2FLY_MAX_DOMAINS_PER_SERVICE:
+        if len(merged) >= limit:
             break
         if domain in merged:
             continue
         if any(domain == parent or domain.endswith(f".{parent}") for parent in merged):
             continue
         merged.append(domain)
-    return merged[:V2FLY_MAX_DOMAINS_PER_SERVICE]
+    return merged[:limit]
 
 
 def _load_watchdog_token() -> str:
@@ -217,7 +225,7 @@ def build_presets() -> dict[str, dict]:
                 for domain in _parse_v2fly_domains(_fetch_text(url))
                 if _service_allows_domain(service, domain, core_domains)
             ]
-            spec["domains"] = _merge_service_domains(list(spec["domains"]), tier2_domains)
+            spec["domains"] = _merge_service_domains(service, list(spec["domains"]), tier2_domains)
             LOG.info("updated preset %s from %s (%s domains)", service, source_name, len(spec["domains"]))
         except urllib.error.URLError as exc:
             LOG.warning("failed to fetch %s from v2fly: %s", source_name, exc)

@@ -106,6 +106,7 @@ def admin_monitor_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="❤️ Health",         callback_data="adm:health"),
             InlineKeyboardButton(text="🐳 Docker",          callback_data="adm:docker"),
         ],
+        [InlineKeyboardButton(text="🧪 Functional", callback_data="adm:functional")],
         [InlineKeyboardButton(text="📊 Трафик клиентов", callback_data="adm:stats")],
         [
             InlineKeyboardButton(text="⚡ Спидтест",        callback_data="adm:speedtest"),
@@ -117,6 +118,20 @@ def admin_monitor_menu() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="◀️ Назад",           callback_data="adm:menu"),
         ],
+    ])
+
+
+def admin_functional_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔄 Quick", callback_data="adm:functional:run:quick"),
+            InlineKeyboardButton(text="🔄 Standard", callback_data="adm:functional:run:standard"),
+            InlineKeyboardButton(text="🔄 Deep", callback_data="adm:functional:run:deep"),
+        ],
+        [
+            InlineKeyboardButton(text="↻ Обновить", callback_data="adm:functional"),
+        ],
+        _nav_row("adm:monitor"),
     ])
 
 

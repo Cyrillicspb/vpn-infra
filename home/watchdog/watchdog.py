@@ -17,6 +17,7 @@ watchdog.py — Центральный агент управления VPN Infra
 
 import asyncio
 import base64
+import ipaddress
 import json
 import logging
 import os
@@ -70,6 +71,20 @@ STATE_FILE   = Path("/opt/vpn/watchdog/state.json")
 PLUGINS_DIR  = Path("/opt/vpn/watchdog/plugins")
 ROUTES_DIR   = Path("/etc/vpn-routes")
 LOG_FILE     = "/var/log/vpn-watchdog.log"
+FUNCTIONAL_SCENARIOS_CANDIDATES = [
+    Path("/opt/vpn/home/health/functional-scenarios.yaml"),
+    Path("/opt/vpn/health/functional-scenarios.yaml"),
+    Path(__file__).resolve().parents[1] / "health" / "functional-scenarios.yaml",
+]
+FUNCTIONAL_RUNTIME_DIR = Path("/run/vpn-functional")
+FUNCTIONAL_BRIDGE = "br-fh"
+FUNCTIONAL_BRIDGE_CIDR = os.getenv("FUNCTIONAL_NS_SUBNET", "172.21.0.0/24")
+FUNCTIONAL_BRIDGE_IP = os.getenv("FUNCTIONAL_NS_GATEWAY_IP", "172.21.0.1/24")
+FUNCTIONAL_NAMESPACES: dict[str, dict[str, str]] = {
+    "lan": {"name": "vpn-fh-lan", "transport_ip": "172.21.0.11/24"},
+    "wg": {"name": "vpn-fh-wg", "transport_ip": "172.21.0.12/24", "client_ip": "10.177.3.250/32", "iface": "wgfh", "server_iface": "wg1"},
+    "awg": {"name": "vpn-fh-awg", "transport_ip": "172.21.0.13/24", "client_ip": "10.177.1.250/32", "iface": "wgfh", "server_iface": "wg0"},
+}
 
 # Порядок по устойчивости (индекс 0 = самый устойчивый)
 # zapret исключён: прямой обход DPI без VPS, работает параллельно (direct_mode=true)
@@ -226,16 +241,271 @@ def _reload_dpi_presets() -> dict[str, dict]:
     DPI_SERVICE_PRESETS = _load_dpi_presets()
     return DPI_SERVICE_PRESETS
 
+
+def _functional_manifest_path() -> Optional[Path]:
+    for path in FUNCTIONAL_SCENARIOS_CANDIDATES:
+        if path.exists():
+            return path
+    return None
+
+
+def subprocess_run(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=_child_env(),
+            check=False,
+        )
+        return result.returncode, result.stdout, result.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", "timeout"
+    except Exception as exc:
+        return 1, "", str(exc)
+
+
+def _scenario_src_ip(client_path: str) -> str:
+    if client_path in FUNCTIONAL_NAMESPACES:
+        spec = FUNCTIONAL_NAMESPACES[client_path]
+        if "client_ip" in spec:
+            return str(ipaddress.ip_interface(spec["client_ip"]).ip)
+        return str(ipaddress.ip_interface(spec["transport_ip"]).ip)
+    return os.getenv("HOME_SERVER_IP", "") or os.getenv("LAN_GATEWAY_IP", "") or "192.168.1.201"
+
+
+def _is_ip_in_nft_set(set_name: str, ip: str) -> bool:
+    rc, out, _ = subprocess_run(["nft", "list", "set", "inet", "vpn", set_name], timeout=5)
+    return rc == 0 and ip in out
+
+
+def _route_get_sync(ip: str, src_ip: str) -> dict[str, str]:
+    rc, out, err = subprocess_run(["ip", "route", "get", ip, "from", src_ip], timeout=5)
+    if rc != 0:
+        return {"ok": "false", "error": (err or out).strip()[:200]}
+    line = out.strip().splitlines()[0] if out.strip() else ""
+    table_match = re.search(r"\btable\s+(\S+)", line)
+    dev_match = re.search(r"\bdev\s+(\S+)", line)
+    via_match = re.search(r"\bvia\s+(\S+)", line)
+    return {
+        "ok": "true",
+        "line": line,
+        "table": table_match.group(1) if table_match else "",
+        "dev": dev_match.group(1) if dev_match else "",
+        "via": via_match.group(1) if via_match else "",
+    }
+
+
+def _functional_path_verdict(ip: str, client_path: str) -> dict[str, Any]:
+    src_ip = _scenario_src_ip(client_path)
+    route_info = _route_get_sync(ip, src_ip)
+    blocked_static = _is_ip_in_nft_set("blocked_static", ip)
+    blocked_dynamic = _is_ip_in_nft_set("blocked_dynamic", ip)
+    dpi_direct = _is_ip_in_nft_set("dpi_direct", ip)
+    if dpi_direct:
+        verdict = "dpi_experimental"
+    elif blocked_static or blocked_dynamic:
+        verdict = "blocked_vps"
+    else:
+        verdict = "direct"
+    return {
+        "src_ip": src_ip,
+        "route": route_info,
+        "set_membership": {
+            "blocked_static": blocked_static,
+            "blocked_dynamic": blocked_dynamic,
+            "dpi_direct": dpi_direct,
+        },
+        "verdict": verdict,
+    }
+
+
+def _functional_code_ok(code: str, expected: list[int]) -> bool:
+    try:
+        return int(code) in expected
+    except Exception:
+        return False
+
+
+def _normalize_scenario(raw: dict[str, Any]) -> "FunctionalScenario":
+    tiers = [str(t).strip() for t in (raw.get("tiers") or ["standard"]) if str(t).strip()]
+    targets = list(raw.get("targets") or [])
+    if not raw.get("id") or not targets:
+        raise ValueError("scenario requires id and targets")
+    return FunctionalScenario(
+        id=str(raw["id"]),
+        enabled=bool(raw.get("enabled", True)),
+        description=str(raw.get("description") or raw["id"]),
+        tiers=tiers,
+        client_path=str(raw.get("client_path") or "lan"),
+        routing_expectation=str(raw.get("routing_expectation") or "direct"),
+        probe_type=str(raw.get("probe_type") or "https_status"),
+        targets=targets,
+        timeout=int(raw.get("timeout") or 10),
+        weight=int(raw.get("weight") or 5),
+        criticality=str(raw.get("criticality") or "medium"),
+        required_successes=raw.get("required_successes"),
+    )
+
+
+def load_functional_scenarios() -> list["FunctionalScenario"]:
+    path = _functional_manifest_path()
+    if path is None:
+        logger.warning("Functional scenarios manifest not found")
+        return []
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        logger.error("Failed to load functional scenarios from %s: %s", path, exc)
+        return []
+    scenarios_raw = data.get("scenarios") if isinstance(data, dict) else None
+    if not isinstance(scenarios_raw, list):
+        logger.error("Functional scenarios manifest must contain top-level 'scenarios' list")
+        return []
+    scenarios: list[FunctionalScenario] = []
+    seen_ids: set[str] = set()
+    for item in scenarios_raw:
+        if not isinstance(item, dict):
+            continue
+        scenario = _normalize_scenario(item)
+        if scenario.id in seen_ids:
+            raise ValueError(f"duplicate functional scenario id: {scenario.id}")
+        seen_ids.add(scenario.id)
+        scenarios.append(scenario)
+    return scenarios
+
+
+async def _functional_ns_exec(ns_name: str, cmd: list[str], timeout: int = 20) -> tuple[int, str, str]:
+    return await run_cmd(["ip", "netns", "exec", ns_name, *cmd], timeout=timeout)
+
+
+async def _ensure_functional_bridge() -> None:
+    rc, _, _ = await run_cmd(["ip", "link", "show", FUNCTIONAL_BRIDGE], timeout=5)
+    if rc != 0:
+        await run_cmd(["ip", "link", "add", FUNCTIONAL_BRIDGE, "type", "bridge"], timeout=5)
+    await run_cmd(["ip", "addr", "replace", FUNCTIONAL_BRIDGE_IP, "dev", FUNCTIONAL_BRIDGE], timeout=5)
+    await run_cmd(["ip", "link", "set", FUNCTIONAL_BRIDGE, "up"], timeout=5)
+
+
+def _functional_link_names(kind: str) -> tuple[str, str]:
+    suffix = kind[:3]
+    return (f"fh-{suffix}-h", f"fh-{suffix}-n")
+
+
+async def _ensure_functional_transport_ns(kind: str) -> dict[str, str]:
+    spec = FUNCTIONAL_NAMESPACES[kind]
+    ns_name = spec["name"]
+    host_if, ns_if = _functional_link_names(kind)
+    await _ensure_functional_bridge()
+    await run_cmd(["ip", "netns", "add", ns_name], timeout=5)
+    rc, _, _ = await run_cmd(["ip", "link", "show", host_if], timeout=5)
+    if rc != 0:
+        await run_cmd(["ip", "link", "add", host_if, "type", "veth", "peer", "name", ns_if], timeout=5)
+        await run_cmd(["ip", "link", "set", ns_if, "netns", ns_name], timeout=5)
+    await run_cmd(["ip", "link", "set", host_if, "master", FUNCTIONAL_BRIDGE], timeout=5)
+    await run_cmd(["ip", "link", "set", host_if, "up"], timeout=5)
+    await _functional_ns_exec(ns_name, ["ip", "link", "set", "lo", "up"], timeout=5)
+    await _functional_ns_exec(ns_name, ["ip", "link", "set", ns_if, "name", "eth0"], timeout=5)
+    await _functional_ns_exec(ns_name, ["ip", "addr", "replace", spec["transport_ip"], "dev", "eth0"], timeout=5)
+    await _functional_ns_exec(ns_name, ["ip", "link", "set", "eth0", "up"], timeout=5)
+    await _functional_ns_exec(ns_name, ["ip", "route", "replace", "default", "via", str(ipaddress.ip_interface(FUNCTIONAL_BRIDGE_IP).ip)], timeout=5)
+    etc_netns = Path("/etc/netns") / ns_name
+    etc_netns.mkdir(parents=True, exist_ok=True)
+    dns_ip = str(ipaddress.ip_interface(FUNCTIONAL_BRIDGE_IP).ip)
+    (etc_netns / "resolv.conf").write_text(f"nameserver {dns_ip}\n", encoding="utf-8")
+    return spec
+
+
+async def _ensure_functional_tunnel_ns(kind: str) -> dict[str, str]:
+    spec = await _ensure_functional_transport_ns(kind)
+    if kind not in ("wg", "awg"):
+        return spec
+    ns_name = spec["name"]
+    runtime_dir = FUNCTIONAL_RUNTIME_DIR / kind
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    priv_path = runtime_dir / "client.key"
+    pub_path = runtime_dir / "client.pub"
+    conf_path = runtime_dir / f"{spec['iface']}.conf"
+    if not priv_path.exists() or not pub_path.exists():
+        rc, priv, err = await run_cmd(["wg", "genkey"], timeout=5)
+        if rc != 0:
+            raise RuntimeError(f"functional {kind}: wg genkey failed: {(err or priv).strip()}")
+        priv = priv.strip()
+        proc = await asyncio.create_subprocess_exec(
+            "wg", "pubkey",
+            env=_child_env(),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await proc.communicate(priv.encode())
+        priv_path.write_text(priv + "\n", encoding="utf-8")
+        pub_path.write_text(out.decode().strip() + "\n", encoding="utf-8")
+
+    server_iface = spec["server_iface"]
+    server_pub = os.getenv("AWG_SERVER_PUBLIC_KEY" if kind == "awg" else "WG_SERVER_PUBLIC_KEY", "").strip()
+    if not server_pub:
+        raise RuntimeError(f"functional {kind}: missing server public key")
+    tool = _wg_tool(server_iface)
+    await run_cmd(
+        [tool, "set", server_iface, "peer", pub_path.read_text(encoding="utf-8").strip(), "allowed-ips", spec["client_ip"], "persistent-keepalive", "25"],
+        timeout=10,
+    )
+    port = os.getenv("WG_AWG_PORT", "51820") if kind == "awg" else os.getenv("WG_WG_PORT", "51821")
+    dns_ip = "10.177.1.1" if kind == "awg" else "10.177.3.1"
+    extra = ""
+    if kind == "awg":
+        extra = (
+            f"Jc = 4\nJmin = 50\nJmax = 1000\nS1 = 30\nS2 = 40\n"
+            f"H1 = {int(os.getenv('AWG_H1', '1'))}\nH2 = {int(os.getenv('AWG_H2', '2'))}\n"
+            f"H3 = {int(os.getenv('AWG_H3', '3'))}\nH4 = {int(os.getenv('AWG_H4', '4'))}\n"
+        )
+    conf_path.write_text(
+        (
+            "[Interface]\n"
+            f"PrivateKey = {priv_path.read_text(encoding='utf-8').strip()}\n"
+            f"Address = {spec['client_ip']}\n"
+            "MTU = 1320\n"
+            f"{extra}"
+            "\n[Peer]\n"
+            f"PublicKey = {server_pub}\n"
+            f"AllowedIPs = 0.0.0.0/0\n"
+            f"Endpoint = {ipaddress.ip_interface(FUNCTIONAL_BRIDGE_IP).ip}:{port}\n"
+            "PersistentKeepalive = 25\n"
+        ),
+        encoding="utf-8",
+    )
+    await _functional_ns_exec(ns_name, [_wg_quick_tool(server_iface), "down", str(conf_path)], timeout=10)
+    rc, out, err = await _functional_ns_exec(ns_name, [_wg_quick_tool(server_iface), "up", str(conf_path)], timeout=20)
+    if rc != 0 and "already exists" not in (err + out):
+        raise RuntimeError(f"functional {kind}: quick up failed: {(err or out).strip()[:300]}")
+    etc_netns = Path("/etc/netns") / ns_name
+    etc_netns.mkdir(parents=True, exist_ok=True)
+    (etc_netns / "resolv.conf").write_text(f"nameserver {dns_ip}\n", encoding="utf-8")
+    return spec
+
+
+async def _ensure_functional_client_runtime(client_path: str) -> Optional[dict[str, str]]:
+    if client_path not in FUNCTIONAL_NAMESPACES:
+        return None
+    if client_path == "lan":
+        return await _ensure_functional_transport_ns("lan")
+    return await _ensure_functional_tunnel_ns(client_path)
+
 # ---------------------------------------------------------------------------
 # Логирование
 # ---------------------------------------------------------------------------
+_log_handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+try:
+    _log_handlers.insert(0, logging.FileHandler(LOG_FILE, encoding="utf-8"))
+except Exception:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ],
+    handlers=_log_handlers,
 )
 logger = logging.getLogger("watchdog")
 _reload_dpi_presets()
@@ -690,6 +960,22 @@ class CheckResult:
     tier:   str  = "quick"
 
 
+@dataclass
+class FunctionalScenario:
+    id: str
+    enabled: bool
+    description: str
+    tiers: list[str]
+    client_path: str
+    routing_expectation: str
+    probe_type: str
+    targets: list[dict[str, Any]]
+    timeout: int = 10
+    weight: int = 5
+    criticality: str = "medium"
+    required_successes: Optional[int] = None
+
+
 class WatchdogState:
     def __init__(self) -> None:
         self.active_stack: str = DEFAULT_STACK
@@ -769,6 +1055,11 @@ class WatchdogState:
         self.server_repo_alert_last_ts: float = 0.0
         self.peer_reconcile_last_ts: float = 0.0
         self.planned_disruptions: dict[str, dict[str, Any]] = {}
+        self.functional_results: dict[str, dict[str, Any]] = {}
+        self.functional_summary: dict[str, Any] = {}
+        self.last_functional_run_by_tier: dict[str, float] = {}
+        self.functional_fail_counters: dict[str, int] = {}
+        self.functional_evidence_store: dict[str, dict[str, Any]] = {}
 
     @property
     def active_vps(self) -> Optional[dict]:
@@ -821,6 +1112,11 @@ class WatchdogState:
             "server_repo_alert_last_ts": self.server_repo_alert_last_ts,
             "peer_reconcile_last_ts": self.peer_reconcile_last_ts,
             "planned_disruptions": self.planned_disruptions,
+            "functional_results": self.functional_results,
+            "functional_summary": self.functional_summary,
+            "last_functional_run_by_tier": self.last_functional_run_by_tier,
+            "functional_fail_counters": self.functional_fail_counters,
+            "functional_evidence_store": self.functional_evidence_store,
         }
 
     def save(self) -> None:
@@ -865,6 +1161,11 @@ class WatchdogState:
                 self.server_repo_alert_last_ts = float(data.get("server_repo_alert_last_ts", 0.0) or 0.0)
                 self.peer_reconcile_last_ts = float(data.get("peer_reconcile_last_ts", 0.0) or 0.0)
                 self.planned_disruptions = data.get("planned_disruptions", {}) or {}
+                self.functional_results = data.get("functional_results", {}) or {}
+                self.functional_summary = data.get("functional_summary", {}) or {}
+                self.last_functional_run_by_tier = data.get("last_functional_run_by_tier", {}) or {}
+                self.functional_fail_counters = data.get("functional_fail_counters", {}) or {}
+                self.functional_evidence_store = data.get("functional_evidence_store", {}) or {}
                 if self.active_stack not in STACK_ORDER:
                     self.active_stack = DEFAULT_STACK
                     self.is_first_run = True
@@ -2413,6 +2714,160 @@ async def _dpi_dataplane_active() -> bool:
     return state.nfqws_ok is True
 
 
+async def _resolve_ipv4(host: str) -> list[str]:
+    loop = asyncio.get_event_loop()
+
+    def _do_resolve() -> list[str]:
+        infos = socket.getaddrinfo(host, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
+        return sorted({info[4][0] for info in infos})
+
+    try:
+        return await loop.run_in_executor(None, _do_resolve)
+    except Exception:
+        return []
+
+
+async def _resolve_ipv4_for_path(host: str, client_path: str) -> list[str]:
+    runtime = await _ensure_functional_client_runtime(client_path)
+    if not runtime:
+        return await _resolve_ipv4(host)
+    ns_name = runtime["name"]
+    py = (
+        "import socket,sys;"
+        "ips=sorted({i[4][0] for i in socket.getaddrinfo(sys.argv[1], None, family=socket.AF_INET, type=socket.SOCK_STREAM)});"
+        "print('\\n'.join(ips))"
+    )
+    rc, out, _ = await _functional_ns_exec(ns_name, ["python3", "-c", py, host], timeout=10)
+    if rc != 0:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+async def _functional_http_probe(url: str, timeout: int, expected_codes: list[int], client_path: str) -> dict[str, Any]:
+    runtime = await _ensure_functional_client_runtime(client_path)
+    cmd = ["curl", "-sS", "-L", "--max-time", str(timeout), "-o", "/dev/null", "-w", "%{http_code}", url]
+    if runtime:
+        rc, out, err = await _functional_ns_exec(runtime["name"], cmd, timeout=timeout + 3)
+    else:
+        rc, out, err = await run_cmd(cmd, timeout=timeout + 3)
+    code = out.strip()
+    return {"ok": rc == 0 and _functional_code_ok(code, expected_codes), "http_code": code, "stderr": err.strip()[:200]}
+
+
+async def _run_functional_scenario(scenario: FunctionalScenario) -> tuple[CheckResult, dict[str, Any]]:
+    target_results: list[dict[str, Any]] = []
+    successes = 0
+
+    for target in scenario.targets:
+        host = str(target.get("host") or "").strip()
+        url = str(target.get("url") or "").strip()
+        expectation = str(target.get("routing_expectation") or scenario.routing_expectation)
+        expected_codes = [int(c) for c in (target.get("expected_codes") or [200, 204, 301, 302, 401, 403])]
+        ips = await _resolve_ipv4_for_path(host, scenario.client_path) if host else []
+        path_evidence = [_functional_path_verdict(ip, scenario.client_path) for ip in ips[:4]]
+        path_ok = bool(path_evidence)
+        if expectation != "mixed":
+            path_ok = any(ev.get("verdict") == expectation for ev in path_evidence)
+
+        if scenario.probe_type == "dns_only":
+            probe_result = {"ok": bool(ips), "resolved_count": len(ips)}
+        else:
+            probe_result = await _functional_http_probe(url, scenario.timeout, expected_codes, scenario.client_path) if url else {"ok": False}
+        ok = bool(probe_result.get("ok")) and path_ok
+        if ok:
+            successes += 1
+        target_results.append(
+            {
+                "host": host,
+                "url": url,
+                "resolved_ips": ips,
+                "path_expectation": expectation,
+                "path_ok": path_ok,
+                "path_evidence": path_evidence,
+                "probe_result": probe_result,
+                "ok": ok,
+            }
+        )
+
+    required_successes = int(scenario.required_successes or len(scenario.targets))
+    scenario_ok = successes >= required_successes
+    state.functional_fail_counters[scenario.id] = 0 if scenario_ok else state.functional_fail_counters.get(scenario.id, 0) + 1
+    detail = f"{successes}/{len(scenario.targets)} targets ok; path={scenario.client_path}; expect={scenario.routing_expectation}"
+    result = CheckResult(f"functional_{scenario.id}", "ok" if scenario_ok else "fail", detail, weight=scenario.weight, tier="functional")
+    evidence = {
+        "id": scenario.id,
+        "description": scenario.description,
+        "client_path": scenario.client_path,
+        "routing_expectation": scenario.routing_expectation,
+        "probe_type": scenario.probe_type,
+        "targets": target_results,
+        "required_successes": required_successes,
+        "successes": successes,
+        "status": result.status,
+        "detail": result.detail,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    return result, evidence
+
+
+async def _run_functional_checks_for_tier(tier: str) -> list[CheckResult]:
+    try:
+        scenarios = [s for s in load_functional_scenarios() if s.enabled and tier in s.tiers]
+    except Exception as exc:
+        logger.error("Functional scenario loading failed: %s", exc)
+        state.functional_summary = {"status": "error", "reason": str(exc)[:200], "tier": tier}
+        return [CheckResult("functional_manifest", "fail", str(exc)[:200], weight=5, tier="functional")]
+    if not scenarios:
+        state.functional_summary = {"status": "disabled", "reason": "no_scenarios", "tier": tier}
+        return []
+
+    results: list[CheckResult] = []
+    evidence_store: dict[str, dict[str, Any]] = {}
+    for scenario in scenarios:
+        if scenario.routing_expectation == "dpi_experimental" and not _dpi_lane_active():
+            results.append(CheckResult(f"functional_{scenario.id}", "ok", "DPI experimental off; scenario skipped", weight=0, tier="functional"))
+            evidence_store[scenario.id] = {
+                "id": scenario.id,
+                "status": "skipped",
+                "reason": "dpi_experimental_off",
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+            }
+            continue
+        result, evidence = await _run_functional_scenario(scenario)
+        results.append(result)
+        evidence_store[scenario.id] = evidence
+
+    state.functional_results = {
+        result.name.removeprefix("functional_"): {"status": result.status, "detail": result.detail, "weight": result.weight}
+        for result in results
+    }
+    state.functional_evidence_store = evidence_store
+    state.last_functional_run_by_tier[tier] = time.time()
+    state.functional_summary = {
+        "tier": tier,
+        "ok": sum(1 for r in results if r.status == "ok"),
+        "fail": sum(1 for r in results if r.status == "fail"),
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    state.save()
+    return results
+
+
+def _cached_functional_check_results() -> list[CheckResult]:
+    results: list[CheckResult] = []
+    for scenario_id, payload in (state.functional_results or {}).items():
+        results.append(
+            CheckResult(
+                f"functional_{scenario_id}",
+                str(payload.get("status") or "warn"),
+                str(payload.get("detail") or "cached functional result"),
+                weight=int(payload.get("weight") or 5),
+                tier="functional",
+            )
+        )
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Health Check — check helper functions
 # ---------------------------------------------------------------------------
@@ -2765,6 +3220,9 @@ class HealthChecker:
                 "fail": sum(1 for r in results if r.status == "fail"),
             },
             "post_deploy_watch": time.time() < state.post_deploy_until,
+            "functional_summary": state.functional_summary,
+            "functional_results": state.functional_results,
+            "functional_evidence": state.functional_evidence_store,
             "checks": [
                 {"name": r.name, "status": r.status, "detail": r.detail,
                  "weight": r.weight, "tier": r.tier}
@@ -2792,6 +3250,7 @@ class HealthChecker:
 
     async def run_quick(self) -> dict:
         results = await _health_quick_checks()
+        results += _cached_functional_check_results()
         report  = self._compute(results, "quick")
         self._save(report)
         self._maybe_alert(report)
@@ -2800,6 +3259,7 @@ class HealthChecker:
     async def run_standard(self) -> dict:
         results = await _health_quick_checks()
         results += await _health_standard_checks()
+        results += await _run_functional_checks_for_tier("standard")
         report  = self._compute(results, "standard")
         self._save(report)
         self._maybe_alert(report)
@@ -2809,6 +3269,7 @@ class HealthChecker:
         results = await _health_quick_checks()
         results += await _health_standard_checks()
         results += await _health_deep_checks()
+        results += await _run_functional_checks_for_tier("deep")
         report  = self._compute(results, "deep")
         self._save(report)
         self._maybe_alert(report)
@@ -3698,6 +4159,7 @@ async def monitoring_loop() -> None:
     await check_watchdog_runtime_sync()
     await check_server_repo_sync()
     state.last_monitoring_tick = time.time()
+    asyncio.create_task(_run_functional_checks_for_tier("quick"), name="functional-warmup")
     await health_checker.run_quick()
 
     while True:
@@ -3759,6 +4221,10 @@ async def monitoring_loop() -> None:
             # Каждые 30 мин: проверка эффективности DPI bypass
             if tick % 180 == 0:
                 asyncio.create_task(_check_dpi_effectiveness())
+
+            # Каждые 15 мин: lightweight functional health refresh
+            if tick % 90 == 0:
+                asyncio.create_task(_run_functional_checks_for_tier("quick"), name="functional-quick")
 
             # Каждые 6 ч: large speedtest, кэш маршрутов, сертификаты, DKMS
             if now - last_large_speedtest >= 6 * 3600:
@@ -3892,6 +4358,10 @@ class DpiToggleRequest(BaseModel):
     tunnel_ip: str = ""
 
 
+class FunctionalRunRequest(BaseModel):
+    tier: str = "standard"
+
+
 # ---------------------------------------------------------------------------
 # API Endpoints — GET
 # ---------------------------------------------------------------------------
@@ -3917,6 +4387,7 @@ async def get_status(_: bool = Depends(_auth)):
             "ram_percent": ram.percent,
             "cpu_percent": psutil.cpu_percent(interval=0.5),
         },
+        "functional_summary": state.functional_summary,
     }
 
     # Gateway Mode: добавляем счётчик LAN-клиентов из conntrack
@@ -4030,6 +4501,38 @@ async def get_metrics(_: bool = Depends(_auth)):
 async def get_health(_: bool = Depends(_auth)):
     """Агрегированный health report со score 0–100."""
     return health_checker.get_cached()
+
+
+@app.get("/functional/status")
+async def get_functional_status(_: bool = Depends(_auth)):
+    return {
+        "summary": state.functional_summary,
+        "results": state.functional_results,
+        "evidence": state.functional_evidence_store,
+        "last_run_by_tier": state.last_functional_run_by_tier,
+        "manifest_path": str(_functional_manifest_path()) if _functional_manifest_path() else None,
+    }
+
+
+@app.post("/functional/run")
+async def post_functional_run(request: Request, req: FunctionalRunRequest, _: bool = Depends(_auth)):
+    await audit_log(request, "functional.run", {"tier": req.tier})
+    tier = (req.tier or "standard").strip().lower()
+    if tier not in {"quick", "standard", "deep"}:
+        raise HTTPException(status_code=400, detail="tier must be quick|standard|deep")
+    if tier == "deep":
+        report = await health_checker.run_deep()
+    elif tier == "standard":
+        report = await health_checker.run_standard()
+    else:
+        await _run_functional_checks_for_tier("quick")
+        report = await health_checker.run_quick()
+    return {
+        "tier": tier,
+        "functional_summary": state.functional_summary,
+        "functional_results": state.functional_results,
+        "health": report,
+    }
 
 
 @app.get("/peer/list")

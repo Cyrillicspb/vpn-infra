@@ -72,6 +72,12 @@ class WatchdogClient:
     async def get_health(self) -> dict:
         return await self._get("/health")
 
+    async def get_functional_status(self) -> dict:
+        return await self._get("/functional/status")
+
+    async def run_functional(self, tier: str = "standard") -> dict:
+        return await self._post("/functional/run", {"tier": tier}, timeout=90)
+
     async def get_metrics(self) -> str:
         data = await self._get("/metrics")
         return data.decode() if isinstance(data, bytes) else str(data)

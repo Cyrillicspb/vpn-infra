@@ -856,7 +856,12 @@ for a in d.get('assets',[]):
             chmod 600 /home/sysadmin/.ssh/authorized_keys 2>/dev/null || true"
         _vps_root_exec \
             "echo 'sysadmin ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/sysadmin && \
-             chmod 440 /etc/sudoers.d/sysadmin"
+             chmod 440 /etc/sudoers.d/sysadmin && \
+             OPERATOR_USER=\$(getent passwd 1000 2>/dev/null | cut -d: -f1 || true) && \
+             if [[ -n \"\${OPERATOR_USER}\" && \"\${OPERATOR_USER}\" != 'sysadmin' ]]; then \
+                 echo \"\${OPERATOR_USER} ALL=(ALL) NOPASSWD:ALL\" > /etc/sudoers.d/\${OPERATOR_USER} && \
+                 chmod 440 /etc/sudoers.d/\${OPERATOR_USER}; \
+             fi"
 
         # Отключение root SSH и парольной аутентификации
         log_info "Настройка SSH на VPS..."
@@ -1276,42 +1281,18 @@ phase3() {
         log_info "Транспорт: TCP ${VPS_SSH_PORT:-22} (не UDP) — не блокируется ISP."
 
 
-        # Скрипт подключения.
-        # Встроенный фоновый монитор назначает IP на tun0 после каждого переподключения.
-        # Remote-команда создаёт persistent tun0 на VPS если не существует, назначает IP.
         mkdir -p /opt/vpn/scripts
-        cat > /opt/vpn/scripts/tier2-connect.sh << 'CONNEOF'
-#!/bin/bash
-# SSH Tier-2 tunnel: tun0, 10.177.2.1 (home) <-> 10.177.2.2 (VPS)
-# VPS_IP и VPS_SSH_PORT берутся из EnvironmentFile=/opt/vpn/.env
-
-# Фоновый монитор: назначает IP на локальный tun0 при каждом появлении
-(while true; do
-    if ip link show tun0 &>/dev/null; then
-        ip addr replace 10.177.2.1/30 dev tun0 2>/dev/null || true
-        ip link set tun0 up 2>/dev/null || true
-    fi
-    sleep 3
-done) &
-MONITOR_PID=$!
-echo $MONITOR_PID > /run/tier2-monitor.pid
-
-exec autossh -M 0 \
-    -o StrictHostKeyChecking=no \
-    -o ServerAliveInterval=10 \
-    -o ServerAliveCountMax=3 \
-    -o ExitOnForwardFailure=yes \
-    -o "ProxyCommand=ncat --proxy 127.0.0.1:1089 --proxy-type socks5 %h %p" \
-    -w 0:0 \
-    -i /root/.ssh/vpn_id_ed25519 \
-    -p "${VPS_SSH_PORT:-22}" \
-    "sysadmin@${VPS_IP}" \
-    'sudo ip tuntap add dev tun0 mode tun 2>/dev/null; sudo ip link set tun0 up; sudo ip addr replace 10.177.2.2/30 dev tun0; sudo ip route replace 10.177.2.1/32 dev tun0; sleep infinity'
-CONNEOF
+        if [[ -f /opt/vpn/home/scripts/tier2-connect.sh ]]; then
+            cp /opt/vpn/home/scripts/tier2-connect.sh /opt/vpn/scripts/tier2-connect.sh
+        elif [[ -f "${REPO_DIR}/home/scripts/tier2-connect.sh" ]]; then
+            cp "${REPO_DIR}/home/scripts/tier2-connect.sh" /opt/vpn/scripts/tier2-connect.sh
+        else
+            die "Не найден source tier2-connect.sh"
+        fi
         chmod +x /opt/vpn/scripts/tier2-connect.sh
 
         # Systemd unit для autossh-tier2 (без ExecStartPost — IP назначает монитор внутри скрипта)
-        cat > /etc/systemd/system/autossh-tier2.service << UNITEOF
+        cat > /etc/systemd/system/autossh-tier2.service << 'UNITEOF'
 [Unit]
 Description=SSH Tier-2 Tunnel to VPS (10.177.2.0/30)
 After=network-online.target docker.service

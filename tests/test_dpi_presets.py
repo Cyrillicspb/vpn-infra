@@ -82,6 +82,15 @@ class DpiPresetUpdateTests(unittest.TestCase):
             ],
         )
 
+    def test_youtube_service_uses_larger_domain_cap(self) -> None:
+        core = ["youtube.com", "googlevideo.com"]
+        tier2 = [f"youtube{i}.example.com" for i in range(400)]
+
+        merged = update_dpi_presets._merge_service_domains("youtube", core, tier2)
+
+        self.assertEqual(len(merged), 256)
+        self.assertEqual(merged[:2], core)
+
 
 if __name__ == "__main__":
     unittest.main()

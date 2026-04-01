@@ -1,0 +1,149 @@
+scenarios:
+  - id: lan_direct_internet
+    enabled: true
+    description: LAN direct internet baseline
+    tiers: [quick, standard, deep]
+    client_path: lan
+    routing_expectation: direct
+    probe_type: https_status
+    timeout: 8
+    weight: 10
+    targets:
+      - host: www.gstatic.com
+        url: https://www.gstatic.com/generate_204
+        expected_codes: [200, 204]
+
+  - id: wg_direct_internet
+    enabled: true
+    description: WG direct internet baseline
+    tiers: [standard, deep]
+    client_path: wg
+    routing_expectation: direct
+    probe_type: https_status
+    timeout: 8
+    weight: 8
+    targets:
+      - host: www.gstatic.com
+        url: https://www.gstatic.com/generate_204
+        expected_codes: [200, 204]
+
+  - id: awg_direct_internet
+    enabled: true
+    description: AWG direct internet baseline
+    tiers: [standard, deep]
+    client_path: awg
+    routing_expectation: direct
+    probe_type: https_status
+    timeout: 8
+    weight: 8
+    targets:
+      - host: www.gstatic.com
+        url: https://www.gstatic.com/generate_204
+        expected_codes: [200, 204]
+
+  - id: lan_blocked_via_vps
+    enabled: true
+    description: LAN blocked service routed via VPS
+    tiers: [quick, standard, deep]
+    client_path: lan
+    routing_expectation: blocked_vps
+    probe_type: https_status
+    timeout: 10
+    weight: 10
+    targets:
+      - host: api.telegram.org
+        url: https://api.telegram.org
+        expected_codes: [200, 301, 302, 401, 403]
+
+  - id: wg_blocked_via_vps
+    enabled: true
+    description: WG blocked service routed via VPS
+    tiers: [standard, deep]
+    client_path: wg
+    routing_expectation: blocked_vps
+    probe_type: https_status
+    timeout: 10
+    weight: 8
+    targets:
+      - host: api.telegram.org
+        url: https://api.telegram.org
+        expected_codes: [200, 301, 302, 401, 403]
+
+  - id: awg_blocked_via_vps
+    enabled: true
+    description: AWG blocked service routed via VPS
+    tiers: [standard, deep]
+    client_path: awg
+    routing_expectation: blocked_vps
+    probe_type: https_status
+    timeout: 10
+    weight: 8
+    targets:
+      - host: api.telegram.org
+        url: https://api.telegram.org
+        expected_codes: [200, 301, 302, 401, 403]
+
+  - id: telegram_control_plane
+    enabled: true
+    description: Telegram admin/control plane reachability
+    tiers: [quick, standard, deep]
+    client_path: lan
+    routing_expectation: blocked_vps
+    probe_type: api_bootstrap
+    timeout: 10
+    weight: 6
+    required_successes: 1
+    targets:
+      - host: api.telegram.org
+        url: https://api.telegram.org
+        expected_codes: [200, 301, 302, 401, 403]
+
+  - id: complex_service_gosuslugi_like
+    enabled: true
+    description: Russian auth chain with multiple direct dependencies
+    tiers: [standard, deep]
+    client_path: lan
+    routing_expectation: direct
+    probe_type: https_chain
+    timeout: 10
+    weight: 6
+    required_successes: 2
+    targets:
+      - host: www.gosuslugi.ru
+        url: https://www.gosuslugi.ru
+        expected_codes: [200, 301, 302, 401, 403]
+      - host: esia.gosuslugi.ru
+        url: https://esia.gosuslugi.ru
+        expected_codes: [200, 301, 302, 401, 403]
+
+  - id: complex_service_okko_like
+    enabled: true
+    description: Mixed-route media bootstrap chain similar to Okko
+    tiers: [standard, deep]
+    client_path: lan
+    routing_expectation: mixed
+    probe_type: media_bootstrap
+    timeout: 10
+    weight: 10
+    required_successes: 4
+    targets:
+      - host: okko.tv
+        url: https://okko.tv
+        routing_expectation: direct
+        expected_codes: [200, 301, 302, 401, 403]
+      - host: api.okko.tv
+        url: https://api.okko.tv
+        routing_expectation: direct
+        expected_codes: [200, 301, 302, 401, 403]
+      - host: static.okko.tv
+        url: https://static.okko.tv
+        routing_expectation: direct
+        expected_codes: [200, 301, 302, 401, 403]
+      - host: drm.playfamily.ru
+        url: https://drm.playfamily.ru
+        routing_expectation: direct
+        expected_codes: [200, 301, 302, 401, 403]
+      - host: www.googleapis.com
+        url: https://www.googleapis.com
+        routing_expectation: blocked_vps
+        expected_codes: [200, 301, 302, 401, 403]

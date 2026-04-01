@@ -203,6 +203,10 @@ check_sync_pair "runtime sync: watchdog-stop-cleanup.sh" \
     "/opt/vpn/home/scripts/watchdog-stop-cleanup.sh" \
     "/opt/vpn/scripts/watchdog-stop-cleanup.sh" \
     "active watchdog-stop-cleanup.sh не совпадает с source tree"
+check_sync_pair "runtime sync: tier2-connect.sh" \
+    "/opt/vpn/home/scripts/tier2-connect.sh" \
+    "/opt/vpn/scripts/tier2-connect.sh" \
+    "active tier2-connect.sh отсутствует или не совпадает с source tree"
 check_sync_pair "runtime sync: watchdog.py" \
     "/opt/vpn/home/watchdog/watchdog.py" \
     "/opt/vpn/watchdog/watchdog.py" \
@@ -219,6 +223,12 @@ check_sync_pair "runtime sync: zapret probe.py" \
     "/opt/vpn/home/watchdog/plugins/zapret/probe.py" \
     "/opt/vpn/watchdog/plugins/zapret/probe.py" \
     "active zapret probe.py не совпадает с source tree"
+
+if [[ -L /opt/vpn/home/.env && "$(readlink -f /opt/vpn/home/.env 2>/dev/null)" == "/opt/vpn/.env" ]]; then
+    ok "source env link: /opt/vpn/home/.env → /opt/vpn/.env"
+else
+    fail "source env link: /opt/vpn/home/.env" "source-tree docker compose/self-heal может сломаться без ссылки на runtime .env"
+fi
 check_sync_pair "runtime sync: watchdog.service" \
     "/opt/vpn/home/systemd/watchdog.service" \
     "/etc/systemd/system/watchdog.service" \

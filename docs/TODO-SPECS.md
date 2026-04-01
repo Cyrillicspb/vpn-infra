@@ -374,6 +374,274 @@ chain postrouting:
 
 -----
 
+## Router-Zapret Extension For Behind-Router Mode
+
+## Summary
+
+Добавить в архитектуру третий управляемый исполнительный контур: `router-zapret` на Keenetic, управляемый исключительно с `home-server` по SSH.
+`home-server` остаётся единственным control plane и source of truth; VPS и Keenetic становятся execution backends.
+Решение вводится только для `server_mode=B` (`home-server` за роутером), с rollout по умолчанию: установка и регистрация выполняются автоматически, но traffic policy остаётся выключенной, пока админ не включит её явно.
+
+Ключевая модель после внедрения:
+
+- `home-server` управляет состоянием системы
+- `watchdog` принимает решения и применяет desired state
+- VPS обслуживает blocked/VPN traffic
+- Keenetic обслуживает DPI bypass на edge для YouTube и других `dpi_direct` сервисов
+- Telegram-бот остаётся штатной operator surface поверх watchdog
+
+## Architecture Changes
+
+### 1. Новый execution backend: router-zapret
+
+Добавить в систему понятие управляемого router backend для `zapret`, отдельное от локального `nfqws` на `home-server`.
+
+Поведение:
+
+- в `mode=A` локальный `zapret` на `home-server` остаётся штатным
+- в `mode=B` система поддерживает два варианта DPI backend:
+  - `local-home-zapret`
+  - `router-zapret`
+- для Keenetic backend считается внешним execution target, а не частью source tree на роутере
+
+В `watchdog` зафиксировать отдельную сущность состояния:
+
+- `dpi_backend_mode`: `local | router`
+- `router_backend`: `none | keenetic`
+- `router_backend_status`: `discovered | reachable | installed | configured | enabled | degraded`
+- `router_backend_last_apply`, `router_backend_last_error`
+- `router_backend_policy_mode`: `disabled | device_allowlist | full_lan`
+
+### 2. Control plane: home-server -> SSH -> Keenetic
+
+Основной и единственный поддерживаемый канал управления:
+
+- SSH к Keenetic с `home-server`
+- файловые операции через `scp/sftp`
+- выполнение команд через `ssh`
+
+Нужно ввести отдельный router access profile, аналогичный текущему VPS access:
+
+- IP/hostname роутера в LAN
+- SSH port
+- username
+- путь к ключу/механизм bootstrap ключа
+- флаг доступности SSH shell и Entware/OPKG
+
+Хранение параметров:
+
+- `.env` как source of truth для router connection metadata
+- при необходимости отдельный шаблон SSH config рядом с `home/ssh/vps.conf.template`, но для роутера
+- никакие router credentials не должны жить в repo-tracked файлах
+
+### 3. Keenetic-specific adapter
+
+Вместо “общего router install” сразу проектировать `KeeneticAdapter` как первый backend adapter.
+
+Зона ответственности adapter:
+
+- проверка SSH-доступа
+- проверка модели Keenetic/совместимости
+- проверка наличия Entware/OPKG
+- установка `nfqws-keenetic`
+- запись managed config
+- применение/рестарт пакета
+- чтение текущего статуса
+- безопасное выключение policy без удаления пакета
+
+Важно:
+
+- adapter не должен пытаться полностью управлять KeeneticOS
+- он управляет только собственным managed footprint:
+  - Entware package
+  - managed config files пакета
+  - managed списки устройств/подсетей
+  - managed enable/disable hooks
+
+### 4. Ownership model для конфигурации
+
+`home-server` должен быть source of truth для `router-zapret` config.
+
+Нужно ввести managed artifacts на стороне `home-server`:
+
+- rendered router package config
+- rendered policy lists for allowlist/full LAN
+- router host metadata
+- last applied checksum/version
+
+На Keenetic нужно писать только файлы, которыми владеет система:
+
+- основной managed config пакета
+- generated allowlist/auto.list/user.list при необходимости
+- marker/version file для drift detection
+
+Правило:
+
+- ручные правки на Keenetic либо запрещены, либо считаются drift и перезаписываются очередным apply
+
+## Implementation Plan
+
+### 1. Installer and configuration model
+
+Расширить `install/setup` flow для `mode=B` новыми параметрами роутера:
+
+- `ROUTER_TYPE=keenetic`
+- `ROUTER_LAN_IP`
+- `ROUTER_SSH_PORT`
+- `ROUTER_SSH_USER`
+- `ROUTER_ZAPRET_BACKEND=keenetic`
+- `ROUTER_ZAPRET_DEFAULT_POLICY=disabled`
+
+В `setup.sh` и `install-home.sh` добавить фазу:
+
+- discover router access
+- validate SSH
+- detect Keenetic / Entware / OPKG
+- install router integration components on home-server
+- при явном флаге enable выполнить package install на Keenetic
+- по умолчанию завершать установкой backend без включения traffic policy
+
+Bootstrap path:
+
+- если SSH ключ уже работает, использовать его
+- если нет, installer должен уметь один раз скопировать ключ при наличии пароля
+- если bootstrap невозможен, behind-router mode считается incomplete и должен быть виден в health
+
+### 2. Home-server router orchestration module
+
+Добавить на `home-server` новый orchestration слой, по аналогии с VPS operations:
+
+- SSH command wrapper
+- file push/pull
+- status/readback helpers
+- dry inspection helpers
+- apply transaction with rollback-to-disabled
+
+Логически это отдельный subsystem, не размазанный по bot handler’ам.
+
+Минимальные операции:
+
+- `router_detect`
+- `router_install_package`
+- `router_render_config`
+- `router_apply_config`
+- `router_enable_policy`
+- `router_disable_policy`
+- `router_collect_status`
+- `router_uninstall` только как явная админская операция
+
+### 3. Watchdog integration
+
+`watchdog` становится owner desired state для `router-zapret`.
+
+Новые обязанности:
+
+- читать router backend config из `.env` и/или state
+- держать health checks для router backend
+- различать local zapret и router-zapret
+- при `mode=B + router backend installed` не считать локальный `nfqws` обязательным для YouTube path
+- expose status в API и `state.json`
+
+Новые health scenarios:
+
+- router SSH reachable
+- router package installed
+- managed config checksum matches
+- policy mode matches desired state
+- router backend enabled/disabled as expected
+- router backend drift detected
+- router backend degraded but system overall still operational
+
+### 4. Bot/operator surface
+
+Управление идёт через `watchdog + Telegram-бот`, без отдельного UI.
+
+Нужно добавить в admin surface:
+
+- статус router backend
+- install/apply/recheck команды
+- enable/disable policy
+- выбрать policy mode:
+  - `disabled`
+  - `device_allowlist`
+  - `full_lan`
+- показать managed targets в allowlist
+
+На первом этапе достаточно admin-only операций; client-facing flows не нужны.
+
+### 5. Policy model on Keenetic
+
+Зафиксировать три режима policy на роутере:
+
+- `disabled`
+  - пакет установлен, но не влияет на трафик
+- `device_allowlist`
+  - `router-zapret` применяется только к явно выбранным устройствам/сетям
+- `full_lan`
+  - применяется ко всему LAN
+
+Default после install: `disabled`.
+
+В первой версии allowlist должен поддерживать как минимум:
+
+- IPv4 адреса устройств
+- возможно подсети
+- без обязательной MAC-based логики в v1, если это усложняет implementation
+
+### 6. Rollout sequence
+
+1. Infrastructure only:
+   - env/config model
+   - SSH orchestration
+   - Keenetic detection
+   - package install/apply
+   - status/health
+2. Operator controls:
+   - watchdog endpoints/state
+   - bot commands/status
+3. Policy enablement:
+   - `disabled`
+   - `device_allowlist`
+   - `full_lan`
+4. Documentation + recovery flows
+
+## Tests and Acceptance
+
+### Automated checks
+
+- shell syntax checks для `setup.sh`, `install-home.sh`, router helper scripts
+- unit tests на config rendering и state transitions
+- tests на idempotent re-apply
+- tests на drift detection
+- tests на mode split
+- router unreachable:
+  - system degrades gracefully
+  - VPS path and home-server continue operating
+- router package already installed manually:
+  - installer detects and adopts only if compatible, иначе сообщает incompatible state
+- repeated deploy/recovery:
+  - router backend state is preserved and re-applied from home-server
+
+### Acceptance criteria
+
+- `home-server` может автоматически установить и настроить `nfqws-keenetic` по SSH
+- после установки `router-zapret` не включается автоматически на трафик
+- оператор может включить/выключить `router-zapret` из bot/watchdog
+- состояние роутера видно в health/status
+- behind-router architecture формально описывает Keenetic как execution backend, а не как отдельный control plane
+
+## Assumptions and Defaults
+
+- Первый поддерживаемый роутер: только Keenetic
+- Основной канал управления: только SSH
+- Основная operator surface: watchdog + Telegram-бот
+- Default rollout mode: disabled until enabled
+- Source of truth: home-server
+- Keenetic не рассматривается как место для хранения бизнес-логики системы; только managed execution target
+- v1 не требует поддержки нескольких vendor adapters; abstraction проектируется сразу, но реализуется только `KeeneticAdapter`
+
+-----
+
 ## Multi-admin
 
 **Модель прав:**

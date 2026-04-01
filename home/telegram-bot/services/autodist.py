@@ -32,6 +32,12 @@ logger = logging.getLogger(__name__)
 
 DEBOUNCE_SECONDS = 300   # 5 минут
 REMINDER_HOURS   = 24
+MOBILE_DNS_WARNING = (
+    "Важно: оставьте только tunnel DNS из конфига.\n"
+    "Отключите Private DNS / Secure DNS / DoH на устройстве, иначе YouTube и другие "
+    "split-tunnel сервисы могут обходить dnsmasq.\n"
+    "Если тоннель с таким именем уже есть в приложении, удалите старый и импортируйте этот конфиг заново."
+)
 
 
 class AutoDist:
@@ -118,7 +124,8 @@ class AutoDist:
         return sent
 
     async def _send_one(self, chat_id: str, device: dict, reason: str) -> None:
-        excludes = await self.db.get_excludes(device["id"])
+        excludes = [item["subnet"] for item in await self.db.get_excludes(device["id"])]
+        server_routes = [item["subnet"] for item in await self.db.get_server_routes(device["id"])]
 
         # Обеспечиваем наличие ключей; сохраняем если были сгенерированы
         had_keys = bool(device.get("private_key"))
@@ -128,7 +135,7 @@ class AutoDist:
                 device["id"], device["private_key"], device["public_key"]
             )
 
-        conf_text, qr_bytes, version = await self.builder.build(device, excludes)
+        conf_text, qr_bytes, version = await self.builder.build(device, excludes, server_routes)
 
         # Если конфиг не изменился — не отправляем
         if version == device.get("config_version"):
@@ -142,6 +149,8 @@ class AutoDist:
             f"⚠️ *Конфигурация содержит приватный ключ!*\n"
             f"Не передавайте никому. Рекомендуется 2FA на устройстве."
         )
+        if not device.get("is_router"):
+            await self.bot.send_message(chat_id, MOBILE_DNS_WARNING)
 
         # QR-код
         if qr_bytes:

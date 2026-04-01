@@ -84,9 +84,15 @@ else
         log_info "Пользователь sysadmin уже существует"
     fi
 
-    # sudo NOPASSWD
+    # sudo NOPASSWD для сервисного и операторского пользователей.
     echo 'sysadmin ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/sysadmin
     chmod 440 /etc/sudoers.d/sysadmin
+
+    OPERATOR_USER="$(getent passwd 1000 2>/dev/null | cut -d: -f1 || true)"
+    if [[ -n "${OPERATOR_USER}" && "${OPERATOR_USER}" != "sysadmin" ]]; then
+        echo "${OPERATOR_USER} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/${OPERATOR_USER}"
+        chmod 440 "/etc/sudoers.d/${OPERATOR_USER}"
+    fi
 
     # docker group добавляется в шаге 15, после установки Docker
 
@@ -584,6 +590,10 @@ table inet vpn {
         type filter hook prerouting priority mangle; policy accept;
         iifname { "wg0", "wg1" } ip daddr @blocked_static  meta mark set 0x1 accept
         iifname { "wg0", "wg1" } ip daddr @blocked_dynamic meta mark set 0x1 accept
+        iifname "br-fh" ip daddr @dpi_direct udp dport 443 drop
+        iifname "br-fh" ip daddr @dpi_direct meta mark set 0x2 accept
+        iifname "br-fh" ip daddr @blocked_static meta mark set 0x1 accept
+        iifname "br-fh" ip daddr @blocked_dynamic meta mark set 0x1 accept
     }
 
     chain forward {
@@ -592,6 +602,8 @@ table inet vpn {
         ip saddr 10.177.1.0/24 ip daddr @blocked_dynamic oifname != "tun*" drop
         ip saddr 10.177.3.0/24 ip daddr @blocked_static  oifname != "tun*" drop
         ip saddr 10.177.3.0/24 ip daddr @blocked_dynamic oifname != "tun*" drop
+        ip saddr 172.21.0.0/24 ip daddr @blocked_static  oifname != "tun*" drop
+        ip saddr 172.21.0.0/24 ip daddr @blocked_dynamic oifname != "tun*" drop
         ct state established,related accept
         # AR1: блокировать QUIC (UDP 443) для dpi_direct — принудить браузер к TCP
         # TCP обрабатывается nfqws, QUIC нет → шейпинг без bypass
@@ -602,6 +614,8 @@ table inet vpn {
         oifname "tun*" accept
         iifname "br-vpn" accept
         oifname "br-vpn" accept
+        iifname "br-fh" accept
+        oifname "br-fh" accept
     }
 
     chain input {
@@ -618,6 +632,8 @@ table inet vpn {
         ip saddr { 127.0.0.1, 10.177.2.0/30 } tcp dport 8090 accept
         iifname { "wg0", "wg1" } udp dport 53 accept
         iifname { "wg0", "wg1" } tcp dport 53 accept
+        iifname "br-fh" udp dport 53 accept
+        iifname "br-fh" tcp dport 53 accept
         icmp type echo-request limit rate 10/second accept
     }
 
@@ -628,6 +644,7 @@ table inet vpn {
         ip saddr 10.177.1.0/24 oifname "tun*" masquerade
         ip saddr 10.177.3.0/24 oifname "tun*" masquerade
         ip saddr 172.20.0.0/24 oifname != "br-vpn" masquerade
+        ip saddr 172.21.0.0/24 oifname != "br-fh" masquerade
     }
 }
 
@@ -1448,6 +1465,9 @@ else
         rsync -a "${REPO_DIR}/home/docker-compose.yml" "$COMPOSE_FILE"
         log_ok "docker-compose.yml синхронизирован из home/"
     fi
+
+    ln -sfn /opt/vpn/.env /opt/vpn/home/.env
+    log_ok "source env link: /opt/vpn/home/.env → /opt/vpn/.env"
 
     # Синхронизируем поддиректории, от которых зависит runtime compose.
     for subdir in telegram-bot prometheus grafana alertmanager nginx; do

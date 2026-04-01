@@ -346,6 +346,8 @@ rollback() {
 git_pull() {
     log_step "Получение обновлений"
     ensure_git_repo || return 1
+    local source_ref=""
+    local source_remote=""
 
     # Настраиваем remote vps-mirror если не настроен
     # Используем публичный VPS_IP + ssh-proxy.sh (SOCKS5 через активный стек)
@@ -365,44 +367,56 @@ git_pull() {
         local proxy_cmd=""
         [[ -x "$SSH_PROXY_CMD" ]] && proxy_cmd="-o ProxyCommand='$SSH_PROXY_CMD %h %p'"
         if GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes ${proxy_cmd}" \
-           git -C "$REPO_DIR" fetch --tags vps-mirror 2>/dev/null; then
+           git -C "$REPO_DIR" fetch --tags vps-mirror \
+                '+refs/heads/*:refs/remotes/vps-mirror/*' 2>/dev/null; then
             log_info "Получено из VPS-зеркала"
+            source_remote="vps-mirror"
         else
             log_warn "VPS-зеркало недоступно, пробуем GitHub напрямую..."
-            if ! git -C "$REPO_DIR" fetch --tags origin 2>/dev/null; then
+            if ! git -C "$REPO_DIR" fetch --tags origin \
+                '+refs/heads/*:refs/remotes/origin/*' 2>/dev/null; then
                 log_warn "Не удалось получить обновления"
                 return 1
             fi
             log_info "Получено из GitHub"
+            source_remote="origin"
         fi
     else
-        if ! git -C "$REPO_DIR" fetch --tags origin 2>/dev/null; then
+        if ! git -C "$REPO_DIR" fetch --tags origin \
+            '+refs/heads/*:refs/remotes/origin/*' 2>/dev/null; then
             log_warn "Не удалось получить обновления"
             return 1
         fi
         log_info "Получено из GitHub"
+        source_remote="origin"
     fi
 
-    # Найти последний тег vX.Y.Z
-    local latest_tag
-    latest_tag="$(git -C "$REPO_DIR" tag -l 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null \
-        | sort -V | tail -1)"
-    if [[ -z "$latest_tag" ]]; then
-        log_warn "Теги vX.Y.Z не найдены"
+    for candidate in \
+        "refs/remotes/${source_remote}/master" \
+        "refs/remotes/${source_remote}/main" \
+        "refs/remotes/origin/master" \
+        "refs/remotes/origin/main"; do
+        if git -C "$REPO_DIR" rev-parse --verify --quiet "$candidate" >/dev/null; then
+            source_ref="$candidate"
+            break
+        fi
+    done
+    if [[ -z "$source_ref" ]]; then
+        log_warn "Не удалось определить актуальную ветку для deploy"
         return 1
     fi
 
     local _before; _before=$(git -C "$REPO_DIR" rev-parse HEAD)
-    git -C "$REPO_DIR" checkout --detach "$latest_tag" 2>/dev/null || {
-        log_warn "Не удалось переключиться на тег $latest_tag"
+    git -C "$REPO_DIR" checkout --detach "$source_ref" 2>/dev/null || {
+        log_warn "Не удалось переключиться на $source_ref"
         return 1
     }
     local _after; _after=$(git -C "$REPO_DIR" rev-parse HEAD)
     if [[ "$_before" != "$_after" ]]; then
-        log_ok "Переключено на $latest_tag"
+        log_ok "Переключено на ${source_ref#refs/remotes/} ($(git -C "$REPO_DIR" rev-parse --short "$_after"))"
         return 0
     fi
-    log_info "Уже на последнем теге: $latest_tag"
+    log_info "Уже на актуальном commit ${source_ref#refs/remotes/} ($(git -C "$REPO_DIR" rev-parse --short "$_after"))"
     return 1
 }
 
@@ -712,15 +726,17 @@ vps_scripts_changed() {
 do_deploy() {
     local force="${1:-}"
     local prev_ver; prev_ver="$(cat "$REPO_DIR/version" 2>/dev/null || echo "unknown")"
+    local prev_head; prev_head="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")"
 
     # Получаем обновления
     git_pull || { log_warn "Нет обновлений"; [[ "$force" == "--force" ]] || exit 0; }
 
     local new_ver; new_ver="$(cat "$REPO_DIR/version" 2>/dev/null || echo "unknown")"
+    local new_head; new_head="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")"
 
     # Проверяем нужен ли деплой
-    if [[ "$prev_ver" == "$new_ver" && "$force" != "--force" ]]; then
-        log_info "Версия не изменилась ($new_ver) — обновление не требуется"
+    if [[ "$prev_head" == "$new_head" && "$force" != "--force" ]]; then
+        log_info "Commit не изменился ($(git -C "$REPO_DIR" rev-parse --short "$new_head" 2>/dev/null || echo "$new_head")) — обновление не требуется"
         log_info "Используйте --force для принудительного деплоя"
         exit 0
     fi
@@ -779,6 +795,7 @@ do_deploy() {
     rsync -a "$REPO_DIR/home/watchdog/watchdog.py" "$REPO_DIR/watchdog/watchdog.py" 2>/dev/null || true
     rsync -a "$REPO_DIR/home/watchdog/plugins/" "$REPO_DIR/watchdog/plugins/" 2>/dev/null || true
     rsync -a "$REPO_DIR/home/scripts/" "$REPO_DIR/scripts/" 2>/dev/null && chmod +x "$REPO_DIR/scripts/"*.sh 2>/dev/null || true
+    ln -sfn "$REPO_DIR/.env" "$REPO_DIR/home/.env" 2>/dev/null || true
     rm -rf "$REPO_DIR/watchdog/plugins/reality" "$REPO_DIR/watchdog/plugins/reality-grpc" 2>/dev/null || true
 
     # Xray конфиги: шаблоны из home/xray/ → подставить .env → xray/
@@ -891,6 +908,7 @@ json.dump(cfg, open('$REPO_DIR/xray/config-cdn.json', 'w'), indent=4)
 check_updates() {
     ensure_git_repo || return 1
     local current_ver; current_ver="$(cat "$REPO_DIR/version" 2>/dev/null | tr -d '[:space:]' || echo 'unknown')"
+    local current_head; current_head="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo 'unknown')"
     log_info "Текущая версия: ${current_ver}"
 
     # Синхронизировать VPS-зеркало (сервер тянет с GitHub)
@@ -898,26 +916,50 @@ check_updates() {
         vps_tmux_exec "cd /opt/vpn/vpn-repo.git && git fetch --tags --quiet" 60 2>/dev/null || true
     fi
 
-    # Получить последний тег vX.Y.Z из удалённого репозитория (не применять локально)
+    # Получить актуальную ветку удалённого репозитория, а не последний тег.
     local remote_ver=""
+    local remote_head=""
+    local remote_ref=""
     if [[ -n "${VPS_IP:-}" ]]; then
         local proxy_cmd=""
         [[ -x "$SSH_PROXY_CMD" ]] && proxy_cmd="-o ProxyCommand='$SSH_PROXY_CMD %h %p'"
-        remote_ver="$(GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes ${proxy_cmd}" \
-            git -C "$REPO_DIR" ls-remote --tags vps-mirror 'refs/tags/v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null \
-            | awk '{print $2}' | sed 's|refs/tags/||' | grep -v '\^{}' | sort -V | tail -1)" || true
+        if GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes ${proxy_cmd}" \
+           git -C "$REPO_DIR" fetch --tags vps-mirror '+refs/heads/*:refs/remotes/vps-mirror/*' >/dev/null 2>&1; then
+            for candidate in refs/remotes/vps-mirror/master refs/remotes/vps-mirror/main; do
+                if git -C "$REPO_DIR" rev-parse --verify --quiet "$candidate" >/dev/null; then
+                    remote_ref="$candidate"
+                    remote_head="$(git -C "$REPO_DIR" rev-parse "$candidate" 2>/dev/null || true)"
+                    remote_ver="$(git -C "$REPO_DIR" show "${candidate}:version" 2>/dev/null | tr -d '[:space:]')" || true
+                    break
+                fi
+            done
+        fi
     fi
-    if [[ -z "${remote_ver:-}" ]]; then
-        remote_ver="$(git -C "$REPO_DIR" ls-remote --tags origin 'refs/tags/v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null \
-            | awk '{print $2}' | sed 's|refs/tags/||' | grep -v '\^{}' | sort -V | tail -1)" || true
+    if [[ -z "${remote_head:-}" ]]; then
+        if git -C "$REPO_DIR" fetch --tags origin '+refs/heads/*:refs/remotes/origin/*' >/dev/null 2>&1; then
+            for candidate in refs/remotes/origin/master refs/remotes/origin/main; do
+                if git -C "$REPO_DIR" rev-parse --verify --quiet "$candidate" >/dev/null; then
+                    remote_ref="$candidate"
+                    remote_head="$(git -C "$REPO_DIR" rev-parse "$candidate" 2>/dev/null || true)"
+                    remote_ver="$(git -C "$REPO_DIR" show "${candidate}:version" 2>/dev/null | tr -d '[:space:]')" || true
+                    break
+                fi
+            done
+        fi
     fi
 
-    if [[ -z "${remote_ver:-}" || "${remote_ver}" == "${current_ver}" ]]; then
-        log_info "Версия актуальна: ${current_ver}"
+    if [[ -z "${remote_head:-}" ]]; then
+        log_warn "Не удалось определить актуальный commit удалённой ветки"
+        return 1
+    fi
+
+    if [[ "${remote_head}" == "${current_head}" ]]; then
+        log_info "Ветка актуальна: ${current_ver} ($(git -C "$REPO_DIR" rev-parse --short "$current_head" 2>/dev/null || echo "$current_head"))"
         return 0
     fi
 
-    log_info "Доступна новая версия: ${remote_ver}"
+    [[ -z "${remote_ver:-}" ]] && remote_ver="unknown"
+    log_info "Доступна новая версия: ${remote_ver} ($(printf '%.8s' "$remote_head"))"
 
     # Проверить не пропущена ли эта версия
     local skip_ver; skip_ver="$(cat "$REPO_DIR/.skip-version" 2>/dev/null | tr -d '[:space:]')"
