@@ -307,10 +307,13 @@ def _route_get_sync(ip: str, src_ip: str) -> dict[str, str]:
 def _functional_path_verdict(ip: str, client_path: str) -> dict[str, Any]:
     src_ip = _scenario_src_ip(client_path)
     route_info = _route_get_sync(ip, src_ip)
+    latency_sensitive_direct = _is_ip_in_nft_set("latency_sensitive_direct", ip)
     blocked_static = _is_ip_in_nft_set("blocked_static", ip)
     blocked_dynamic = _is_ip_in_nft_set("blocked_dynamic", ip)
     dpi_direct = _is_ip_in_nft_set("dpi_direct", ip)
-    if dpi_direct:
+    if latency_sensitive_direct:
+        verdict = "latency_sensitive_direct"
+    elif dpi_direct:
         verdict = "dpi_experimental"
     elif blocked_static or blocked_dynamic:
         verdict = "blocked_vps"
@@ -320,6 +323,7 @@ def _functional_path_verdict(ip: str, client_path: str) -> dict[str, Any]:
         "src_ip": src_ip,
         "route": route_info,
         "set_membership": {
+            "latency_sensitive_direct": latency_sensitive_direct,
             "blocked_static": blocked_static,
             "blocked_dynamic": blocked_dynamic,
             "dpi_direct": dpi_direct,
@@ -353,6 +357,7 @@ def _normalize_scenario(raw: dict[str, Any]) -> "FunctionalScenario":
         weight=int(raw.get("weight") or 5),
         criticality=str(raw.get("criticality") or "medium"),
         required_successes=raw.get("required_successes"),
+        scenario_class=str(raw.get("scenario_class") or "baseline"),
     )
 
 
@@ -981,6 +986,7 @@ class FunctionalScenario:
     weight: int = 5
     criticality: str = "medium"
     required_successes: Optional[int] = None
+    scenario_class: str = "baseline"
 
 
 class WatchdogState:
@@ -1069,6 +1075,7 @@ class WatchdogState:
         self.functional_infra_checks: list[dict[str, Any]] = []
         self.functional_results: dict[str, dict[str, Any]] = {}
         self.functional_summary: dict[str, Any] = {}
+        self.responsiveness_summary: dict[str, Any] = {}
         self.last_functional_run_by_tier: dict[str, float] = {}
         self.functional_fail_counters: dict[str, int] = {}
         self.functional_evidence_store: dict[str, dict[str, Any]] = {}
@@ -1131,6 +1138,7 @@ class WatchdogState:
             "functional_infra_checks": self.functional_infra_checks,
             "functional_results": self.functional_results,
             "functional_summary": self.functional_summary,
+            "responsiveness_summary": self.responsiveness_summary,
             "last_functional_run_by_tier": self.last_functional_run_by_tier,
             "functional_fail_counters": self.functional_fail_counters,
             "functional_evidence_store": self.functional_evidence_store,
@@ -1198,9 +1206,11 @@ class WatchdogState:
                 self.functional_infra_checks = data.get("functional_infra_checks", []) or []
                 self.functional_results = data.get("functional_results", {}) or {}
                 self.functional_summary = data.get("functional_summary", {}) or {}
+                self.responsiveness_summary = data.get("responsiveness_summary", {}) or {}
                 self.last_functional_run_by_tier = data.get("last_functional_run_by_tier", {}) or {}
                 self.functional_fail_counters = data.get("functional_fail_counters", {}) or {}
                 self.functional_evidence_store = data.get("functional_evidence_store", {}) or {}
+                _normalize_functional_state()
                 if self.active_stack not in STACK_ORDER:
                     self.active_stack = DEFAULT_STACK
                     self.is_first_run = True
@@ -1235,6 +1245,27 @@ def _functional_active() -> bool:
     return _functional_mode() == FUNCTIONAL_MODE_ACTIVE
 
 
+def _normalize_functional_state() -> None:
+    """Не даёт stale active verdicts переживать staged/off режимы."""
+    mode = _functional_mode()
+    if mode == FUNCTIONAL_MODE_ACTIVE:
+        return
+    desired_status = FUNCTIONAL_EXEC_DISABLED
+    status_name = "off" if mode == FUNCTIONAL_MODE_OFF else "staged"
+    reason = "functional_mode_off" if mode == FUNCTIONAL_MODE_OFF else "staged_mode"
+    if (
+        state.functional_execution_status != desired_status
+        or state.functional_results
+        or state.functional_evidence_store
+        or state.functional_summary.get("mode") != mode
+        or state.functional_summary.get("status") != status_name
+    ):
+        state.functional_execution_status = desired_status
+        state.functional_execution_last_error = ""
+        state.functional_execution_auto_disabled_reason = ""
+        _set_functional_disabled_summary(status_name, reason, state.functional_summary.get("tier", "quick") or "quick")
+
+
 def _set_functional_disabled_summary(status: str, reason: str, tier: str) -> None:
     state.functional_results = {}
     state.functional_evidence_store = {}
@@ -1245,6 +1276,17 @@ def _set_functional_disabled_summary(status: str, reason: str, tier: str) -> Non
         "tier": tier,
         "mode": _functional_mode(),
         "execution_status": state.functional_execution_status,
+    }
+    state.responsiveness_summary = {
+        "status": status,
+        "reason": reason,
+        "mode": _functional_mode(),
+        "functional_status": state.functional_execution_status,
+        "samples": 0,
+        "slow_scenarios": [],
+        "path_failures": [],
+        "by_path": {},
+        "by_class": {},
     }
 
 
@@ -1305,6 +1347,17 @@ def _set_functional_execution_failure(tier: str, reason: str, detail: str) -> li
         "ok": 0,
         "fail": 1,
         "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    state.responsiveness_summary = {
+        "status": "degraded",
+        "reason": reason,
+        "mode": _functional_mode(),
+        "functional_status": state.functional_execution_status,
+        "samples": 0,
+        "slow_scenarios": ["__execution__"],
+        "path_failures": [],
+        "by_path": {},
+        "by_class": {},
     }
     state.save()
     return [CheckResult("functional_execution", "fail", detail[:200], weight=10, tier="functional")]
@@ -2643,7 +2696,7 @@ async def check_nftables_integrity() -> None:
       - input chain: policy drop
       - forward chain: policy drop
       - ключевые правила (SSH 22, AWG 51820, WG 51821, blocked sets)
-      - sets blocked_static и blocked_dynamic существуют
+      - sets blocked_static, blocked_dynamic, latency_sensitive_direct и dpi_direct существуют
 
     При расхождении — восстанавливает из /etc/nftables.conf и алертит.
     """
@@ -2682,6 +2735,8 @@ async def check_nftables_integrity() -> None:
                 issues.append("set blocked_static отсутствует")
             if "blocked_dynamic" not in out_s:
                 issues.append("set blocked_dynamic отсутствует")
+            if "latency_sensitive_direct" not in out_s:
+                issues.append("set latency_sensitive_direct отсутствует")
             if "dpi_direct" not in out_s:
                 issues.append("set dpi_direct отсутствует")
         else:
@@ -2769,8 +2824,8 @@ async def check_wg_interfaces() -> None:
 # Мониторинг: количество элементов в nft sets (для standard health check)
 # ---------------------------------------------------------------------------
 async def check_nftset_counts() -> None:
-    """Считает элементы в blocked_static / blocked_dynamic / dpi_direct."""
-    for set_name in ("blocked_static", "blocked_dynamic", "dpi_direct"):
+    """Считает элементы в blocked_static / blocked_dynamic / latency_sensitive_direct / dpi_direct."""
+    for set_name in ("blocked_static", "blocked_dynamic", "latency_sensitive_direct", "dpi_direct"):
         rc, out, _ = await run_cmd(
             ["nft", "list", "set", "inet", "vpn", set_name], timeout=5
         )
@@ -2866,13 +2921,108 @@ async def _resolve_ipv4_for_path(host: str, client_path: str) -> list[str]:
 
 async def _functional_http_probe(url: str, timeout: int, expected_codes: list[int], client_path: str) -> dict[str, Any]:
     runtime = await _ensure_functional_client_runtime(client_path)
-    cmd = ["curl", "-sS", "-L", "--max-time", str(timeout), "-o", "/dev/null", "-w", "%{http_code}", url]
+    marker = "__VPNFH__"
+    cmd = [
+        "curl", "-sS", "-L", "--max-time", str(timeout), "-o", "/dev/null",
+        "-w", f"%{{http_code}} {marker} %{{time_namelookup}} %{{time_connect}} %{{time_starttransfer}} %{{time_total}}",
+        url,
+    ]
     if runtime:
         rc, out, err = await _functional_ns_exec(runtime["name"], cmd, timeout=timeout + 3)
     else:
         rc, out, err = await run_cmd(cmd, timeout=timeout + 3)
-    code = out.strip()
-    return {"ok": rc == 0 and _functional_code_ok(code, expected_codes), "http_code": code, "stderr": err.strip()[:200]}
+    raw = out.strip()
+    code = raw
+    timings: dict[str, float] = {}
+    if marker in raw:
+        head, tail = raw.split(marker, 1)
+        code = head.strip()
+        parts = tail.strip().split()
+        for key, value in zip(("dns_s", "connect_s", "ttfb_s", "total_s"), parts[:4]):
+            try:
+                timings[key] = round(float(value), 3)
+            except Exception:
+                pass
+    return {
+        "ok": rc == 0 and _functional_code_ok(code, expected_codes),
+        "http_code": code,
+        "stderr": err.strip()[:200],
+        "timings": timings,
+    }
+
+
+def _build_responsiveness_summary(
+    scenario_results: dict[str, dict[str, Any]],
+    evidence_store: dict[str, dict[str, Any]],
+    functional_status: str,
+    functional_mode: str,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "status": "unknown",
+        "mode": functional_mode,
+        "functional_status": functional_status,
+        "samples": 0,
+        "slow_scenarios": [],
+        "path_failures": [],
+        "by_path": {},
+        "by_class": {},
+    }
+    if functional_mode == FUNCTIONAL_MODE_OFF:
+        summary["status"] = "disabled"
+        summary["reason"] = "functional_mode_off"
+        return summary
+    if functional_status != FUNCTIONAL_EXEC_HEALTHY:
+        summary["status"] = "staged" if functional_mode == FUNCTIONAL_MODE_STAGED else "degraded"
+        summary["reason"] = functional_status
+        return summary
+
+    dns_samples: list[float] = []
+    ttfb_samples: list[float] = []
+    total_samples: list[float] = []
+    slow_scenarios: list[str] = []
+    path_failures: list[str] = []
+    by_path: dict[str, dict[str, int]] = {}
+    by_class: dict[str, dict[str, int]] = {}
+
+    for scenario_id, evidence in (evidence_store or {}).items():
+        scenario_class = str(evidence.get("scenario_class") or "baseline")
+        client_path = str(evidence.get("client_path") or "host")
+        path_bucket = by_path.setdefault(client_path, {"ok": 0, "fail": 0})
+        class_bucket = by_class.setdefault(scenario_class, {"ok": 0, "fail": 0})
+        scenario_ok = str((scenario_results.get(scenario_id) or {}).get("status") or evidence.get("status")) == "ok"
+        if scenario_ok:
+            path_bucket["ok"] += 1
+            class_bucket["ok"] += 1
+        else:
+            path_bucket["fail"] += 1
+            class_bucket["fail"] += 1
+        for target in evidence.get("targets") or []:
+            probe_result = target.get("probe_result") or {}
+            timings = probe_result.get("timings") or {}
+            if "dns_s" in timings:
+                dns_samples.append(float(timings["dns_s"]) * 1000.0)
+            if "ttfb_s" in timings:
+                ttfb_samples.append(float(timings["ttfb_s"]) * 1000.0)
+            if "total_s" in timings:
+                total_samples.append(float(timings["total_s"]) * 1000.0)
+            if not target.get("path_ok", True):
+                path_failures.append(f"{scenario_id}:{target.get('host') or target.get('url')}")
+        if not scenario_ok:
+            slow_scenarios.append(scenario_id)
+
+    if dns_samples:
+        summary["dns_bootstrap_latency_ms_avg"] = round(sum(dns_samples) / len(dns_samples), 1)
+    if ttfb_samples:
+        summary["first_https_latency_ms_avg"] = round(sum(ttfb_samples) / len(ttfb_samples), 1)
+    if total_samples:
+        summary["total_latency_ms_avg"] = round(sum(total_samples) / len(total_samples), 1)
+    summary["samples"] = len(total_samples)
+    summary["slow_scenarios"] = slow_scenarios[:8]
+    summary["path_failures"] = path_failures[:12]
+    summary["by_path"] = by_path
+    summary["by_class"] = by_class
+    summary["status"] = "degraded" if slow_scenarios or path_failures else "ok"
+    return summary
 
 
 async def _run_functional_scenario(scenario: FunctionalScenario) -> tuple[CheckResult, dict[str, Any]]:
@@ -2918,6 +3068,7 @@ async def _run_functional_scenario(scenario: FunctionalScenario) -> tuple[CheckR
     evidence = {
         "id": scenario.id,
         "description": scenario.description,
+        "scenario_class": scenario.scenario_class,
         "client_path": scenario.client_path,
         "routing_expectation": scenario.routing_expectation,
         "probe_type": scenario.probe_type,
@@ -3030,6 +3181,12 @@ async def _run_functional_checks_for_tier(tier: str) -> list[CheckResult]:
         "mode": mode,
         "execution_status": state.functional_execution_status,
     }
+    state.responsiveness_summary = _build_responsiveness_summary(
+        state.functional_results,
+        state.functional_evidence_store,
+        state.functional_execution_status,
+        mode,
+    )
     state.save()
     return results
 
@@ -3179,6 +3336,10 @@ async def _health_standard_checks() -> list[CheckResult]:
             results.append(CheckResult(f"nft_{set_name}_nonempty", "warn", "set пустой — dns-warmup?", weight=w, tier="standard"))
         else:
             results.append(CheckResult(f"nft_{set_name}_nonempty", "warn", "ещё не проверялось", weight=w, tier="standard"))
+
+    latency_count = state.nftset_counts.get("latency_sensitive_direct", -2)
+    if latency_count >= 0:
+        results.append(CheckResult("nft_latency_sensitive_direct", "ok", f"{latency_count} элементов", weight=0, tier="standard"))
 
     # 10. dpi_direct — имеет смысл только когда DPI bypass реально включён
     dpi_count = state.nftset_counts.get("dpi_direct", -2)
@@ -3407,6 +3568,7 @@ class HealthChecker:
             "functional_execution_status": state.functional_execution_status,
             "functional_infra_checks": state.functional_infra_checks,
             "functional_summary": state.functional_summary,
+            "responsiveness_summary": state.responsiveness_summary,
             "functional_results": state.functional_results,
             "functional_evidence": state.functional_evidence_store,
             "checks": [
@@ -4558,6 +4720,7 @@ class FunctionalModeRequest(BaseModel):
 # ---------------------------------------------------------------------------
 @app.get("/status")
 async def get_status(_: bool = Depends(_auth)):
+    _normalize_functional_state()
     disk = psutil.disk_usage("/")
     ram  = psutil.virtual_memory()
     result: dict[str, Any] = {
@@ -4582,6 +4745,7 @@ async def get_status(_: bool = Depends(_auth)):
         "functional_execution_status": state.functional_execution_status,
         "functional_infra_checks": state.functional_infra_checks,
         "functional_summary": state.functional_summary,
+        "responsiveness_summary": state.responsiveness_summary,
     }
 
     # Gateway Mode: добавляем счётчик LAN-клиентов из conntrack
@@ -4694,11 +4858,13 @@ async def get_metrics(_: bool = Depends(_auth)):
 @app.get("/health")
 async def get_health(_: bool = Depends(_auth)):
     """Агрегированный health report со score 0–100."""
+    _normalize_functional_state()
     return health_checker.get_cached()
 
 
 @app.get("/functional/status")
 async def get_functional_status(_: bool = Depends(_auth)):
+    _normalize_functional_state()
     return {
         "mode": _functional_mode(),
         "execution_status": state.functional_execution_status,
@@ -4706,6 +4872,7 @@ async def get_functional_status(_: bool = Depends(_auth)):
         "execution_auto_disabled_reason": state.functional_execution_auto_disabled_reason,
         "infra_checks": state.functional_infra_checks,
         "summary": state.functional_summary,
+        "responsiveness_summary": state.responsiveness_summary,
         "results": state.functional_results,
         "evidence": state.functional_evidence_store,
         "last_run_by_tier": state.last_functional_run_by_tier,
@@ -4726,11 +4893,13 @@ async def post_functional_mode(request: Request, req: FunctionalModeRequest, _: 
     else:
         state.functional_execution_status = FUNCTIONAL_EXEC_DISABLED
     await _run_functional_checks_for_tier("quick")
+    _normalize_functional_state()
     report = await health_checker.run_quick()
     return {
         "mode": _functional_mode(),
         "execution_status": state.functional_execution_status,
         "functional_summary": state.functional_summary,
+        "responsiveness_summary": state.responsiveness_summary,
         "functional_results": state.functional_results,
         "health": report,
     }
@@ -4741,6 +4910,21 @@ async def post_functional_run(request: Request, req: FunctionalRunRequest, _: bo
     tier = (req.tier or "standard").strip().lower()
     if tier not in {"quick", "standard", "deep"}:
         raise HTTPException(status_code=400, detail="tier must be quick|standard|deep")
+    if _functional_mode() != FUNCTIONAL_MODE_ACTIVE:
+        await _run_functional_checks_for_tier("quick")
+        _normalize_functional_state()
+        report = await health_checker.run_quick()
+        return {
+            "tier": tier,
+            "mode": _functional_mode(),
+            "execution_status": state.functional_execution_status,
+            "execution_last_error": state.functional_execution_last_error,
+            "infra_checks": state.functional_infra_checks,
+            "functional_summary": state.functional_summary,
+            "responsiveness_summary": state.responsiveness_summary,
+            "functional_results": state.functional_results,
+            "health": report,
+        }
     if tier == "deep":
         report = await health_checker.run_deep()
     elif tier == "standard":
@@ -4755,6 +4939,7 @@ async def post_functional_run(request: Request, req: FunctionalRunRequest, _: bo
         "execution_last_error": state.functional_execution_last_error,
         "infra_checks": state.functional_infra_checks,
         "functional_summary": state.functional_summary,
+        "responsiveness_summary": state.responsiveness_summary,
         "functional_results": state.functional_results,
         "health": report,
     }
@@ -5373,7 +5558,11 @@ async def post_check_domain(request: Request, _: bool = Depends(_auth)):
     # 2. Проверка в nft sets
     in_static = False
     in_dynamic = False
+    in_latency = False
     for ip in ips:
+        rc_l, _, _ = await run_cmd(["nft", "get", "element", "inet", "vpn", "latency_sensitive_direct", f"{{ {ip} }}"], timeout=3)
+        if rc_l == 0:
+            in_latency = True
         rc_s, _, _ = await run_cmd(["nft", "get", "element", "inet", "vpn", "blocked_static",  f"{{ {ip} }}"], timeout=3)
         if rc_s == 0:
             in_static = True
@@ -5381,6 +5570,7 @@ async def post_check_domain(request: Request, _: bool = Depends(_auth)):
         if rc_d == 0:
             in_dynamic = True
 
+    result["in_latency_sensitive_direct"] = in_latency
     result["in_blocked_static"]  = in_static
     result["in_blocked_dynamic"] = in_dynamic
 
@@ -5391,7 +5581,9 @@ async def post_check_domain(request: Request, _: bool = Depends(_auth)):
     result["in_manual_direct"] = MANUAL_DIRECT.exists() and domain in MANUAL_DIRECT.read_text()
 
     # 4. Итоговый вердикт
-    if result["in_manual_vpn"] or in_static or in_dynamic:
+    if in_latency:
+        result["verdict"] = "latency_sensitive_direct"
+    elif result["in_manual_vpn"] or in_static or in_dynamic:
         result["verdict"] = "vpn"
     elif result["in_manual_direct"]:
         result["verdict"] = "direct"
@@ -5559,6 +5751,7 @@ async def get_nft_stats(_: bool = Depends(_auth)):
     sets = {
         "blocked_static":  ("inet", "vpn", "blocked_static"),
         "blocked_dynamic": ("inet", "vpn", "blocked_dynamic"),
+        "latency_sensitive_direct": ("inet", "vpn", "latency_sensitive_direct"),
         "dpi_direct":      ("inet", "vpn", "dpi_direct"),
     }
     result = {}
