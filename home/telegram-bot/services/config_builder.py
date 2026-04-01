@@ -70,7 +70,6 @@ def _rand32() -> int:
 def _load_allowed_ips(protocol: str, excludes: list[str]) -> list[str]:
     dns_entries = [
         "10.177.1.1/32" if protocol == "awg" else "10.177.3.1/32",
-        "1.1.1.1/32",
     ]
     if not COMBINED_CIDR.exists():
         logger.warning(f"combined.cidr не найден: {COMBINED_CIDR}")
