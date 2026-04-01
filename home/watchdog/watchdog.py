@@ -2815,10 +2815,18 @@ async def _run_functional_checks_for_tier(tier: str) -> list[CheckResult]:
         scenarios = [s for s in load_functional_scenarios() if s.enabled and tier in s.tiers]
     except Exception as exc:
         logger.error("Functional scenario loading failed: %s", exc)
+        state.functional_results = {}
+        state.functional_evidence_store = {}
+        state.last_functional_run_by_tier[tier] = time.time()
         state.functional_summary = {"status": "error", "reason": str(exc)[:200], "tier": tier}
+        state.save()
         return [CheckResult("functional_manifest", "fail", str(exc)[:200], weight=5, tier="functional")]
     if not scenarios:
+        state.functional_results = {}
+        state.functional_evidence_store = {}
+        state.last_functional_run_by_tier[tier] = time.time()
         state.functional_summary = {"status": "disabled", "reason": "no_scenarios", "tier": tier}
+        state.save()
         return []
 
     results: list[CheckResult] = []
