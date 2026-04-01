@@ -122,11 +122,11 @@ gateway_nat_block = f"""
 lan_prerouting = f"""
         # Gateway Mode: LAN split tunneling fwmark
         iifname "{lan_iface}" ip saddr {lan_subnet} ip daddr @control_direct_ips accept
+        # QUIC drop для dpi_direct из LAN (принудить браузер к TCP для nfqws bypass)
+        iifname "{lan_iface}" ip daddr @dpi_direct udp dport 443 drop
         iifname "{lan_iface}" ip saddr {lan_subnet} ip daddr @dpi_direct       meta mark set 0x2 accept
         iifname "{lan_iface}" ip saddr {lan_subnet} ip daddr @blocked_static   meta mark set 0x1 accept
         iifname "{lan_iface}" ip saddr {lan_subnet} ip daddr @blocked_dynamic  meta mark set 0x1 accept
-        # QUIC drop для dpi_direct из LAN (принудить браузер к TCP для nfqws bypass)
-        iifname "{lan_iface}" ip daddr @dpi_direct udp dport 443 drop
 """
 
 control_prerouting = """

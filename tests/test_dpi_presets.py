@@ -36,7 +36,14 @@ class DpiPresetUpdateTests(unittest.TestCase):
         fallback = {
             "youtube": {
                 "display": "YouTube",
-                "domains": ["youtube.com", "googlevideo.com", "youtubei.googleapis.com"],
+                "domains": [
+                    "youtube.com",
+                    "googlevideo.com",
+                    "youtubei.googleapis.com",
+                    "gvt1.com",
+                    "gstatic.com",
+                    "yt3.googleusercontent.com",
+                ],
             }
         }
         v2fly_text = "\n".join(
@@ -64,6 +71,9 @@ class DpiPresetUpdateTests(unittest.TestCase):
                 "youtube.com",
                 "googlevideo.com",
                 "youtubei.googleapis.com",
+                "gvt1.com",
+                "gstatic.com",
+                "yt3.googleusercontent.com",
                 "wide-youtube.l.google.com",
                 "youtube.googleapis.com",
                 "withyoutube.com",

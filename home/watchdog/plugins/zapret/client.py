@@ -57,6 +57,27 @@ DIRECT_TEST_SERVERS = [
 HISTORY_FILE = PLUGIN_DIR / "preset_history.log"
 
 
+def _build_forward_iifnames() -> list[str]:
+    iifnames = ["wg0", "wg1"]
+    if os.getenv("SERVER_MODE") == "gateway":
+        lan_iface = (os.getenv("LAN_IFACE") or "").strip()
+        if lan_iface and lan_iface not in iifnames:
+            iifnames.append(lan_iface)
+    return iifnames
+
+
+def build_nft_forward_script() -> str:
+    iifnames = ", ".join(f'"{name}"' for name in _build_forward_iifnames())
+    return f"""\
+table inet zapret_main {{
+    chain forward {{
+        type filter hook forward priority filter + 1;
+        iifname {{ {iifnames} }} oifname "{ETH_IFACE}" tcp dport {{ 80, 443 }} queue num {NFQUEUE_NUM} bypass
+    }}
+}}
+"""
+
+
 class ZapretPlugin(BasePlugin):
     name = "zapret"
     pid_file = PID_FILE
@@ -114,18 +135,13 @@ class ZapretPlugin(BasePlugin):
     async def _nft_add_forward_rules(self) -> bool:
         """
         Добавить nft таблицу zapret_main (FORWARD chain).
-        Перехватывает TCP 443/80 от VPN клиентов (wg0/wg1) выходящих через eth0.
+        Перехватывает TCP 443/80 от VPN клиентов, а в gateway mode и от LAN.
         Вызывается ТОЛЬКО при явной активации трафика через zapret.
         Возвращает True при успехе.
         """
-        nft_script = f"""\
-table inet zapret_main {{
-    chain forward {{
-        type filter hook forward priority filter + 1;
-        iifname {{ "wg0", "wg1" }} oifname "{ETH_IFACE}" tcp dport {{ 80, 443 }} queue num {NFQUEUE_NUM} bypass
-    }}
-}}
-"""
+        # nft не заменяет существующую таблицу атомарно: при повторной активации
+        # могут накапливаться дублирующиеся queue-правила. Сначала очищаем старую.
+        await self._nft_del_forward_rules()
         proc = await asyncio.create_subprocess_exec(
             "nft", "-f", "-",
             env=child_env(),
@@ -133,7 +149,7 @@ table inet zapret_main {{
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, err = await proc.communicate(input=nft_script.encode())
+        _, err = await proc.communicate(input=build_nft_forward_script().encode())
         if proc.returncode != 0:
             print(f"[zapret] nft add forward rules: {err.decode().strip()}", file=sys.stderr)
             return False
