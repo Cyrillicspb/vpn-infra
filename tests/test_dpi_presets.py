@@ -21,6 +21,7 @@ class DpiPresetUpdateTests(unittest.TestCase):
         youtube.com
         full:youtube.googleapis.com
         domain:googlevideo.com
+        domain:ggpht.cn
         keyword:youtube
         regexp:^googlevideo
         include:google

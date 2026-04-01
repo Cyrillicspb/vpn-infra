@@ -49,6 +49,9 @@ V2FLY_MAPPING = {
 }
 
 V2FLY_EXCLUDE_PREFIXES = ("api.", "auth.", "login.", "accounts.")
+EXCLUDED_DOMAINS = {
+    "ggpht.cn",
+}
 V2FLY_MAX_DOMAINS_PER_SERVICE = 15
 HTTP_TIMEOUT = 30
 SERVICE_DOMAIN_FRAGMENTS = {
@@ -142,6 +145,8 @@ def _parse_v2fly_domains(text: str) -> list[str]:
             candidate = line
         candidate = _normalize_domain_name(candidate)
         if not _is_domain_like(candidate):
+            continue
+        if candidate in EXCLUDED_DOMAINS:
             continue
         if candidate.startswith(V2FLY_EXCLUDE_PREFIXES):
             continue
