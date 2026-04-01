@@ -4715,7 +4715,6 @@ async def get_functional_status(_: bool = Depends(_auth)):
 
 @app.post("/functional/mode")
 async def post_functional_mode(request: Request, req: FunctionalModeRequest, _: bool = Depends(_auth)):
-    await audit_log(request, "functional.mode", {"mode": req.mode})
     mode = str(req.mode or FUNCTIONAL_MODE_STAGED).strip().lower()
     if mode not in {FUNCTIONAL_MODE_OFF, FUNCTIONAL_MODE_STAGED, FUNCTIONAL_MODE_ACTIVE}:
         raise HTTPException(status_code=400, detail="mode must be off|staged|active")
@@ -4739,7 +4738,6 @@ async def post_functional_mode(request: Request, req: FunctionalModeRequest, _: 
 
 @app.post("/functional/run")
 async def post_functional_run(request: Request, req: FunctionalRunRequest, _: bool = Depends(_auth)):
-    await audit_log(request, "functional.run", {"tier": req.tier})
     tier = (req.tier or "standard").strip().lower()
     if tier not in {"quick", "standard", "deep"}:
         raise HTTPException(status_code=400, detail="tier must be quick|standard|deep")
