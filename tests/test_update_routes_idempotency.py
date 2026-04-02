@@ -157,14 +157,15 @@ class DnsmasqDpiExclusionTests(unittest.TestCase):
 
     def test_render_dnsmasq_latency_sensitive_uses_separate_set(self) -> None:
         content, written = update_routes.render_dnsmasq_latency_sensitive(
-            ["okko.tv", "www.googleapis.com", "invalid domain"]
+            ["okko.tv", "www.googleapis.com", "yastatic.net", "invalid domain"]
         )
 
         self.assertIn("server=/okko.tv/77.88.8.8", content)
         self.assertIn("nftset=/okko.tv/4#inet#vpn#latency_sensitive_direct", content)
         self.assertIn("nftset=/www.googleapis.com/4#inet#vpn#latency_sensitive_direct", content)
+        self.assertIn("nftset=/yastatic.net/4#inet#vpn#latency_sensitive_direct", content)
         self.assertNotIn("invalid domain", content)
-        self.assertEqual(written, 2)
+        self.assertEqual(written, 3)
 
     def test_render_dnsmasq_direct_marks_ru_domains_direct_first(self) -> None:
         content = update_routes.render_dnsmasq_direct()

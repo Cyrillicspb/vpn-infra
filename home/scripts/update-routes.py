@@ -121,6 +121,14 @@ LATENCY_SENSITIVE_DIRECT_DOMAINS: list[str] = [
     "googleapis.com",
     "gstatic.com",
     "kidsmanagement-pa.googleapis.com",
+    "kinopoisk.ru",
+    "www.kinopoisk.ru",
+    "api.kinopoisk.ru",
+    "widgets.kinopoisk.ru",
+    "yastatic.net",
+    "cloud.cdn.yandex.net",
+    "passport.yandex.ru",
+    "strm.yandex.ru",
 ]
 
 # ── Источники ─────────────────────────────────────────────────────────────────
