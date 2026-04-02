@@ -34,6 +34,7 @@ class StableHashPayloadTests(unittest.TestCase):
             dnsmasq_domains_content=content_a,
             dnsmasq_force_content="",
             dnsmasq_direct_content="",
+            dnsmasq_latency_content="",
         )
         payload_b = update_routes.build_stable_hash_payload(
             allowed_cidrs=["1.1.1.0/24"],
@@ -41,6 +42,7 @@ class StableHashPayloadTests(unittest.TestCase):
             dnsmasq_domains_content=content_b,
             dnsmasq_force_content="",
             dnsmasq_direct_content="",
+            dnsmasq_latency_content="",
         )
 
         self.assertEqual(payload_a, payload_b)
@@ -52,6 +54,7 @@ class StableHashPayloadTests(unittest.TestCase):
             dnsmasq_domains_content="",
             dnsmasq_force_content="",
             dnsmasq_direct_content="",
+            dnsmasq_latency_content="",
         )
         payload_b = update_routes.build_stable_hash_payload(
             allowed_cidrs=["1.1.1.0/24"],
@@ -59,6 +62,7 @@ class StableHashPayloadTests(unittest.TestCase):
             dnsmasq_domains_content="",
             dnsmasq_force_content="",
             dnsmasq_direct_content="",
+            dnsmasq_latency_content="",
         )
 
         self.assertNotEqual(payload_a, payload_b)
@@ -70,6 +74,7 @@ class StableHashPayloadTests(unittest.TestCase):
             dnsmasq_domains_content="",
             dnsmasq_force_content="",
             dnsmasq_direct_content="server=/.ru/77.88.8.8\n",
+            dnsmasq_latency_content="",
         )
         payload_b = update_routes.build_stable_hash_payload(
             allowed_cidrs=["1.1.1.0/24"],
@@ -77,6 +82,27 @@ class StableHashPayloadTests(unittest.TestCase):
             dnsmasq_domains_content="",
             dnsmasq_force_content="",
             dnsmasq_direct_content="server=/.ru/77.88.8.1\n",
+            dnsmasq_latency_content="",
+        )
+
+        self.assertNotEqual(payload_a, payload_b)
+
+    def test_detects_latency_dnsmasq_changes(self) -> None:
+        payload_a = update_routes.build_stable_hash_payload(
+            allowed_cidrs=["1.1.1.0/24"],
+            nft_cidrs=["1.1.1.1/32"],
+            dnsmasq_domains_content="",
+            dnsmasq_force_content="",
+            dnsmasq_direct_content="",
+            dnsmasq_latency_content="server=/okko.tv/77.88.8.8\n",
+        )
+        payload_b = update_routes.build_stable_hash_payload(
+            allowed_cidrs=["1.1.1.0/24"],
+            nft_cidrs=["1.1.1.1/32"],
+            dnsmasq_domains_content="",
+            dnsmasq_force_content="",
+            dnsmasq_direct_content="",
+            dnsmasq_latency_content="server=/okko.tv/77.88.8.1\n",
         )
 
         self.assertNotEqual(payload_a, payload_b)
@@ -128,6 +154,17 @@ class DnsmasqDpiExclusionTests(unittest.TestCase):
                     update_routes.load_active_dpi_domains(),
                     {"youtube.com", "googlevideo.com"},
                 )
+
+    def test_render_dnsmasq_latency_sensitive_uses_separate_set(self) -> None:
+        content, written = update_routes.render_dnsmasq_latency_sensitive(
+            ["okko.tv", "www.googleapis.com", "invalid domain"]
+        )
+
+        self.assertIn("server=/okko.tv/77.88.8.8", content)
+        self.assertIn("nftset=/okko.tv/4#inet#vpn#latency_sensitive_direct", content)
+        self.assertIn("nftset=/www.googleapis.com/4#inet#vpn#latency_sensitive_direct", content)
+        self.assertNotIn("invalid domain", content)
+        self.assertEqual(written, 2)
 
 
 if __name__ == "__main__":

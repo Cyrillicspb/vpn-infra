@@ -71,9 +71,11 @@ NFT_STATIC      = Path("/etc/nftables-blocked-static.conf")
 DNSMASQ_DOMAINS = Path("/etc/dnsmasq.d/vpn-domains.conf")
 DNSMASQ_FORCE   = Path("/etc/dnsmasq.d/vpn-force.conf")
 DNSMASQ_DIRECT  = Path("/etc/dnsmasq.d/vpn-direct.conf")
+DNSMASQ_LATENCY = Path("/etc/dnsmasq.d/vpn-latency-sensitive.conf")
 WATCHDOG_STATE  = Path("/opt/vpn/watchdog/state.json")
 MANUAL_VPN      = ROUTES_DIR / "manual-vpn.txt"
 MANUAL_DIRECT   = ROUTES_DIR / "manual-direct.txt"
+LATENCY_DIRECT  = ROUTES_DIR / "latency-sensitive-direct.txt"
 
 # ── Переменные из окружения ────────────────────────────────────────────────────
 BOT_TOKEN       = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -99,6 +101,26 @@ EXPANSION_RATIO_WARN = 8.0
 # .рф в punycode = xn--p1acf
 # Российские домены: не нужен VPN, российские сервисы блокируют иностранные IP
 DIRECT_TLDS: frozenset[str] = frozenset({".ru", ".xn--p1acf"})
+
+# ── Домены, где важнее первый полезный ответ, чем агрессивное уводение через VPS ─
+# Эти домены и их известные bootstrap-зависимости получают отдельный класс
+# latency_sensitive_direct, который должен выигрывать у blocked policy.
+LATENCY_SENSITIVE_DIRECT_DOMAINS: list[str] = [
+    "okko.tv",
+    "api.okko.tv",
+    "static.okko.tv",
+    "drm.playfamily.ru",
+    "clients-static.okko.tv",
+    "tvxx.okko.tv",
+    "lge.okko.tv",
+    "gosuslugi.ru",
+    "www.gosuslugi.ru",
+    "esia.gosuslugi.ru",
+    "www.googleapis.com",
+    "googleapis.com",
+    "gstatic.com",
+    "kidsmanagement-pa.googleapis.com",
+]
 
 # ── Источники ─────────────────────────────────────────────────────────────────
 # type: "ip_list" | "cidr_list" | "zapret_csv" | "plain"
@@ -780,6 +802,19 @@ def load_manual_vpn() -> tuple[set[ipaddress.IPv4Network], set[str]]:
     return networks, domains
 
 
+def load_manual_domains(path: Path) -> set[str]:
+    domains: set[str] = set()
+    if not path.exists():
+        return domains
+    for line in path.read_text().splitlines():
+        line = line.split("#")[0].strip().lower()
+        if not line:
+            continue
+        if _is_valid_domain(line):
+            domains.add(line)
+    return domains
+
+
 def load_active_dpi_domains() -> set[str]:
     """
     Считать домены активных DPI bypass сервисов из watchdog state.
@@ -1028,6 +1063,34 @@ def render_dnsmasq_direct() -> str:
     return "\n".join(lines)
 
 
+def render_dnsmasq_latency_sensitive(domains: list[str]) -> tuple[str, int]:
+    """
+    vpn-latency-sensitive.conf:
+      - домены резолвятся через локальный/российский DNS напрямую
+      - IP добавляются в отдельный nft set latency_sensitive_direct
+      - этот set выигрывает у blocked_static/blocked_dynamic в nftables
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    lines: list[str] = [
+        "# vpn-latency-sensitive.conf — latency-sensitive direct-first domains",
+        f"# Обновлено: {now}",
+        f"# Доменов: {len(domains)}",
+        "# Не редактировать вручную — перезаписывается update-routes.py",
+        "",
+    ]
+    written = 0
+    for domain in sorted(set(domains)):
+        domain = domain.strip().lower().lstrip("*.")
+        if not domain or not _is_valid_domain(domain):
+            continue
+        lines.append(f"server=/{domain}/77.88.8.8")
+        lines.append(f"server=/{domain}/77.88.8.1")
+        lines.append(f"nftset=/{domain}/4#inet#vpn#latency_sensitive_direct")
+        lines.append("")
+        written += 1
+    return "\n".join(lines), written
+
+
 def write_dnsmasq_direct() -> None:
     content = render_dnsmasq_direct()
     DNSMASQ_DIRECT.parent.mkdir(parents=True, exist_ok=True)
@@ -1115,6 +1178,7 @@ def build_stable_hash_payload(
     dnsmasq_domains_content: str,
     dnsmasq_force_content: str,
     dnsmasq_direct_content: str,
+    dnsmasq_latency_content: str,
 ) -> str:
     """Возвращает стабильный payload для HASH_FILE.
 
@@ -1128,6 +1192,7 @@ def build_stable_hash_payload(
             "dnsmasq_domains": normalize_generated_text(dnsmasq_domains_content),
             "dnsmasq_force": normalize_generated_text(dnsmasq_force_content),
             "dnsmasq_direct": normalize_generated_text(dnsmasq_direct_content),
+            "dnsmasq_latency": normalize_generated_text(dnsmasq_latency_content),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -1176,6 +1241,10 @@ def main() -> None:
     all_networks.update(manual_networks)
     cidr_networks.update(manual_networks)
     dpi_domains = load_active_dpi_domains()
+    manual_direct_domains = load_manual_domains(MANUAL_DIRECT)
+    latency_direct_domains = set(LATENCY_SENSITIVE_DIRECT_DOMAINS)
+    latency_direct_domains.update(load_manual_domains(LATENCY_DIRECT))
+    latency_direct_domains.update(manual_direct_domains)
 
     if not all_networks:
         log.error("Нет данных для обновления!")
@@ -1276,16 +1345,21 @@ def main() -> None:
         exclude_domains=dpi_domains,
     )
     dnsmasq_direct_content = render_dnsmasq_direct()
+    dnsmasq_latency_content, latency_written = render_dnsmasq_latency_sensitive(
+        list(latency_direct_domains)
+    )
     nft_cidr_lines = [str(n) for n in nft_networks]
     normalized_dnsmasq_domains = normalize_generated_text(dnsmasq_domains_content)
     normalized_dnsmasq_force = normalize_generated_text(dnsmasq_force_content)
     normalized_dnsmasq_direct = normalize_generated_text(dnsmasq_direct_content)
+    normalized_dnsmasq_latency = normalize_generated_text(dnsmasq_latency_content)
     stable_hash_payload = build_stable_hash_payload(
         allowed_cidrs=new_cidr_lines,
         nft_cidrs=nft_cidr_lines,
         dnsmasq_domains_content=dnsmasq_domains_content,
         dnsmasq_force_content=dnsmasq_force_content,
         dnsmasq_direct_content=dnsmasq_direct_content,
+        dnsmasq_latency_content=dnsmasq_latency_content,
     )
     new_hash = content_hash(stable_hash_payload)
     combined_content = (
@@ -1305,11 +1379,15 @@ def main() -> None:
     current_dnsmasq_direct = normalize_generated_text(
         DNSMASQ_DIRECT.read_text(encoding="utf-8")
     ) if DNSMASQ_DIRECT.exists() else ""
+    current_dnsmasq_latency = normalize_generated_text(
+        DNSMASQ_LATENCY.read_text(encoding="utf-8")
+    ) if DNSMASQ_LATENCY.exists() else ""
     changed = (
         new_hash != old_hash
         or normalized_dnsmasq_domains != current_dnsmasq_domains
         or normalized_dnsmasq_force != current_dnsmasq_force
         or normalized_dnsmasq_direct != current_dnsmasq_direct
+        or normalized_dnsmasq_latency != current_dnsmasq_latency
     )
 
     if not changed and not force:
@@ -1337,6 +1415,8 @@ def main() -> None:
 
     DNSMASQ_DIRECT.write_text(dnsmasq_direct_content, encoding="utf-8")
     log.info(f"{DNSMASQ_DIRECT.name}: конфиг записан")
+    DNSMASQ_LATENCY.write_text(dnsmasq_latency_content, encoding="utf-8")
+    log.info(f"{DNSMASQ_LATENCY.name}: конфиг записан ({latency_written} доменов)")
 
     # Логируем итоговые счётчики после записи, чтобы было видно исключение DPI-доменов.
     _, dnsmasq_written, dnsmasq_excluded = render_dnsmasq_config(
@@ -1355,7 +1435,8 @@ def main() -> None:
     )
     log.info(
         f"dnsmasq итог: vpn-domains={dnsmasq_written}, vpn-force={force_written}, "
-        f"dpi-excluded={dnsmasq_excluded + force_excluded}"
+        f"dpi-excluded={dnsmasq_excluded + force_excluded}, "
+        f"latency-direct={latency_written}"
     )
 
     # ── Применение (только root) ───────────────────────────────────────────────

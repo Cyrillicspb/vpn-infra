@@ -107,6 +107,7 @@ class FunctionalHealthTests(unittest.TestCase):
         watchdog.state.functional_evidence_store = {}
         watchdog.state.functional_infra_checks = []
         watchdog.state.last_functional_run_by_tier = {}
+        watchdog.state.responsiveness_summary = {}
 
     def test_load_functional_scenarios_reads_manifest(self) -> None:
         manifest = """
@@ -252,6 +253,58 @@ scenarios:
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].status, "fail")
         self.assertEqual(watchdog.state.functional_execution_status, watchdog.FUNCTIONAL_EXEC_AUTO_DISABLED)
+
+    def test_build_responsiveness_summary_aggregates_timings(self) -> None:
+        summary = watchdog._build_responsiveness_summary(
+            scenario_results={
+                "complex_service_okko_like": {"status": "ok"},
+                "lan_blocked_via_vps": {"status": "fail"},
+            },
+            evidence_store={
+                "complex_service_okko_like": {
+                    "scenario_class": "complex_media_service",
+                    "client_path": "lan",
+                    "targets": [
+                        {
+                            "host": "okko.tv",
+                            "path_ok": True,
+                            "probe_result": {"timings": {"dns_s": 0.02, "ttfb_s": 0.15, "total_s": 0.4}},
+                        }
+                    ],
+                },
+                "lan_blocked_via_vps": {
+                    "scenario_class": "blocked_baseline",
+                    "client_path": "lan",
+                    "targets": [
+                        {
+                            "host": "api.telegram.org",
+                            "path_ok": False,
+                            "probe_result": {"timings": {"dns_s": 0.03, "ttfb_s": 0.25, "total_s": 0.6}},
+                        }
+                    ],
+                },
+            },
+            functional_status=watchdog.FUNCTIONAL_EXEC_HEALTHY,
+            functional_mode=watchdog.FUNCTIONAL_MODE_ACTIVE,
+        )
+
+        self.assertEqual(summary["status"], "degraded")
+        self.assertAlmostEqual(summary["dns_bootstrap_latency_ms_avg"], 25.0)
+        self.assertAlmostEqual(summary["first_https_latency_ms_avg"], 200.0)
+        self.assertIn("lan_blocked_via_vps", summary["slow_scenarios"])
+        self.assertIn("lan_blocked_via_vps:api.telegram.org", summary["path_failures"])
+
+    def test_path_verdict_prefers_latency_sensitive_direct(self) -> None:
+        with mock.patch.object(watchdog, "_scenario_src_ip", return_value="192.168.1.201"):
+            with mock.patch.object(watchdog, "_route_get_sync", return_value={"ok": "true", "line": "", "table": "", "dev": "", "via": ""}):
+                with mock.patch.object(
+                    watchdog,
+                    "_is_ip_in_nft_set",
+                    side_effect=lambda set_name, ip: set_name in {"latency_sensitive_direct", "blocked_static"},
+                ):
+                    verdict = watchdog._functional_path_verdict("1.2.3.4", "lan")
+
+        self.assertEqual(verdict["verdict"], "latency_sensitive_direct")
 
 
 if __name__ == "__main__":

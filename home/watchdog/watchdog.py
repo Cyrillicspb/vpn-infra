@@ -1653,6 +1653,8 @@ COMPOSE_DRIFT_CONFIRM_SECONDS = int(os.getenv("COMPOSE_DRIFT_CONFIRM_SECONDS", "
 COMPOSE_SELFHEAL_COOLDOWN_SECONDS = int(os.getenv("COMPOSE_SELFHEAL_COOLDOWN_SECONDS", "1800"))
 WATCHDOG_SOURCE_FILE = Path("/opt/vpn/home/watchdog/watchdog.py")
 WATCHDOG_RUNTIME_FILE = Path("/opt/vpn/watchdog/watchdog.py")
+NFTABLES_TEMPLATE_SOURCE_FILE = Path("/opt/vpn/home/nftables/nftables.conf")
+NFTABLES_GENERATOR_SOURCE_FILE = Path("/opt/vpn/scripts/generate-nftables.sh")
 WATCHDOG_DRIFT_CONFIRM_SECONDS = int(os.getenv("WATCHDOG_DRIFT_CONFIRM_SECONDS", "300"))
 WATCHDOG_SELFHEAL_COOLDOWN_SECONDS = int(os.getenv("WATCHDOG_SELFHEAL_COOLDOWN_SECONDS", "1800"))
 SERVER_REPO_DIR = Path("/opt/vpn")
@@ -2155,6 +2157,8 @@ async def check_server_repo_sync() -> None:
     critical_files = {
         "watchdog": ("home/watchdog/watchdog.py", WATCHDOG_SOURCE_FILE),
         "compose": ("home/docker-compose.yml", COMPOSE_SOURCE_FILE),
+        "nftables-template": ("home/nftables/nftables.conf", NFTABLES_TEMPLATE_SOURCE_FILE),
+        "nftables-generator": ("home/scripts/generate-nftables.sh", NFTABLES_GENERATOR_SOURCE_FILE),
     }
     for rel_path in BOT_RUNTIME_FILES:
         critical_files[f"telegram-bot:{rel_path}"] = (
