@@ -166,6 +166,13 @@ class DnsmasqDpiExclusionTests(unittest.TestCase):
         self.assertNotIn("invalid domain", content)
         self.assertEqual(written, 2)
 
+    def test_render_dnsmasq_direct_marks_ru_domains_direct_first(self) -> None:
+        content = update_routes.render_dnsmasq_direct()
+
+        self.assertIn("server=/.ru/77.88.8.8", content)
+        self.assertIn("nftset=/.ru/4#inet#vpn#latency_sensitive_direct", content)
+        self.assertIn("nftset=/.xn--p1acf/4#inet#vpn#latency_sensitive_direct", content)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -94,6 +94,7 @@ FETCH_WORKERS        = 6      # Параллельные загрузки
 ZAPRET_MAX_LINES     = 500_000  # Лимит строк из всех dump-*.csv
 FORBIDDEN_ALLOWED_PREFIXES = frozenset({7, 8})
 CONDITIONAL_ALLOWED_PREFIXES = frozenset({9, 10})
+MIN_NFT_BLOCKED_PREFIXLEN = 11
 EXPANSION_RATIO_OK = 4.0
 EXPANSION_RATIO_WARN = 8.0
 
@@ -910,6 +911,49 @@ def normalize_allowed_networks(
     return normalized, stats
 
 
+def normalize_nft_blocked_networks(
+    networks: set[ipaddress.IPv4Network],
+    *,
+    min_prefixlen: int = MIN_NFT_BLOCKED_PREFIXLEN,
+) -> tuple[list[ipaddress.IPv4Network], dict[str, int | dict[int, int]]]:
+    """Нормализация blocked_static без сверхшироких префиксов.
+
+    Для nft blocked_static correctness тоже важнее компактности: слишком широкие
+    CIDR приводят к ложным срабатываниям на обычных direct-ресурсах. Поэтому
+    любой exact-collapsed префикс шире min_prefixlen детерминированно дробим.
+    """
+    exact_collapsed = aggregate_networks(networks)
+    normalized: list[ipaddress.IPv4Network] = []
+    split_count = 0
+
+    for net in exact_collapsed:
+        if net.prefixlen < min_prefixlen:
+            subnets = [net]
+            while any(s.prefixlen < min_prefixlen for s in subnets):
+                next_subnets: list[ipaddress.IPv4Network] = []
+                for subnet in subnets:
+                    if subnet.prefixlen < min_prefixlen:
+                        next_subnets.extend(subnet.subnets(prefixlen_diff=1))
+                    else:
+                        next_subnets.append(subnet)
+                subnets = next_subnets
+            normalized.extend(subnets)
+            split_count += len(subnets) - 1
+        else:
+            normalized.append(net)
+
+    normalized = sorted(set(normalized))
+    stats: dict[str, int | dict[int, int]] = {
+        "before_count": len(exact_collapsed),
+        "after_count": len(normalized),
+        "split_count": split_count,
+        "before_distribution": prefix_distribution(exact_collapsed),
+        "after_distribution": prefix_distribution(normalized),
+        "too_broad_count": sum(1 for net in normalized if net.prefixlen < min_prefixlen),
+    }
+    return normalized, stats
+
+
 # =============================================================================
 # Дельта-проверка
 # =============================================================================
@@ -1054,10 +1098,12 @@ def render_dnsmasq_direct() -> str:
         "# .ru — российские домены",
         "server=/.ru/77.88.8.8",
         "server=/.ru/77.88.8.1",
+        "nftset=/.ru/4#inet#vpn#latency_sensitive_direct",
         "",
         "# .рф — российские домены в кириллице (IDN punycode)",
         "server=/.xn--p1acf/77.88.8.8",
         "server=/.xn--p1acf/77.88.8.1",
+        "nftset=/.xn--p1acf/4#inet#vpn#latency_sensitive_direct",
         "",
     ]
     return "\n".join(lines)
@@ -1255,9 +1301,17 @@ def main() -> None:
     log.info(f"CIDR-only (для AllowedIPs): {len(cidr_networks)} сетей")
 
     # ── Агрегация: полный set для nft blocked_static ───────────────────────────
-    log.info("Агрегация nft blocked_static (без лимита)...")
-    nft_networks = aggregate_networks(all_networks)
-    log.info(f"nft blocked_static: {len(all_networks)} → {len(nft_networks)} после агрегации")
+    log.info("Агрегация nft blocked_static (без сверхшироких CIDR)...")
+    nft_networks, nft_stats = normalize_nft_blocked_networks(all_networks)
+    log.info(
+        "nft blocked_static: %s → %s после нормализации (split=%s)",
+        len(all_networks),
+        len(nft_networks),
+        nft_stats["split_count"],
+    )
+    if nft_stats["too_broad_count"]:
+        log.error("nft blocked_static still contains too-broad prefixes")
+        sys.exit(1)
 
     # ── Нормализация: AllowedIPs (combined.cidr) ──────────────────────────────
     # Используем только CIDR-based источники (не /32 IP-листы), но больше не
