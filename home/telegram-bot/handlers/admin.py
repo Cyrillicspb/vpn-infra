@@ -1422,16 +1422,13 @@ async def cmd_check(message: Message, state: FSMContext, **kw):
         verdict   = r.get("verdict", "unknown")
         ips       = r.get("ips", [])
         ip_str    = ", ".join(ips[:4]) if ips else "не резолвится"
-        sources   = []
-        if r.get("in_manual_vpn"):     sources.append("manual-vpn")
-        if r.get("in_latency_sensitive_direct"): sources.append("latency-sensitive-direct")
-        if r.get("in_blocked_static"): sources.append("blocked_static")
-        if r.get("in_blocked_dynamic"):sources.append("blocked_dynamic")
-        if r.get("in_manual_direct"):  sources.append("manual-direct")
+        sources   = list(r.get("sources") or [])
         src = " | ".join(sources) if sources else "—"
         icon = {"vpn": "🔒", "direct": "🌐", "latency_sensitive_direct": "⚡", "unknown": "❓"}.get(verdict, "❓")
+        service = str(r.get("latency_service") or "")
+        service_line = f"\nСервис: <b>{service}</b>" if service else ""
         await message.answer(
-            f"{icon} <code>{domain}</code>\nВердикт: <b>{verdict}</b>\nIP: <code>{ip_str}</code>\nИсточники: {src}",
+            f"{icon} <code>{domain}</code>\nВердикт: <b>{verdict}</b>\nIP: <code>{ip_str}</code>{service_line}\nИсточники: {src}",
             parse_mode="HTML",
         )
     except WatchdogError as e:
@@ -3114,20 +3111,14 @@ async def fsm_check_domain(message: Message, state: FSMContext, **kw):
         verdict = r.get("verdict", "unknown")
         ips     = r.get("ips", [])
         ip_str  = ", ".join(ips[:4]) if ips else "не резолвится"
-        sources = []
-        if r.get("in_manual_vpn"):      sources.append("manual-vpn")
-        if r.get("in_latency_sensitive_direct"): sources.append("latency-sensitive-direct")
-        if r.get("in_blocked_static"):  sources.append("blocked_static")
-        if r.get("in_blocked_dynamic"): sources.append("blocked_dynamic")
-        if r.get("in_manual_direct"):   sources.append("manual-direct")
+        sources = list(r.get("sources") or [])
         src  = " | ".join(sources) if sources else "—"
         icon = {"vpn": "🔒", "direct": "🌐", "latency_sensitive_direct": "⚡", "unknown": "❓"}.get(verdict, "❓")
-        text = (
-            f"{icon} <code>{domain}</code>\n"
-            f"Вердикт: <b>{verdict}</b>\n"
-            f"IP: <code>{ip_str}</code>\n"
-            f"Источники: {src}"
-        )
+        service = str(r.get("latency_service") or "")
+        text = f"{icon} <code>{domain}</code>\nВердикт: <b>{verdict}</b>\nIP: <code>{ip_str}</code>"
+        if service:
+            text += f"\nСервис: <b>{service}</b>"
+        text += f"\nИсточники: {src}"
     except WatchdogError as e:
         text = f"❌ {e}"
     await message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")

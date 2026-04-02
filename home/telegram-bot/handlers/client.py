@@ -1703,6 +1703,7 @@ async def fsm_checksite_domain(message: Message, state: FSMContext, **kw):
         in_static = r.get("in_blocked_static", False)
         in_dyn    = r.get("in_blocked_dynamic", False)
         in_manual = r.get("in_manual_vpn", False)
+        service   = str(r.get("latency_service") or "")
         ip_str    = ", ".join(ips[:3]) + ("…" if len(ips) > 3 else "") if ips else "не резолвится"
 
         if verdict == "vpn":
@@ -1726,6 +1727,14 @@ async def fsm_checksite_domain(message: Message, state: FSMContext, **kw):
                 f"IP: <code>{ip_str}</code>\n\n"
                 "Этот сайт настроен на прямое соединение. "
                 "Чтобы пустить через VPN — нажмите «🌐 Открыть сайт через VPN»."
+            )
+        elif verdict == "latency_sensitive_direct":
+            text = (
+                f"⚡ <b>{domain}</b> — direct-first маршрут\n"
+                f"IP: <code>{ip_str}</code>\n"
+                + (f"Сервис: <b>{service}</b>\n" if service else "") +
+                "\nСайт и его bootstrap-зависимости специально оставлены прямыми, "
+                "чтобы не ломались вход, геопривязка и загрузка приложения."
             )
         else:
             text = (

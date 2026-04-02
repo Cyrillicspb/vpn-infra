@@ -1,0 +1,355 @@
+{
+  "services": {
+    "gosuslugi": {
+      "display": "Gosuslugi",
+      "category": "state",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["gosuslugi.ru", "www.gosuslugi.ru"],
+        "auth": ["esia.gosuslugi.ru", "esia-portal.gosuslugi.ru"],
+        "api": ["gu-st.ru"],
+        "bootstrap": ["gosuslugi.ru", "esia.gosuslugi.ru"]
+      }
+    },
+    "nalog": {
+      "display": "Nalog",
+      "category": "state",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["nalog.gov.ru", "lkfl2.nalog.ru"],
+        "auth": ["esia.gosuslugi.ru"],
+        "api": ["service.nalog.ru"]
+      }
+    },
+    "mosru": {
+      "display": "mos.ru",
+      "category": "state",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["mos.ru", "www.mos.ru"],
+        "auth": ["login.mos.ru"],
+        "api": ["api.mos.ru"]
+      }
+    },
+    "sber": {
+      "display": "Sber",
+      "category": "bank",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["sberbank.ru", "online.sberbank.ru", "sber.ru"],
+        "auth": ["id.sber.ru", "securepayments.sberbank.ru"],
+        "api": ["api.sberbank.ru", "api.sber.ru"],
+        "cdn": ["sberdevices.ru"]
+      }
+    },
+    "tbank": {
+      "display": "T-Bank",
+      "category": "bank",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["tbank.ru", "www.tbank.ru", "tinkoff.ru", "www.tinkoff.ru"],
+        "auth": ["id.tbank.ru", "oauth.tinkoff.ru"],
+        "api": ["api.tbank.ru", "api.tinkoff.ru"],
+        "cdn": ["static.tbank.ru"]
+      }
+    },
+    "vtb": {
+      "display": "VTB",
+      "category": "bank",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["vtb.ru", "online.vtb.ru"],
+        "auth": ["id.vtb.ru"],
+        "api": ["api.vtb.ru"]
+      }
+    },
+    "alfa": {
+      "display": "Alfa-Bank",
+      "category": "bank",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["alfabank.ru", "alfa.ru"],
+        "auth": ["oauth.alfabank.ru", "id.alfabank.ru"],
+        "api": ["api.alfabank.ru"]
+      }
+    },
+    "gazprombank": {
+      "display": "Gazprombank",
+      "category": "bank",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["gazprombank.ru", "online.gazprombank.ru"],
+        "auth": ["id.gazprombank.ru"],
+        "api": ["api.gazprombank.ru"]
+      }
+    },
+    "raiffeisen": {
+      "display": "Raiffeisen",
+      "category": "bank",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["raiffeisen.ru", "online.raiffeisen.ru"],
+        "auth": ["id.raiffeisen.ru"],
+        "api": ["api.raiffeisen.ru"]
+      }
+    },
+    "ozon": {
+      "display": "Ozon",
+      "category": "marketplace",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["ozon.ru", "www.ozon.ru"],
+        "auth": ["id.ozon.ru"],
+        "api": ["api.ozon.ru"],
+        "cdn": ["cdn1.ozone.ru", "ozone.ru"]
+      }
+    },
+    "ozon_bank": {
+      "display": "Ozon Bank",
+      "category": "bank",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["finance.ozon.ru", "bank.ozon.ru"],
+        "auth": ["id.ozon.ru"],
+        "api": ["api.ozon.ru"]
+      }
+    },
+    "wildberries": {
+      "display": "Wildberries",
+      "category": "marketplace",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["wildberries.ru", "www.wildberries.ru"],
+        "api": ["seller.wildberries.ru"],
+        "cdn": ["wbstatic.net"]
+      }
+    },
+    "yandex_market": {
+      "display": "Yandex Market",
+      "category": "marketplace",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["market.yandex.ru", "beru.ru"],
+        "auth": ["passport.yandex.ru"],
+        "api": ["api.market.yandex.ru"],
+        "cdn": ["yastatic.net", "cloud.cdn.yandex.net"]
+      }
+    },
+    "megamarket": {
+      "display": "Megamarket",
+      "category": "marketplace",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["megamarket.ru", "sbermegamarket.ru"],
+        "auth": ["id.sber.ru"],
+        "api": ["api.megamarket.ru"]
+      }
+    },
+    "avito": {
+      "display": "Avito",
+      "category": "marketplace",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["avito.ru", "www.avito.ru"],
+        "auth": ["id.avito.ru"],
+        "api": ["api.avito.ru"],
+        "cdn": ["avito.st", "avitoedge.com"]
+      }
+    },
+    "bitrix24": {
+      "display": "Bitrix24",
+      "category": "work_saas",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["bitrix24.ru", "www.bitrix24.ru"],
+        "auth": ["auth2.bitrix24.net", "login.bitrix24.net"],
+        "api": ["api.bitrix24.com"],
+        "cdn": ["bitrix.info"]
+      }
+    },
+    "kontur": {
+      "display": "Kontur",
+      "category": "work_saas",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["kontur.ru", "extern.kontur.ru", "diadoc.ru"],
+        "auth": ["id.kontur.ru"],
+        "api": ["api.kontur.ru"]
+      }
+    },
+    "moysklad": {
+      "display": "MoySklad",
+      "category": "work_saas",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["moysklad.ru", "online.moysklad.ru"],
+        "auth": ["login.moysklad.ru"],
+        "api": ["api.moysklad.ru"]
+      }
+    },
+    "yandex": {
+      "display": "Yandex Ecosystem",
+      "category": "ecosystem",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["yandex.ru", "ya.ru", "mail.yandex.ru", "disk.yandex.ru", "music.yandex.ru"],
+        "auth": ["passport.yandex.ru", "passport-rc.yandex.ru"],
+        "api": ["api.browser.yandex.ru", "api.music.yandex.net", "strm.yandex.ru"],
+        "cdn": ["yastatic.net", "cloud.cdn.yandex.net"]
+      }
+    },
+    "vk": {
+      "display": "VK Ecosystem",
+      "category": "messenger_social",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["vk.com", "m.vk.com", "mail.ru", "ok.ru"],
+        "auth": ["id.vk.com", "oauth.vk.com"],
+        "api": ["api.vk.com", "api.mail.ru"],
+        "cdn": ["vkuser.net", "vkvideo.ru"]
+      }
+    },
+    "mts": {
+      "display": "MTS",
+      "category": "telecom",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["mts.ru", "login.mts.ru", "lk.mts.ru"],
+        "auth": ["id.mts.ru", "oauth.mts.ru"],
+        "api": ["api.mts.ru", "lk-api.mts.ru"]
+      }
+    },
+    "megafon": {
+      "display": "MegaFon",
+      "category": "telecom",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["megafon.ru", "lk.megafon.ru"],
+        "auth": ["id.megafon.ru"],
+        "api": ["api.megafon.ru"]
+      }
+    },
+    "rostelecom": {
+      "display": "Rostelecom / Wink",
+      "category": "telecom",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["rt.ru", "wink.ru"],
+        "auth": ["id.rt.ru"],
+        "api": ["api.wink.ru", "api.rt.ru"],
+        "cdn": ["static.wink.ru"]
+      }
+    },
+    "rustore": {
+      "display": "RuStore",
+      "category": "ecosystem",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["rustore.ru", "www.rustore.ru"],
+        "auth": ["id.vk.com"],
+        "api": ["api.rustore.ru"],
+        "cdn": ["static.rustore.ru"]
+      }
+    },
+    "okko": {
+      "display": "Okko",
+      "category": "media",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["okko.tv", "api.okko.tv"],
+        "bootstrap": ["static.okko.tv", "clients-static.okko.tv", "tvxx.okko.tv", "lge.okko.tv"],
+        "auth": ["drm.playfamily.ru"],
+        "api": ["api.okko.tv"],
+        "cdn": ["www.googleapis.com", "googleapis.com", "gstatic.com", "kidsmanagement-pa.googleapis.com"]
+      }
+    },
+    "kinopoisk": {
+      "display": "Kinopoisk",
+      "category": "media",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["kinopoisk.ru", "www.kinopoisk.ru"],
+        "bootstrap": ["widgets.kinopoisk.ru", "yastatic.net", "cloud.cdn.yandex.net"],
+        "auth": ["passport.yandex.ru"],
+        "api": ["api.kinopoisk.ru", "strm.yandex.ru"]
+      }
+    },
+    "ivi": {
+      "display": "IVI",
+      "category": "media",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["ivi.ru", "www.ivi.ru"],
+        "api": ["api.ivi.ru"],
+        "cdn": ["static.ivi.ru"]
+      }
+    },
+    "rutube": {
+      "display": "Rutube",
+      "category": "media",
+      "auto_promote_allowed": true,
+      "geo_sensitive": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["rutube.ru", "www.rutube.ru"],
+        "auth": ["passport.yandex.ru"],
+        "api": ["api.rutube.ru"],
+        "cdn": ["static.rutube.ru"]
+      }
+    }
+  }
+}

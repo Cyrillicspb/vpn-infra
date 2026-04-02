@@ -71,6 +71,15 @@ STATE_FILE   = Path("/opt/vpn/watchdog/state.json")
 PLUGINS_DIR  = Path("/opt/vpn/watchdog/plugins")
 ROUTES_DIR   = Path("/etc/vpn-routes")
 LOG_FILE     = "/var/log/vpn-watchdog.log"
+LATENCY_CATALOG_FILE = ROUTES_DIR / "latency-catalog.json"
+LATENCY_CANDIDATES_FILE = ROUTES_DIR / "latency-candidates.json"
+LATENCY_LEARNED_FILE = ROUTES_DIR / "latency-learned.txt"
+LATENCY_MANUAL_FILE = ROUTES_DIR / "latency-sensitive-direct.txt"
+LATENCY_CATALOG_FALLBACKS = [
+    Path("/opt/vpn/home/routes/latency-catalog-default.json"),
+    Path("/opt/vpn/routes/latency-catalog-default.json"),
+    Path(__file__).resolve().parents[1] / "routes" / "latency-catalog-default.json",
+]
 FUNCTIONAL_MODE_OFF = "off"
 FUNCTIONAL_MODE_STAGED = "staged"
 FUNCTIONAL_MODE_ACTIVE = "active"
@@ -122,6 +131,9 @@ ALL_STACKS_DOWN_MINUTES   = 5
 TIER2_PROXY_PORT          = 1089  # Stable SOCKS5 port для tier-2 SSH туннеля
 HEALTH_SCORE_THRESHOLD    = int(os.getenv("HEALTH_SCORE_THRESHOLD", "70"))
 BACKUP_MAX_AGE_DAYS       = 3     # deep check: бэкап не старше N дней
+LATENCY_AUTO_PROMOTE_SCORE = int(os.getenv("LATENCY_AUTO_PROMOTE_SCORE", "3"))
+LATENCY_AUTO_PROMOTE_COOLDOWN = int(os.getenv("LATENCY_AUTO_PROMOTE_COOLDOWN", "600"))
+LATENCY_CANDIDATE_TTL_SECONDS = int(os.getenv("LATENCY_CANDIDATE_TTL_SECONDS", str(14 * 24 * 3600)))
 
 # ---------------------------------------------------------------------------
 # DPI bypass (zapret lane)
@@ -227,6 +239,168 @@ def _canonicalize_preset_map(raw: dict[str, Any]) -> dict[str, dict]:
             continue
         presets[str(name)] = {"display": display, "domains": domains}
     return presets
+
+
+def _read_domain_lines(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    result: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        raw = line.split("#")[0].strip()
+        if _is_domain_like(raw):
+            result.append(_normalize_domain_name(raw))
+    return result
+
+
+def _canonicalize_latency_catalog(raw: dict[str, Any]) -> dict[str, dict]:
+    services: dict[str, dict] = {}
+    raw_services = raw.get("services") if isinstance(raw, dict) else {}
+    if not isinstance(raw_services, dict):
+        return services
+    for service_id, spec in raw_services.items():
+        if not isinstance(spec, dict):
+            continue
+        roles: dict[str, list[str]] = {}
+        for role, values in (spec.get("domains") or {}).items():
+            domains = _dedupe_domain_suffixes(list(values or []))
+            if domains:
+                roles[str(role)] = domains
+        if not roles:
+            continue
+        services[str(service_id).strip().lower()] = {
+            "display": str(spec.get("display") or service_id),
+            "category": str(spec.get("category") or "misc"),
+            "auto_promote_allowed": bool(spec.get("auto_promote_allowed", True)),
+            "geo_sensitive": bool(spec.get("geo_sensitive", True)),
+            "requires_direct_bootstrap": bool(spec.get("requires_direct_bootstrap", True)),
+            "domains": roles,
+        }
+    return services
+
+
+def _merge_latency_catalogs(*catalogs: dict[str, dict]) -> dict[str, dict]:
+    merged: dict[str, dict] = {}
+    for catalog in catalogs:
+        for service_id, spec in catalog.items():
+            dst = merged.setdefault(
+                service_id,
+                {
+                    "display": str(spec.get("display") or service_id),
+                    "category": str(spec.get("category") or "misc"),
+                    "auto_promote_allowed": bool(spec.get("auto_promote_allowed", True)),
+                    "geo_sensitive": bool(spec.get("geo_sensitive", True)),
+                    "requires_direct_bootstrap": bool(spec.get("requires_direct_bootstrap", True)),
+                    "domains": {},
+                },
+            )
+            dst["display"] = str(spec.get("display") or dst["display"])
+            dst["category"] = str(spec.get("category") or dst["category"])
+            dst["auto_promote_allowed"] = bool(spec.get("auto_promote_allowed", dst["auto_promote_allowed"]))
+            dst["geo_sensitive"] = bool(spec.get("geo_sensitive", dst["geo_sensitive"]))
+            dst["requires_direct_bootstrap"] = bool(
+                spec.get("requires_direct_bootstrap", dst["requires_direct_bootstrap"])
+            )
+            for role, values in (spec.get("domains") or {}).items():
+                dst["domains"][role] = _dedupe_domain_suffixes(list(dst["domains"].get(role, [])) + list(values or []))
+    return merged
+
+
+def _load_latency_catalog() -> dict[str, dict]:
+    runtime: dict[str, dict] = {}
+    if LATENCY_CATALOG_FILE.exists():
+        try:
+            runtime = _canonicalize_latency_catalog(json.loads(LATENCY_CATALOG_FILE.read_text(encoding="utf-8")))
+        except Exception as exc:
+            logger.warning("Invalid latency catalog %s: %s", LATENCY_CATALOG_FILE, exc)
+    fallback: dict[str, dict] = {}
+    for path in LATENCY_CATALOG_FALLBACKS:
+        if not path.exists():
+            continue
+        try:
+            fallback = _canonicalize_latency_catalog(json.loads(path.read_text(encoding="utf-8")))
+            break
+        except Exception as exc:
+            logger.warning("Invalid fallback latency catalog %s: %s", path, exc)
+    return _merge_latency_catalogs(fallback, runtime)
+
+
+def _match_latency_catalog_domain(domain: str) -> Optional[dict[str, Any]]:
+    domain = _normalize_domain_name(domain)
+    if not _is_domain_like(domain):
+        return None
+    catalog = _load_latency_catalog()
+    best: Optional[dict[str, Any]] = None
+    best_len = -1
+    for service_id, spec in catalog.items():
+        for role, values in (spec.get("domains") or {}).items():
+            for parent in values:
+                if domain == parent or domain.endswith(f".{parent}"):
+                    if len(parent) > best_len:
+                        best = {
+                            "service_id": service_id,
+                            "display": spec.get("display", service_id),
+                            "category": spec.get("category", "misc"),
+                            "role": role,
+                            "parent_domain": parent,
+                            "auto_promote_allowed": bool(spec.get("auto_promote_allowed", True)),
+                            "requires_direct_bootstrap": bool(spec.get("requires_direct_bootstrap", True)),
+                        }
+                        best_len = len(parent)
+    return best
+
+
+def _load_latency_candidates() -> dict[str, dict[str, Any]]:
+    if not LATENCY_CANDIDATES_FILE.exists():
+        return {}
+    try:
+        payload = json.loads(LATENCY_CANDIDATES_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Invalid latency candidates file %s: %s", LATENCY_CANDIDATES_FILE, exc)
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    cleaned: dict[str, dict[str, Any]] = {}
+    now = time.time()
+    for domain, spec in payload.items():
+        d = _normalize_domain_name(domain)
+        if not _is_domain_like(d) or not isinstance(spec, dict):
+            continue
+        last_seen = float(spec.get("last_seen_ts", 0.0) or 0.0)
+        if last_seen and now - last_seen > LATENCY_CANDIDATE_TTL_SECONDS:
+            continue
+        cleaned[d] = {
+            "score": int(spec.get("score", 0) or 0),
+            "service_id": str(spec.get("service_id") or ""),
+            "display": str(spec.get("display") or ""),
+            "category": str(spec.get("category") or ""),
+            "role": str(spec.get("role") or ""),
+            "parent_domain": str(spec.get("parent_domain") or ""),
+            "reasons": list(spec.get("reasons") or [])[-10:],
+            "sources": list(spec.get("sources") or [])[-10:],
+            "first_seen_ts": float(spec.get("first_seen_ts", last_seen or now) or now),
+            "last_seen_ts": last_seen or now,
+            "promoted": bool(spec.get("promoted", False)),
+        }
+    return cleaned
+
+
+def _save_latency_candidates(candidates: dict[str, dict[str, Any]]) -> None:
+    LATENCY_CANDIDATES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    LATENCY_CANDIDATES_FILE.write_text(
+        json.dumps(candidates, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _load_latency_learned() -> set[str]:
+    return set(_read_domain_lines(LATENCY_LEARNED_FILE))
+
+
+def _write_latency_learned(domains: set[str]) -> None:
+    LATENCY_LEARNED_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ordered = sorted(_dedupe_domain_suffixes(list(domains)))
+    content = "".join(f"{domain}\n" for domain in ordered)
+    LATENCY_LEARNED_FILE.write_text(content, encoding="utf-8")
 
 
 def _load_dpi_presets() -> dict[str, dict]:
@@ -1079,6 +1253,7 @@ class WatchdogState:
         self.last_functional_run_by_tier: dict[str, float] = {}
         self.functional_fail_counters: dict[str, int] = {}
         self.functional_evidence_store: dict[str, dict[str, Any]] = {}
+        self.latency_learning_last_apply_ts: float = 0.0
 
     @property
     def active_vps(self) -> Optional[dict]:
@@ -1142,6 +1317,7 @@ class WatchdogState:
             "last_functional_run_by_tier": self.last_functional_run_by_tier,
             "functional_fail_counters": self.functional_fail_counters,
             "functional_evidence_store": self.functional_evidence_store,
+            "latency_learning_last_apply_ts": self.latency_learning_last_apply_ts,
         }
 
     def save(self) -> None:
@@ -1210,6 +1386,7 @@ class WatchdogState:
                 self.last_functional_run_by_tier = data.get("last_functional_run_by_tier", {}) or {}
                 self.functional_fail_counters = data.get("functional_fail_counters", {}) or {}
                 self.functional_evidence_store = data.get("functional_evidence_store", {}) or {}
+                self.latency_learning_last_apply_ts = float(data.get("latency_learning_last_apply_ts", 0.0) or 0.0)
                 _normalize_functional_state()
                 if self.active_stack not in STACK_ORDER:
                     self.active_stack = DEFAULT_STACK
@@ -3192,6 +3369,7 @@ async def _run_functional_checks_for_tier(tier: str) -> list[CheckResult]:
         mode,
     )
     state.save()
+    await _observe_latency_from_functional_evidence(evidence_store)
     return results
 
 
@@ -3735,6 +3913,7 @@ async def _regen_dpi_dnsmasq() -> None:
 
 
 _DPI_ROUTES_REFRESH_LOCK = asyncio.Lock()
+_LATENCY_ROUTES_REFRESH_LOCK = asyncio.Lock()
 
 
 def _sync_preset_backed_dpi_services() -> bool:
@@ -3763,6 +3942,141 @@ def _sync_preset_backed_dpi_services() -> bool:
     if changed:
         state.save()
     return changed
+
+
+def _latency_manual_vpn_domains() -> set[str]:
+    return set(_read_domain_lines(ROUTES_DIR / "manual-vpn.txt"))
+
+
+def _latency_manual_direct_domains() -> set[str]:
+    domains = set(_read_domain_lines(ROUTES_DIR / "manual-direct.txt"))
+    domains.update(_read_domain_lines(LATENCY_MANUAL_FILE))
+    return domains
+
+
+def _latency_route_source_tags(domain: str, result: dict[str, Any]) -> list[str]:
+    sources: list[str] = []
+    match = _match_latency_catalog_domain(domain)
+    if match:
+        catalog_tag = "runtime-catalog" if LATENCY_CATALOG_FILE.exists() else "fallback-catalog"
+        sources.append(f"{catalog_tag}:{match['service_id']}")
+    if domain in _load_latency_learned():
+        sources.append("learned")
+    if domain in _latency_manual_direct_domains():
+        sources.append("latency-manual")
+    if domain in _latency_manual_vpn_domains():
+        sources.append("manual-vpn")
+    if result.get("in_manual_direct"):
+        sources.append("manual-direct")
+    if result.get("in_latency_sensitive_direct"):
+        sources.append("latency-sensitive-direct")
+    if result.get("in_blocked_static"):
+        sources.append("blocked_static")
+    if result.get("in_blocked_dynamic"):
+        sources.append("blocked_dynamic")
+    return sources
+
+
+def _record_latency_learning_observation(
+    domain: str,
+    *,
+    source: str,
+    reason: str,
+    route_verdict: str,
+    blocked_static: bool = False,
+    blocked_dynamic: bool = False,
+) -> bool:
+    domain = _normalize_domain_name(domain)
+    if not _is_domain_like(domain):
+        return False
+    if route_verdict not in {"vpn", "blocked_vps", "unknown"} and not (blocked_static or blocked_dynamic):
+        return False
+    if domain in _latency_manual_vpn_domains():
+        return False
+    if domain in _latency_manual_direct_domains():
+        return False
+
+    match = _match_latency_catalog_domain(domain)
+    if not match:
+        return False
+    if not match.get("auto_promote_allowed", True) or not match.get("requires_direct_bootstrap", True):
+        return False
+
+    learned = _load_latency_learned()
+    if domain in learned:
+        return False
+
+    candidates = _load_latency_candidates()
+    now = time.time()
+    candidate = candidates.get(domain, {})
+    candidate["score"] = int(candidate.get("score", 0) or 0) + 1
+    candidate["service_id"] = match["service_id"]
+    candidate["display"] = match["display"]
+    candidate["category"] = match["category"]
+    candidate["role"] = match["role"]
+    candidate["parent_domain"] = match["parent_domain"]
+    candidate["first_seen_ts"] = float(candidate.get("first_seen_ts", now) or now)
+    candidate["last_seen_ts"] = now
+    reasons = list(candidate.get("reasons") or [])
+    reasons.append(reason)
+    candidate["reasons"] = reasons[-10:]
+    sources = list(candidate.get("sources") or [])
+    sources.append(source)
+    candidate["sources"] = sources[-10:]
+    promoted = bool(candidate.get("promoted", False))
+    if candidate["score"] >= LATENCY_AUTO_PROMOTE_SCORE:
+        promoted = True
+        learned.add(domain)
+        _write_latency_learned(learned)
+        logger.warning(
+            "Latency self-learning promoted %s via %s (service=%s score=%s)",
+            domain,
+            source,
+            match["service_id"],
+            candidate["score"],
+        )
+    candidate["promoted"] = promoted
+    candidates[domain] = candidate
+    _save_latency_candidates(candidates)
+    return promoted
+
+
+async def _maybe_apply_latency_learning_updates(reason: str) -> None:
+    async with _LATENCY_ROUTES_REFRESH_LOCK:
+        now = time.time()
+        if now - state.latency_learning_last_apply_ts < LATENCY_AUTO_PROMOTE_COOLDOWN:
+            return
+        state.latency_learning_last_apply_ts = now
+        state.save()
+        logger.info("Applying latency self-learning updates: %s", reason)
+        await _routes_update_task()
+
+
+async def _observe_latency_from_functional_evidence(evidence_store: dict[str, dict[str, Any]]) -> None:
+    promoted = False
+    for evidence in (evidence_store or {}).values():
+        for target in list((evidence or {}).get("targets") or []):
+            domain = _normalize_domain_name(target.get("host") or "")
+            if not _is_domain_like(domain):
+                continue
+            expectation = str(target.get("path_expectation") or evidence.get("routing_expectation") or "")
+            if expectation != "latency_sensitive_direct":
+                continue
+            if target.get("path_ok"):
+                continue
+            path_evidence = list(target.get("path_evidence") or [])
+            if not any((item or {}).get("verdict") == "blocked_vps" for item in path_evidence):
+                continue
+            promoted = _record_latency_learning_observation(
+                domain,
+                source="functional",
+                reason=f"functional:{evidence.get('id')}",
+                route_verdict="blocked_vps",
+                blocked_static=any(((item or {}).get("set_membership") or {}).get("blocked_static") for item in path_evidence),
+                blocked_dynamic=any(((item or {}).get("set_membership") or {}).get("blocked_dynamic") for item in path_evidence),
+            ) or promoted
+    if promoted:
+        asyncio.create_task(_maybe_apply_latency_learning_updates("functional self-learning promotion"))
 
 
 async def _refresh_vpn_domains_for_dpi(reason: str) -> None:
@@ -5583,6 +5897,8 @@ async def post_check_domain(request: Request, _: bool = Depends(_auth)):
     MANUAL_DIRECT = Path("/etc/vpn-routes/manual-direct.txt")
     result["in_manual_vpn"]    = MANUAL_VPN.exists()    and domain in MANUAL_VPN.read_text()
     result["in_manual_direct"] = MANUAL_DIRECT.exists() and domain in MANUAL_DIRECT.read_text()
+    catalog_match = _match_latency_catalog_domain(domain)
+    result["latency_catalog_match"] = catalog_match
 
     # 4. Итоговый вердикт
     if in_latency:
@@ -5593,6 +5909,22 @@ async def post_check_domain(request: Request, _: bool = Depends(_auth)):
         result["verdict"] = "direct"
     else:
         result["verdict"] = "unknown"
+
+    result["sources"] = _latency_route_source_tags(domain, result)
+    if catalog_match:
+        result["latency_service"] = catalog_match.get("display")
+        result["latency_service_id"] = catalog_match.get("service_id")
+
+    promoted = _record_latency_learning_observation(
+        domain,
+        source="check",
+        reason="check blocked-path observation",
+        route_verdict=str(result["verdict"]),
+        blocked_static=in_static,
+        blocked_dynamic=in_dynamic,
+    )
+    if promoted:
+        asyncio.create_task(_maybe_apply_latency_learning_updates(f"/check promoted {domain}"))
 
     return result
 
@@ -5769,6 +6101,26 @@ async def get_nft_stats(_: bool = Depends(_auth)):
         else:
             result[name] = -1
     return result
+
+
+@app.get("/latency/learning")
+async def get_latency_learning(_: bool = Depends(_auth)):
+    candidates = _load_latency_candidates()
+    learned = sorted(_load_latency_learned())
+    ordered_candidates = sorted(
+        (
+            {"domain": domain, **spec}
+            for domain, spec in candidates.items()
+            if not spec.get("promoted")
+        ),
+        key=lambda item: (-int(item.get("score", 0) or 0), item["domain"]),
+    )
+    return {
+        "learned": learned,
+        "learned_count": len(learned),
+        "candidates": ordered_candidates[:100],
+        "candidate_count": len(ordered_candidates),
+    }
 
 
 # ---------------------------------------------------------------------------

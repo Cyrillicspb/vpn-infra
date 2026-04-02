@@ -63,6 +63,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Пути ──────────────────────────────────────────────────────────────────────
+SCRIPT_DIR       = Path(__file__).resolve().parent
 ROUTES_DIR      = Path("/etc/vpn-routes")
 CACHE_DIR       = ROUTES_DIR / "cache"
 COMBINED_CIDR   = ROUTES_DIR / "combined.cidr"
@@ -76,6 +77,11 @@ WATCHDOG_STATE  = Path("/opt/vpn/watchdog/state.json")
 MANUAL_VPN      = ROUTES_DIR / "manual-vpn.txt"
 MANUAL_DIRECT   = ROUTES_DIR / "manual-direct.txt"
 LATENCY_DIRECT  = ROUTES_DIR / "latency-sensitive-direct.txt"
+LATENCY_LEARNED = ROUTES_DIR / "latency-learned.txt"
+LATENCY_CATALOG = ROUTES_DIR / "latency-catalog.json"
+LATENCY_CATALOG_OVERLAY = ROUTES_DIR / "latency-catalog-overlay.json"
+LATENCY_REMOTE_URLS = ROUTES_DIR / "latency-catalog-remote.urls"
+REPO_LATENCY_CATALOG = SCRIPT_DIR.parent / "routes" / "latency-catalog-default.json"
 
 # ── Переменные из окружения ────────────────────────────────────────────────────
 BOT_TOKEN       = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -469,6 +475,24 @@ def _is_valid_domain(s: str) -> bool:
     return bool(re.match(r"^[a-z0-9][a-z0-9.\-]{1,251}[a-z0-9]$", s) and "." in s)
 
 
+def _normalize_domain_name(value: str) -> str:
+    return str(value or "").strip().lower().lstrip("*.").strip(".")
+
+
+def _dedupe_domain_suffixes(domains: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in domains:
+        domain = _normalize_domain_name(raw)
+        if not _is_valid_domain(domain) or domain in seen:
+            continue
+        if any(domain == parent or domain.endswith(f".{parent}") for parent in result):
+            continue
+        result.append(domain)
+        seen.add(domain)
+    return result
+
+
 def _to_root_domain(domain: str) -> str:
     """sub.example.com → example.com (простое eTLD+1 без PSL)."""
     parts = domain.split(".")
@@ -822,6 +846,139 @@ def load_manual_domains(path: Path) -> set[str]:
         if _is_valid_domain(line):
             domains.add(line)
     return domains
+
+
+def _canonicalize_latency_catalog(raw: dict) -> dict[str, dict]:
+    services: dict[str, dict] = {}
+    raw_services = raw.get("services") if isinstance(raw, dict) else {}
+    if not isinstance(raw_services, dict):
+        return services
+
+    for service_id, spec in raw_services.items():
+        if not isinstance(spec, dict):
+            continue
+        service_name = str(service_id or "").strip().lower()
+        if not service_name:
+            continue
+        domain_roles = spec.get("domains") if isinstance(spec.get("domains"), dict) else {}
+        canonical_roles: dict[str, list[str]] = {}
+        total_domains = 0
+        for role, values in domain_roles.items():
+            normalized = _dedupe_domain_suffixes([_normalize_domain_name(v) for v in (values or [])])
+            if not normalized:
+                continue
+            canonical_roles[str(role)] = normalized
+            total_domains += len(normalized)
+        if total_domains == 0:
+            continue
+        services[service_name] = {
+            "display": str(spec.get("display") or service_name),
+            "category": str(spec.get("category") or "misc"),
+            "auto_promote_allowed": bool(spec.get("auto_promote_allowed", True)),
+            "geo_sensitive": bool(spec.get("geo_sensitive", True)),
+            "requires_direct_bootstrap": bool(spec.get("requires_direct_bootstrap", True)),
+            "domains": canonical_roles,
+        }
+    return services
+
+
+def _merge_latency_catalogs(*catalogs: dict[str, dict]) -> dict[str, dict]:
+    merged: dict[str, dict] = {}
+    for catalog in catalogs:
+        for service_id, spec in catalog.items():
+            existing = merged.setdefault(
+                service_id,
+                {
+                    "display": str(spec.get("display") or service_id),
+                    "category": str(spec.get("category") or "misc"),
+                    "auto_promote_allowed": bool(spec.get("auto_promote_allowed", True)),
+                    "geo_sensitive": bool(spec.get("geo_sensitive", True)),
+                    "requires_direct_bootstrap": bool(spec.get("requires_direct_bootstrap", True)),
+                    "domains": {},
+                },
+            )
+            existing["display"] = str(spec.get("display") or existing["display"])
+            existing["category"] = str(spec.get("category") or existing["category"])
+            existing["auto_promote_allowed"] = bool(spec.get("auto_promote_allowed", existing["auto_promote_allowed"]))
+            existing["geo_sensitive"] = bool(spec.get("geo_sensitive", existing["geo_sensitive"]))
+            existing["requires_direct_bootstrap"] = bool(
+                spec.get("requires_direct_bootstrap", existing["requires_direct_bootstrap"])
+            )
+            for role, values in (spec.get("domains") or {}).items():
+                combined = list(existing["domains"].get(role, [])) + list(values or [])
+                existing["domains"][role] = _dedupe_domain_suffixes(combined)
+    return merged
+
+
+def _fetch_json_catalog(url: str) -> dict[str, dict]:
+    try:
+        raw = _fetch_raw(url, proxy=_get_socks5_proxy() if "githubusercontent.com" in url or "github.com" in url else None)
+        parsed = json.loads(raw)
+    except Exception as exc:
+        log.warning(f"[latency-catalog] remote source failed {url}: {exc}")
+        return {}
+    return _canonicalize_latency_catalog(parsed)
+
+
+def load_latency_catalog() -> dict[str, dict]:
+    runtime_catalog: dict[str, dict] = {}
+    if LATENCY_CATALOG.exists():
+        try:
+            runtime_catalog = _canonicalize_latency_catalog(
+                json.loads(LATENCY_CATALOG.read_text(encoding="utf-8"))
+            )
+        except Exception as exc:
+            log.warning(f"[latency-catalog] invalid runtime catalog {LATENCY_CATALOG}: {exc}")
+
+    fallback_catalog: dict[str, dict] = {}
+    if REPO_LATENCY_CATALOG.exists():
+        fallback_catalog = _canonicalize_latency_catalog(
+            json.loads(REPO_LATENCY_CATALOG.read_text(encoding="utf-8"))
+        )
+
+    overlay_catalog: dict[str, dict] = {}
+    if LATENCY_CATALOG_OVERLAY.exists():
+        try:
+            overlay_catalog = _canonicalize_latency_catalog(
+                json.loads(LATENCY_CATALOG_OVERLAY.read_text(encoding="utf-8"))
+            )
+        except Exception as exc:
+            log.warning(f"[latency-catalog] invalid overlay catalog {LATENCY_CATALOG_OVERLAY}: {exc}")
+
+    remote_catalogs: list[dict[str, dict]] = []
+    if LATENCY_REMOTE_URLS.exists():
+        for line in LATENCY_REMOTE_URLS.read_text(encoding="utf-8").splitlines():
+            url = line.split("#")[0].strip()
+            if not url:
+                continue
+            remote_catalogs.append(_fetch_json_catalog(url))
+
+    merged = _merge_latency_catalogs(
+        fallback_catalog,
+        runtime_catalog,
+        *remote_catalogs,
+        overlay_catalog,
+    )
+    if merged:
+        log.info("[latency-catalog] services=%s", len(merged))
+    return merged
+
+
+def build_latency_sensitive_domains(
+    *,
+    manual_direct_domains: Optional[set[str]] = None,
+) -> set[str]:
+    domains: list[str] = list(LATENCY_SENSITIVE_DIRECT_DOMAINS)
+    catalog = load_latency_catalog()
+    for spec in catalog.values():
+        if not spec.get("requires_direct_bootstrap", True):
+            continue
+        for values in (spec.get("domains") or {}).values():
+            domains.extend(list(values or []))
+    domains.extend(load_manual_domains(LATENCY_DIRECT))
+    domains.extend(load_manual_domains(LATENCY_LEARNED))
+    domains.extend(list(manual_direct_domains or set()))
+    return set(_dedupe_domain_suffixes(domains))
 
 
 def load_active_dpi_domains() -> set[str]:
@@ -1296,9 +1453,9 @@ def main() -> None:
     cidr_networks.update(manual_networks)
     dpi_domains = load_active_dpi_domains()
     manual_direct_domains = load_manual_domains(MANUAL_DIRECT)
-    latency_direct_domains = set(LATENCY_SENSITIVE_DIRECT_DOMAINS)
-    latency_direct_domains.update(load_manual_domains(LATENCY_DIRECT))
-    latency_direct_domains.update(manual_direct_domains)
+    latency_direct_domains = build_latency_sensitive_domains(
+        manual_direct_domains=manual_direct_domains
+    )
 
     if not all_networks:
         log.error("Нет данных для обновления!")
@@ -1407,9 +1564,7 @@ def main() -> None:
         exclude_domains=dpi_domains,
     )
     dnsmasq_direct_content = render_dnsmasq_direct()
-    dnsmasq_latency_content, latency_written = render_dnsmasq_latency_sensitive(
-        list(latency_direct_domains)
-    )
+    dnsmasq_latency_content, latency_written = render_dnsmasq_latency_sensitive(list(latency_direct_domains))
     nft_cidr_lines = [str(n) for n in nft_networks]
     normalized_dnsmasq_domains = normalize_generated_text(dnsmasq_domains_content)
     normalized_dnsmasq_force = normalize_generated_text(dnsmasq_force_content)
