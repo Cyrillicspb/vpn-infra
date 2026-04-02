@@ -208,16 +208,41 @@
 
 #### Не делать сразу
 
-- [ ] Не внедрять полный auto self-learning
+- [x] Не внедрять полный auto self-learning
+- [x] Вместо этого внедрить bounded self-learning:
+  - только внутри известных service families из latency catalog
+  - только после повторяемых blocked-path симптомов
+  - без свободного автодобавления произвольных доменов
 - [ ] Не внедрять агрессивный auto-merge
 - [ ] Не внедрять полную per-user сегрегацию
 
 #### Делать поэтапно
 
-- [ ] Сначала ограничения агрегации
-- [ ] Потом классы
+- [x] Сначала ограничения агрегации
+- [x] Потом классы
 - [ ] Потом профили
-- [ ] Потом наблюдения
+- [x] Потом наблюдения
+
+#### Реализовано для latency-sensitive routing
+
+- [x] `blocked_static` больше не допускает сверхширокие `/7-/8` и аналогично опасные broad CIDR
+- [x] `latency_sensitive_direct` имеет direct-first precedence над `blocked_static` и `blocked_dynamic`
+- [x] `.ru` / `.рф` получают direct-first не только через DNS, но и через отдельный nft set
+- [x] Добавлен fallback catalog российских сервисов и их bootstrap/auth/CDN зависимостей
+- [x] Добавлен runtime catalog: `/etc/vpn-routes/latency-catalog.json`
+- [x] Добавлен runtime overlay: `/etc/vpn-routes/latency-catalog-overlay.json`
+- [x] Добавлен runtime learned-set: `/etc/vpn-routes/latency-learned.txt`
+- [x] Добавлен runtime candidates-store: `/etc/vpn-routes/latency-candidates.json`
+- [x] Добавлен updater: `update-latency-catalog.py`
+- [x] `/check` теперь показывает service attribution и source tags
+- [x] Self-learning ограничен catalog-мэтчем и не перебивает `manual-vpn`
+
+#### Следующие шаги
+
+- [ ] Добавить systemd timer для `update-latency-catalog.py`
+- [ ] Расширить functional scenarios под банки, маркетплейсы, Bitrix24, телекомы
+- [ ] Добавить операторские команды для просмотра learned/candidates из Telegram-бота
+- [ ] Добавить алерт если runtime catalog слишком старый или пустой
 
 -----
 

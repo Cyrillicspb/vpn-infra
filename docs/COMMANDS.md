@@ -234,6 +234,13 @@
 /check <домен>         — проверить доступность через активный тун
 ```
 
+`/check` теперь показывает не только итоговый вердикт, но и:
+- source tags (`manual-vpn`, `manual-direct`, `blocked_static`, `blocked_dynamic`, `latency-sensitive-direct`)
+- catalog attribution (`fallback-catalog:<service>` или `runtime-catalog:<service>`)
+- имя matched service, если домен распознан как часть latency catalog
+
+Если домен повторно попадает в blocked-path, но относится к известной service family из latency catalog, watchdog может поместить его в bounded self-learning pipeline. Автопромоут работает только для catalog-matched доменов и не перебивает `manual-vpn`.
+
 #### Обновление баз РКН
 
 ```
@@ -241,6 +248,21 @@
 ```
 
 Запускает `update-routes.py` немедленно (не ждать cron 03:00). Асинхронно (202 Accepted), прогресс и результат приходят отдельным сообщением. Если базы изменились — рассылаются новые конфиги.
+
+Что пересобирается сейчас:
+- `/etc/vpn-routes/combined.cidr`
+- `/etc/nftables-blocked-static.conf`
+- `/etc/dnsmasq.d/vpn-domains.conf`
+- `/etc/dnsmasq.d/vpn-force.conf`
+- `/etc/dnsmasq.d/vpn-direct.conf`
+- `/etc/dnsmasq.d/vpn-latency-sensitive.conf`
+
+Latency-sensitive routing теперь собирается из нескольких слоёв:
+- fallback catalog из репозитория
+- runtime catalog `/etc/vpn-routes/latency-catalog.json`
+- runtime override `/etc/vpn-routes/latency-sensitive-direct.txt`
+- learned domains `/etc/vpn-routes/latency-learned.txt`
+- `manual-direct.txt`
 
 ---
 
