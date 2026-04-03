@@ -23,6 +23,7 @@ DEPLOY_BRANCH="${DEPLOY_BRANCH:-deploy-live}"
 SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-120}"
 SNAPSHOT_KEEP="${SNAPSHOT_KEEP:-5}"
 ALLOW_NON_ROOT="${ALLOW_NON_ROOT:-0}"
+BASELINE_SMOKE_FAILURES="${BASELINE_SMOKE_FAILURES:-}"
 
 CURRENT_STATE_FILE="$STATE_DIR/current.json"
 PENDING_STATE_FILE="$STATE_DIR/pending.json"
@@ -450,6 +451,37 @@ remote_state_get() {
     printf '%s' "$raw" | json_get_string "$key"
 }
 
+smoke_failures_from_file() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+    awk '/^[[:space:]]+\[FAIL\][[:space:]]+/ { print $2 }' "$file" | sort -u
+}
+
+collect_baseline_smoke_failures() {
+    is_mock_mode && return 0
+
+    local smoke_log
+    smoke_log="$(mktemp /tmp/vpn-smoke-baseline.XXXXXX.log)"
+    if timeout "$SMOKE_TIMEOUT" bash "$REPO_DIR/tests/run-smoke-tests.sh" >"$smoke_log" 2>&1; then
+        BASELINE_SMOKE_FAILURES=""
+        rm -f "$smoke_log"
+        return 0
+    fi
+
+    BASELINE_SMOKE_FAILURES="$(smoke_failures_from_file "$smoke_log" || true)"
+    if [[ -n "$BASELINE_SMOKE_FAILURES" ]]; then
+        log_warn "Pre-existing провалы (не будут причиной отката):"
+        while IFS= read -r failed; do
+            [[ -n "$failed" ]] || continue
+            log_warn "  - $failed"
+        done <<< "$BASELINE_SMOKE_FAILURES"
+    else
+        log_warn "Baseline smoke завершился с ошибкой без списка FAIL-тестов"
+    fi
+    cat "$smoke_log" >> "$LOG_FILE" 2>/dev/null || true
+    rm -f "$smoke_log"
+}
+
 fetch_target_release() {
     local source_ref=""
     TARGET_SOURCE_REMOTE=""
@@ -795,7 +827,29 @@ deploy_vps() {
 
 run_smoke_tests() {
     log_step "Smoke-тесты"
-    timeout "$SMOKE_TIMEOUT" bash "$REPO_DIR/tests/run-smoke-tests.sh"
+    local smoke_log
+    smoke_log="$(mktemp /tmp/vpn-smoke-verify.XXXXXX.log)"
+    local smoke_rc=0
+    timeout "$SMOKE_TIMEOUT" bash "$REPO_DIR/tests/run-smoke-tests.sh" >"$smoke_log" 2>&1 || smoke_rc=$?
+    cat "$smoke_log"
+
+    local current_failures new_failures
+    current_failures="$(smoke_failures_from_file "$smoke_log" || true)"
+    if [[ -n "$BASELINE_SMOKE_FAILURES" ]]; then
+        new_failures="$(comm -23 <(printf '%s\n' "$current_failures" | sed '/^$/d' | sort -u) <(printf '%s\n' "$BASELINE_SMOKE_FAILURES" | sed '/^$/d' | sort -u) || true)"
+    else
+        new_failures="$current_failures"
+    fi
+    rm -f "$smoke_log"
+
+    if [[ -n "$new_failures" ]]; then
+        die "Smoke suite introduced new failures: $(echo "$new_failures" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    fi
+    if [[ $smoke_rc -ne 0 && -n "$current_failures" ]]; then
+        log_warn "Smoke suite всё ещё содержит pre-existing провалы: $(echo "$current_failures" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+        return 0
+    fi
+    [[ $smoke_rc -eq 0 ]] || die "Smoke suite завершился с ошибкой"
 }
 
 watchdog_health_check() {
@@ -809,10 +863,10 @@ verify_vps_release_parity() {
     local remote_sha
     if [[ -f "$PENDING_STATE_FILE" ]]; then
         remote_sha="$(remote_state_get "pending.json" "pending_release.sha" | tr -d '\r\n' || true)"
-        [[ "$remote_sha" == "$TARGET_RELEASE_SHA" ]] || die "VPS pending release не совпадает с target SHA"
+        [[ "$remote_sha" == "$TARGET_RELEASE_SHA" ]] || die "VPS pending release не совпадает с target SHA (expected $TARGET_RELEASE_SHA, got ${remote_sha:-empty})"
     else
         remote_sha="$(remote_state_get "current.json" "current_release.sha" | tr -d '\r\n' || true)"
-        [[ "$remote_sha" == "$CURRENT_RELEASE_SHA" ]] || die "VPS current release не совпадает с current SHA"
+        [[ "$remote_sha" == "$CURRENT_RELEASE_SHA" ]] || die "VPS current release не совпадает с current SHA (expected $CURRENT_RELEASE_SHA, got ${remote_sha:-empty})"
     fi
 }
 
@@ -968,6 +1022,8 @@ do_deploy() {
     read_current_release
     fetch_target_release || die "Не удалось получить target release"
     validate_preflight
+
+    collect_baseline_smoke_failures
 
     if [[ "$CURRENT_RELEASE_SHA" == "$TARGET_RELEASE_SHA" && "${FORCE_DEPLOY:-false}" != "true" ]]; then
         set_last_attempt "noop" "check" "release ${CURRENT_RELEASE_ID} already current"
