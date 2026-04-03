@@ -34,6 +34,7 @@ REMOTE_PENDING_STATE_FILE="$REMOTE_STATE_DIR/pending.json"
 REMOTE_LAST_ATTEMPT_FILE="$REMOTE_STATE_DIR/last-attempt.json"
 SSH_PROXY_CMD="$REPO_DIR/scripts/ssh-proxy.sh"
 GITHUB_REPO_URL_DEFAULT="${GITHUB_REPO_URL_DEFAULT:-https://github.com/Cyrillicspb/vpn-infra.git}"
+DEPLOY_USE_SSH_PROXY="${DEPLOY_USE_SSH_PROXY:-0}"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -345,7 +346,9 @@ vps_exec() {
     fi
     local port="${VPS_SSH_PORT:-22}"
     local proxy_opts=()
-    [[ -x "$SSH_PROXY_CMD" ]] && proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
+    if [[ "$DEPLOY_USE_SSH_PROXY" == "1" && -x "$SSH_PROXY_CMD" ]]; then
+        proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
+    fi
     ssh -p "$port" -i "$SSH_KEY" \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=15 \
@@ -358,7 +361,9 @@ vps_copy_stdin_to_file() {
     local remote_file="$1"
     local port="${VPS_SSH_PORT:-22}"
     local proxy_opts=()
-    [[ -x "$SSH_PROXY_CMD" ]] && proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
+    if [[ "$DEPLOY_USE_SSH_PROXY" == "1" && -x "$SSH_PROXY_CMD" ]]; then
+        proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
+    fi
     ssh -p "$port" -i "$SSH_KEY" \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=15 \
@@ -371,7 +376,9 @@ vps_read_file() {
     local remote_file="$1"
     local port="${VPS_SSH_PORT:-22}"
     local proxy_opts=()
-    [[ -x "$SSH_PROXY_CMD" ]] && proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
+    if [[ "$DEPLOY_USE_SSH_PROXY" == "1" && -x "$SSH_PROXY_CMD" ]]; then
+        proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
+    fi
     ssh -p "$port" -i "$SSH_KEY" \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=15 \
@@ -389,7 +396,9 @@ vps_tmux_exec() {
     local timeout="${2:-300}"
     local port="${VPS_SSH_PORT:-22}"
     local proxy_opts=()
-    [[ -x "$SSH_PROXY_CMD" ]] && proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
+    if [[ "$DEPLOY_USE_SSH_PROXY" == "1" && -x "$SSH_PROXY_CMD" ]]; then
+        proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
+    fi
     local -a ssh_base=( ssh -p "$port" -i "$SSH_KEY"
         -o StrictHostKeyChecking=no -o BatchMode=yes
         -o ConnectTimeout=15
@@ -424,7 +433,9 @@ vps_tmux_exec() {
 vps_rsync_ssh() {
     local ssh_port="${VPS_SSH_PORT:-22}"
     local rsync_ssh="ssh -p $ssh_port -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes"
-    [[ -x "$SSH_PROXY_CMD" ]] && rsync_ssh+=" -o ProxyCommand='${SSH_PROXY_CMD} %h %p'"
+    if [[ "$DEPLOY_USE_SSH_PROXY" == "1" && -x "$SSH_PROXY_CMD" ]]; then
+        rsync_ssh+=" -o ProxyCommand='${SSH_PROXY_CMD} %h %p'"
+    fi
     echo "$rsync_ssh"
 }
 
