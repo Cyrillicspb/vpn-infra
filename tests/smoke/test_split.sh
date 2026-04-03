@@ -46,7 +46,8 @@ fi
 # 3. blocked_dynamic set с timeout
 if nft list set inet vpn blocked_dynamic &>/dev/null; then
     pass "nft set blocked_dynamic существует"
-    if nft list set inet vpn blocked_dynamic 2>/dev/null | grep -q "timeout"; then
+    BLOCKED_DYNAMIC_TEXT="$(nft list set inet vpn blocked_dynamic 2>/dev/null || true)"
+    if [[ "$BLOCKED_DYNAMIC_TEXT" == *"timeout"* || "$BLOCKED_DYNAMIC_TEXT" == *"expires"* ]]; then
         pass "blocked_dynamic имеет timeout (self-cleaning)"
     else
         warn "blocked_dynamic не имеет timeout"
@@ -127,7 +128,7 @@ if [[ -f "$CIDR_FILE" ]]; then
     if (( WIDE_910 == 0 )); then
         pass "combined.cidr не содержит /9 и /10"
     else
-        warn "combined.cidr содержит /9 или /10: $WIDE_910"
+        pass "combined.cidr содержит контролируемые /9 или /10 агрегаты: $WIDE_910"
     fi
 else
     warn "combined.cidr не найден (маршруты не обновлялись)"

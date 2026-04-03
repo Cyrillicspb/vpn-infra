@@ -103,7 +103,8 @@ else
 fi
 
 # 9. Нет OOM в логах watchdog
-OOM=$(journalctl -u watchdog --since "1 hour ago" --no-pager 2>/dev/null | grep -c "MemoryError\|OOM" || echo 0)
+OOM=$(journalctl -u watchdog --since "1 hour ago" --no-pager 2>/dev/null | grep -c "MemoryError\|OOM" || true)
+OOM="${OOM:-0}"
 if (( OOM == 0 )); then
     pass "OOM ошибок в логах нет"
 else

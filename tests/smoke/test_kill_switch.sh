@@ -111,7 +111,13 @@ IPV6_STATUS=$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo "
 if [[ "$IPV6_STATUS" == "1" ]]; then
     pass "IPv6 отключён системно (нет утечки через IPv6)"
 else
-    warn "IPv6 включён — возможна утечка через IPv6 (disable_ipv6=$IPV6_STATUS)"
+    IPV6_DEFAULT_ROUTE=$(ip -6 route show default 2>/dev/null || true)
+    IPV6_GLOBAL_ADDR=$(ip -6 addr show scope global 2>/dev/null || true)
+    if [[ -z "$IPV6_DEFAULT_ROUTE" && -z "$IPV6_GLOBAL_ADDR" ]]; then
+        pass "IPv6 включён, но глобальная IPv6 маршрутизация отсутствует"
+    else
+        warn "IPv6 включён — возможна утечка через IPv6 (disable_ipv6=$IPV6_STATUS)"
+    fi
 fi
 
 # 11. Проверка masquerade для VPN-трафика
@@ -136,6 +142,9 @@ if [[ -n "$BLOCKED_IP" ]]; then
             tun_dev=$(echo "$route_out" | grep -oP 'dev \K\S+' | head -1)
             pass "kill switch routing OK: $BLOCKED_IP → tun ($tun_dev)"
         fi
+    elif echo "$route_out" | grep -qE "dev tun-"; then
+        tun_dev=$(echo "$route_out" | grep -oP 'dev \K\S+' | head -1)
+        pass "kill switch routing OK: $BLOCKED_IP → tun ($tun_dev)"
     elif echo "$route_out" | grep -qE "dev (eth|ens|enp)"; then
         fail "УТЕЧКА: $BLOCKED_IP (fwmark 0x1) маршрутизируется через eth0!"
         echo "       ip route get: $route_out"

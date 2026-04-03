@@ -59,11 +59,17 @@ else
 fi
 
 # 6. vpn-domains.conf существует и непустой
-VPN_DOMAINS="/opt/vpn/dnsmasq/dnsmasq.d/vpn-domains.conf"
-if [[ -f "$VPN_DOMAINS" ]]; then
+VPN_DOMAINS=""
+for candidate in /etc/dnsmasq.d/vpn-domains.conf /opt/vpn/dnsmasq/dnsmasq.d/vpn-domains.conf; do
+    if [[ -f "$candidate" ]]; then
+        VPN_DOMAINS="$candidate"
+        break
+    fi
+done
+if [[ -n "$VPN_DOMAINS" ]]; then
     DOMAIN_COUNT=$(grep -c "^server=" "$VPN_DOMAINS" 2>/dev/null || echo 0)
     if (( DOMAIN_COUNT > 0 )); then
-        pass "vpn-domains.conf содержит $DOMAIN_COUNT записей"
+        pass "vpn-domains.conf содержит $DOMAIN_COUNT записей ($VPN_DOMAINS)"
     else
         warn "vpn-domains.conf пуст (нет server= записей)"
     fi

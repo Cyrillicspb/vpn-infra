@@ -60,6 +60,10 @@ done
 
 # 3. Опциональные контейнеры
 for CONTAINER in "${OPTIONAL_CONTAINERS[@]}"; do
+    if [[ "$CONTAINER" == "cloudflared" ]] && ! grep -qE '^[[:space:]]+cloudflared:' /opt/vpn/home/docker-compose.yml 2>/dev/null; then
+        pass "Контейнер $CONTAINER не ожидается в home compose"
+        continue
+    fi
     STATE=$(docker inspect --format '{{.State.Status}}' "$CONTAINER" 2>/dev/null || echo "missing")
     case "$STATE" in
         running)

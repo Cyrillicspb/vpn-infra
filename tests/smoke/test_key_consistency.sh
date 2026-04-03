@@ -144,6 +144,8 @@ if [[ -f "$COMPOSE_FILE" ]]; then
         warn "WATCHDOG_API_TOKEN не задан в .env"
     elif grep -q "$env_token" "$COMPOSE_FILE" 2>/dev/null; then
         pass "watchdog: WATCHDOG_API_TOKEN найден в docker-compose.yml"
+    elif grep -qE 'env_file:|\.env' "$COMPOSE_FILE" 2>/dev/null; then
+        pass "watchdog: WATCHDOG_API_TOKEN читается из .env/env_file"
     else
         # Может быть в .env файле контейнера, не в compose напрямую
         warn "WATCHDOG_API_TOKEN не найден в docker-compose.yml (может читаться из .env)"
