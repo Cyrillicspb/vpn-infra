@@ -420,14 +420,12 @@ sync_state_to_vps() {
     fi
 
     [[ -n "${VPS_IP:-}" ]] || return 0
-    local rsync_ssh
-    rsync_ssh="$(vps_rsync_ssh)"
     vps_exec "mkdir -p '$REMOTE_STATE_DIR'" >/dev/null
 
     for file in current.json pending.json last-attempt.json; do
         remote_file="$REMOTE_STATE_DIR/$file"
         if [[ -f "$STATE_DIR/$file" ]]; then
-            rsync -e "$rsync_ssh" -a "$STATE_DIR/$file" "sysadmin@${VPS_IP}:$remote_file"
+            vps_exec "cat > '$remote_file'" < "$STATE_DIR/$file"
         else
             vps_exec "rm -f '$remote_file'" >/dev/null || true
         fi
