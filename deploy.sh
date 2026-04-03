@@ -387,6 +387,42 @@ vps_read_file() {
         "sysadmin@${VPS_IP:-localhost}" "cat '$remote_file' 2>/dev/null"
 }
 
+vps_read_json_key() {
+    local remote_file="$1"
+    local key="$2"
+    local port="${VPS_SSH_PORT:-22}"
+    local proxy_opts=()
+    if [[ "$DEPLOY_USE_SSH_PROXY" == "1" && -x "$SSH_PROXY_CMD" ]]; then
+        proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
+    fi
+    ssh -p "$port" -i "$SSH_KEY" \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=15 \
+        -o BatchMode=yes \
+        "${proxy_opts[@]}" \
+        "sysadmin@${VPS_IP:-localhost}" python3 - "$remote_file" "$key" <<'PY'
+import json, sys
+path, key = sys.argv[1], sys.argv[2]
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+value = data
+for part in key.split("."):
+    if isinstance(value, dict):
+        value = value.get(part)
+    else:
+        value = None
+        break
+if value is None:
+    sys.exit(0)
+if isinstance(value, bool):
+    print("true" if value else "false")
+elif isinstance(value, (dict, list)):
+    print(json.dumps(value, ensure_ascii=False))
+else:
+    print(value)
+PY
+}
+
 vps_tmux_exec() {
     local cmd="$1"
     if is_mock_mode; then
@@ -481,6 +517,12 @@ remote_state_get() {
     fi
 
     local raw
+    raw="$(vps_read_json_key "$REMOTE_STATE_DIR/$file" "$key" 2>/dev/null | tr -d '\r\n' || true)"
+    if [[ -n "$raw" ]]; then
+        printf '%s' "$raw"
+        return 0
+    fi
+
     raw="$(vps_read_file "$REMOTE_STATE_DIR/$file" || true)"
     [[ -n "$raw" ]] || return 0
     printf '%s' "$raw" | json_get_string "$key"

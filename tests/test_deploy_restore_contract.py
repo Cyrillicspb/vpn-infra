@@ -114,6 +114,7 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('vps_copy_stdin_to_file "$remote_file" < "$STATE_DIR/$file"', deploy_script)
         self.assertIn('raw="$(vps_read_file "$REMOTE_STATE_DIR/$file" || true)"', deploy_script)
         self.assertIn('DEPLOY_USE_SSH_PROXY="${DEPLOY_USE_SSH_PROXY:-0}"', deploy_script)
+        self.assertIn('raw="$(vps_read_json_key "$REMOTE_STATE_DIR/$file" "$key" 2>/dev/null | tr -d', deploy_script)
 
     def test_vps_cloudflared_is_not_in_default_compose_startup(self):
         vps_compose = (ROOT / "vps" / "docker-compose.yml").read_text(encoding="utf-8")
