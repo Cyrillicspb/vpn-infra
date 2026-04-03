@@ -111,7 +111,8 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertNotIn('vps_tmux_exec "$cmd" 300', deploy_script)
         self.assertIn('collect_baseline_smoke_failures', deploy_script)
         self.assertIn('Smoke suite introduced new failures', deploy_script)
-        self.assertIn('vps_exec "cat > \'$remote_file\'" < "$STATE_DIR/$file"', deploy_script)
+        self.assertIn('vps_copy_stdin_to_file "$remote_file" < "$STATE_DIR/$file"', deploy_script)
+        self.assertIn('raw="$(vps_read_file "$REMOTE_STATE_DIR/$file" || true)"', deploy_script)
 
     def test_vps_cloudflared_is_not_in_default_compose_startup(self):
         vps_compose = (ROOT / "vps" / "docker-compose.yml").read_text(encoding="utf-8")

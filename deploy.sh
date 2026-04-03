@@ -354,6 +354,32 @@ vps_exec() {
         "sysadmin@${VPS_IP:-localhost}" "$@"
 }
 
+vps_copy_stdin_to_file() {
+    local remote_file="$1"
+    local port="${VPS_SSH_PORT:-22}"
+    local proxy_opts=()
+    [[ -x "$SSH_PROXY_CMD" ]] && proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
+    ssh -p "$port" -i "$SSH_KEY" \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=15 \
+        -o BatchMode=yes \
+        "${proxy_opts[@]}" \
+        "sysadmin@${VPS_IP:-localhost}" "cat > '$remote_file'"
+}
+
+vps_read_file() {
+    local remote_file="$1"
+    local port="${VPS_SSH_PORT:-22}"
+    local proxy_opts=()
+    [[ -x "$SSH_PROXY_CMD" ]] && proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
+    ssh -p "$port" -i "$SSH_KEY" \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=15 \
+        -o BatchMode=yes \
+        "${proxy_opts[@]}" \
+        "sysadmin@${VPS_IP:-localhost}" "cat '$remote_file' 2>/dev/null"
+}
+
 vps_tmux_exec() {
     local cmd="$1"
     if is_mock_mode; then
@@ -425,7 +451,7 @@ sync_state_to_vps() {
     for file in current.json pending.json last-attempt.json; do
         remote_file="$REMOTE_STATE_DIR/$file"
         if [[ -f "$STATE_DIR/$file" ]]; then
-            vps_exec "cat > '$remote_file'" < "$STATE_DIR/$file"
+            vps_copy_stdin_to_file "$remote_file" < "$STATE_DIR/$file"
         else
             vps_exec "rm -f '$remote_file'" >/dev/null || true
         fi
@@ -444,7 +470,7 @@ remote_state_get() {
     fi
 
     local raw
-    raw="$(vps_exec "cat '$REMOTE_STATE_DIR/$file' 2>/dev/null" || true)"
+    raw="$(vps_read_file "$REMOTE_STATE_DIR/$file" || true)"
     [[ -n "$raw" ]] || return 0
     printf '%s' "$raw" | json_get_string "$key"
 }
@@ -859,6 +885,7 @@ watchdog_health_check() {
 
 verify_vps_release_parity() {
     local remote_sha
+    sync_state_to_vps
     if [[ -f "$PENDING_STATE_FILE" ]]; then
         remote_sha="$(remote_state_get "pending.json" "pending_release.sha" | tr -d '\r\n' || true)"
         [[ "$remote_sha" == "$TARGET_RELEASE_SHA" ]] || die "VPS pending release не совпадает с target SHA (expected $TARGET_RELEASE_SHA, got ${remote_sha:-empty})"
