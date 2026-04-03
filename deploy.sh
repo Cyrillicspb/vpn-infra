@@ -70,7 +70,6 @@ notify() {
     [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_ADMIN_CHAT_ID:-}" ]] && return 0
     local tg_send="$REPO_DIR/scripts/tg-send.sh"
     if [[ ! -x "$tg_send" ]]; then
-        log_warn "tg-send.sh не найден или не исполняем: $tg_send"
         return 0
     fi
     "$tg_send" "${TELEGRAM_ADMIN_CHAT_ID}" "${msg}" || true

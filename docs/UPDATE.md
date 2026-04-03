@@ -209,6 +209,20 @@ migrations/
 /check youtube.com — заблокированные сайты работают
 ```
 
+Maintenance-проверка после серии infra-изменений:
+
+```bash
+sudo bash /opt/vpn/scripts/post-install-check.sh
+sudo python3 /opt/vpn/scripts/update-routes.py --force
+cd /opt/vpn && bash tests/run-smoke-tests.sh
+```
+
+Ожидаемое состояние после успешного maintenance-pass:
+- `post-install-check.sh` без критических ошибок
+- `update-routes.py --force` завершился без traceback
+- `tests/run-smoke-tests.sh` проходит полностью
+- `deploy.sh --status` показывает `Pending: none` и `Last attempt: success / commit`
+
 Если сломался release: `/rollback` или `sudo bash deploy.sh --rollback`
 Если нужен disaster recovery из архивного бэкапа: `sudo bash restore.sh --full-restore <backup>`
 

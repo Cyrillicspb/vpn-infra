@@ -278,7 +278,7 @@ check "wg0 интерфейс UP"  "ip link show wg0 2>/dev/null | grep -q UP"  
 check "wg1 интерфейс UP"  "ip link show wg1 2>/dev/null | grep -q UP"  "wg show wg1"
 
 # UDP порты слушают
-check "UDP 51820 (AWG)"   "ss -ulnp | grep -q ':51820 '"               "awg show wg0"
+check "UDP 51820 (AWG)"   "awg show wg0 2>/dev/null | grep -q 'listening port: 51820'" "awg show wg0"
 check "UDP 51821 (WG)"    "ss -ulnp | grep -q ':51821 '"               "wg show wg1"
 
 # IP адреса интерфейсов

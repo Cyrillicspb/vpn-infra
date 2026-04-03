@@ -176,6 +176,22 @@
 6. При любом unsafe state — авто-rollback + алерт
 7. Источник истины для deploy/rollback status — JSON state в `/opt/vpn/.deploy-state/`
 
+#### Maintenance после deploy
+
+Через SSH:
+
+```bash
+sudo bash /opt/vpn/scripts/post-install-check.sh
+sudo python3 /opt/vpn/scripts/update-routes.py --force
+cd /opt/vpn && bash tests/run-smoke-tests.sh
+```
+
+Ожидаемый результат:
+- `post-install-check.sh` без критических ошибок
+- `update-routes.py --force` завершён успешно
+- `tests/run-smoke-tests.sh` полностью зелёный
+- `sudo bash deploy.sh --status` показывает committed release без `pending`
+
 #### `/rollback`
 
 Откат release к последнему подтвержденному snapshot из `.deploy-snapshot/`. Выполняется немедленно без подтверждения.
