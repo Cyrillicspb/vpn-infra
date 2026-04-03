@@ -790,7 +790,7 @@ deploy_vps() {
 
     local cmd
     cmd="sudo -n bash -lc 'set -euo pipefail; cd /opt/vpn; chmod +x /opt/vpn/scripts/*.sh 2>/dev/null || true; bash /opt/vpn/scripts/render-reality-xhttp-config.sh; docker compose pull; docker compose up -d --remove-orphans; mkdir -p \"$REMOTE_STATE_DIR\"'"
-    vps_tmux_exec "$cmd" 300 || die "VPS deploy завершился с ошибкой"
+    vps_exec "$cmd" || die "VPS deploy завершился с ошибкой"
 }
 
 run_smoke_tests() {

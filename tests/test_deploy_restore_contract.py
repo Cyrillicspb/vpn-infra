@@ -107,7 +107,8 @@ class DeployRestoreContractTests(unittest.TestCase):
         deploy_script = DEPLOY.read_text(encoding="utf-8")
         self.assertIn('if [[ ! -x "$tg_send" ]]; then', deploy_script)
         self.assertIn('sudo -n bash -lc', deploy_script)
-        self.assertNotIn('vps_tmux_exec "$cmd" 300 >/dev/null', deploy_script)
+        self.assertIn('vps_exec "$cmd" || die "VPS deploy завершился с ошибкой"', deploy_script)
+        self.assertNotIn('vps_tmux_exec "$cmd" 300', deploy_script)
 
     def test_vps_cloudflared_is_not_in_default_compose_startup(self):
         vps_compose = (ROOT / "vps" / "docker-compose.yml").read_text(encoding="utf-8")
