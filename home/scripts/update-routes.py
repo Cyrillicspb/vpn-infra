@@ -63,6 +63,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Пути ──────────────────────────────────────────────────────────────────────
+SCRIPT_DIR       = Path(__file__).resolve().parent
 ROUTES_DIR      = Path("/etc/vpn-routes")
 CACHE_DIR       = ROUTES_DIR / "cache"
 COMBINED_CIDR   = ROUTES_DIR / "combined.cidr"
@@ -71,9 +72,16 @@ NFT_STATIC      = Path("/etc/nftables-blocked-static.conf")
 DNSMASQ_DOMAINS = Path("/etc/dnsmasq.d/vpn-domains.conf")
 DNSMASQ_FORCE   = Path("/etc/dnsmasq.d/vpn-force.conf")
 DNSMASQ_DIRECT  = Path("/etc/dnsmasq.d/vpn-direct.conf")
+DNSMASQ_LATENCY = Path("/etc/dnsmasq.d/vpn-latency-sensitive.conf")
 WATCHDOG_STATE  = Path("/opt/vpn/watchdog/state.json")
 MANUAL_VPN      = ROUTES_DIR / "manual-vpn.txt"
 MANUAL_DIRECT   = ROUTES_DIR / "manual-direct.txt"
+LATENCY_DIRECT  = ROUTES_DIR / "latency-sensitive-direct.txt"
+LATENCY_LEARNED = ROUTES_DIR / "latency-learned.txt"
+LATENCY_CATALOG = ROUTES_DIR / "latency-catalog.json"
+LATENCY_CATALOG_OVERLAY = ROUTES_DIR / "latency-catalog-overlay.json"
+LATENCY_REMOTE_URLS = ROUTES_DIR / "latency-catalog-remote.urls"
+REPO_LATENCY_CATALOG = SCRIPT_DIR.parent / "routes" / "latency-catalog-default.json"
 
 # ── Переменные из окружения ────────────────────────────────────────────────────
 BOT_TOKEN       = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -92,6 +100,7 @@ FETCH_WORKERS        = 6      # Параллельные загрузки
 ZAPRET_MAX_LINES     = 500_000  # Лимит строк из всех dump-*.csv
 FORBIDDEN_ALLOWED_PREFIXES = frozenset({7, 8})
 CONDITIONAL_ALLOWED_PREFIXES = frozenset({9, 10})
+MIN_NFT_BLOCKED_PREFIXLEN = 11
 EXPANSION_RATIO_OK = 4.0
 EXPANSION_RATIO_WARN = 8.0
 
@@ -99,6 +108,34 @@ EXPANSION_RATIO_WARN = 8.0
 # .рф в punycode = xn--p1acf
 # Российские домены: не нужен VPN, российские сервисы блокируют иностранные IP
 DIRECT_TLDS: frozenset[str] = frozenset({".ru", ".xn--p1acf"})
+
+# ── Домены, где важнее первый полезный ответ, чем агрессивное уводение через VPS ─
+# Эти домены и их известные bootstrap-зависимости получают отдельный класс
+# latency_sensitive_direct, который должен выигрывать у blocked policy.
+LATENCY_SENSITIVE_DIRECT_DOMAINS: list[str] = [
+    "okko.tv",
+    "api.okko.tv",
+    "static.okko.tv",
+    "drm.playfamily.ru",
+    "clients-static.okko.tv",
+    "tvxx.okko.tv",
+    "lge.okko.tv",
+    "gosuslugi.ru",
+    "www.gosuslugi.ru",
+    "esia.gosuslugi.ru",
+    "www.googleapis.com",
+    "googleapis.com",
+    "gstatic.com",
+    "kidsmanagement-pa.googleapis.com",
+    "kinopoisk.ru",
+    "www.kinopoisk.ru",
+    "api.kinopoisk.ru",
+    "widgets.kinopoisk.ru",
+    "yastatic.net",
+    "cloud.cdn.yandex.net",
+    "passport.yandex.ru",
+    "strm.yandex.ru",
+]
 
 # ── Источники ─────────────────────────────────────────────────────────────────
 # type: "ip_list" | "cidr_list" | "zapret_csv" | "plain"
@@ -436,6 +473,24 @@ def _is_valid_domain(s: str) -> bool:
     if not s or len(s) > 253:
         return False
     return bool(re.match(r"^[a-z0-9][a-z0-9.\-]{1,251}[a-z0-9]$", s) and "." in s)
+
+
+def _normalize_domain_name(value: str) -> str:
+    return str(value or "").strip().lower().lstrip("*.").strip(".")
+
+
+def _dedupe_domain_suffixes(domains: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in domains:
+        domain = _normalize_domain_name(raw)
+        if not _is_valid_domain(domain) or domain in seen:
+            continue
+        if any(domain == parent or domain.endswith(f".{parent}") for parent in result):
+            continue
+        result.append(domain)
+        seen.add(domain)
+    return result
 
 
 def _to_root_domain(domain: str) -> str:
@@ -780,6 +835,152 @@ def load_manual_vpn() -> tuple[set[ipaddress.IPv4Network], set[str]]:
     return networks, domains
 
 
+def load_manual_domains(path: Path) -> set[str]:
+    domains: set[str] = set()
+    if not path.exists():
+        return domains
+    for line in path.read_text().splitlines():
+        line = line.split("#")[0].strip().lower()
+        if not line:
+            continue
+        if _is_valid_domain(line):
+            domains.add(line)
+    return domains
+
+
+def _canonicalize_latency_catalog(raw: dict) -> dict[str, dict]:
+    services: dict[str, dict] = {}
+    raw_services = raw.get("services") if isinstance(raw, dict) else {}
+    if not isinstance(raw_services, dict):
+        return services
+
+    for service_id, spec in raw_services.items():
+        if not isinstance(spec, dict):
+            continue
+        service_name = str(service_id or "").strip().lower()
+        if not service_name:
+            continue
+        domain_roles = spec.get("domains") if isinstance(spec.get("domains"), dict) else {}
+        canonical_roles: dict[str, list[str]] = {}
+        total_domains = 0
+        for role, values in domain_roles.items():
+            normalized = _dedupe_domain_suffixes([_normalize_domain_name(v) for v in (values or [])])
+            if not normalized:
+                continue
+            canonical_roles[str(role)] = normalized
+            total_domains += len(normalized)
+        if total_domains == 0:
+            continue
+        services[service_name] = {
+            "display": str(spec.get("display") or service_name),
+            "category": str(spec.get("category") or "misc"),
+            "auto_promote_allowed": bool(spec.get("auto_promote_allowed", True)),
+            "geo_sensitive": bool(spec.get("geo_sensitive", True)),
+            "requires_direct_bootstrap": bool(spec.get("requires_direct_bootstrap", True)),
+            "domains": canonical_roles,
+        }
+    return services
+
+
+def _merge_latency_catalogs(*catalogs: dict[str, dict]) -> dict[str, dict]:
+    merged: dict[str, dict] = {}
+    for catalog in catalogs:
+        for service_id, spec in catalog.items():
+            existing = merged.setdefault(
+                service_id,
+                {
+                    "display": str(spec.get("display") or service_id),
+                    "category": str(spec.get("category") or "misc"),
+                    "auto_promote_allowed": bool(spec.get("auto_promote_allowed", True)),
+                    "geo_sensitive": bool(spec.get("geo_sensitive", True)),
+                    "requires_direct_bootstrap": bool(spec.get("requires_direct_bootstrap", True)),
+                    "domains": {},
+                },
+            )
+            existing["display"] = str(spec.get("display") or existing["display"])
+            existing["category"] = str(spec.get("category") or existing["category"])
+            existing["auto_promote_allowed"] = bool(spec.get("auto_promote_allowed", existing["auto_promote_allowed"]))
+            existing["geo_sensitive"] = bool(spec.get("geo_sensitive", existing["geo_sensitive"]))
+            existing["requires_direct_bootstrap"] = bool(
+                spec.get("requires_direct_bootstrap", existing["requires_direct_bootstrap"])
+            )
+            for role, values in (spec.get("domains") or {}).items():
+                combined = list(existing["domains"].get(role, [])) + list(values or [])
+                existing["domains"][role] = _dedupe_domain_suffixes(combined)
+    return merged
+
+
+def _fetch_json_catalog(url: str) -> dict[str, dict]:
+    try:
+        raw = _fetch_raw(url, proxy=_get_socks5_proxy() if "githubusercontent.com" in url or "github.com" in url else None)
+        parsed = json.loads(raw)
+    except Exception as exc:
+        log.warning(f"[latency-catalog] remote source failed {url}: {exc}")
+        return {}
+    return _canonicalize_latency_catalog(parsed)
+
+
+def load_latency_catalog() -> dict[str, dict]:
+    runtime_catalog: dict[str, dict] = {}
+    if LATENCY_CATALOG.exists():
+        try:
+            runtime_catalog = _canonicalize_latency_catalog(
+                json.loads(LATENCY_CATALOG.read_text(encoding="utf-8"))
+            )
+        except Exception as exc:
+            log.warning(f"[latency-catalog] invalid runtime catalog {LATENCY_CATALOG}: {exc}")
+
+    fallback_catalog: dict[str, dict] = {}
+    if REPO_LATENCY_CATALOG.exists():
+        fallback_catalog = _canonicalize_latency_catalog(
+            json.loads(REPO_LATENCY_CATALOG.read_text(encoding="utf-8"))
+        )
+
+    overlay_catalog: dict[str, dict] = {}
+    if LATENCY_CATALOG_OVERLAY.exists():
+        try:
+            overlay_catalog = _canonicalize_latency_catalog(
+                json.loads(LATENCY_CATALOG_OVERLAY.read_text(encoding="utf-8"))
+            )
+        except Exception as exc:
+            log.warning(f"[latency-catalog] invalid overlay catalog {LATENCY_CATALOG_OVERLAY}: {exc}")
+
+    remote_catalogs: list[dict[str, dict]] = []
+    if LATENCY_REMOTE_URLS.exists():
+        for line in LATENCY_REMOTE_URLS.read_text(encoding="utf-8").splitlines():
+            url = line.split("#")[0].strip()
+            if not url:
+                continue
+            remote_catalogs.append(_fetch_json_catalog(url))
+
+    merged = _merge_latency_catalogs(
+        fallback_catalog,
+        runtime_catalog,
+        *remote_catalogs,
+        overlay_catalog,
+    )
+    if merged:
+        log.info("[latency-catalog] services=%s", len(merged))
+    return merged
+
+
+def build_latency_sensitive_domains(
+    *,
+    manual_direct_domains: Optional[set[str]] = None,
+) -> set[str]:
+    domains: list[str] = list(LATENCY_SENSITIVE_DIRECT_DOMAINS)
+    catalog = load_latency_catalog()
+    for spec in catalog.values():
+        if not spec.get("requires_direct_bootstrap", True):
+            continue
+        for values in (spec.get("domains") or {}).values():
+            domains.extend(list(values or []))
+    domains.extend(load_manual_domains(LATENCY_DIRECT))
+    domains.extend(load_manual_domains(LATENCY_LEARNED))
+    domains.extend(list(manual_direct_domains or set()))
+    return set(_dedupe_domain_suffixes(domains))
+
+
 def load_active_dpi_domains() -> set[str]:
     """
     Считать домены активных DPI bypass сервисов из watchdog state.
@@ -871,6 +1072,49 @@ def normalize_allowed_networks(
         "expansion_ratio": expansion_ratio(exact_collapsed, normalized),
         "forbidden_count": sum(1 for net in normalized if net.prefixlen in FORBIDDEN_ALLOWED_PREFIXES),
         "conditional_count": sum(1 for net in normalized if net.prefixlen in CONDITIONAL_ALLOWED_PREFIXES),
+    }
+    return normalized, stats
+
+
+def normalize_nft_blocked_networks(
+    networks: set[ipaddress.IPv4Network],
+    *,
+    min_prefixlen: int = MIN_NFT_BLOCKED_PREFIXLEN,
+) -> tuple[list[ipaddress.IPv4Network], dict[str, int | dict[int, int]]]:
+    """Нормализация blocked_static без сверхшироких префиксов.
+
+    Для nft blocked_static correctness тоже важнее компактности: слишком широкие
+    CIDR приводят к ложным срабатываниям на обычных direct-ресурсах. Поэтому
+    любой exact-collapsed префикс шире min_prefixlen детерминированно дробим.
+    """
+    exact_collapsed = aggregate_networks(networks)
+    normalized: list[ipaddress.IPv4Network] = []
+    split_count = 0
+
+    for net in exact_collapsed:
+        if net.prefixlen < min_prefixlen:
+            subnets = [net]
+            while any(s.prefixlen < min_prefixlen for s in subnets):
+                next_subnets: list[ipaddress.IPv4Network] = []
+                for subnet in subnets:
+                    if subnet.prefixlen < min_prefixlen:
+                        next_subnets.extend(subnet.subnets(prefixlen_diff=1))
+                    else:
+                        next_subnets.append(subnet)
+                subnets = next_subnets
+            normalized.extend(subnets)
+            split_count += len(subnets) - 1
+        else:
+            normalized.append(net)
+
+    normalized = sorted(set(normalized))
+    stats: dict[str, int | dict[int, int]] = {
+        "before_count": len(exact_collapsed),
+        "after_count": len(normalized),
+        "split_count": split_count,
+        "before_distribution": prefix_distribution(exact_collapsed),
+        "after_distribution": prefix_distribution(normalized),
+        "too_broad_count": sum(1 for net in normalized if net.prefixlen < min_prefixlen),
     }
     return normalized, stats
 
@@ -1019,13 +1263,43 @@ def render_dnsmasq_direct() -> str:
         "# .ru — российские домены",
         "server=/.ru/77.88.8.8",
         "server=/.ru/77.88.8.1",
+        "nftset=/.ru/4#inet#vpn#latency_sensitive_direct",
         "",
         "# .рф — российские домены в кириллице (IDN punycode)",
         "server=/.xn--p1acf/77.88.8.8",
         "server=/.xn--p1acf/77.88.8.1",
+        "nftset=/.xn--p1acf/4#inet#vpn#latency_sensitive_direct",
         "",
     ]
     return "\n".join(lines)
+
+
+def render_dnsmasq_latency_sensitive(domains: list[str]) -> tuple[str, int]:
+    """
+    vpn-latency-sensitive.conf:
+      - домены резолвятся через локальный/российский DNS напрямую
+      - IP добавляются в отдельный nft set latency_sensitive_direct
+      - этот set выигрывает у blocked_static/blocked_dynamic в nftables
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    lines: list[str] = [
+        "# vpn-latency-sensitive.conf — latency-sensitive direct-first domains",
+        f"# Обновлено: {now}",
+        f"# Доменов: {len(domains)}",
+        "# Не редактировать вручную — перезаписывается update-routes.py",
+        "",
+    ]
+    written = 0
+    for domain in sorted(set(domains)):
+        domain = domain.strip().lower().lstrip("*.")
+        if not domain or not _is_valid_domain(domain):
+            continue
+        lines.append(f"server=/{domain}/77.88.8.8")
+        lines.append(f"server=/{domain}/77.88.8.1")
+        lines.append(f"nftset=/{domain}/4#inet#vpn#latency_sensitive_direct")
+        lines.append("")
+        written += 1
+    return "\n".join(lines), written
 
 
 def write_dnsmasq_direct() -> None:
@@ -1115,6 +1389,7 @@ def build_stable_hash_payload(
     dnsmasq_domains_content: str,
     dnsmasq_force_content: str,
     dnsmasq_direct_content: str,
+    dnsmasq_latency_content: str,
 ) -> str:
     """Возвращает стабильный payload для HASH_FILE.
 
@@ -1128,6 +1403,7 @@ def build_stable_hash_payload(
             "dnsmasq_domains": normalize_generated_text(dnsmasq_domains_content),
             "dnsmasq_force": normalize_generated_text(dnsmasq_force_content),
             "dnsmasq_direct": normalize_generated_text(dnsmasq_direct_content),
+            "dnsmasq_latency": normalize_generated_text(dnsmasq_latency_content),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -1176,6 +1452,10 @@ def main() -> None:
     all_networks.update(manual_networks)
     cidr_networks.update(manual_networks)
     dpi_domains = load_active_dpi_domains()
+    manual_direct_domains = load_manual_domains(MANUAL_DIRECT)
+    latency_direct_domains = build_latency_sensitive_domains(
+        manual_direct_domains=manual_direct_domains
+    )
 
     if not all_networks:
         log.error("Нет данных для обновления!")
@@ -1186,9 +1466,17 @@ def main() -> None:
     log.info(f"CIDR-only (для AllowedIPs): {len(cidr_networks)} сетей")
 
     # ── Агрегация: полный set для nft blocked_static ───────────────────────────
-    log.info("Агрегация nft blocked_static (без лимита)...")
-    nft_networks = aggregate_networks(all_networks)
-    log.info(f"nft blocked_static: {len(all_networks)} → {len(nft_networks)} после агрегации")
+    log.info("Агрегация nft blocked_static (без сверхшироких CIDR)...")
+    nft_networks, nft_stats = normalize_nft_blocked_networks(all_networks)
+    log.info(
+        "nft blocked_static: %s → %s после нормализации (split=%s)",
+        len(all_networks),
+        len(nft_networks),
+        nft_stats["split_count"],
+    )
+    if nft_stats["too_broad_count"]:
+        log.error("nft blocked_static still contains too-broad prefixes")
+        sys.exit(1)
 
     # ── Нормализация: AllowedIPs (combined.cidr) ──────────────────────────────
     # Используем только CIDR-based источники (не /32 IP-листы), но больше не
@@ -1276,16 +1564,19 @@ def main() -> None:
         exclude_domains=dpi_domains,
     )
     dnsmasq_direct_content = render_dnsmasq_direct()
+    dnsmasq_latency_content, latency_written = render_dnsmasq_latency_sensitive(list(latency_direct_domains))
     nft_cidr_lines = [str(n) for n in nft_networks]
     normalized_dnsmasq_domains = normalize_generated_text(dnsmasq_domains_content)
     normalized_dnsmasq_force = normalize_generated_text(dnsmasq_force_content)
     normalized_dnsmasq_direct = normalize_generated_text(dnsmasq_direct_content)
+    normalized_dnsmasq_latency = normalize_generated_text(dnsmasq_latency_content)
     stable_hash_payload = build_stable_hash_payload(
         allowed_cidrs=new_cidr_lines,
         nft_cidrs=nft_cidr_lines,
         dnsmasq_domains_content=dnsmasq_domains_content,
         dnsmasq_force_content=dnsmasq_force_content,
         dnsmasq_direct_content=dnsmasq_direct_content,
+        dnsmasq_latency_content=dnsmasq_latency_content,
     )
     new_hash = content_hash(stable_hash_payload)
     combined_content = (
@@ -1305,11 +1596,15 @@ def main() -> None:
     current_dnsmasq_direct = normalize_generated_text(
         DNSMASQ_DIRECT.read_text(encoding="utf-8")
     ) if DNSMASQ_DIRECT.exists() else ""
+    current_dnsmasq_latency = normalize_generated_text(
+        DNSMASQ_LATENCY.read_text(encoding="utf-8")
+    ) if DNSMASQ_LATENCY.exists() else ""
     changed = (
         new_hash != old_hash
         or normalized_dnsmasq_domains != current_dnsmasq_domains
         or normalized_dnsmasq_force != current_dnsmasq_force
         or normalized_dnsmasq_direct != current_dnsmasq_direct
+        or normalized_dnsmasq_latency != current_dnsmasq_latency
     )
 
     if not changed and not force:
@@ -1337,6 +1632,8 @@ def main() -> None:
 
     DNSMASQ_DIRECT.write_text(dnsmasq_direct_content, encoding="utf-8")
     log.info(f"{DNSMASQ_DIRECT.name}: конфиг записан")
+    DNSMASQ_LATENCY.write_text(dnsmasq_latency_content, encoding="utf-8")
+    log.info(f"{DNSMASQ_LATENCY.name}: конфиг записан ({latency_written} доменов)")
 
     # Логируем итоговые счётчики после записи, чтобы было видно исключение DPI-доменов.
     _, dnsmasq_written, dnsmasq_excluded = render_dnsmasq_config(
@@ -1355,7 +1652,8 @@ def main() -> None:
     )
     log.info(
         f"dnsmasq итог: vpn-domains={dnsmasq_written}, vpn-force={force_written}, "
-        f"dpi-excluded={dnsmasq_excluded + force_excluded}"
+        f"dpi-excluded={dnsmasq_excluded + force_excluded}, "
+        f"latency-direct={latency_written}"
     )
 
     # ── Применение (только root) ───────────────────────────────────────────────

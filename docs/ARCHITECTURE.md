@@ -307,8 +307,21 @@ Tier-2 нужен для служебной связности, не для по
 
 - `blocked_static` → через активный VPN стек;
 - `blocked_dynamic` → через активный VPN стек;
+- `latency_sensitive_direct` → direct-first, даже если IP совпал с broad blocked CIDR;
 - `dpi_direct` → напрямую через `zapret`;
 - остальное → прямой интернет.
+
+`latency_sensitive_direct` нужен для российских сервисов и приложений, которые:
+- плохо работают с иностранным IP;
+- имеют геоограничения;
+- зависят от bootstrap/auth/CDN цепочек, которые ломаются при уходе через VPS.
+
+Источники `latency_sensitive_direct`:
+- fallback catalog в репозитории
+- runtime catalog `/etc/vpn-routes/latency-catalog.json`
+- ручной runtime override `/etc/vpn-routes/latency-sensitive-direct.txt`
+- learned runtime domains `/etc/vpn-routes/latency-learned.txt`
+- `manual-direct.txt`
 
 ---
 
@@ -338,6 +351,15 @@ Tier-2 нужен для служебной связности, не для по
 - уведомления в Telegram;
 - управление state-файлами и policy routing;
 - reassessment и standby tests.
+
+Дополнительно watchdog теперь делает bounded self-learning для latency-sensitive routing:
+- принимает наблюдения из `/check` и functional scenarios;
+- ведёт candidates-store `/etc/vpn-routes/latency-candidates.json`;
+- auto-promote делает только для доменов, которые suffix-match известный service family из latency catalog;
+- learned домены пишет в `/etc/vpn-routes/latency-learned.txt`;
+- после promotion запускает обычный `update-routes.py`, а не редактирует dataplane напрямую.
+
+Это не полный auto-discovery интернета. Система не учится на произвольных доменах вне catalog envelope.
 
 Плагины загружаются из `/opt/vpn/watchdog/plugins/<stack>/`.
 

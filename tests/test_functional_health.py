@@ -107,6 +107,8 @@ class FunctionalHealthTests(unittest.TestCase):
         watchdog.state.functional_evidence_store = {}
         watchdog.state.functional_infra_checks = []
         watchdog.state.last_functional_run_by_tier = {}
+        watchdog.state.responsiveness_summary = {}
+        watchdog.state.latency_learning_last_apply_ts = 0.0
 
     def test_load_functional_scenarios_reads_manifest(self) -> None:
         manifest = """
@@ -252,6 +254,148 @@ scenarios:
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].status, "fail")
         self.assertEqual(watchdog.state.functional_execution_status, watchdog.FUNCTIONAL_EXEC_AUTO_DISABLED)
+
+    def test_build_responsiveness_summary_aggregates_timings(self) -> None:
+        summary = watchdog._build_responsiveness_summary(
+            scenario_results={
+                "complex_service_okko_like": {"status": "ok"},
+                "lan_blocked_via_vps": {"status": "fail"},
+            },
+            evidence_store={
+                "complex_service_okko_like": {
+                    "scenario_class": "complex_media_service",
+                    "client_path": "lan",
+                    "targets": [
+                        {
+                            "host": "okko.tv",
+                            "path_ok": True,
+                            "probe_result": {"timings": {"dns_s": 0.02, "ttfb_s": 0.15, "total_s": 0.4}},
+                        }
+                    ],
+                },
+                "lan_blocked_via_vps": {
+                    "scenario_class": "blocked_baseline",
+                    "client_path": "lan",
+                    "targets": [
+                        {
+                            "host": "api.telegram.org",
+                            "path_ok": False,
+                            "probe_result": {"timings": {"dns_s": 0.03, "ttfb_s": 0.25, "total_s": 0.6}},
+                        }
+                    ],
+                },
+            },
+            functional_status=watchdog.FUNCTIONAL_EXEC_HEALTHY,
+            functional_mode=watchdog.FUNCTIONAL_MODE_ACTIVE,
+        )
+
+        self.assertEqual(summary["status"], "degraded")
+        self.assertAlmostEqual(summary["dns_bootstrap_latency_ms_avg"], 25.0)
+        self.assertAlmostEqual(summary["first_https_latency_ms_avg"], 200.0)
+        self.assertIn("lan_blocked_via_vps", summary["slow_scenarios"])
+        self.assertIn("lan_blocked_via_vps:api.telegram.org", summary["path_failures"])
+
+    def test_path_verdict_prefers_latency_sensitive_direct(self) -> None:
+        with mock.patch.object(watchdog, "_scenario_src_ip", return_value="192.168.1.201"):
+            with mock.patch.object(watchdog, "_route_get_sync", return_value={"ok": "true", "line": "", "table": "", "dev": "", "via": ""}):
+                with mock.patch.object(
+                    watchdog,
+                    "_is_ip_in_nft_set",
+                    side_effect=lambda set_name, ip: set_name in {"latency_sensitive_direct", "blocked_static"},
+                ):
+                    verdict = watchdog._functional_path_verdict("1.2.3.4", "lan")
+
+        self.assertEqual(verdict["verdict"], "latency_sensitive_direct")
+
+    def test_record_latency_learning_observation_promotes_catalog_matched_domain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            catalog_path = tmp / "latency-catalog.json"
+            catalog_path.write_text(
+                """
+{
+  "services": {
+    "kinopoisk": {
+      "display": "Kinopoisk",
+      "category": "media",
+      "auto_promote_allowed": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "cdn": ["yastatic.net"]
+      }
+    }
+  }
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            candidates_path = tmp / "latency-candidates.json"
+            learned_path = tmp / "latency-learned.txt"
+            manual_direct = tmp / "manual-direct.txt"
+            manual_vpn = tmp / "manual-vpn.txt"
+            latency_manual = tmp / "latency-sensitive-direct.txt"
+
+            with mock.patch.object(watchdog, "LATENCY_CATALOG_FILE", catalog_path):
+                with mock.patch.object(watchdog, "LATENCY_CANDIDATES_FILE", candidates_path):
+                    with mock.patch.object(watchdog, "LATENCY_LEARNED_FILE", learned_path):
+                        with mock.patch.object(watchdog, "LATENCY_MANUAL_FILE", latency_manual):
+                            with mock.patch.object(watchdog, "ROUTES_DIR", tmp):
+                                for _ in range(watchdog.LATENCY_AUTO_PROMOTE_SCORE):
+                                    promoted = watchdog._record_latency_learning_observation(
+                                        "cdn.yastatic.net",
+                                        source="check",
+                                        reason="blocked path",
+                                        route_verdict="vpn",
+                                        blocked_static=True,
+                                    )
+
+            self.assertTrue(promoted)
+            self.assertIn("cdn.yastatic.net", learned_path.read_text(encoding="utf-8"))
+
+    def test_record_latency_learning_observation_skips_manual_vpn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            catalog_path = tmp / "latency-catalog.json"
+            catalog_path.write_text(
+                """
+{
+  "services": {
+    "bank": {
+      "display": "Bank",
+      "category": "bank",
+      "auto_promote_allowed": true,
+      "requires_direct_bootstrap": true,
+      "domains": {
+        "primary": ["example-bank.ru"]
+      }
+    }
+  }
+}
+""".strip(),
+                encoding="utf-8",
+            )
+            manual_vpn = tmp / "manual-vpn.txt"
+            manual_vpn.write_text("api.example-bank.ru\n", encoding="utf-8")
+            candidates_path = tmp / "latency-candidates.json"
+            learned_path = tmp / "latency-learned.txt"
+            manual_direct = tmp / "manual-direct.txt"
+            latency_manual = tmp / "latency-sensitive-direct.txt"
+
+            with mock.patch.object(watchdog, "LATENCY_CATALOG_FILE", catalog_path):
+                with mock.patch.object(watchdog, "LATENCY_CANDIDATES_FILE", candidates_path):
+                    with mock.patch.object(watchdog, "LATENCY_LEARNED_FILE", learned_path):
+                        with mock.patch.object(watchdog, "LATENCY_MANUAL_FILE", latency_manual):
+                            with mock.patch.object(watchdog, "ROUTES_DIR", tmp):
+                                promoted = watchdog._record_latency_learning_observation(
+                                    "api.example-bank.ru",
+                                    source="check",
+                                    reason="blocked path",
+                                    route_verdict="vpn",
+                                    blocked_static=True,
+                                )
+
+            self.assertFalse(promoted)
+            self.assertFalse(learned_path.exists())
 
 
 if __name__ == "__main__":

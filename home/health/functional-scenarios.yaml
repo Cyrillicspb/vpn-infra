@@ -2,6 +2,7 @@ scenarios:
   - id: lan_direct_internet
     enabled: true
     description: LAN direct internet baseline
+    scenario_class: direct_baseline
     tiers: [quick, standard, deep]
     client_path: lan
     routing_expectation: direct
@@ -16,6 +17,7 @@ scenarios:
   - id: wg_direct_internet
     enabled: true
     description: WG direct internet baseline
+    scenario_class: direct_baseline
     tiers: [standard, deep]
     client_path: wg
     routing_expectation: direct
@@ -30,6 +32,7 @@ scenarios:
   - id: awg_direct_internet
     enabled: true
     description: AWG direct internet baseline
+    scenario_class: direct_baseline
     tiers: [standard, deep]
     client_path: awg
     routing_expectation: direct
@@ -44,6 +47,7 @@ scenarios:
   - id: lan_blocked_via_vps
     enabled: true
     description: LAN blocked service routed via VPS
+    scenario_class: blocked_baseline
     tiers: [quick, standard, deep]
     client_path: lan
     routing_expectation: blocked_vps
@@ -58,6 +62,7 @@ scenarios:
   - id: wg_blocked_via_vps
     enabled: true
     description: WG blocked service routed via VPS
+    scenario_class: blocked_baseline
     tiers: [standard, deep]
     client_path: wg
     routing_expectation: blocked_vps
@@ -72,6 +77,7 @@ scenarios:
   - id: awg_blocked_via_vps
     enabled: true
     description: AWG blocked service routed via VPS
+    scenario_class: blocked_baseline
     tiers: [standard, deep]
     client_path: awg
     routing_expectation: blocked_vps
@@ -86,6 +92,7 @@ scenarios:
   - id: telegram_control_plane
     enabled: true
     description: Telegram admin/control plane reachability
+    scenario_class: control_plane
     tiers: [quick, standard, deep]
     client_path: lan
     routing_expectation: blocked_vps
@@ -101,9 +108,10 @@ scenarios:
   - id: complex_service_gosuslugi_like
     enabled: true
     description: Russian auth chain with multiple direct dependencies
+    scenario_class: complex_ru_service
     tiers: [standard, deep]
     client_path: lan
-    routing_expectation: direct
+    routing_expectation: latency_sensitive_direct
     probe_type: https_chain
     timeout: 10
     weight: 6
@@ -111,14 +119,17 @@ scenarios:
     targets:
       - host: www.gosuslugi.ru
         url: https://www.gosuslugi.ru
+        routing_expectation: latency_sensitive_direct
         expected_codes: [200, 301, 302, 401, 403]
       - host: esia.gosuslugi.ru
         url: https://esia.gosuslugi.ru
+        routing_expectation: latency_sensitive_direct
         expected_codes: [200, 301, 302, 401, 403]
 
   - id: complex_service_okko_like
     enabled: true
     description: Mixed-route media bootstrap chain similar to Okko
+    scenario_class: complex_media_service
     tiers: [standard, deep]
     client_path: lan
     routing_expectation: mixed
@@ -129,21 +140,21 @@ scenarios:
     targets:
       - host: okko.tv
         url: https://okko.tv
-        routing_expectation: direct
+        routing_expectation: latency_sensitive_direct
         expected_codes: [200, 301, 302, 401, 403]
       - host: api.okko.tv
         url: https://api.okko.tv
-        routing_expectation: direct
+        routing_expectation: latency_sensitive_direct
         expected_codes: [200, 301, 302, 401, 403]
       - host: static.okko.tv
         url: https://static.okko.tv
-        routing_expectation: direct
+        routing_expectation: latency_sensitive_direct
         expected_codes: [200, 301, 302, 401, 403]
       - host: drm.playfamily.ru
         url: https://drm.playfamily.ru
-        routing_expectation: direct
+        routing_expectation: latency_sensitive_direct
         expected_codes: [200, 301, 302, 401, 403]
       - host: www.googleapis.com
         url: https://www.googleapis.com
-        routing_expectation: blocked_vps
+        routing_expectation: latency_sensitive_direct
         expected_codes: [200, 301, 302, 401, 403]

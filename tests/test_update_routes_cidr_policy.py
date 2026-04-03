@@ -54,5 +54,19 @@ class AllowedIpsNormalizationTests(unittest.TestCase):
         self.assertEqual(stats["after_distribution"], {9: 3, 10: 1})
 
 
+class BlockedStaticNormalizationTests(unittest.TestCase):
+    def test_splits_too_broad_prefixes_for_nft_blocked_static(self) -> None:
+        networks = {
+            ipaddress.ip_network("46.0.0.0/8"),
+            ipaddress.ip_network("5.0.0.0/11"),
+        }
+
+        normalized, stats = update_routes.normalize_nft_blocked_networks(networks)
+
+        self.assertTrue(all(net.prefixlen >= 11 for net in normalized))
+        self.assertEqual(stats["too_broad_count"], 0)
+        self.assertGreater(stats["split_count"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

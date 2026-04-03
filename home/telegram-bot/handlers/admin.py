@@ -93,6 +93,7 @@ def _render_health_html(h: dict) -> str:
     pdw    = h.get("post_deploy_watch", False)
     summary = h.get("summary", {})
     functional = h.get("functional_summary", {})
+    responsiveness = h.get("responsiveness_summary", {})
     functional_mode = h.get("functional_mode", "")
     functional_execution = h.get("functional_execution_status", "")
 
@@ -120,6 +121,19 @@ def _render_health_html(h: dict) -> str:
             + (f" | mode={functional_mode}" if functional_mode else "")
             + (f" | exec={functional_execution}" if functional_execution else "")
         )
+    if responsiveness:
+        parts = ["⚡ Responsive"]
+        if responsiveness.get("status"):
+            parts.append(str(responsiveness.get("status")))
+        if responsiveness.get("dns_bootstrap_latency_ms_avg") is not None:
+            parts.append(f"dns={responsiveness.get('dns_bootstrap_latency_ms_avg')}ms")
+        if responsiveness.get("first_https_latency_ms_avg") is not None:
+            parts.append(f"ttfb={responsiveness.get('first_https_latency_ms_avg')}ms")
+        if responsiveness.get("total_latency_ms_avg") is not None:
+            parts.append(f"total={responsiveness.get('total_latency_ms_avg')}ms")
+        if responsiveness.get("slow_scenarios"):
+            parts.append(f"slow={len(responsiveness.get('slow_scenarios') or [])}")
+        lines.append(" | ".join(parts))
     lines.append("")
 
     icon_map = {"ok": "✅", "warn": "⚠️", "fail": "❌"}
@@ -136,6 +150,7 @@ def _render_health_html(h: dict) -> str:
 
 def _render_functional_html(payload: dict) -> str:
     summary = payload.get("summary") or payload.get("functional_summary") or {}
+    responsiveness = payload.get("responsiveness_summary") or {}
     results = payload.get("results") or payload.get("functional_results") or {}
     infra_checks = payload.get("infra_checks") or []
     mode = payload.get("mode") or summary.get("mode") or "staged"
@@ -165,6 +180,19 @@ def _render_functional_html(payload: dict) -> str:
             if detail:
                 line += f" — {detail}"
             lines.append(line)
+    if responsiveness:
+        lines.append("")
+        lines.append("<b>Responsiveness</b>")
+        parts = [str(responsiveness.get("status") or "unknown")]
+        if responsiveness.get("dns_bootstrap_latency_ms_avg") is not None:
+            parts.append(f"dns={responsiveness.get('dns_bootstrap_latency_ms_avg')}ms")
+        if responsiveness.get("first_https_latency_ms_avg") is not None:
+            parts.append(f"ttfb={responsiveness.get('first_https_latency_ms_avg')}ms")
+        if responsiveness.get("total_latency_ms_avg") is not None:
+            parts.append(f"total={responsiveness.get('total_latency_ms_avg')}ms")
+        if responsiveness.get("slow_scenarios"):
+            parts.append("slow=" + ", ".join(responsiveness.get("slow_scenarios")[:4]))
+        lines.append(" | ".join(parts))
     failing = [(name, data) for name, data in results.items() if data.get("status") == "fail"]
     if not results:
         lines.append("")
@@ -382,6 +410,7 @@ async def cmd_status(message: Message, state: FSMContext, **kw):
             f"Диск: {sys.get('disk_percent', '?')}%"
         )
         functional = s.get("functional_summary") or {}
+        responsiveness = s.get("responsiveness_summary") or {}
         if functional:
             text += (
                 "\n\n"
@@ -389,6 +418,19 @@ async def cmd_status(message: Message, state: FSMContext, **kw):
                 + (f" | tier `{functional.get('tier')}`" if functional.get("tier") else "")
                 + (f" | mode `{s.get('functional_mode')}`" if s.get("functional_mode") else "")
                 + (f" | exec `{s.get('functional_execution_status')}`" if s.get("functional_execution_status") else "")
+            )
+        if responsiveness:
+            text += (
+                "\n"
+                f"*Responsive*: `{responsiveness.get('status', 'unknown')}`"
+                + (
+                    f" | dns `{responsiveness.get('dns_bootstrap_latency_ms_avg')}ms`"
+                    if responsiveness.get("dns_bootstrap_latency_ms_avg") is not None else ""
+                )
+                + (
+                    f" | ttfb `{responsiveness.get('first_https_latency_ms_avg')}ms`"
+                    if responsiveness.get("first_https_latency_ms_avg") is not None else ""
+                )
             )
     except WatchdogError as e:
         text = f"❌ Watchdog недоступен: {e}"
@@ -1380,15 +1422,13 @@ async def cmd_check(message: Message, state: FSMContext, **kw):
         verdict   = r.get("verdict", "unknown")
         ips       = r.get("ips", [])
         ip_str    = ", ".join(ips[:4]) if ips else "не резолвится"
-        sources   = []
-        if r.get("in_manual_vpn"):     sources.append("manual-vpn")
-        if r.get("in_blocked_static"): sources.append("blocked_static")
-        if r.get("in_blocked_dynamic"):sources.append("blocked_dynamic")
-        if r.get("in_manual_direct"):  sources.append("manual-direct")
+        sources   = list(r.get("sources") or [])
         src = " | ".join(sources) if sources else "—"
-        icon = {"vpn": "🔒", "direct": "🌐", "unknown": "❓"}.get(verdict, "❓")
+        icon = {"vpn": "🔒", "direct": "🌐", "latency_sensitive_direct": "⚡", "unknown": "❓"}.get(verdict, "❓")
+        service = str(r.get("latency_service") or "")
+        service_line = f"\nСервис: <b>{service}</b>" if service else ""
         await message.answer(
-            f"{icon} <code>{domain}</code>\nВердикт: <b>{verdict}</b>\nIP: <code>{ip_str}</code>\nИсточники: {src}",
+            f"{icon} <code>{domain}</code>\nВердикт: <b>{verdict}</b>\nIP: <code>{ip_str}</code>{service_line}\nИсточники: {src}",
             parse_mode="HTML",
         )
     except WatchdogError as e:
@@ -3071,19 +3111,14 @@ async def fsm_check_domain(message: Message, state: FSMContext, **kw):
         verdict = r.get("verdict", "unknown")
         ips     = r.get("ips", [])
         ip_str  = ", ".join(ips[:4]) if ips else "не резолвится"
-        sources = []
-        if r.get("in_manual_vpn"):      sources.append("manual-vpn")
-        if r.get("in_blocked_static"):  sources.append("blocked_static")
-        if r.get("in_blocked_dynamic"): sources.append("blocked_dynamic")
-        if r.get("in_manual_direct"):   sources.append("manual-direct")
+        sources = list(r.get("sources") or [])
         src  = " | ".join(sources) if sources else "—"
-        icon = {"vpn": "🔒", "direct": "🌐", "unknown": "❓"}.get(verdict, "❓")
-        text = (
-            f"{icon} <code>{domain}</code>\n"
-            f"Вердикт: <b>{verdict}</b>\n"
-            f"IP: <code>{ip_str}</code>\n"
-            f"Источники: {src}"
-        )
+        icon = {"vpn": "🔒", "direct": "🌐", "latency_sensitive_direct": "⚡", "unknown": "❓"}.get(verdict, "❓")
+        service = str(r.get("latency_service") or "")
+        text = f"{icon} <code>{domain}</code>\nВердикт: <b>{verdict}</b>\nIP: <code>{ip_str}</code>"
+        if service:
+            text += f"\nСервис: <b>{service}</b>"
+        text += f"\nИсточники: {src}"
     except WatchdogError as e:
         text = f"❌ {e}"
     await message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
@@ -3705,11 +3740,13 @@ async def cb_adm_nft_stats(cb: CallbackQuery, **kw):
         stats = await _wc().get_nft_stats()
         blocked_static  = stats.get("blocked_static", -1)
         blocked_dynamic = stats.get("blocked_dynamic", -1)
+        latency_direct  = stats.get("latency_sensitive_direct", -1)
         dpi_direct      = stats.get("dpi_direct", -1)
         text = (
             f"<b>📊 Статистика nft sets</b>\n\n"
             f"<b>blocked_static</b> (базы РКН + геоблок): <b>{blocked_static}</b> IP\n"
             f"<b>blocked_dynamic</b> (DNS кэш): <b>{blocked_dynamic}</b> IP\n"
+            f"<b>latency_sensitive_direct</b> (direct-first для UX-критичных доменов): <b>{latency_direct}</b> IP\n"
             f"<b>dpi_direct</b> (zapret experimental): <b>{dpi_direct}</b> IP\n\n"
             f"<i>blocked_static</i> — обновляется раз в сутки:\n"
             f"  • antifilter.download — IP из реестра РКН\n"
@@ -3718,6 +3755,7 @@ async def cb_adm_nft_stats(cb: CallbackQuery, **kw):
             f"  • zapret-info/z-i — выгрузка Роскомнадзора\n"
             f"  • RockBlack-VPN — геоблок (230+ сервисов)\n\n"
             f"<i>blocked_dynamic</i> — наполняется dnsmasq при резолве заблокированных доменов (timeout 24ч)\n"
+            f"<i>latency_sensitive_direct</i> — direct-first set для сложных российских сервисов и их bootstrap-зависимостей\n"
             f"<i>dpi_direct</i> — IP из experimental DPI bypass (zapret/nfqws)"
         )
     except WatchdogError as e:

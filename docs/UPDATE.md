@@ -148,7 +148,20 @@ sudo docker compose up -d
 
 Или через SSH:
 ```bash
-sudo /opt/vpn/venv/bin/python3 /opt/vpn/home/scripts/update-routes.py --force
+sudo python3 /opt/vpn/scripts/update-routes.py --force
+```
+
+Что ещё обновляется вместе с маршрутами:
+- `vpn-latency-sensitive.conf`
+- direct-first routing для доменов из latency catalog
+- learned latency-sensitive домены из `/etc/vpn-routes/latency-learned.txt`
+
+Отдельно можно пересобрать runtime catalog без `deploy.sh`:
+
+```bash
+sudo python3 /opt/vpn/scripts/update-latency-catalog.py
+sudo python3 /opt/vpn/scripts/update-routes.py
+sudo systemctl restart watchdog
 ```
 
 ---

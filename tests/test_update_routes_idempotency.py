@@ -34,6 +34,7 @@ class StableHashPayloadTests(unittest.TestCase):
             dnsmasq_domains_content=content_a,
             dnsmasq_force_content="",
             dnsmasq_direct_content="",
+            dnsmasq_latency_content="",
         )
         payload_b = update_routes.build_stable_hash_payload(
             allowed_cidrs=["1.1.1.0/24"],
@@ -41,6 +42,7 @@ class StableHashPayloadTests(unittest.TestCase):
             dnsmasq_domains_content=content_b,
             dnsmasq_force_content="",
             dnsmasq_direct_content="",
+            dnsmasq_latency_content="",
         )
 
         self.assertEqual(payload_a, payload_b)
@@ -52,6 +54,7 @@ class StableHashPayloadTests(unittest.TestCase):
             dnsmasq_domains_content="",
             dnsmasq_force_content="",
             dnsmasq_direct_content="",
+            dnsmasq_latency_content="",
         )
         payload_b = update_routes.build_stable_hash_payload(
             allowed_cidrs=["1.1.1.0/24"],
@@ -59,6 +62,7 @@ class StableHashPayloadTests(unittest.TestCase):
             dnsmasq_domains_content="",
             dnsmasq_force_content="",
             dnsmasq_direct_content="",
+            dnsmasq_latency_content="",
         )
 
         self.assertNotEqual(payload_a, payload_b)
@@ -70,6 +74,7 @@ class StableHashPayloadTests(unittest.TestCase):
             dnsmasq_domains_content="",
             dnsmasq_force_content="",
             dnsmasq_direct_content="server=/.ru/77.88.8.8\n",
+            dnsmasq_latency_content="",
         )
         payload_b = update_routes.build_stable_hash_payload(
             allowed_cidrs=["1.1.1.0/24"],
@@ -77,6 +82,27 @@ class StableHashPayloadTests(unittest.TestCase):
             dnsmasq_domains_content="",
             dnsmasq_force_content="",
             dnsmasq_direct_content="server=/.ru/77.88.8.1\n",
+            dnsmasq_latency_content="",
+        )
+
+        self.assertNotEqual(payload_a, payload_b)
+
+    def test_detects_latency_dnsmasq_changes(self) -> None:
+        payload_a = update_routes.build_stable_hash_payload(
+            allowed_cidrs=["1.1.1.0/24"],
+            nft_cidrs=["1.1.1.1/32"],
+            dnsmasq_domains_content="",
+            dnsmasq_force_content="",
+            dnsmasq_direct_content="",
+            dnsmasq_latency_content="server=/okko.tv/77.88.8.8\n",
+        )
+        payload_b = update_routes.build_stable_hash_payload(
+            allowed_cidrs=["1.1.1.0/24"],
+            nft_cidrs=["1.1.1.1/32"],
+            dnsmasq_domains_content="",
+            dnsmasq_force_content="",
+            dnsmasq_direct_content="",
+            dnsmasq_latency_content="server=/okko.tv/77.88.8.1\n",
         )
 
         self.assertNotEqual(payload_a, payload_b)
@@ -128,6 +154,84 @@ class DnsmasqDpiExclusionTests(unittest.TestCase):
                     update_routes.load_active_dpi_domains(),
                     {"youtube.com", "googlevideo.com"},
                 )
+
+    def test_build_latency_sensitive_domains_merges_catalog_and_runtime_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fallback = tmp / "latency-catalog-default.json"
+            fallback.write_text(
+                json.dumps(
+                    {
+                        "services": {
+                            "catalog-service": {
+                                "display": "Catalog Service",
+                                "category": "media",
+                                "requires_direct_bootstrap": True,
+                                "domains": {
+                                    "primary": ["catalog.example"],
+                                    "cdn": ["cdn.catalog.example"]
+                                }
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runtime = tmp / "latency-catalog.json"
+            runtime.write_text(
+                json.dumps(
+                    {
+                        "services": {
+                            "runtime-service": {
+                                "display": "Runtime Service",
+                                "category": "work",
+                                "requires_direct_bootstrap": True,
+                                "domains": {
+                                    "primary": ["runtime.example"]
+                                }
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            learned = tmp / "latency-learned.txt"
+            learned.write_text("learned.example\n", encoding="utf-8")
+            manual = tmp / "latency-sensitive-direct.txt"
+            manual.write_text("manual.example\n", encoding="utf-8")
+
+            with mock.patch.object(update_routes, "REPO_LATENCY_CATALOG", fallback):
+                with mock.patch.object(update_routes, "LATENCY_CATALOG", runtime):
+                    with mock.patch.object(update_routes, "LATENCY_LEARNED", learned):
+                        with mock.patch.object(update_routes, "LATENCY_DIRECT", manual):
+                            domains = update_routes.build_latency_sensitive_domains(
+                                manual_direct_domains={"extra.example"}
+                            )
+
+        self.assertIn("catalog.example", domains)
+        self.assertIn("runtime.example", domains)
+        self.assertIn("learned.example", domains)
+        self.assertIn("manual.example", domains)
+        self.assertIn("extra.example", domains)
+
+    def test_render_dnsmasq_latency_sensitive_uses_separate_set(self) -> None:
+        content, written = update_routes.render_dnsmasq_latency_sensitive(
+            ["okko.tv", "www.googleapis.com", "yastatic.net", "invalid domain"]
+        )
+
+        self.assertIn("server=/okko.tv/77.88.8.8", content)
+        self.assertIn("nftset=/okko.tv/4#inet#vpn#latency_sensitive_direct", content)
+        self.assertIn("nftset=/www.googleapis.com/4#inet#vpn#latency_sensitive_direct", content)
+        self.assertIn("nftset=/yastatic.net/4#inet#vpn#latency_sensitive_direct", content)
+        self.assertNotIn("invalid domain", content)
+        self.assertEqual(written, 3)
+
+    def test_render_dnsmasq_direct_marks_ru_domains_direct_first(self) -> None:
+        content = update_routes.render_dnsmasq_direct()
+
+        self.assertIn("server=/.ru/77.88.8.8", content)
+        self.assertIn("nftset=/.ru/4#inet#vpn#latency_sensitive_direct", content)
+        self.assertIn("nftset=/.xn--p1acf/4#inet#vpn#latency_sensitive_direct", content)
 
 
 if __name__ == "__main__":

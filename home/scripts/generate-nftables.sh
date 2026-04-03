@@ -122,6 +122,7 @@ gateway_nat_block = f"""
 lan_prerouting = f"""
         # Gateway Mode: LAN split tunneling fwmark
         iifname "{lan_iface}" ip saddr {lan_subnet} ip daddr @control_direct_ips accept
+        iifname "{lan_iface}" ip saddr {lan_subnet} ip daddr @latency_sensitive_direct accept
         # QUIC drop для dpi_direct из LAN (принудить браузер к TCP для nfqws bypass)
         iifname "{lan_iface}" ip daddr @dpi_direct udp dport 443 drop
         iifname "{lan_iface}" ip saddr {lan_subnet} ip daddr @dpi_direct       meta mark set 0x2 accept
@@ -142,6 +143,8 @@ control_output = """
 
 # 3. LAN kill switch в forward (вставляется сразу после открывающей строки chain forward)
 lan_forward_kill_switch = f"""
+        # Latency-sensitive direct-first traffic должен переживать broad blocked CIDR
+        ip daddr @latency_sensitive_direct accept
         # Gateway Mode: LAN kill switch — заблокированное не должно утечь через eth0
         ip saddr {lan_subnet} ip daddr @blocked_static  oifname != "tun*" drop
         ip saddr {lan_subnet} ip daddr @blocked_dynamic oifname != "tun*" drop
