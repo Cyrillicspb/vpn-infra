@@ -115,6 +115,15 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('raw="$(vps_read_file "$REMOTE_STATE_DIR/$file" || true)"', deploy_script)
         self.assertIn('DEPLOY_USE_SSH_PROXY="${DEPLOY_USE_SSH_PROXY:-0}"', deploy_script)
         self.assertIn('raw="$(vps_read_json_key "$REMOTE_STATE_DIR/$file" "$key" 2>/dev/null | tr -d', deploy_script)
+        self.assertIn('export XRAY_VISION_PUBLIC_KEY="${XRAY_VISION_PUBLIC_KEY:-${XRAY_XHTTP_PUBLIC_KEY:-}}"', deploy_script)
+        self.assertIn("grep -oE '\\$\\{[^}]+\\}'", deploy_script)
+
+    def test_home_vision_template_uses_plain_env_vars_after_render_defaults(self):
+        vision_template = (ROOT / "home" / "xray" / "config-vision.json").read_text(encoding="utf-8")
+        self.assertIn("${XRAY_VISION_UUID}", vision_template)
+        self.assertIn("${XRAY_VISION_PUBLIC_KEY}", vision_template)
+        self.assertIn("${XRAY_VISION_SHORT_ID}", vision_template)
+        self.assertNotIn(":-", vision_template)
 
     def test_vps_cloudflared_is_not_in_default_compose_startup(self):
         vps_compose = (ROOT / "vps" / "docker-compose.yml").read_text(encoding="utf-8")

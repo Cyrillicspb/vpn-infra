@@ -28,9 +28,29 @@ DIRECT_SITES=(
 )
 
 # 1. Найти активный tun интерфейс
-TUN_IFACE=$(ip link show 2>/dev/null | grep -oP '^[0-9]+: \Ktun\d+' | head -1 || true)
-AWG_TUN=$(ip link show 2>/dev/null | grep -oP '^[0-9]+: \KawgTun\S*' | head -1 || true)
-ACTIVE_TUN="${TUN_IFACE:-$AWG_TUN}"
+ACTIVE_TUN=""
+
+if [[ -f /var/run/vpn-active-tun ]]; then
+    ACTIVE_TUN=$(tr -d '[:space:]' < /var/run/vpn-active-tun 2>/dev/null || true)
+fi
+
+if [[ -z "$ACTIVE_TUN" ]]; then
+    PROBE_SITE="${BLOCKED_SITES[0]}"
+    PROBE_IP=$(dig @127.0.0.1 +timeout=5 +tries=1 "$PROBE_SITE" A +short 2>/dev/null | head -1 || true)
+    if [[ -n "$PROBE_IP" ]]; then
+        ACTIVE_TUN=$(ip route get "$PROBE_IP" mark 0x1 2>/dev/null | grep -oP 'dev \K\S+' | head -1 || true)
+    fi
+fi
+
+if [[ -z "$ACTIVE_TUN" ]]; then
+    ACTIVE_TUN=$(ip -4 route show table marked 2>/dev/null | awk '/^default dev / {print $3; exit}' || true)
+fi
+
+if [[ -z "$ACTIVE_TUN" ]]; then
+    TUN_IFACE=$(ip link show 2>/dev/null | grep -oP '^[0-9]+: \Ktun\S*' | head -1 || true)
+    AWG_TUN=$(ip link show 2>/dev/null | grep -oP '^[0-9]+: \KawgTun\S*' | head -1 || true)
+    ACTIVE_TUN="${TUN_IFACE:-$AWG_TUN}"
+fi
 
 if [[ -z "$ACTIVE_TUN" ]]; then
     warn "Активный tun интерфейс не найден — проверка через watchdog API"
@@ -51,6 +71,10 @@ if [[ -z "$ACTIVE_TUN" ]]; then
             exit 0  # Не FAIL — туннель может быть не поднят при первой установке
         fi
     fi
+fi
+
+if [[ -n "$ACTIVE_TUN" ]]; then
+    pass "Активный VPN интерфейс: $ACTIVE_TUN"
 fi
 
 # 2. VPS доступен через туннель

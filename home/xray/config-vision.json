@@ -13,7 +13,7 @@
                 "address": "${VPS_IP}",
                 "port": 443,
                 "users": [{
-                    "id": "${XRAY_VISION_UUID:-${XRAY_XHTTP_UUID}}",
+                    "id": "${XRAY_VISION_UUID}",
                     "encryption": "none",
                     "flow": "xtls-rprx-vision"
                 }]
@@ -25,8 +25,8 @@
             "realitySettings": {
                 "fingerprint": "chrome",
                 "serverName": "www.microsoft.com",
-                "publicKey": "${XRAY_VISION_PUBLIC_KEY:-${XRAY_XHTTP_PUBLIC_KEY}}",
-                "shortId": "${XRAY_VISION_SHORT_ID:-${XRAY_XHTTP_SHORT_ID}}"
+                "publicKey": "${XRAY_VISION_PUBLIC_KEY}",
+                "shortId": "${XRAY_VISION_SHORT_ID}"
             }
         }
     }]

@@ -77,7 +77,7 @@ fi
 SSH_PROXY="/opt/vpn/scripts/ssh-proxy.sh"
 if [[ -x "$SSH_PROXY" ]]; then
     # Тест с несуществующим файлом состояния → должен вернуть прямое соединение
-    RESULT=$(SOCKS_STATE_FILE="/tmp/vpn-nonexistent-$$" bash "$SSH_PROXY" localhost 22 2>/dev/null || echo "TIMEOUT")
+    RESULT=$(SOCKS_STATE_FILE="/tmp/vpn-nonexistent-$$" timeout 5 bash "$SSH_PROXY" localhost 22 2>/dev/null || echo "TIMEOUT")
     if [[ "$RESULT" != "TIMEOUT" ]]; then
         pass "ssh-proxy.sh: fallback to direct connection works"
     else

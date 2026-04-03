@@ -779,12 +779,15 @@ apply_system_configs() {
 
 render_xray_templates() {
     mkdir -p "$REPO_DIR/xray"
+    export XRAY_VISION_UUID="${XRAY_VISION_UUID:-${XRAY_XHTTP_UUID:-}}"
+    export XRAY_VISION_PUBLIC_KEY="${XRAY_VISION_PUBLIC_KEY:-${XRAY_XHTTP_PUBLIC_KEY:-}}"
+    export XRAY_VISION_SHORT_ID="${XRAY_VISION_SHORT_ID:-${XRAY_XHTTP_SHORT_ID:-}}"
     local tmpl name result unresolved
     for tmpl in "$REPO_DIR/home/xray/"*.json; do
         [[ -f "$tmpl" ]] || continue
         name="$(basename "$tmpl")"
         result="$(envsubst < "$tmpl")"
-        unresolved="$(echo "$result" | grep -oE '\$\{[A-Z_][A-Z0-9_]*\}' | sort -u | tr '\n' ' ' || true)"
+        unresolved="$(echo "$result" | grep -oE '\$\{[^}]+\}' | sort -u | tr '\n' ' ' || true)"
         [[ -z "$unresolved" ]] || die "Шаблон $name содержит незамещённые переменные: $unresolved"
         printf "%s" "$result" > "$REPO_DIR/xray/$name"
     done
