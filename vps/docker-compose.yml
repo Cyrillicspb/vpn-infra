@@ -129,9 +129,9 @@ services:
     image: cloudflare/cloudflared:2024.5.0
     container_name: cloudflared
     restart: unless-stopped
-    # entrypoint override: CDN через Workers не требует cloudflared на VPS.
-    entrypoint: ["/bin/sh"]
-    command: ["-c", "exec sleep infinity"]
+    # CDN через Workers не требует cloudflared на VPS.
+    # Сервис оставлен только для совместимости и ручного запуска.
+    profiles: ["manual"]
     network_mode: host
     healthcheck:
       disable: true
