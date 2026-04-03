@@ -66,7 +66,12 @@ notify() {
     local msg
     msg="$(printf '%b' "$1")"
     [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_ADMIN_CHAT_ID:-}" ]] && return 0
-    "$REPO_DIR/scripts/tg-send.sh" "${TELEGRAM_ADMIN_CHAT_ID}" "${msg}" || true
+    local tg_send="$REPO_DIR/scripts/tg-send.sh"
+    if [[ ! -x "$tg_send" ]]; then
+        log_warn "tg-send.sh не найден или не исполняем: $tg_send"
+        return 0
+    fi
+    "$tg_send" "${TELEGRAM_ADMIN_CHAT_ID}" "${msg}" || true
 }
 
 persist_env_default() {
@@ -784,8 +789,8 @@ deploy_vps() {
     sync_state_to_vps
 
     local cmd
-    cmd="set -euo pipefail; cd /opt/vpn; chmod +x /opt/vpn/scripts/*.sh 2>/dev/null || true; bash /opt/vpn/scripts/render-reality-xhttp-config.sh; docker compose pull; docker compose up -d --remove-orphans; mkdir -p '$REMOTE_STATE_DIR'"
-    vps_tmux_exec "$cmd" 300 >/dev/null || die "VPS deploy завершился с ошибкой"
+    cmd="sudo -n bash -lc 'set -euo pipefail; cd /opt/vpn; chmod +x /opt/vpn/scripts/*.sh 2>/dev/null || true; bash /opt/vpn/scripts/render-reality-xhttp-config.sh; docker compose pull; docker compose up -d --remove-orphans; mkdir -p \"$REMOTE_STATE_DIR\"'"
+    vps_tmux_exec "$cmd" 300 || die "VPS deploy завершился с ошибкой"
 }
 
 run_smoke_tests() {

@@ -103,6 +103,12 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn("last-attempt.json", content)
         self.assertIn("rollback-failed", content)
 
+    def test_deploy_script_guards_tg_send_and_uses_sudo_for_vps_apply(self):
+        deploy_script = DEPLOY.read_text(encoding="utf-8")
+        self.assertIn('if [[ ! -x "$tg_send" ]]; then', deploy_script)
+        self.assertIn('sudo -n bash -lc', deploy_script)
+        self.assertNotIn('vps_tmux_exec "$cmd" 300 >/dev/null', deploy_script)
+
     def test_admin_bot_texts_match_deploy_status_contract(self):
         admin_handler = (ROOT / "home" / "telegram-bot" / "handlers" / "admin.py").read_text(encoding="utf-8")
         self.assertIn("Deploy запущен. Прогресс и итог доступны через /status.", admin_handler)
