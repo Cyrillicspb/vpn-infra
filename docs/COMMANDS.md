@@ -168,16 +168,17 @@
 
 Обновляет инфраструктуру из git-зеркала на VPS:
 
-1. Создаёт снимок в `.deploy-snapshot/`
-2. `git pull` с VPS через SSH (через Tier-2)
-3. `rsync` конфигов на домашний сервер и VPS
-4. Избирательный рестарт изменившихся сервисов
-5. Автоматический smoke-test
-6. При провале — авто-rollback + алерт
+1. Проверяет rollback readiness и доступность VPS
+2. Получает target release из git-зеркала на VPS
+3. Создаёт release snapshot в `.deploy-snapshot/`
+4. Применяет release на home и VPS
+5. Гоняет обязательный health gate
+6. При любом unsafe state — авто-rollback + алерт
+7. Источник истины для deploy/rollback status — JSON state в `/opt/vpn/.deploy-state/`
 
 #### `/rollback`
 
-Откат к последнему снимку из `.deploy-snapshot/`. Выполняется немедленно без подтверждения.
+Откат release к последнему подтвержденному snapshot из `.deploy-snapshot/`. Выполняется немедленно без подтверждения.
 
 ---
 

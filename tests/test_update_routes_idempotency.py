@@ -216,15 +216,22 @@ class DnsmasqDpiExclusionTests(unittest.TestCase):
 
     def test_render_dnsmasq_latency_sensitive_uses_separate_set(self) -> None:
         content, written = update_routes.render_dnsmasq_latency_sensitive(
-            ["okko.tv", "www.googleapis.com", "yastatic.net", "invalid domain"]
+            ["okko.tv", "static.okko.tv", "yastatic.net", "invalid domain"]
         )
 
         self.assertIn("server=/okko.tv/77.88.8.8", content)
         self.assertIn("nftset=/okko.tv/4#inet#vpn#latency_sensitive_direct", content)
-        self.assertIn("nftset=/www.googleapis.com/4#inet#vpn#latency_sensitive_direct", content)
+        self.assertIn("nftset=/static.okko.tv/4#inet#vpn#latency_sensitive_direct", content)
         self.assertIn("nftset=/yastatic.net/4#inet#vpn#latency_sensitive_direct", content)
         self.assertNotIn("invalid domain", content)
         self.assertEqual(written, 3)
+
+    def test_latency_sensitive_domains_do_not_include_broad_shared_google_cdns(self) -> None:
+        domains = update_routes.build_latency_sensitive_domains()
+
+        self.assertNotIn("www.googleapis.com", domains)
+        self.assertNotIn("googleapis.com", domains)
+        self.assertNotIn("gstatic.com", domains)
 
     def test_render_dnsmasq_direct_marks_ru_domains_direct_first(self) -> None:
         content = update_routes.render_dnsmasq_direct()

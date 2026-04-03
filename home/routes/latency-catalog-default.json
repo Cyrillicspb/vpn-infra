@@ -309,8 +309,7 @@
         "primary": ["okko.tv", "api.okko.tv"],
         "bootstrap": ["static.okko.tv", "clients-static.okko.tv", "tvxx.okko.tv", "lge.okko.tv"],
         "auth": ["drm.playfamily.ru"],
-        "api": ["api.okko.tv"],
-        "cdn": ["www.googleapis.com", "googleapis.com", "gstatic.com", "kidsmanagement-pa.googleapis.com"]
+        "api": ["api.okko.tv"]
       }
     },
     "kinopoisk": {

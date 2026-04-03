@@ -127,8 +127,8 @@ class WatchdogClient:
     # -----------------------------------------------------------------------
     # Deploy
     # -----------------------------------------------------------------------
-    async def deploy(self, version: Optional[str] = None, force: bool = False) -> dict:
-        return await self._post("/deploy", {"version": version, "force": force})
+    async def deploy(self, force: bool = False) -> dict:
+        return await self._post("/deploy", {"force": force})
 
     async def rollback(self) -> dict:
         return await self._post("/rollback")

@@ -3,10 +3,12 @@
 # restore.sh — Восстановление VPN Infrastructure из бэкапа
 #
 # Использование:
-#   sudo bash restore.sh <backup.tar.gz.gpg>   — восстановление из бэкапа
-#   sudo bash restore.sh <backup.tar.gz>        — без шифрования
-#   sudo bash restore.sh --migrate-vps <IP>     — восстановить VPS из бэкапа
-#   sudo bash restore.sh --list                 — список локальных бэкапов
+#   sudo bash restore.sh --full-restore <backup.tar.gz.gpg>
+#   sudo bash restore.sh <backup.tar.gz.gpg>
+#   sudo bash restore.sh --restore-data-only <backup.tar.gz.gpg>
+#   sudo bash restore.sh --migrate-vps <IP>
+#   sudo bash restore.sh --list
+#   sudo bash restore.sh --check-export <backup.tar.gz.gpg>
 #
 # Алгоритм:
 #   1. Расшифровать GPG (passphrase со stdin через --passphrase-fd)
@@ -20,12 +22,13 @@
 set -euo pipefail
 
 # ── Константы ─────────────────────────────────────────────────────────────────
-REPO_DIR="/opt/vpn"
-ENV_FILE="$REPO_DIR/.env"
-LOG_FILE="/var/log/vpn-restore.log"
-RESTORE_TMP="$(mktemp -d)"
-GITHUB_REPO="https://github.com/Cyrillicspb/vpn-infra.git"
-SSH_KEY="/root/.ssh/vpn_id_ed25519"
+REPO_DIR="${REPO_DIR:-/opt/vpn}"
+ENV_FILE="${ENV_FILE:-$REPO_DIR/.env}"
+LOG_FILE="${LOG_FILE:-/var/log/vpn-restore.log}"
+RESTORE_TMP="${RESTORE_TMP:-$(mktemp -d)}"
+GITHUB_REPO="${GITHUB_REPO:-https://github.com/Cyrillicspb/vpn-infra.git}"
+SSH_KEY="${SSH_KEY:-/root/.ssh/vpn_id_ed25519}"
+ALLOW_NON_ROOT="${ALLOW_NON_ROOT:-0}"
 
 # ── Очистка при выходе ────────────────────────────────────────────────────────
 cleanup() { rm -rf "$RESTORE_TMP"; }
@@ -45,8 +48,25 @@ log_step()  { _log "${CYAN}${BOLD}━━━ $* ━━━${NC}"; }
 die() {
     log_error "$*"
     echo ""
-    echo "  Восстановление прервано. Проверьте /var/log/vpn-restore.log"
+    echo "  Восстановление прервано. Проверьте $LOG_FILE"
     exit 1
+}
+
+usage() {
+    cat <<EOF
+Использование:
+  bash restore.sh --full-restore <backup.tar.gz.gpg|backup.tar.gz>
+  bash restore.sh <backup.tar.gz.gpg|backup.tar.gz>
+  bash restore.sh --restore-data-only <backup.tar.gz.gpg|backup.tar.gz>
+  bash restore.sh --check-export <backup.tar.gz.gpg|backup.tar.gz>
+  bash restore.sh --migrate-vps <IP>
+  bash restore.sh --list
+  bash restore.sh --help
+
+Назначение:
+  restore.sh используется только для DR/backup restore.
+  Для rollback неудачного release используйте deploy.sh --rollback.
+EOF
 }
 
 # =============================================================================
@@ -623,13 +643,24 @@ _restore_data_only() {
 # Main
 # =============================================================================
 main() {
-    [[ "$EUID" -eq 0 ]] || die "Запустите: sudo bash restore.sh ..."
+    if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+        usage
+        exit 0
+    fi
+
+    [[ "$ALLOW_NON_ROOT" == "1" || "$EUID" -eq 0 ]] || die "Запустите: sudo bash restore.sh ..."
 
     mkdir -p "$(dirname "$LOG_FILE")"
     echo "" >> "$LOG_FILE"
     echo "════ Restore $(date '+%Y-%m-%d %H:%M:%S') ════" >> "$LOG_FILE"
 
     case "${1:-}" in
+        --full-restore)
+            shift
+            ARCHIVE_FILE="${1:-}"
+            [[ -z "$ARCHIVE_FILE" ]] && die "--full-restore требует путь к файлу"
+            set -- "$ARCHIVE_FILE"
+            ;;
         --list)
             list_backups
             exit 0
@@ -660,8 +691,12 @@ main() {
             _restore_data_only "$ARCHIVE_FILE"
             exit 0
             ;;
+        --component|--from-backup|--rollback)
+            die "Флаг ${1} не поддерживается. restore.sh — только для backup/DR; для rollback release используйте deploy.sh --rollback"
+            ;;
         "")
-            die "Укажите файл бэкапа или флаг:\n  bash restore.sh <backup.tar.gz.gpg>\n  bash restore.sh --list\n  bash restore.sh --migrate-vps <IP>\n  bash restore.sh --check-export <file>\n  bash restore.sh --restore-data-only <file>"
+            usage
+            exit 1
             ;;
     esac
 

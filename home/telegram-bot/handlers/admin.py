@@ -432,6 +432,30 @@ async def cmd_status(message: Message, state: FSMContext, **kw):
                     if responsiveness.get("first_https_latency_ms_avg") is not None else ""
                 )
             )
+        deploy = s.get("deploy") or {}
+        deploy_current = (deploy.get("current") or {}).get("current_release") or {}
+        deploy_pending = deploy.get("pending") or {}
+        deploy_last = deploy.get("last_attempt") or {}
+        if deploy_current or deploy_pending or deploy_last:
+            text += (
+                "\n\n"
+                f"*Deploy*: current `{deploy_current.get('version', 'unknown')}`"
+                f" (`{deploy_current.get('id', 'unknown')}`)"
+            )
+            if deploy.get("running") and deploy_pending:
+                pending_release = deploy_pending.get("pending_release") or {}
+                text += (
+                    "\n"
+                    f"pending `{pending_release.get('id', 'unknown')}`"
+                    f" | {deploy_pending.get('phase', 'unknown')}"
+                    f" | {deploy_pending.get('status', 'unknown')}"
+                )
+            if deploy_last:
+                text += (
+                    "\n"
+                    f"last `{deploy_last.get('status', 'unknown')}`"
+                    f" | {deploy_last.get('phase', 'unknown')}"
+                )
     except WatchdogError as e:
         text = f"❌ Watchdog недоступен: {e}"
     await message.answer(text)
@@ -775,7 +799,7 @@ async def cmd_deploy(message: Message, state: FSMContext, **kw):
     await state.clear()
     try:
         await _wc().deploy()
-        await message.answer("🚀 Deploy запущен. Отчёт придёт по завершении.")
+        await message.answer("🚀 Deploy запущен. Прогресс и итог доступны через /status.")
     except WatchdogError as e:
         await message.answer(f"❌ {e}")
 
@@ -787,7 +811,7 @@ async def cmd_rollback(message: Message, state: FSMContext, **kw):
     await state.clear()
     try:
         await _wc().rollback()
-        await message.answer("⏮️ Откат запущен...")
+        await message.answer("⏮️ Rollback запущен. Прогресс и итог доступны через /status.")
     except WatchdogError as e:
         await message.answer(f"❌ {e}")
 
@@ -832,13 +856,17 @@ async def cb_reboot_no(cb: CallbackQuery, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 # Уведомление об обновлении: [Обновить] / [Пропустить]
 # callback_data: "update:confirm:<version>" / "update:skip:<version>"
+# version в callback используется только для UX и skip-version, не как аргумент deploy.
 # ---------------------------------------------------------------------------
 @router.callback_query(F.data.startswith("update:confirm:"))
 async def cb_update_confirm(cb: CallbackQuery, **kw):
     version = cb.data[len("update:confirm:"):]
-    await cb.answer(f"Запускаю обновление до {version}...")
+    await cb.answer(f"Запускаю обновление {version}...")
     await cb.message.edit_reply_markup(reply_markup=None)
-    await cb.message.answer(f"🚀 Запускаю деплой {version}...")
+    await cb.message.answer(
+        f"🚀 Запускаю deploy для обновления `{version}`.\nПрогресс и итог доступны через /status.",
+        parse_mode="Markdown",
+    )
     try:
         await _wc().deploy()
     except Exception as e:
@@ -2330,7 +2358,7 @@ async def cb_adm_deploy(cb: CallbackQuery, **kw):
     await cb.answer()
     await _edit_or_answer(
         cb,
-        "🚀 <b>Применить апдейт?</b>\nСервисы кратковременно перезапустятся.",
+        "🚀 <b>Запустить deploy?</b>\nHome и VPS будут обновляться как один release.",
         confirm_kb("adm:deploy_ok", "adm:system"),
     )
 
@@ -2340,7 +2368,7 @@ async def cb_adm_deploy_ok(cb: CallbackQuery, **kw):
     await cb.answer("Запускаю deploy...")
     try:
         await _wc().deploy()
-        text = "🚀 Deploy запущен. Отчёт придёт по завершении."
+        text = "🚀 Deploy запущен. Прогресс и итог доступны через /status."
     except WatchdogError as e:
         text = f"❌ {e}"
     await _edit_or_answer(cb, text, back_to_admin_menu())
@@ -2351,7 +2379,7 @@ async def cb_adm_rollback(cb: CallbackQuery, **kw):
     await cb.answer()
     await _edit_or_answer(
         cb,
-        "⏮️ <b>Откатить до предыдущей версии?</b>",
+        "⏮️ <b>Запустить rollback к последнему подтвержденному snapshot?</b>",
         confirm_kb("adm:rollback_ok", "adm:system"),
     )
 
@@ -2361,7 +2389,7 @@ async def cb_adm_rollback_ok(cb: CallbackQuery, **kw):
     await cb.answer("Запускаю откат...")
     try:
         await _wc().rollback()
-        text = "⏮️ Откат запущен..."
+        text = "⏮️ Rollback запущен. Прогресс и итог доступны через /status."
     except WatchdogError as e:
         text = f"❌ {e}"
     await _edit_or_answer(cb, text, back_to_admin_menu())

@@ -112,6 +112,9 @@ DIRECT_TLDS: frozenset[str] = frozenset({".ru", ".xn--p1acf"})
 # ── Домены, где важнее первый полезный ответ, чем агрессивное уводение через VPS ─
 # Эти домены и их известные bootstrap-зависимости получают отдельный класс
 # latency_sensitive_direct, который должен выигрывать у blocked policy.
+# ВАЖНО: сюда нельзя добавлять broad shared CDN / platform domains вроде
+# googleapis.com или gstatic.com — они используются множеством unrelated
+# сервисов и могут увести чужой трафик в direct lane.
 LATENCY_SENSITIVE_DIRECT_DOMAINS: list[str] = [
     "okko.tv",
     "api.okko.tv",
@@ -123,10 +126,6 @@ LATENCY_SENSITIVE_DIRECT_DOMAINS: list[str] = [
     "gosuslugi.ru",
     "www.gosuslugi.ru",
     "esia.gosuslugi.ru",
-    "www.googleapis.com",
-    "googleapis.com",
-    "gstatic.com",
-    "kidsmanagement-pa.googleapis.com",
     "kinopoisk.ru",
     "www.kinopoisk.ru",
     "api.kinopoisk.ru",

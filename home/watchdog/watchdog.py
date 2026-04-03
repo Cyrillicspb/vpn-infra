@@ -4986,7 +4986,6 @@ class RouteRequest(BaseModel):
     direction: str      # "vpn" | "direct"
 
 class DeployRequest(BaseModel):
-    version: Optional[str] = None
     force: bool = False
 
 class ServiceRestartRequest(BaseModel):
@@ -5064,6 +5063,7 @@ async def get_status(_: bool = Depends(_auth)):
         "functional_infra_checks": state.functional_infra_checks,
         "functional_summary": state.functional_summary,
         "responsiveness_summary": state.responsiveness_summary,
+        "deploy": _read_deploy_state(),
     }
 
     # Gateway Mode: добавляем счётчик LAN-клиентов из conntrack
@@ -5090,6 +5090,39 @@ async def get_status(_: bool = Depends(_auth)):
             pass
 
     return result
+
+
+DEPLOY_STATE_DIR = Path("/opt/vpn/.deploy-state")
+
+
+def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
+    try:
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Не удалось прочитать %s: %s", path, exc)
+        return None
+
+
+def _read_deploy_state() -> dict[str, Any]:
+    current = _read_json_file(DEPLOY_STATE_DIR / "current.json")
+    pending = _read_json_file(DEPLOY_STATE_DIR / "pending.json")
+    last_attempt = _read_json_file(DEPLOY_STATE_DIR / "last-attempt.json")
+    latest_snapshot = None
+    latest_file = DEPLOY_STATE_DIR.parent / ".deploy-snapshot" / "latest"
+    try:
+        if latest_file.is_file():
+            latest_snapshot = latest_file.read_text(encoding="utf-8").strip() or None
+    except Exception as exc:
+        logger.warning("Не удалось прочитать latest snapshot: %s", exc)
+    return {
+        "running": pending is not None,
+        "current": current,
+        "pending": pending,
+        "last_attempt": last_attempt,
+        "latest_snapshot": latest_snapshot,
+    }
 
 
 @app.get("/metrics")
@@ -5512,42 +5545,65 @@ async def _deploy_task(req: DeployRequest) -> None:
     cmd = ["bash", "/opt/vpn/deploy.sh"]
     if req.force:
         cmd.append("--force")
-    if req.version:
-        cmd += ["--version", req.version]
     rc, out, err = await run_cmd(cmd, timeout=600)
+    deploy_state = _read_deploy_state()
+    last_attempt = deploy_state.get("last_attempt") or {}
+    current = deploy_state.get("current") or {}
+    current_release = current.get("current_release") or {}
+    current_id = current_release.get("id") or "unknown"
+    current_ver = current_release.get("version") or "unknown"
+    last_status = last_attempt.get("status") or ""
+    last_message = last_attempt.get("message") or ""
+
     if rc != 0:
-        # Ищем строки с ошибкой в stdout (deploy.sh пишет туда диагностику)
-        combined = (out or "") + "\n" + (err or "")
-        error_lines = [l for l in combined.splitlines() if any(
-            kw in l for kw in ("❌", "FAIL", "Error", "error", "failed", "Cannot", "cannot")
-        )]
-        snippet = "\n".join(error_lines[-10:]) if error_lines else combined.strip()[-600:]
-        alert(f"❌ Deploy завершился с ошибкой:\n`{snippet[:600]}`")
-    else:
-        ver = ""
-        try:
-            with open("/opt/vpn/version") as f:
-                ver = f.read().strip()
-        except Exception as exc:
-            logger.debug("Не удалось прочитать /opt/vpn/version: %s", exc)
-        # Определить что произошло по выводу
-        output = (out or "").strip()
-        if "не требуется" in output or "актуальна" in output:
-            alert(f"ℹ️ Deploy: обновлений нет, версия `{ver}` актуальна")
-        elif "Откат" in output:
-            alert(f"⚠️ Deploy завершён откатом к предыдущей версии")
+        if last_status == "rollback-completed":
+            alert(
+                f"⚠️ Deploy не принят, выполнен rollback к `{current_ver}` (`{current_id}`)\n"
+                f"{last_message or 'release restored'}"
+            )
+        elif last_status == "rollback-failed":
+            alert(
+                "🚨 Deploy завершился аварией: auto-rollback не смог восстановить рабочее состояние\n"
+                f"{last_message or 'manual intervention required'}"
+            )
         else:
-            alert(f"✅ Deploy завершён успешно, версия `{ver}`")
-            # Запускаем post-deploy watch: усиленный мониторинг 15 мин
+            combined = (out or "") + "\n" + (err or "")
+            error_lines = [l for l in combined.splitlines() if any(
+                kw in l for kw in ("❌", "FAIL", "Error", "error", "failed", "Cannot", "cannot")
+            )]
+            snippet = "\n".join(error_lines[-10:]) if error_lines else combined.strip()[-600:]
+            alert(f"❌ Deploy завершился с ошибкой:\n`{(last_message or snippet)[:600]}`")
+    else:
+        if last_status == "noop":
+            alert(f"ℹ️ Deploy: release `{current_ver}` (`{current_id}`) уже актуален")
+        else:
+            alert(f"✅ Deploy завершён успешно, release `{current_ver}` (`{current_id}`)")
             state.post_deploy_until = time.time() + 900
             alert("🔍 *Post-deploy watch* активен — усиленный мониторинг 15 мин")
+
+
+async def _rollback_task() -> None:
+    rc, out, err = await run_cmd(["bash", "/opt/vpn/deploy.sh", "--rollback"], timeout=600)
+    deploy_state = _read_deploy_state()
+    last_attempt = deploy_state.get("last_attempt") or {}
+    current = deploy_state.get("current") or {}
+    current_release = current.get("current_release") or {}
+    current_id = current_release.get("id") or "unknown"
+    current_ver = current_release.get("version") or "unknown"
+    last_status = last_attempt.get("status") or ""
+    last_message = last_attempt.get("message") or ""
+    if rc == 0 and last_status == "rollback-completed":
+        alert(f"✅ Rollback завершён, активный release `{current_ver}` (`{current_id}`)")
+        return
+    snippet = ((last_message or "") + "\n" + (out or "") + "\n" + (err or "")).strip()[-600:]
+    alert(f"🚨 Rollback завершился с ошибкой:\n`{snippet}`")
 
 
 @app.post("/rollback")
 @limiter.limit("10/second")
 async def post_rollback(request: Request, bg: BackgroundTasks, _: bool = Depends(_auth)):
-    bg.add_task(run_cmd, ["bash", "/opt/vpn/deploy.sh", "--rollback"], 300)
-    return {"status": "rolling_back"}
+    bg.add_task(_rollback_task)
+    return {"status": "accepted"}
 
 
 class SkipVersionRequest(BaseModel):
