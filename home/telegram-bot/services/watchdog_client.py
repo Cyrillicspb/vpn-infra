@@ -178,6 +178,9 @@ class WatchdogClient:
     async def check_domain(self, domain: str) -> dict:
         return await self._post("/check", {"domain": domain})
 
+    async def get_latency_learning(self) -> dict:
+        return await self._get("/latency/learning")
+
     # -----------------------------------------------------------------------
     # DPI bypass (zapret lane)
     # -----------------------------------------------------------------------

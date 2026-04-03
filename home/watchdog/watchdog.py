@@ -61,9 +61,11 @@ GRAFANA_URL          = os.getenv("GRAFANA_URL", "http://172.20.0.32:3000")
 GRAFANA_TOKEN        = os.getenv("GRAFANA_TOKEN", "")
 GRAFANA_PASSWORD     = os.getenv("GRAFANA_PASSWORD", "")
 DDNS_PROVIDER        = os.getenv("DDNS_PROVIDER", "")
-DDNS_DOMAIN          = os.getenv("DDNS_DOMAIN", "")
+HOME_DDNS_DOMAIN     = os.getenv("HOME_DDNS_DOMAIN", "") or os.getenv("DDNS_DOMAIN", "")
+DDNS_DOMAIN          = HOME_DDNS_DOMAIN
 DDNS_TOKEN           = os.getenv("DDNS_TOKEN", "")
 CF_API_TOKEN         = os.getenv("CF_API_TOKEN", "")
+VPS_HOSTNAME         = os.getenv("VPS_HOSTNAME", "")
 NET_INTERFACE        = os.getenv("NET_INTERFACE", "eth0")
 GATEWAY_IP           = os.getenv("GATEWAY_IP", "")
 
@@ -118,6 +120,8 @@ DEFAULT_STACK = STACK_ORDER[0]
 RTT_DEGRADATION_FACTOR   = 3.0   # RTT > 3× baseline → деградация
 RTT_BASELINE_WINDOW      = 7 * 24 * 3600 // 10   # 7 дней при опросе каждые 10 с
 THROUGHPUT_DEGRADATION    = 0.5   # throughput < 50% baseline → шейпинг
+LATENCY_CATALOG_MAX_AGE_DAYS = 7.0
+LATENCY_CATALOG_ALERT_COOLDOWN_SECONDS = 6 * 3600
 PEER_STALE_SECONDS        = 180
 DISK_WARN_PCT             = 85
 DISK_CLEAN_PCT            = 80
@@ -322,6 +326,46 @@ def _load_latency_catalog() -> dict[str, dict]:
         except Exception as exc:
             logger.warning("Invalid fallback latency catalog %s: %s", path, exc)
     return _merge_latency_catalogs(fallback, runtime)
+
+
+def _latency_catalog_status() -> dict[str, Any]:
+    fallback_exists = any(path.exists() for path in LATENCY_CATALOG_FALLBACKS)
+    runtime_exists = LATENCY_CATALOG_FILE.exists()
+    service_count = 0
+    source = "missing"
+    age_days: Optional[float] = None
+    stale = False
+    empty = False
+
+    if runtime_exists:
+        source = "runtime"
+        age_days = (time.time() - LATENCY_CATALOG_FILE.stat().st_mtime) / 86400
+        stale = age_days > LATENCY_CATALOG_MAX_AGE_DAYS
+        try:
+            service_count = len(
+                _canonicalize_latency_catalog(
+                    json.loads(LATENCY_CATALOG_FILE.read_text(encoding="utf-8"))
+                )
+            )
+        except Exception:
+            service_count = 0
+    else:
+        source = "fallback" if fallback_exists else "missing"
+
+    if service_count == 0:
+        service_count = len(_load_latency_catalog())
+    empty = service_count == 0
+
+    return {
+        "source": source,
+        "runtime_exists": runtime_exists,
+        "fallback_exists": fallback_exists,
+        "service_count": service_count,
+        "age_days": round(age_days, 2) if age_days is not None else None,
+        "stale": stale,
+        "empty": empty,
+        "max_age_days": LATENCY_CATALOG_MAX_AGE_DAYS,
+    }
 
 
 def _match_latency_catalog_domain(domain: str) -> Optional[dict[str, Any]]:
@@ -1254,6 +1298,7 @@ class WatchdogState:
         self.functional_fail_counters: dict[str, int] = {}
         self.functional_evidence_store: dict[str, dict[str, Any]] = {}
         self.latency_learning_last_apply_ts: float = 0.0
+        self.latency_catalog_alert_last_ts: float = 0.0
 
     @property
     def active_vps(self) -> Optional[dict]:
@@ -1318,6 +1363,7 @@ class WatchdogState:
             "functional_fail_counters": self.functional_fail_counters,
             "functional_evidence_store": self.functional_evidence_store,
             "latency_learning_last_apply_ts": self.latency_learning_last_apply_ts,
+            "latency_catalog_alert_last_ts": self.latency_catalog_alert_last_ts,
         }
 
     def save(self) -> None:
@@ -1387,6 +1433,7 @@ class WatchdogState:
                 self.functional_fail_counters = data.get("functional_fail_counters", {}) or {}
                 self.functional_evidence_store = data.get("functional_evidence_store", {}) or {}
                 self.latency_learning_last_apply_ts = float(data.get("latency_learning_last_apply_ts", 0.0) or 0.0)
+                self.latency_catalog_alert_last_ts = float(data.get("latency_catalog_alert_last_ts", 0.0) or 0.0)
                 _normalize_functional_state()
                 if self.active_stack not in STACK_ORDER:
                     self.active_stack = DEFAULT_STACK
@@ -3639,6 +3686,61 @@ async def _hc_backup_freshness() -> CheckResult:
                        f"последний {age_days:.1f} дн. назад (порог {BACKUP_MAX_AGE_DAYS} дн.)", weight=3, tier="deep")
 
 
+def _hc_latency_catalog_freshness() -> CheckResult:
+    info = _latency_catalog_status()
+    if info["empty"]:
+        return CheckResult(
+            "latency_catalog_freshness",
+            "fail",
+            "runtime/fallback catalog пуст или недоступен",
+            weight=5,
+            tier="deep",
+        )
+    if info["source"] == "runtime" and info["stale"]:
+        return CheckResult(
+            "latency_catalog_freshness",
+            "warn",
+            f"runtime catalog устарел: {info['age_days']} дн. (порог {info['max_age_days']} дн.)",
+            weight=3,
+            tier="deep",
+        )
+    if info["source"] == "fallback":
+        return CheckResult(
+            "latency_catalog_freshness",
+            "warn",
+            "runtime catalog отсутствует, используется fallback",
+            weight=2,
+            tier="deep",
+        )
+    return CheckResult(
+        "latency_catalog_freshness",
+        "ok",
+        f"services={info['service_count']} source={info['source']}" + (
+            f" age={info['age_days']}d" if info["age_days"] is not None else ""
+        ),
+        weight=2,
+        tier="deep",
+    )
+
+
+def _maybe_alert_latency_catalog() -> None:
+    info = _latency_catalog_status()
+    if not (info["empty"] or info["stale"]):
+        return
+    now = time.time()
+    if now - state.latency_catalog_alert_last_ts < LATENCY_CATALOG_ALERT_COOLDOWN_SECONDS:
+        return
+    state.latency_catalog_alert_last_ts = now
+    state.save()
+    if info["empty"]:
+        alert("⚠️ Runtime latency catalog пуст или недоступен.\nПроверьте `update-latency-catalog.py` и `/routes update`.")
+        return
+    alert(
+        "⚠️ Runtime latency catalog устарел.\n"
+        f"Возраст: `{info['age_days']}` дн. при пороге `{info['max_age_days']}`."
+    )
+
+
 async def _hc_file_permissions() -> list[CheckResult]:
     results: list[CheckResult] = []
     checks = [
@@ -3702,6 +3804,7 @@ async def _health_deep_checks() -> list[CheckResult]:
     results: list[CheckResult] = []
     results.append(await _hc_sqlite_integrity())
     results.append(await _hc_backup_freshness())
+    results.append(_hc_latency_catalog_freshness())
     results.extend(await _hc_file_permissions())
     results.append(_hc_fernet_key())
     results.append(await _hc_vps_ssh())
@@ -4899,6 +5002,7 @@ async def monitoring_loop() -> None:
                 logger.info(f"Speedtest (10MB): {mbps:.1f} Mbps")
                 last_large_speedtest = now
                 await check_routes_cache_age()
+                _maybe_alert_latency_catalog()
                 await check_certs()
                 await check_dkms()
 
@@ -5064,6 +5168,7 @@ async def get_status(_: bool = Depends(_auth)):
         "functional_summary": state.functional_summary,
         "responsiveness_summary": state.responsiveness_summary,
         "deploy": _read_deploy_state(),
+        "latency_catalog": _latency_catalog_status(),
     }
 
     # Gateway Mode: добавляем счётчик LAN-клиентов из conntrack
@@ -6176,6 +6281,7 @@ async def get_latency_learning(_: bool = Depends(_auth)):
         "learned_count": len(learned),
         "candidates": ordered_candidates[:100],
         "candidate_count": len(ordered_candidates),
+        "catalog": _latency_catalog_status(),
     }
 
 

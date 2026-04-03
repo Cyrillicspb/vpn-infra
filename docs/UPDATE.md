@@ -1,159 +1,105 @@
-# Обновление системы
+# Обновление и recovery
 
-## Способы обновления
+## Поддерживаемые пути
 
-| Способ | Когда использовать |
-|--------|-------------------|
-| Автоматическое (Telegram-бот) | Основной способ, рекомендуется |
-| Вручную через бота `/deploy` | Форсированное обновление |
-| SSH + `deploy.sh` | Если бот недоступен |
-| Rollback | При проблемах после обновления |
+### Основной путь
 
----
+- бот: `/deploy`
+- или SSH: `sudo bash /opt/vpn/deploy.sh`
 
-## Автоматическое обновление
-
-Watchdog проверяет обновления **каждый час** через git-зеркало на VPS (не напрямую с GitHub — он может быть заблокирован).
-
-При появлении новой версии бот присылает уведомление:
-
-```
-🔔 Доступно обновление: v1.3 → v1.4
-
-📋 Что нового:
-• Улучшена детекция шейпинга
-• Исправлен баг с AWG peers
-• Добавлен новый источник баз РКН
-⚠️ Security-обновление
-
-[Обновить] [Пропустить] [Подробнее]
-```
-
-- **[Обновить]** — запускает `deploy.sh` с автоматическим smoke-тестом
-- **[Пропустить]** — напомнит через 24 часа
-- **[Подробнее]** — показывает полный changelog
-
----
-
-## Процесс обновления (deploy.sh)
-
-```mermaid
-flowchart TD
-    START[Начало] --> LOCK[flock: только один deploy]
-    LOCK --> PREFLIGHT[Preflight\nVPS reachable\ntracked tree clean]
-    PREFLIGHT --> FETCH[Получить target release]
-    FETCH --> SNAPSHOT[Снимок текущего release\nв .deploy-snapshot/]
-    SNAPSHOT --> APPLY_HOME[Применить release на home]
-    APPLY_HOME --> APPLY_VPS[Применить release на VPS]
-    APPLY_VPS --> HEALTH[Health gate\nwatchdog + smoke + VPS parity]
-    HEALTH --> PASS{Gate пройден?}
-    PASS -->|Да| DONE[✅ release committed\nstate обновлён]
-    PASS -->|Нет| ROLLBACK[⚠️ Авто-rollback\nк snapshot release]
-    ROLLBACK --> VERIFY[Health gate после rollback]
-    VERIFY --> NOTIFY[Результат rollback в Telegram]
-```
-
-### Особенности
-
-- **flock:** только один deploy за раз, параллельные игнорируются
-- **Release state:** текущее и pending состояние хранятся в `/opt/vpn/.deploy-state/`
-- **State contract:** schema и terminal statuses описаны в `docs/DEPLOY-STATE.md`
-- **Снимки:** хранятся 5 последних в `/opt/vpn/.deploy-snapshot/`
-- **Consistency-first:** release не принимается, пока home и VPS не подтверждены одним health gate
-- **Security:** обновления отмечаются ⚠️, рекомендуется применить немедленно
-
----
-
-## Ручное обновление через бота
-
-```
-/deploy            — обновить из git (создаёт снимок, smoke-тест, авто-откат)
-/deploy --check    — показать что изменится (без применения)
-/deploy --force    — обновить даже если нет новых коммитов
-```
-
----
-
-## Обновление через SSH
-
-Если бот недоступен:
+### Проверка без применения
 
 ```bash
-ssh sysadmin@<IP_ДОМАШНЕГО_СЕРВЕРА>
-cd /opt/vpn
-
-# Обычное обновление:
-sudo bash deploy.sh
-
-# С детальным выводом:
-sudo bash deploy.sh 2>&1 | tee /tmp/deploy.log
-
-# Проверить без применения:
-sudo bash deploy.sh --check
+sudo bash /opt/vpn/deploy.sh --check
 ```
 
----
-
-## Откат
-
-### Автоматический откат
-
-При любом unsafe state после начала apply deploy.sh автоматически откатывается и сообщает в Telegram.
-
-### Ручной откат через бота
-
-```
-/rollback          — откат к последнему снимку
-```
-
-### Ручной откат через SSH
+### Статус
 
 ```bash
-sudo bash deploy.sh --rollback
+sudo bash /opt/vpn/deploy.sh --status
 ```
 
----
+### Rollback release
 
-## Обновление Docker-образов
+- бот: `/rollback`
+- или SSH: `sudo bash /opt/vpn/deploy.sh --rollback`
 
-Docker-образы зафиксированы по версии (image pinning). Обновление образов — отдельная операция:
+### Disaster recovery
 
-```
-/update    — обновить Docker-образы (покажет что изменится, требует подтверждение)
-```
-
-Или через SSH:
 ```bash
-cd /opt/vpn
-sudo docker compose pull
-sudo docker compose up -d
+sudo bash /opt/vpn/restore.sh --full-restore <backup.tar.gz.gpg>
 ```
 
-> **Важно:** Обновление Docker-образов не обновляет код проекта (watchdog, бот, скрипты).
-> Используйте `/deploy` для обновления кода, `/update` для обновления базовых образов.
+## Deploy contract
 
----
+`deploy.sh` обновляет home и VPS как один release:
 
-## Обновление баз РКН
+1. preflight;
+2. fetch target release;
+3. snapshot текущего release;
+4. apply на home;
+5. apply на VPS;
+6. verify через health gate;
+7. commit или rollback.
 
-Базы обновляются автоматически в 03:00 каждую ночь.
+Health gate опирается на:
 
-Принудительное обновление:
+- watchdog/API health;
+- smoke suite;
+- parity между home и VPS deploy-state.
+
+## Источник истины для результата
+
+Результат deploy/rollback определяется по:
+
+- `/opt/vpn/.deploy-state/current.json`
+- `/opt/vpn/.deploy-state/pending.json`
+- `/opt/vpn/.deploy-state/last-attempt.json`
+
+Не по тексту логов и не по факту старта команды.
+
+State contract описан в [docs/DEPLOY-STATE.md](/home/kirill/vpn-infra/docs/DEPLOY-STATE.md).
+
+## Rollback и restore различаются
+
+### Rollback
+
+Используется для проблемы в последнем release:
+
+```bash
+sudo bash /opt/vpn/deploy.sh --rollback
 ```
-/routes update    — обновить базы РКН прямо сейчас (async, займёт 1–2 мин)
+
+Rollback возвращает систему к последнему подтверждённому deploy snapshot.
+
+### Restore
+
+Используется для DR, миграции или полного восстановления из backup:
+
+```bash
+sudo bash /opt/vpn/restore.sh --full-restore <backup>
 ```
 
-Или через SSH:
+Это не тот же самый механизм.
+
+## Docker image update
+
+Обновление Docker-образов не равно deploy кода.
+
+- бот: `/upgrade`
+- или ручной `docker compose pull/up` там, где это действительно нужно
+
+Использовать `/deploy` для изменения кода и generated configs.
+
+## Route data refresh
+
+Если нужен route rebuild без deploy:
+
 ```bash
 sudo python3 /opt/vpn/scripts/update-routes.py --force
 ```
 
-Что ещё обновляется вместе с маршрутами:
-- `vpn-latency-sensitive.conf`
-- direct-first routing для доменов из latency catalog
-- learned latency-sensitive домены из `/etc/vpn-routes/latency-learned.txt`
-
-Отдельно можно пересобрать runtime catalog без `deploy.sh`:
+Если нужно отдельно пересобрать latency catalog:
 
 ```bash
 sudo python3 /opt/vpn/scripts/update-latency-catalog.py
@@ -161,190 +107,32 @@ sudo python3 /opt/vpn/scripts/update-routes.py
 sudo systemctl restart watchdog
 ```
 
----
+Runtime catalog теперь также обновляется по `systemd timer`.
+Если watchdog считает runtime catalog пустым или устаревшим, это попадает в health/alerts и видно через bot surface `/latency all`.
 
-## Отдельная миграция VPS
+## Maintenance после обновления
 
-Для DR/миграции используйте `restore.sh --migrate-vps <IP>`.
-`deploy.sh` больше не поддерживает отдельный `--vps-only`: release считается успешным только при согласованном состоянии home + VPS.
-
----
-
-## Миграции
-
-При обновлении кода между версиями могут быть изменения БД или конфигов.
-Миграции применяются автоматически в `deploy.sh`:
-
-```
-migrations/
-├── 001_add_device_limit.sql      — изменение схемы SQLite
-├── 002_add_excludes_table.sql
-└── apply.sh                      — применяет непримeнённые миграции
-```
-
-Статус применённых миграций: `/opt/vpn/.migrations-applied`
-
----
-
-## Обновление ОС
-
-> ⚠️ **ЗАПРЕЩЕНО:** `do-release-upgrade` (Ubuntu 22.04 → 24.04 in-place)
-> Это сломает DKMS-модули, конфиги, venv и другие компоненты.
-
-**Правильный способ обновления ОС:**
-1. Сделайте бэкап: `/vpn add` команды не нужны, `backup.sh` сохраняет всё
-2. Установите Ubuntu 24.04 чистой установкой
-3. Восстановите: `sudo bash restore.sh --full-restore vpn-backup-XXXXXX.tar.gz.gpg`
-
----
-
-## Checklist после обновления
-
-После каждого обновления проверьте:
-
-```
-/status           — туннель активен
-/docker           — все контейнеры running/healthy
-/speed            — скорость не деградировала
-/check youtube.com — заблокированные сайты работают
-```
-
-Maintenance-проверка после серии infra-изменений:
+После крупных infra-изменений прогонять:
 
 ```bash
 sudo bash /opt/vpn/scripts/post-install-check.sh
 sudo python3 /opt/vpn/scripts/update-routes.py --force
 cd /opt/vpn && bash tests/run-smoke-tests.sh
+sudo bash /opt/vpn/deploy.sh --status
 ```
 
-Ожидаемое состояние после успешного maintenance-pass:
-- `post-install-check.sh` без критических ошибок
-- `update-routes.py --force` завершился без traceback
-- `tests/run-smoke-tests.sh` проходит полностью
-- `deploy.sh --status` показывает `Pending: none` и `Last attempt: success / commit`
+Ожидаемый committed baseline:
 
-Если сломался release: `/rollback` или `sudo bash deploy.sh --rollback`
-Если нужен disaster recovery из архивного бэкапа: `sudo bash restore.sh --full-restore <backup>`
+- post-install без критических ошибок;
+- smoke полностью зелёный;
+- `Pending: none`;
+- `Last attempt: success / commit`.
 
----
+## Что больше не является update contract
 
-## Восстановление после сбоя (Disaster Recovery)
+Из документа убраны старые paths:
 
-### Хранение бэкапов
-
-| Расположение | Путь | TTL |
-|--------------|------|-----|
-| Домашний сервер | `/opt/vpn/backups/vpn-backup-*.tar.gz.gpg` | 30 дней |
-| VPS | `/opt/vpn/backups/vpn-backup-*.tar.gz.gpg` | 30 дней |
-| Telegram | Сообщение от бота в чате с собой | Навсегда |
-
-GPG-passphrase: переменная `BACKUP_GPG_PASSPHRASE` из `.env`. Если `.env` утерян — нужен passphrase из Telegram-бэкапа.
-
----
-
-### Сценарий 1: Домашний сервер вышел из строя
-
-**Время восстановления: ~40–60 минут**
-
-1. Установить Ubuntu Server 24.04 на новое железо (пользователь `sysadmin`, OpenSSH, Ethernet, тот же LAN IP)
-2. Получить бэкап с VPS: `scp -i ~/.ssh/vpn_vps sysadmin@<VPS_IP>:/opt/vpn/backups/vpn-backup-<DATE>.tar.gz.gpg ~/`
-3. Запустить восстановление:
-```bash
-curl -sO https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/restore.sh
-sudo bash restore.sh vpn-backup-YYYYMMDD_HHMMSS.tar.gz.gpg
-```
-
-`restore.sh` расшифрует бэкап, проверит sha256 и восстановит компоненты в правильном порядке. Это DR-механизм, а не release rollback.
-
----
-
-### Сценарий 2: Повреждена ОС (сервер жив)
-
-**Время восстановления: ~20–30 минут**
-
-```bash
-# Откат к снимку deploy:
-sudo bash /opt/vpn/deploy.sh --rollback
-
-# Восстановление из бэкапа:
-sudo bash restore.sh --full-restore /opt/vpn/backups/vpn-backup-<LATEST>.tar.gz.gpg
-
-# DKMS слетел после обновления ядра:
-sudo apt install linux-headers-$(uname -r)
-sudo dkms install amneziawg -v $(dkms status | grep amneziawg | awk '{print $2}' | tr -d ',')
-sudo systemctl restart awg-quick@wg0 wg-quick@wg1
-```
-
----
-
-### Сценарий 3: VPS недоступен
-
-При недоступности VPS все 4 стека не работают — нет автоматического аварийного режима без VPS.
-
-```bash
-# Диагностика:
-ping <VPS_IP> -c 5
-ssh -i /root/.ssh/vpn_id_ed25519 sysadmin@<VPS_IP>
-```
-
-Если VPS завис: войдите в веб-консоль провайдера (Hetzner Console, Vultr VNC) → Hard reset VM → `docker compose up -d`.
-
----
-
-### Сценарий 4: Смена VPS
-
-```
-/migrate_vps <IP_НОВОГО_VPS>
-```
-
-Бот установит Docker, скопирует конфиги, поднимет сервисы, протестирует стеки и разошлёт новые конфиги клиентам. Если DDNS настроен — клиентам ничего делать не нужно.
-
-```bash
-# Через restore.sh:
-sudo bash restore.sh --migrate-vps <НОВЫЙ_VPS_IP>
-```
-
----
-
-### Сценарий 5: Компрометация ключей
-
-```bash
-# Немедленно через бота:
-/rotate_keys
-```
-
-`/rotate_keys` сгенерирует новые ключи для сервера и всех пиров, разошлёт новые конфиги клиентам, перезапустит WireGuard.
-
-```bash
-# Проверить нет ли посторонних peers:
-sudo wg show wg0 && sudo wg show wg1
-# Проверить authorized_keys:
-cat /home/sysadmin/.ssh/authorized_keys
-# Проверить логи входов:
-last -n 30
-```
-
----
-
-### Быстрый старт: команды восстановления
-
-```bash
-# Полное восстановление из бэкапа:
-sudo bash restore.sh --full-restore <ФАЙЛ_БЕКАПА>
-
-# Откат deploy:
-sudo bash deploy.sh --rollback
-
-# Миграция VPS:
-sudo bash restore.sh --migrate-vps <IP>
-```
-
-### RTO / RPO
-
-| Сценарий | RTO | RPO |
-|----------|-----|-----|
-| Повреждены конфиги, ОС цела | 10–15 мин | 0 |
-| Новое железо + бэкап | 40–60 мин | ≤24 ч |
-| Смена VPS | 15–30 мин | 0 |
-| Утеря обоих серверов | 60–90 мин | ≤24 ч |
-| Компрометация ключей | 5 мин | 0 |
+- отдельный `vps-only` deploy;
+- смешивание release rollback и backup restore;
+- утверждение, что Docker image update автоматически обновляет код проекта;
+- описание success/failure deploy только через Telegram-тексты.

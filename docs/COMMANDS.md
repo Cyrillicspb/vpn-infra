@@ -1,182 +1,133 @@
 # Команды Telegram-бота
 
-Весь интерфейс на **русском языке**.
+Документ описывает только текущий поддерживаемый bot surface.
+Если команда существует в коде, но не доведена до production-contract, это отмечено отдельно.
 
-Бот работает в двух режимах:
-- **Администратор** — полный доступ ко всем функциям. Определяется по `TELEGRAM_ADMIN_CHAT_ID` из `.env`.
-- **Клиент** — самообслуживание: свои устройства, конфиги, запросы на домены.
-- **Незарегистрированный** — видит только `/start`. Все остальные команды бот молча игнорирует.
+## Роли
 
----
+- Администратор: `TELEGRAM_ADMIN_CHAT_ID` и дополнительные admins из БД.
+- Клиент: зарегистрированный пользователь.
+- Незарегистрированный пользователь: только `/start`.
 
 ## Команды администратора
 
-### Мониторинг и статус
+### Статус и здоровье
 
-#### `/status`
+- `/status` — общий статус системы, включая deploy-state.
+- `/health` — сводка health checks.
+- `/functional` — functional health и сценарии.
+- `/tunnel` — состояние туннелей и активного стека.
+- `/ip` — direct IP и VPN/VPS egress IP.
+- `/docker` — статус контейнеров.
+- `/speed` — быстрый throughput snapshot.
 
-Сводка состояния инфраструктуры:
-- Активный стек (vless-reality-vision / reality-xhttp / cloudflare-cdn / hysteria2) и время переключения
-- RTT к VPS и baseline (7-дневное скользящее)
-- Количество пиров на wg0 и wg1
-- Статус dnsmasq
-- Время следующей плановой ротации
-- Возраст кэша баз РКН
+### Логи и графики
 
-#### `/tunnel`
+- `/logs <service> [N]` — логи сервиса.
+- `/graph [panel] [period]` — график через Grafana render.
 
-Детальный статус всех четырёх стеков:
-- Для каждого: статус (active / standby / unreachable), RTT, throughput последнего теста
-- Активный tun-интерфейс и его маршрут в таблице `marked`
-- Время последнего failover и причина
+Поддерживаемые `panel`: `system`, `tunnel`, `speed`, `clients`.
+Типовые `period`: `1h`, `6h`, `24h`, `7d`.
 
-#### `/ip`
+### Операции со стэками и сервисами
 
-Два внешних IP:
-- IP через активный VPN-тун (должен совпадать с IP VPS или Cloudflare)
-- Прямой IP домашнего сервера
+- `/assess` — тест доступных стэков.
+- `/switch <stack>` — переключить активный стек.
+- `/restart <service>` — перезапустить сервис или контейнер.
+- `/upgrade` — обновить Docker-образы.
+- `/reboot` — перезагрузить home-server.
 
-#### `/docker`
+### Deploy и rollback
 
-Список всех Docker-контейнеров с их статусом:
-- Имя, статус (running / exited / unhealthy), uptime, использование памяти
-- Контейнеры на домашнем сервере и VPS (через watchdog API)
+- `/deploy` — запустить release deploy.
+- `/rollback` — откатить к последнему подтверждённому snapshot.
 
-#### `/clients`
+Прогресс и итог deploy/rollback нужно смотреть через `/status`, а не по тексту запуска.
 
-Список зарегистрированных клиентов:
-- Имя пользователя (Telegram), количество устройств, протокол
-- Статус (active / disabled), дата регистрации
-- Last handshake для каждого устройства
+### Клиенты и рассылки
 
-#### `/speed`
+- `/invite` — создать invite.
+- `/clients` — список клиентов.
+- `/client disable <name>`
+- `/client enable <name>`
+- `/client kick <name>`
+- `/client limit <name> <n>`
+- `/broadcast <text>` — сообщение всем клиентам.
+- `/requests` — входящие запросы клиентов.
+- `/admin list`
+- `/admin invite`
+- `/admin remove <username|id>`
 
-Запускает speedtest через активный тун прямо сейчас:
-- 100 KB тест (download + upload)
-- 10 MB тест (download + upload)
-- Сравнение с baseline и вывод если шейпинг обнаружен
+### Routing policy
 
----
+- `/vpn add <domain>`
+- `/vpn remove <domain>`
+- `/direct add <domain>`
+- `/direct remove <domain>`
+- `/list vpn`
+- `/list direct`
+- `/check <domain>`
+- `/latency learned|candidates|all`
+- `/routes update`
 
-### Графики
+`/check` показывает verdict, source tags и service attribution, если домен сопоставлен с latency catalog.
+`/latency all` показывает runtime catalog status, `learned` и `candidates`.
 
-Команда: `/graph [тип] [период]`
+### VPS и recovery-операции
 
-| Тип | Что показывает |
-|-----|---------------|
-| `/graph` | system (default) |
-| `/graph tunnel` | RTT, активный стек, события failover |
-| `/graph speed` | История speedtest: download/upload по времени |
-| `/graph clients` | Количество активных пиров, трафик wg0/wg1 |
-| `/graph system` | CPU, RAM, диск на домашнем сервере и VPS |
+- `/vps list`
+- `/vps add <ip> [ssh_port]`
+- `/vps remove <ip>`
+- `/migrate_vps <ip> [--from-backup]`
+- `/migrate-vps <ip> [--from-backup]`
+- `/renew_cert`
+- `/renew-cert`
+- `/renew_ca`
+- `/renew-ca`
+- `/diagnose <device>`
 
-Периоды: `1h`, `6h` (по умолчанию), `24h`, `7d`.
+### Experimental / partial commands
 
-Примеры:
-```
-/graph tunnel 24h
-/graph system 7d
-/graph speed 1h
-```
+- `/dpi` — experimental DPI bypass surface.
+- `/rotate_keys` и `/rotate-keys` — зарезервированы, но пока не реализованы как безопасный production path.
 
-Бот запрашивает PNG через Grafana Render API и отправляет изображение напрямую в чат.
+## Команды клиента
 
----
+- `/start` — регистрация по invite-коду или вход в меню.
+- `/mydevices` — список устройств.
+- `/myconfig` — получить конфиг.
+- `/adddevice` — добавить устройство.
+- `/removedevice` — удалить устройство.
+- `/update` — обновить конфиги устройств.
+- `/request` — запросить policy change по домену.
+- `/myrequests` — статус собственных запросов.
+- `/exclude` — исключения из split tunneling.
+- `/route` — принудительные маршруты через сервер.
+- `/report` — отправить сообщение администратору.
+- `/status` — клиентский статус VPN.
+- `/help` — краткая помощь.
+- `/menu` — показать меню.
 
-### Логи
+## Поддерживаемые смысловые сценарии
 
-```
-/logs <сервис> [количество строк]
-```
+### Deploy
 
-По умолчанию — 50 последних строк. При больших объёмах бот отправляет файл.
+- `/deploy`
+- затем `/status`
 
-| Пример | Источник |
-|--------|---------|
-| `/logs watchdog` | journald: `watchdog.service` |
-| `/logs telegram-bot 100` | Docker: контейнер `telegram-bot` |
-| `/logs dnsmasq` | journald: `dnsmasq.service` |
-| `/logs hysteria2` | journald: `hysteria2.service` |
-| `/logs xray-client-vision` | Docker: контейнер `xray-client-vision` |
-| `/logs xray-client-xhttp` | Docker: контейнер `xray-client-xhttp` |
-| `/logs nginx` | Docker: контейнер `nginx` на VPS |
+### Rollback
 
----
+- `/rollback`
+- затем `/status`
 
-### Управление туннелем
+### Routing
 
-#### Ручное переключение стека
+- `/check example.com`
+- `/vpn add example.com`
+- `/direct add example.com`
+- `/routes update`
 
-```
-/switch vless-reality-vision  — переключить на штатный TCP fallback (Vision, :443)
-/switch reality-xhttp         — переключить на experimental XHTTP (:2083)
-/switch cloudflare-cdn        — переключить на CDN (VLESS+WS через Cloudflare)
-/switch hysteria2             — переключить на Hysteria2 (QUIC+Salamander, UDP 443)
-```
-
-Переключение выполняется через watchdog (make-before-break). Кратковременный обрыв ≈1–3 сек.
-
----
-
-### Управление сервисами
-
-#### Перезапуск
-
-```
-/restart <сервис>
-```
-
-| Пример | Что перезапускается |
-|--------|-------------------|
-| `/restart watchdog` | watchdog.service (systemd) |
-| `/restart dnsmasq` | dnsmasq.service (systemd) |
-| `/restart hysteria2` | hysteria2.service (systemd) |
-| `/restart telegram-bot` | Docker-контейнер telegram-bot |
-| `/restart xray-client-vision` | Docker-контейнер xray-client-vision |
-| `/restart xray-client-xhttp` | Docker-контейнер xray-client-xhttp |
-| `/restart cloudflared` | Docker-контейнер cloudflared |
-
-#### Перезагрузка сервера
-
-```
-/reboot
-```
-
-Требует подтверждения (ввести "ДА"). После перезагрузки `vpn-postboot.service` отправит отчёт в Telegram.
-
-#### Тест всех стеков
-
-```
-/assess
-```
-
-Запускает одновременный throughput-тест всех четырёх стеков. Результат приходит отдельным сообщением (~40 сек). Используется для ручной оценки перед переключением.
-
-#### Обновление Docker-образов
-
-```
-/upgrade
-```
-
-Требует подтверждения. Скачивает новые версии образов, пересоздаёт контейнеры. Watchdog не трогается.
-
----
-
-### Обновление и откат
-
-#### `/deploy`
-
-Обновляет инфраструктуру из git-зеркала на VPS:
-
-1. Проверяет rollback readiness и доступность VPS
-2. Получает target release из git-зеркала на VPS
-3. Создаёт release snapshot в `.deploy-snapshot/`
-4. Применяет release на home и VPS
-5. Гоняет обязательный health gate
-6. При любом unsafe state — авто-rollback + алерт
-7. Источник истины для deploy/rollback status — JSON state в `/opt/vpn/.deploy-state/`
-
-#### Maintenance после deploy
+### Maintenance после deploy
 
 Через SSH:
 
@@ -184,390 +135,22 @@
 sudo bash /opt/vpn/scripts/post-install-check.sh
 sudo python3 /opt/vpn/scripts/update-routes.py --force
 cd /opt/vpn && bash tests/run-smoke-tests.sh
+sudo bash /opt/vpn/deploy.sh --status
 ```
 
 Ожидаемый результат:
-- `post-install-check.sh` без критических ошибок
-- `update-routes.py --force` завершён успешно
-- `tests/run-smoke-tests.sh` полностью зелёный
-- `sudo bash deploy.sh --status` показывает committed release без `pending`
 
-#### `/rollback`
+- post-install check без критических ошибок;
+- route rebuild без traceback;
+- smoke полностью зелёный;
+- `Pending: none`;
+- `Last attempt: success / commit`.
 
-Откат release к последнему подтвержденному snapshot из `.deploy-snapshot/`. Выполняется немедленно без подтверждения.
+## Чего здесь намеренно нет
 
----
+Из документа убраны:
 
-### Управление клиентами
-
-```
-/invite
-```
-Создаёт одноразовый invite-код с TTL 24 часа. Передать клиенту для регистрации.
-
-```
-/client disable <имя>        — деактивировать клиента (peer остаётся в конфиге, трафик не проходит)
-/client enable <имя>         — реактивировать клиента
-/client kick <имя>           — удалить все устройства клиента и их peers
-/client limit <имя> <число>  — установить лимит устройств (по умолчанию 5)
-```
-
-```
-/broadcast <текст>           — отправить сообщение всем зарегистрированным клиентам
-```
-
----
-
-### Запросы клиентов
-
-```
-/requests
-```
-
-Показывает список ожидающих запросов от клиентов (тип, домен, имя клиента, дата). Для каждого запроса — инлайн-кнопки **[Одобрить]** и **[Отклонить]**.
-
-При одобрении `/request vpn`: домен добавляется через `/vpn add` и рассылаются обновлённые конфиги.
-
----
-
-### Маршруты и домены
-
-#### Ручное управление VPN-доменами
-
-```
-/vpn add <домен>       — добавить домен: трафик к нему идёт через VPN для всех клиентов
-/vpn remove <домен>    — убрать домен из VPN-списка
-/direct add <домен>    — добавить домен в прямой доступ (обойти VPN, даже если в базах РКН)
-/direct remove <домен> — убрать из прямого доступа
-```
-
-После `/vpn add` watchdog добавляет домен в `dnsmasq.d/vpn-force.conf`, перезагружает dnsmasq, добавляет /24 подсеть IP домена в `combined.cidr`, рассылает обновлённые конфиги (debounce 5 мин).
-
-#### Просмотр и проверка
-
-```
-/list vpn              — список доменов из manual-vpn.txt
-/list direct           — список доменов из manual-direct.txt
-/check <домен>         — проверить доступность через активный тун
-```
-
-`/check` теперь показывает не только итоговый вердикт, но и:
-- source tags (`manual-vpn`, `manual-direct`, `blocked_static`, `blocked_dynamic`, `latency-sensitive-direct`)
-- catalog attribution (`fallback-catalog:<service>` или `runtime-catalog:<service>`)
-- имя matched service, если домен распознан как часть latency catalog
-
-Если домен повторно попадает в blocked-path, но относится к известной service family из latency catalog, watchdog может поместить его в bounded self-learning pipeline. Автопромоут работает только для catalog-matched доменов и не перебивает `manual-vpn`.
-
-#### Обновление баз РКН
-
-```
-/routes update
-```
-
-Запускает `update-routes.py` немедленно (не ждать cron 03:00). Асинхронно (202 Accepted), прогресс и результат приходят отдельным сообщением. Если базы изменились — рассылаются новые конфиги.
-
-Что пересобирается сейчас:
-- `/etc/vpn-routes/combined.cidr`
-- `/etc/nftables-blocked-static.conf`
-- `/etc/dnsmasq.d/vpn-domains.conf`
-- `/etc/dnsmasq.d/vpn-force.conf`
-- `/etc/dnsmasq.d/vpn-direct.conf`
-- `/etc/dnsmasq.d/vpn-latency-sensitive.conf`
-
-Latency-sensitive routing теперь собирается из нескольких слоёв:
-- fallback catalog из репозитория
-- runtime catalog `/etc/vpn-routes/latency-catalog.json`
-- runtime override `/etc/vpn-routes/latency-sensitive-direct.txt`
-- learned domains `/etc/vpn-routes/latency-learned.txt`
-- `manual-direct.txt`
-
----
-
-### VPS
-
-```
-/vps list                              — список VPS и их статус (активный/standby/down)
-/vps add <IP>                          — добавить VPS в ротацию
-/vps remove <IP>                       — удалить VPS
-/migrate_vps <IP>                      — подготовить миграцию на новый VPS
-/migrate_vps <IP> --from-backup        — подготовить миграцию с флагом восстановления
-```
-
-Сейчас команда в боте только запускает подтверждённый deploy-flow и не выполняет отдельную таргетированную миграцию на указанный VPS. Это требует отдельного backend path в watchdog.
-
----
-
-### Безопасность и сертификаты
-
-```
-/rotate_keys           — зарезервировано; управляемая ротация из бота пока не реализована
-/renew_cert            — обновить клиентский mTLS сертификат (TTL 2 года)
-/renew_ca              — обновить CA сертификат (TTL 10 лет; делать редко, аннулирует все клиентские)
-```
-
-Также поддерживаются slash-алиасы с дефисом:
-
-```
-/migrate-vps
-/rotate-keys
-/renew-cert
-/renew-ca
-```
-
----
-
-### Управление DPI bypass (zapret/nfqws)
-
-```
-/dpi                          — статус experimental DPI bypass
-/dpi on                       — включить experimental DPI bypass глобально
-/dpi off                      — выключить experimental DPI bypass
-/dpi add <пресет|домен>       — добавить сервис или домен в dpi_direct список
-/dpi remove <имя>             — удалить из списка
-/dpi toggle <имя>             — включить/выключить конкретный пресет
-```
-
-Zapret (nfqws) сейчас считается experimental-механизмом DPI-десинхронизации для SNI-throttling. Production-path для YouTube и других blocked-сервисов идёт через VPS; `dpi_direct` используется только после явного admin opt-in.
-
----
-
-### Диагностика
-
-```
-/diagnose <устройство>
-```
-
-Полная диагностика конкретного устройства клиента:
-- Статус WG peer (last handshake, RX/TX)
-- RTT от VPS до клиента через тун
-- Проверка nftables fwmark (тестовый пакет к заблокированному IP)
-- DNS-резолв через dnsmasq (nftset= работает?)
-- Kill switch: трафик к заблокированному IP не утекает через eth0
-
----
-
-### Меню
-
-```
-/menu
-```
-
-Показывает ReplyKeyboard с кнопками основных команд администратора.
-
----
-
-## Команды клиента
-
-### Регистрация
-
-```
-/start
-```
-
-Если пользователь **уже зарегистрирован** — сразу показывает список его устройств.
-
-Если **новый** — запускает FSM регистрации:
-1. Запрос invite-кода (получить у администратора)
-2. Ввод имени устройства (например: `iPhone` или `Ноутбук`)
-3. Выбор протокола: `AWG` (рекомендуется, маскировка заголовков) или `WG` (стандартный)
-4. Получение `.conf` файла + QR-кода (если AllowedIPs ≤ 50 записей)
-
----
-
-### Устройства
-
-```
-/mydevices
-```
-Список ваших устройств: имя, протокол, last handshake, статус.
-
-```
-/myconfig <имя>
-```
-Получить конфиг конкретного устройства повторно. Если конфиг не изменился — бот сообщит об этом.
-
-```
-/adddevice
-```
-Запрос на добавление нового устройства. Требует одобрения администратора. После одобрения бот пришлёт конфиг.
-
-```
-/removedevice <имя>
-```
-Удалить одно из своих устройств. WG peer удаляется немедленно.
-
-```
-/update
-```
-Получить актуальные конфиги всех устройств. Если конфиги не изменились — бот сообщит об этом.
-
----
-
-### Исключения из split tunneling
-
-```
-/exclude add <подсеть>     — добавить подсеть: трафик к ней идёт мимо VPN (прямо)
-/exclude remove <подсеть>  — убрать подсеть из исключений
-/exclude list              — список исключений ваших устройств
-```
-
-Пример использования — офисная подсеть:
-```
-/exclude add 192.168.100.0/24
-```
-
-Исключения работают на уровне AllowedIPs в конфиге устройства. После изменения бот пришлёт обновлённый конфиг.
-
----
-
-### Маршруты через сервер
-
-```
-/route add <ip|подсеть>     — добавить IP/подсеть: трафик к ним идёт через сервер
-/route remove <ip|подсеть>  — убрать из списка
-/route list                 — список маршрутов через сервер ваших устройств
-```
-
-Примеры:
-```
-/route add 192.168.1.200
-/route add 192.168.1.0/24
-```
-
-Это per-device override для split tunneling: по умолчанию локальные/LAN адреса у обычных клиентов остаются direct, но конкретные IP/подсети можно явно отправить через сервер.
-
----
-
-### Запросы на домены
-
-```
-/request vpn <домен>      — попросить администратора добавить домен в VPN
-/request direct <домен>   — попросить добавить домен в прямой доступ
-/myrequests               — статус ваших запросов (ожидает / одобрен / отклонён)
-```
-
----
-
-### Статус и помощь
-
-```
-/status                   — текущий статус VPN: активный стек, RTT, работает ли туннель
-/report <описание>        — отправить сообщение о проблеме администратору
-/help                     — список доступных команд
-```
-
----
-
-## Алерты — автоматические уведомления
-
-Watchdog и VPS healthcheck отправляют уведомления администратору при следующих условиях:
-
-### Критичные
-
-| Условие | Кому |
-|---------|------|
-| Туннель недоступен более 1 минуты | Администратору |
-| Все 4 стека недоступны более 5 минут | Администратору + всем клиентам: «VPN временно недоступен» |
-| Watchdog не отвечает (cron failsafe каждые 5 мин) | Администратору |
-| dnsmasq не отвечает на dig | Администратору |
-| DKMS модуль AmneziaWG не собран | Администратору |
-| CA сертификат истекает ≤ 30 дней | Администратору |
-| Deploy завершился с ошибкой → авто-rollback | Администратору |
-| Heartbeat к VPS потерян более 5 минут | Администратору |
-
-### Предупреждения
-
-| Условие | Кому |
-|---------|------|
-| RTT > 500ms | Администратору |
-| Потери пакетов > 5% | Администратору |
-| Throughput < 5 Mbps | Администратору |
-| Шейпинг обнаружен (throughput ниже baseline) | Администратору |
-| Объёмный шейпинг (расхождение 100KB и 10MB тестов) | Администратору |
-| WG peer stale > 180 сек | Администратору |
-| Docker-контейнер перешёл в exited или unhealthy | Администратору |
-| Диск > 85% | Администратору |
-| Клиентский mTLS cert истекает ≤ 14 дней | Администратору |
-| Standby-туннель не прошёл ежедневную проверку (04:30) | Администратору |
-| Заблокированные сайты недоступны через тун | Администратору |
-| Кэш баз маршрутов устарел > 3 дней | Администратору |
-| Upload-канал занят > 80% | Администратору |
-| fail2ban заблокировал IP | Администратору |
-
-### Информационные
-
-| Условие | Кому |
-|---------|------|
-| Внешний IP домашнего сервера изменился | Администратору |
-| Доступна новая версия (с кнопками [Обновить] [Пропустить] [Подробнее]) | Администратору |
-| Успешный deploy с diff версий | Администратору |
-
-**Graceful degradation:** при недоступности Telegram API алерты складываются в очередь и отправляются после восстановления.
-
----
-
-## FSM-состояния
-
-### Регистрация нового клиента (`/start`)
-
-```
-Idle
-  │  /start → пользователь не зарегистрирован
-  ▼
-WaitInvite
-  │  invite-код верен, резервируется на 10 мин
-  ▼
-WaitName
-  │  имя устройства введено
-  ▼
-WaitProtocol
-  │  AWG или WG выбран
-  ▼
-(завершён) Peer создан, конфиг отправлен
-```
-
-### Добавление устройства (`/adddevice`)
-
-```
-Idle
-  │  /adddevice
-  ▼
-WaitDeviceName
-  │  имя введено
-  ▼
-(завершён) Запрос отправлен администратору → ожидание одобрения
-```
-
-### Удаление устройства (`/removedevice`)
-
-```
-Idle
-  │  /removedevice
-  ▼
-WaitDeviceChoice — показывает список устройств
-  │  устройство выбрано
-  ▼
-WaitConfirm — «Удалить iPhone? [Да] [Нет]»
-  │  подтверждение
-  ▼
-(завершён) Peer удалён
-```
-
-### Подтверждение перезагрузки (`/reboot`)
-
-```
-Idle (только для администратора)
-  │  /reboot
-  ▼
-WaitRebootConfirm — «Введите ДА для подтверждения»
-  │  «ДА» получено
-  ▼
-(завершён) sudo reboot
-```
-
-### Общие правила FSM
-
-- **Timeout:** любое состояние сбрасывается через **10 минут** бездействия
-- **Прерывание:** ввод любой команды из другого контекста → текущий FSM сбрасывается → команда выполняется
-- **Invite-код:** при таймауте WaitInvite код освобождается автоматически
-- **Default handler:** для зарегистрированных пользователей вне FSM — «Неизвестная команда. Используйте /help»; для незарегистрированных — молчание
+- старые обещания про команды, которых больше нет в production-contract;
+- описание alert-матрицы как гарантированного API;
+- старые версии deploy UX, где успех определялся по тексту запуска;
+- неактуальные команды для отдельного `vps-only` update path.

@@ -6,6 +6,7 @@ handlers/admin.py — Все команды администратора
   /switch /restart /upgrade /deploy /rollback
   /invite /clients /broadcast /requests
   /vpn add|remove   /direct add|remove   /list vpn|direct   /check
+  /latency learned|candidates|all
   /routes update    /vps list|add|remove  /migrate_vps
   /dpi [on|off|add|remove|toggle]
   /client disable|enable|kick|limit
@@ -285,6 +286,46 @@ async def _docker_logs(service: str, n: int = 50) -> str:
 
 MANUAL_VPN    = Path("/etc/vpn-routes/manual-vpn.txt")
 MANUAL_DIRECT = Path("/etc/vpn-routes/manual-direct.txt")
+
+
+def _render_latency_learning_text(payload: dict) -> str:
+    catalog = payload.get("catalog") or {}
+    learned = list(payload.get("learned") or [])
+    candidates = list(payload.get("candidates") or [])
+    age_days = catalog.get("age_days")
+    age_text = f"{age_days} дн." if age_days is not None else "—"
+    lines = [
+        "🧠 <b>Latency learning</b>",
+        (
+            f"Catalog: source=<code>{catalog.get('source', '?')}</code> | "
+            f"services=<b>{catalog.get('service_count', 0)}</b> | "
+            f"age=<b>{age_text}</b>"
+        ),
+    ]
+    if catalog.get("empty"):
+        lines.append("⚠️ Catalog пуст или недоступен.")
+    elif catalog.get("stale"):
+        lines.append("⚠️ Runtime catalog устарел.")
+    lines.append("")
+    lines.append(f"<b>Learned</b>: {payload.get('learned_count', 0)}")
+    if learned:
+        lines.extend(f"• <code>{domain}</code>" for domain in learned[:15])
+        if len(learned) > 15:
+            lines.append(f"... и ещё {len(learned) - 15}")
+    else:
+        lines.append("—")
+    lines.append("")
+    lines.append(f"<b>Candidates</b>: {payload.get('candidate_count', 0)}")
+    if candidates:
+        for item in candidates[:10]:
+            score = item.get("score", 0)
+            hits = item.get("hits", item.get("hit_count", 0))
+            lines.append(f"• <code>{item.get('domain','?')}</code> | score={score} | hits={hits}")
+        if len(candidates) > 10:
+            lines.append(f"... и ещё {len(candidates) - 10}")
+    else:
+        lines.append("—")
+    return "\n".join(lines)
 ALLOWED_SERVICES = {
     "dnsmasq", "watchdog", "hysteria2", "docker",
     "awg-quick@wg0", "wg-quick@wg1", "nftables",
@@ -1463,6 +1504,26 @@ async def cmd_check(message: Message, state: FSMContext, **kw):
         await message.answer(f"❌ {e}")
 
 
+@router.message(Command("latency"), StateFilter("*"))
+async def cmd_latency(message: Message, state: FSMContext, **kw):
+    if not await _is_admin(message, db=kw.get("db")):
+        return
+    await state.clear()
+    args = message.text.split()
+    if len(args) < 2 or args[1] not in ("learned", "candidates", "all"):
+        await message.answer("Использование: `/latency learned|candidates|all`")
+        return
+    try:
+        payload = await _wc().get_latency_learning()
+        if args[1] == "learned":
+            payload = {**payload, "candidates": []}
+        elif args[1] == "candidates":
+            payload = {**payload, "learned": []}
+        await message.answer(_render_latency_learning_text(payload), parse_mode="HTML")
+    except WatchdogError as e:
+        await message.answer(f"❌ {e}")
+
+
 # ---------------------------------------------------------------------------
 # /routes update
 # ---------------------------------------------------------------------------
@@ -2463,9 +2524,24 @@ async def cb_adm_routes_info(cb: CallbackQuery, **kw):
         "`/direct add <домен>` — добавить в прямые\n"
         "`/direct remove <домен>` — убрать из прямых\n"
         "`/check <домен>` — проверить домен\n"
+        "`/latency all` — learned/candidates + catalog status\n"
         "`/routes update` — обновить все маршруты",
         reply_markup=back_to_admin_menu(),
     )
+
+
+@router.callback_query(F.data == "adm:latency_learning")
+async def cb_adm_latency_learning(cb: CallbackQuery, **kw):
+    await cb.answer()
+    try:
+        payload = await _wc().get_latency_learning()
+        await cb.message.answer(
+            _render_latency_learning_text(payload),
+            reply_markup=back_to_admin_menu(),
+            parse_mode="HTML",
+        )
+    except WatchdogError as e:
+        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic refresh of runtime latency catalog
+Documentation=https://github.com/Cyrillicspb/vpn-infra/blob/main/docs/TODO-SPECS.md
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+Persistent=true
+RandomizedDelaySec=10m
+Unit=vpn-latency-catalog-update.service
+
+[Install]
+WantedBy=timers.target

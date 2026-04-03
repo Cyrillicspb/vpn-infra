@@ -517,15 +517,17 @@ phase0() {
         ask USE_DDNS "Настроить DDNS? (y/N)"
         if [[ "${USE_DDNS,,}" == "y" ]]; then
             ask DDNS_PROVIDER "Провайдер DDNS (duckdns/noip/cloudflare)"
-            ask DDNS_DOMAIN "DDNS домен для клиентского Endpoint / home ingress (например: myhome.duckdns.org)"
+            ask HOME_DDNS_DOMAIN "DDNS домен для клиентского Endpoint / home ingress (например: myhome.duckdns.org)"
             ask DDNS_TOKEN "DDNS токен (для DuckDNS: UUID с сайта duckdns.org, напр. a1b2c3d4-...)" yes
-            WG_HOST="${DDNS_DOMAIN}"
+            DDNS_DOMAIN="${HOME_DDNS_DOMAIN}"
+            WG_HOST="${HOME_DDNS_DOMAIN}"
         else
             # Gateway Mode: WG_HOST = IP роутера (передан TUI/введён вручную)
             # Hosted Mode:  WG_HOST = внешний IP сервера
             WG_HOST="${ROUTER_EXTERNAL_IP:-${EXTERNAL_IP:-}}"
             [[ -z "$WG_HOST" ]] && die "Не удалось определить внешний IP. Укажите DDNS или ROUTER_EXTERNAL_IP."
         fi
+        ask VPS_HOSTNAME "Операционный hostname VPS (опционально; не используется как client endpoint)"
 
         # ── CDN-стек (Cloudflare Workers) — опциональный ──────────────────────────
         echo ""
@@ -604,8 +606,10 @@ phase0() {
         env_set "WG_HOST"                "${WG_HOST}"
         env_set "USE_DDNS"               "${USE_DDNS:-n}"
         env_set "DDNS_PROVIDER"          "${DDNS_PROVIDER:-}"
+        env_set "HOME_DDNS_DOMAIN"       "${HOME_DDNS_DOMAIN:-${DDNS_DOMAIN:-}}"
         env_set "DDNS_DOMAIN"            "${DDNS_DOMAIN:-}"
         env_set "DDNS_TOKEN"             "${DDNS_TOKEN:-}"
+        env_set "VPS_HOSTNAME"           "${VPS_HOSTNAME:-}"
         env_set "USE_CLOUDFLARE"         "${USE_CLOUDFLARE:-n}"
 
         env_set "CF_CDN_HOSTNAME"    "${CF_CDN_HOSTNAME:-}"

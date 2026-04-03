@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 import importlib.util
+import json
 import sys
 import tempfile
 import types
@@ -109,6 +110,48 @@ class FunctionalHealthTests(unittest.TestCase):
         watchdog.state.last_functional_run_by_tier = {}
         watchdog.state.responsiveness_summary = {}
         watchdog.state.latency_learning_last_apply_ts = 0.0
+        watchdog.state.latency_catalog_alert_last_ts = 0.0
+
+    def test_latency_catalog_status_prefers_runtime_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            runtime = tmp / "latency-catalog.json"
+            runtime.write_text(
+                json.dumps(
+                    {
+                        "services": {
+                            "yandex": {
+                                "display": "Yandex",
+                                "domains": {"core": ["yandex.ru"]},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            fallback = tmp / "latency-catalog-default.json"
+            fallback.write_text('{"services":{}}', encoding="utf-8")
+            with mock.patch.object(watchdog, "LATENCY_CATALOG_FILE", runtime):
+                with mock.patch.object(watchdog, "LATENCY_CATALOG_FALLBACKS", [fallback]):
+                    info = watchdog._latency_catalog_status()
+        self.assertEqual(info["source"], "runtime")
+        self.assertEqual(info["service_count"], 1)
+        self.assertFalse(info["empty"])
+
+    def test_latency_catalog_health_warns_on_missing_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fallback = tmp / "latency-catalog-default.json"
+            fallback.write_text(
+                json.dumps({"services": {"okko": {"display": "Okko", "domains": {"core": ["okko.tv"]}}}}),
+                encoding="utf-8",
+            )
+            runtime = tmp / "latency-catalog.json"
+            with mock.patch.object(watchdog, "LATENCY_CATALOG_FILE", runtime):
+                with mock.patch.object(watchdog, "LATENCY_CATALOG_FALLBACKS", [fallback]):
+                    result = watchdog._hc_latency_catalog_freshness()
+        self.assertEqual(result.status, "warn")
+        self.assertIn("fallback", result.detail)
 
     def test_load_functional_scenarios_reads_manifest(self) -> None:
         manifest = """

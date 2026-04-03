@@ -283,6 +283,9 @@ def admin_routes_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔄 Обновить маршруты", callback_data="adm:routes_update"),
         ],
         [
+            InlineKeyboardButton(text="🧠 Latency state", callback_data="adm:latency_learning"),
+        ],
+        [
             InlineKeyboardButton(text="🧪 DPI experimental", callback_data="adm:dpi"),
             InlineKeyboardButton(text="📊 Наборы IP",       callback_data="adm:nft_stats"),
         ],

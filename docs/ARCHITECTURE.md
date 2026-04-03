@@ -1,431 +1,129 @@
-# Архитектура VPN-инфраструктуры v4.0
-
-## Содержание
-
-1. [Цели системы](#1-цели-системы)
-2. [Сетевая топология](#2-сетевая-топология)
-3. [Адресное пространство](#3-адресное-пространство)
-4. [Компоненты домашнего сервера](#4-компоненты-домашнего-сервера)
-5. [Компоненты VPS](#5-компоненты-vps)
-6. [Tier-2 туннель](#6-tier-2-туннель)
-7. [Стеки защищённого соединения](#7-стеки-защищённого-соединения)
-8. [Zapret (nfqws)](#8-zapret-nfqws)
-9. [Failover и reassessment](#9-failover-и-reassessment)
-10. [Split tunneling](#10-split-tunneling)
-11. [nftables и policy routing](#11-nftables-и-policy-routing)
-12. [Watchdog](#12-watchdog)
-13. [Telegram-бот](#13-telegram-бот)
-14. [Мониторинг](#14-мониторинг)
-15. [Операционные замечания](#15-операционные-замечания)
-
----
-
-## 1. Цели системы
-
-Инфраструктура решает три задачи:
-
-1. Обход DPI и блокировок РКН без ручных действий пользователя.
-2. Split tunneling: через VPS идёт только заблокированный трафик.
-3. Простая эксплуатация: клиенты получают WireGuard/AmneziaWG конфиги через Telegram, а домашний сервер сам выбирает рабочий внешний стек.
-
-Клиенты всегда подключаются только к домашнему серверу. Переключение между внешними стеками происходит прозрачно для них.
-
-### Client Endpoint Source Of Truth
-
-- Клиентский `Endpoint` для AWG/WG всегда должен указывать на home ingress.
-- В `gateway` mode source of truth для клиентского ingress:
-  - `WG_HOST` или DDNS-домен, который резолвится в внешний IP домашнего роутера;
-  - `ROUTER_EXTERNAL_IP` как fallback и hairpin source of truth для LAN.
-- `VPS_IP` и любые VPS-hostname не должны использоваться как клиентский `Endpoint` для AWG/WG.
-- DDNS для клиентского `Endpoint` должен обновляться по реальному WAN IP домашнего роутера, а не по текущему egress IP активного VPS-стека.
-- Если в системе появится отдельный hostname для миграции или операционного доступа к VPS, он должен храниться отдельно от `WG_HOST` и не влиять на генерацию клиентских конфигов.
-
----
-
-## 2. Сетевая топология
-
-```mermaid
-graph TD
-    subgraph CLIENTS["Клиенты"]
-        C1[Телефон<br/>AmneziaWG]
-        C2[Ноутбук<br/>WireGuard]
-        C3[Роутер<br/>AmneziaWG]
-    end
-
-    subgraph HOME["Домашний сервер"]
-        WG0[wg0<br/>10.177.1.0/24]
-        WG1[wg1<br/>10.177.3.0/24]
-        DNS[dnsmasq]
-        NFT[nftables]
-        WD[watchdog :8080]
-        H2[hysteria2.service]
-        T2[autossh-tier2<br/>10.177.2.1]
-
-        subgraph HOME_DOCKER["Docker"]
-            BOT[telegram-bot]
-            XHTTP[xray-client-xhttp<br/>SOCKS :1081]
-            VISION[xray-client-vision<br/>SOCKS :1084]
-            CDN[xray-client-cdn<br/>SOCKS :1082]
-            SOCK[socket-proxy]
-            NE1[node-exporter]
-        end
-    end
-
-    subgraph VPS["VPS"]
-        T2V[tier-2 peer<br/>10.177.2.2]
-        XUI[3x-ui<br/>panel + CDN inbound :8080]
-        XV[xray-reality-vision<br/>TCP :443]
-        XX[xray-reality-xhttp<br/>TCP :2083]
-        H2V[hysteria2<br/>UDP :443]
-        NGINX[nginx :8443]
-        NE2[node-exporter]
-    end
-
-    subgraph CF["Cloudflare"]
-        WORKER[Cloudflare Worker]
-    end
-
-    C1 --> WG0
-    C2 --> WG1
-    C3 --> WG0
-    WG0 --> NFT
-    WG1 --> NFT
-    DNS --> NFT
-    NFT -->|blocked traffic| WD
-    NFT -->|direct traffic| Internet[Прямой интернет]
-
-    WD --> H2
-    WD --> XHTTP
-    WD --> VISION
-    WD --> CDN
-
-    H2 --> H2V
-    XHTTP --> XX
-    VISION --> XV
-    CDN --> WORKER
-    WORKER --> XUI
+# Архитектура
 
-    T2 <--> T2V
-    BOT --> WD
-```
+## Назначение
 
-Ключевой смысл:
+Система решает три задачи:
 
-- клиенты ходят только на домашний сервер;
-- заблокированный трафик уходит через активный внешний стек;
-- свободный трафик идёт напрямую;
-- `watchdog` выбирает активный стек и обновляет маршрутизацию;
-- `reality-xhttp` оставлен как experimental и не участвует в автоматическом выборе.
-- DDNS/hostname для клиентских конфигов относится к home ingress, а не к VPS.
+- даёт клиентам один стабильный ingress на home-server;
+- уводит blocked/VPN-трафик через VPS;
+- оставляет обычный трафик direct, если policy не требует обратного.
 
----
+Главный принцип: клиенты знают только home ingress. Home-server остаётся control plane, watchdog принимает runtime-решения, VPS выступает execution backend для blocked/VPN lane.
 
-## 3. Адресное пространство
+## Основные узлы
 
-| Сегмент | Подсеть | Назначение |
-|---|---|---|
-| AWG клиенты | `10.177.1.0/24` | клиенты AmneziaWG |
-| Tier-2 | `10.177.2.0/30` | служебный туннель дом ↔ VPS |
-| WG клиенты | `10.177.3.0/24` | клиенты WireGuard |
-| Docker home | `172.20.0.0/24` | контейнеры домашнего сервера |
-| Docker VPS | `172.21.0.0/24` | контейнеры VPS |
+### Home-server
 
-Tier-2:
+На home-server живут:
 
-- `10.177.2.1` — home
-- `10.177.2.2` — VPS
+- `wg0` и `wg1` для клиентских подключений;
+- `dnsmasq` и `nftables` для split tunneling;
+- `watchdog` как decision engine и HTTP API;
+- Telegram-бот;
+- клиентские outbound-стэки к VPS;
+- `deploy.sh`, `restore.sh`, smoke и post-install проверки.
 
----
+### VPS
 
-## 4. Компоненты домашнего сервера
+На VPS живут:
 
-### systemd
+- публичные inbound-стэки;
+- вспомогательные reverse-proxy и admin components;
+- git mirror и parity state для deploy;
+- backup/recovery артефакты.
 
-| Сервис | Роль |
-|---|---|
-| `nftables.service` | базовые таблицы и правила |
-| `vpn-sets-restore.service` | восстановление `blocked_static` после reboot |
-| `awg-quick@wg0` | AmneziaWG |
-| `wg-quick@wg1` | WireGuard |
-| `autossh-tier2` | служебный туннель к VPS |
-| `vpn-routes.service` | таблицы `vpn` и `marked` |
-| `dnsmasq.service` | DNS + `nftset` наполнение |
-| `hysteria2.service` | клиент Hysteria2 |
-| `watchdog.service` | decision engine и API |
+## Control Plane
 
-### Docker
+Источник истины для состояния системы:
 
-| Контейнер | Роль |
-|---|---|
-| `telegram-bot` | админский и клиентский интерфейс |
-| `xray-client-xhttp` | experimental XHTTP, SOCKS `:1081` |
-| `xray-client-vision` | штатный TCP fallback, SOCKS `:1084` |
-| `xray-client-cdn` | Cloudflare CDN стек, SOCKS `:1082` |
-| `socket-proxy` | ограниченный доступ к Docker API |
-| `node-exporter` | метрики хоста |
+- `/opt/vpn/.env` для секретов и инсталляционных параметров;
+- `/opt/vpn/.deploy-state/` для deploy/rollback состояния;
+- watchdog API для runtime-операций;
+- Telegram-бот как operator surface.
 
----
+Watchdog и бот не должны определять успех deploy по stdout скриптов. Для этого используется только deploy-state contract.
 
-## 5. Компоненты VPS
+## Client Endpoint Contract
 
-| Контейнер/сервис | Роль |
-|---|---|
-| `3x-ui` | панель + inbound для CDN стека |
-| `xray-reality-vision` | standalone `VLESS+REALITY+Vision` на `TCP 443` |
-| `xray-reality-xhttp` | standalone `VLESS+REALITY+XHTTP` на `TCP 2083` |
-| `hysteria2` | `UDP 443` |
-| `nginx` | mTLS доступ к админке |
-| `node-exporter` | метрики VPS |
+- Клиентский `Endpoint` для WG/AWG всегда указывает на home ingress.
+- `WG_HOST` относится только к home ingress.
+- `HOME_DDNS_DOMAIN` относится только к home ingress DDNS.
+- `VPS_IP` и любые VPS-hostname не должны использоваться как клиентский endpoint.
+- Если в будущем появится отдельный hostname для операционного доступа к VPS, он должен жить отдельно от `WG_HOST`.
 
-Текущая схема больше не использует `3x-ui` как хостинг для старых `reality/reality-grpc` inbound’ов. Эти исторические inbound’ы удаляются скриптом `vps/scripts/xray-setup.sh`.
+## Traffic Model
 
----
+Система делит трафик на три логических lane:
 
-## 6. Tier-2 туннель
+- `direct`: обычный трафик идёт в интернет напрямую;
+- `vpn`: blocked/static/dynamic трафик идёт через VPS lane;
+- `latency_sensitive_direct`: отдельный direct-first слой для сервисов, которые должны обходить broad blocked CIDR.
 
-Tier-2 нужен для служебной связности, не для пользовательского трафика.
+Приоритет правил важен:
 
-Через него идут:
+1. manual overrides;
+2. `latency_sensitive_direct`;
+3. blocked static/dynamic policy;
+4. остальной трафик.
 
-- scrape метрик VPS;
-- служебные probes watchdog;
-- DNS-резолв для части сценариев;
-- операторский доступ и синхронизация.
+## Routing Data Sources
 
-Главный принцип: Tier-2 не зависит от активного внешнего стека и не должен ломаться при failover.
+Runtime routing собирается из нескольких источников:
 
----
+- статические базы blocked domains/IP ranges;
+- `manual-vpn.txt`;
+- `manual-direct.txt`;
+- runtime latency catalog;
+- runtime learned latency set;
+- generated dnsmasq/nftables artifacts.
 
-## 7. Стеки защищённого соединения
+Bounded self-learning ограничен только известными service families из latency catalog. Он не должен свободно переводить произвольные домены между lane.
 
-Ниже указаны именно внешние стеки между home-server и VPS.
+## External Stacks
 
-### 7.1 Hysteria2
+Home-server использует набор outbound-стэков до VPS. Watchdog выбирает активный стек и может переключать его без изменения клиентских конфигов.
 
-| Параметр | Значение |
-|---|---|
-| Роль | текущий primary |
-| Транспорт | QUIC |
-| Порт VPS | `UDP 443` |
-| Преимущество | быстрый и уже рабочий |
-| Ограничение | QUIC проще фильтровать |
+Документация не фиксирует один конкретный preferred stack как вечную истину. Актуальное состояние нужно смотреть через:
 
-### 7.2 VLESS + REALITY + Vision
+- `/status`;
+- `/tunnel`;
+- watchdog `/status`.
 
-| Параметр | Значение |
-|---|---|
-| Роль | штатный TCP fallback |
-| Транспорт | TCP |
-| Порт VPS | `TCP 443` |
-| Home SOCKS | `127.0.0.1:1084` |
-| Маскировка | `www.microsoft.com` |
-| Участие в автоматике | да |
+## Deploy And Recovery
 
-Это основной TCP-резерв для watchdog.
+### Deploy
 
-### 7.3 VLESS + REALITY + XHTTP
+`deploy.sh` обновляет home и VPS как один release:
 
-| Параметр | Значение |
-|---|---|
-| Роль | experimental |
-| Транспорт | XHTTP |
-| Порт VPS | `TCP 2083` |
-| Home SOCKS | `127.0.0.1:1081` |
-| Маскировка | `cdn.jsdelivr.net` |
-| Участие в автоматике | нет |
+- fetch target release;
+- create snapshot;
+- apply home;
+- apply VPS;
+- verify через health gate;
+- commit или rollback.
 
-Стек сохранён только для ручных тестов и исследований transport compatibility. По текущему состоянию формально поднимается, но data path нестабилен.
+### Rollback
 
-### 7.4 Cloudflare CDN
+`deploy.sh --rollback` возвращает систему к последнему подтверждённому snapshot release.
 
-| Параметр | Значение |
-|---|---|
-| Роль | наиболее устойчивый обход |
-| Транспорт | HTTPS через Cloudflare Worker |
-| Home SOCKS | `127.0.0.1:1082` |
-| Участие в автоматике | да |
+### Disaster recovery
 
----
+`restore.sh` используется только для backup/DR и migration flows. Это не release rollback.
 
-## 8. Zapret (nfqws)
+## Verification Baseline
 
-`zapret` работает параллельно и решает другую задачу:
+Поддерживаемый operational baseline после install/deploy:
 
-- не заменяет VPN-стек;
-- помогает с DPI-throttling на прямом трафике;
-- не решает IP-level блокировки.
+- `bash /opt/vpn/scripts/post-install-check.sh` зелёный;
+- `bash /opt/vpn/tests/run-smoke-tests.sh` зелёный;
+- `bash /opt/vpn/deploy.sh --status` показывает committed release без `pending`;
+- deploy-state на home и VPS совпадает.
 
-Он используется для `dpi_direct` трафика через отдельную policy routing ветку.
+## Что не является текущим контрактом
 
----
+В текущую архитектуру не входят как active commitments:
 
-## 9. Failover и reassessment
-
-### Текущее правило ролей
-
-- `hysteria2` — текущий primary;
-- `vless-reality-vision` — штатный TCP standby;
-- `cloudflare-cdn` — более устойчивый внешний fallback;
-- `reality-xhttp` — только experimental/manual.
-
-### Что делает watchdog
-
-1. Следит за health и reachability.
-2. Хранит `active_stack`.
-3. Пишет `/var/run/vpn-active-stack` и `/var/run/vpn-active-socks-port`.
-4. Переключает `table marked`.
-5. Делает hourly reassessment и standby checks.
-
-### Что исключено из автоматики
-
-Плагин с:
-
-- `experimental: true`
-- `auto_enabled: false`
-
-остаётся видимым в API и UI, но не участвует в:
-
-- `test_standby_tunnels()`
-- `_full_reassessment()`
-- `_failover_impl()`
-
-Именно так сейчас обрабатывается `reality-xhttp`.
-
----
-
-## 10. Split tunneling
-
-Два уровня:
-
-1. `AllowedIPs` на клиентах ограничивают трафик, который вообще приходит на home-server.
-2. На home-server `nftables` и `ip rule` решают, что идёт:
-   - через VPS,
-   - напрямую,
-   - через `zapret`.
-
-Категории трафика:
-
-- `blocked_static` → через активный VPN стек;
-- `blocked_dynamic` → через активный VPN стек;
-- `latency_sensitive_direct` → direct-first, даже если IP совпал с broad blocked CIDR;
-- `dpi_direct` → напрямую через `zapret`;
-- остальное → прямой интернет.
-
-`latency_sensitive_direct` нужен для российских сервисов и приложений, которые:
-- плохо работают с иностранным IP;
-- имеют геоограничения;
-- зависят от bootstrap/auth/CDN цепочек, которые ломаются при уходе через VPS.
-
-Источники `latency_sensitive_direct`:
-- fallback catalog в репозитории
-- runtime catalog `/etc/vpn-routes/latency-catalog.json`
-- ручной runtime override `/etc/vpn-routes/latency-sensitive-direct.txt`
-- learned runtime domains `/etc/vpn-routes/latency-learned.txt`
-- `manual-direct.txt`
-
----
-
-## 11. nftables и policy routing
-
-Используются основные таблицы:
-
-- `vpn` (`table 100`) — прямой трафик;
-- `marked` (`table 200`) — трафик через активный внешний стек;
-- `dpi` (`table 201`) — прямой трафик через `zapret`.
-
-`watchdog` меняет `table marked` при переключении стеков.
-
-Если активный стек не поднят, система может переводить `table marked` в `unreachable`, чтобы blocked-трафик не утекал наружу.
-
----
-
-## 12. Watchdog
-
-`watchdog.py` — центральный decision engine.
-
-Основные функции:
-
-- API `/status`, `/metrics`, `/health`;
-- ротация и failover стеков;
-- health score;
-- уведомления в Telegram;
-- управление state-файлами и policy routing;
-- reassessment и standby tests.
-
-Дополнительно watchdog теперь делает bounded self-learning для latency-sensitive routing:
-- принимает наблюдения из `/check` и functional scenarios;
-- ведёт candidates-store `/etc/vpn-routes/latency-candidates.json`;
-- auto-promote делает только для доменов, которые suffix-match известный service family из latency catalog;
-- learned домены пишет в `/etc/vpn-routes/latency-learned.txt`;
-- после promotion запускает обычный `update-routes.py`, а не редактирует dataplane напрямую.
-
-Это не полный auto-discovery интернета. Система не учится на произвольных доменах вне catalog envelope.
-
-Плагины загружаются из `/opt/vpn/watchdog/plugins/<stack>/`.
-
-Критически важно: изменения нужно вносить в шаблоны и скрипты генерации, а не в продовые файлы вручную.
-
----
-
-## 13. Telegram-бот
-
-Бот предоставляет:
-
-- выдачу клиентских конфигов;
-- админское меню;
-- `/status`, `/tunnel`, `/switch`, `/logs`, `/assess`;
-- уведомления от watchdog и post-install проверок.
-
-В UI сейчас:
-
-- `REALITY + Vision` — штатный TCP fallback;
-- `REALITY + XHTTP (exp)` — явно экспериментальный стек.
-
----
-
-## 14. Мониторинг
-
-Мониторинг сейчас живёт в основном на home-server:
-
-- `Prometheus`
-- `Grafana`
-- `Alertmanager`
-- `node-exporter`
-
-VPS даёт:
-
-- `node-exporter`
-- healthcheck-скрипт
-- сервисные контейнеры, которые проверяются отдельно
-
----
-
-## 15. Операционные замечания
-
-### Проверенный install path
-
-Единственный поддерживаемый способ установки:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install.sh | sudo bash
-```
-
-### Что нужно помнить
-
-- `reality-xhttp` намеренно оставлен в системе, но он experimental.
-- `post-install-check.sh` должен знать про `xray-client-vision` и `vless-reality-vision`.
-- при переустановке именно генераторы должны восстанавливать runtime-конфиги:
-  - `setup.sh`
-  - `install-home.sh`
-  - `install-vps.sh`
-  - `vps/scripts/render-reality-vision-config.sh`
-  - `vps/scripts/render-reality-xhttp-config.sh`
-
-### Текущая рабочая модель
-
-На момент этой версии рабочая схема такая:
-
-- `hysteria2` проводит трафик;
-- `vless-reality-vision` проводит трафик и готов как TCP fallback;
-- `reality-xhttp` формально поднят, но не считается надёжным data path;
-- `cloudflare-cdn` остаётся наиболее устойчивым обходом при необходимости.
+- GUI installer как основной install path;
+- router-zapret / Keenetic backend;
+- отдельный `vps-only` deploy;
+- определение здоровья системы по логам вместо state/API.
