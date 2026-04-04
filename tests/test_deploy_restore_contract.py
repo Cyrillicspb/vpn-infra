@@ -139,6 +139,15 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertNotIn("docker compose --profile extra-stacks up -d trojan-server tuic-server", deploy_script)
         self.assertIn("docker compose up -d --force-recreate xray-client-xhttp xray-client-cdn xray-client-vision", deploy_script)
 
+    def test_vpn_policy_routing_reload_does_not_flush_live_control_plane_table(self):
+        routing_script = (ROOT / "home" / "scripts" / "vpn-policy-routing.sh").read_text(encoding="utf-8")
+        setup_section = routing_script.split("teardown_routing() {", 1)[0]
+        self.assertNotIn("ip route flush table $TABLE_VPN", setup_section)
+        self.assertNotIn("ip route flush table $TABLE_DPI", setup_section)
+        self.assertIn('ip route replace default via "$GATEWAY" dev "$ETH_IFACE" table $TABLE_VPN', setup_section)
+        self.assertIn('ip route replace default via "$GATEWAY" dev "$ETH_IFACE" table $TABLE_DPI', setup_section)
+        self.assertIn('ip route del "$FUNCTIONAL_NS_SUBNET" dev br-fh table $TABLE_VPN', setup_section)
+
     def test_admin_bot_texts_match_deploy_status_contract(self):
         admin_handler = (ROOT / "home" / "telegram-bot" / "handlers" / "admin.py").read_text(encoding="utf-8")
         watchdog_client = (ROOT / "home" / "telegram-bot" / "services" / "watchdog_client.py").read_text(encoding="utf-8")
@@ -283,8 +292,8 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('systemctl disable --now autossh-tier2', installer)
         self.assertIn('rm -f /etc/systemd/system/autossh-tier2.service', installer)
         self.assertIn('log_ok "Удалён устаревший autossh-tier2.service"', installer)
-        self.assertIn('HAS_AUTOSSH_TIER2=0', post_install)
-        self.assertIn('if [[ "$HAS_AUTOSSH_TIER2" == "1" ]]; then', post_install)
+        self.assertNotIn('HAS_AUTOSSH_TIER2', post_install)
+        self.assertNotIn('check_warn "autossh-tier2"', post_install)
 
     def test_sing_box_extra_client_templates_do_not_use_removed_legacy_inbound_fields(self):
         tuic_client = (ROOT / "home" / "sing-box" / "tuic-client.json").read_text(encoding="utf-8")

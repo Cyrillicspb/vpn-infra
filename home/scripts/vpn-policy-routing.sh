@@ -63,7 +63,16 @@ log() {
 # ── Вспомогательные функции ──────────────────────────────────────────────────
 
 rule_exists() {
-    ip rule show | grep -q "$1"
+    local pattern="$1"
+    local alias_pattern="$pattern"
+
+    if ip rule show | grep -Fq "$pattern"; then
+        return 0
+    fi
+
+    alias_pattern="${alias_pattern//lookup $TABLE_VPN/lookup vpn}"
+    alias_pattern="${alias_pattern//lookup $TABLE_MARKED/lookup marked}"
+    ip rule show | grep -Fq "$alias_pattern"
 }
 
 route_exists() {
@@ -97,9 +106,6 @@ setup_routing() {
 
     # --- Table 200: заблокированный трафик (fwmark 0x1) → tun ---
 
-    # Очищаем старые маршруты в table 200
-    ip route flush table $TABLE_MARKED 2>/dev/null || true
-
     if [[ -n "$TUN_IFACE" ]]; then
         # Маршрут по умолчанию через tun
         ip route replace default dev "$TUN_IFACE" table $TABLE_MARKED
@@ -111,9 +117,6 @@ setup_routing() {
     fi
 
     # --- Table 100: VPN-клиенты (незаблокированное) → eth0 ---
-
-    # Очищаем старые маршруты в table 100
-    ip route flush table $TABLE_VPN 2>/dev/null || true
 
     # Маршрут по умолчанию через основной gateway
     ip route replace default via "$GATEWAY" dev "$ETH_IFACE" table $TABLE_VPN
@@ -130,11 +133,12 @@ setup_routing() {
     if ip link show br-fh &>/dev/null; then
         ip route replace "$FUNCTIONAL_NS_SUBNET" dev br-fh table $TABLE_VPN 2>/dev/null || true
         log "Table $TABLE_VPN: $FUNCTIONAL_NS_SUBNET dev br-fh (functional namespaces)"
+    else
+        ip route del "$FUNCTIONAL_NS_SUBNET" dev br-fh table $TABLE_VPN 2>/dev/null || true
     fi
 
     # --- Table 201: DPI-bypass (fwmark 0x2) → eth0 + zapret ---
 
-    ip route flush table $TABLE_DPI 2>/dev/null || true
     ip route replace default via "$GATEWAY" dev "$ETH_IFACE" table $TABLE_DPI
     log "Table $TABLE_DPI: default via $GATEWAY dev $ETH_IFACE (DPI bypass)"
 

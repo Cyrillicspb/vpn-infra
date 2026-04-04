@@ -1294,50 +1294,13 @@ phase3() {
 
     [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
 
-    # Шаг 46 — Запуск autossh-tier2 (SSH tun туннель 10.177.2.0/30)
+    # Шаг 46 — legacy autossh-tier2 удалён
     if is_done "step46_tier2_tunnel"; then
         step_skip "step46_tier2_tunnel"
     else
-        step "Настройка SSH Tier-2 туннеля autossh-tier2 (10.177.2.0/30)"
-        log_info "autossh -w 0:0 подключается к persistent tun0 на VPS."
-        log_info "IP: домашний сервер 10.177.2.1, VPS 10.177.2.2 — те же, что и раньше."
-        log_info "Транспорт: TCP ${VPS_SSH_PORT:-22} (не UDP) — не блокируется ISP."
-
-
-        mkdir -p /opt/vpn/scripts
-        if [[ -f /opt/vpn/home/scripts/tier2-connect.sh ]]; then
-            cp /opt/vpn/home/scripts/tier2-connect.sh /opt/vpn/scripts/tier2-connect.sh
-        elif [[ -f "${REPO_DIR}/home/scripts/tier2-connect.sh" ]]; then
-            cp "${REPO_DIR}/home/scripts/tier2-connect.sh" /opt/vpn/scripts/tier2-connect.sh
-        else
-            die "Не найден source tier2-connect.sh"
-        fi
-        chmod +x /opt/vpn/scripts/tier2-connect.sh
-
-        # Systemd unit для autossh-tier2 (без ExecStartPost — IP назначает монитор внутри скрипта)
-        cat > /etc/systemd/system/autossh-tier2.service << 'UNITEOF'
-[Unit]
-Description=SSH Tier-2 Tunnel to VPS (10.177.2.0/30)
-After=network-online.target docker.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-Environment=AUTOSSH_GATETIME=0
-EnvironmentFile=/opt/vpn/.env
-ExecStart=/opt/vpn/scripts/tier2-connect.sh
-ExecStop=/bin/bash -c 'kill $(cat /run/tier2-monitor.pid 2>/dev/null) 2>/dev/null; ip link set tun0 down 2>/dev/null; true'
-Restart=always
-RestartSec=15
-
-[Install]
-WantedBy=multi-user.target
-UNITEOF
-
-        systemctl daemon-reload
-        systemctl enable autossh-tier2
-        systemctl restart autossh-tier2
+        step "Пропуск legacy autossh-tier2"
+        log_info "Системный SSH tun fallback удалён из install flow."
+        log_info "Управление VPS идёт через ssh-proxy.sh и autossh-vpn fallback SOCKS."
 
         # AmneziaWG: создаём директорию и симлинк конфига (wg0 — клиентский, не tier2)
         mkdir -p /etc/amnezia/amneziawg
@@ -1350,18 +1313,6 @@ UNITEOF
         # WireGuard wg1 (клиенты WG, порт 51821)
         systemctl enable --now wg-quick@wg1 2>/dev/null \
             || log_warn "wg-quick@wg1 не запустился — продолжаем"
-
-        # Ждём поднятия туннеля (autossh + tun0 конфигурация)
-        sleep 12
-        if ping -c 3 -W 3 10.177.2.2 &>/dev/null; then
-            log_ok "Tier-2 SSH туннель работает: ping 10.177.2.2 успешен"
-            # tun0 поднят — перезапускаем dnsmasq на VPS чтобы он забиндился на 10.177.2.2
-            vps_exec "sudo systemctl restart dnsmasq" \
-                && log_ok "dnsmasq на VPS перезапущен (теперь слушает на 10.177.2.2)" \
-                || log_warn "Не удалось перезапустить dnsmasq на VPS — DNS может не работать"
-        else
-            log_warn "Ping 10.177.2.2 не прошёл. Туннель может ещё подниматься — проверьте: systemctl status autossh-tier2"
-        fi
 
         step_done "step46_tier2_tunnel"
     fi
@@ -1758,16 +1709,11 @@ phase4() {
          done; exit 1" \
         "systemctl status dnsmasq; journalctl -u dnsmasq -n 30"
 
-    # Шаг 51 — VPN туннель Tier-2 (autossh-tier2 через SOCKS5 watchdog)
-    # Туннель поднимается после старта watchdog + активации первого VPN-стека.
-    # Ждём до 60 сек.
-    step "Тест VPN-туннеля Tier-2"
-    run_test "Ping Tier-2 (10.177.2.2)" \
-        "for _i in \$(seq 1 12); do
-             ping -c 1 -W 2 10.177.2.2 &>/dev/null && exit 0
-             sleep 5
-         done; exit 1" \
-        "systemctl status autossh-tier2; journalctl -u autossh-tier2 -n 20; systemctl status watchdog"
+    # Шаг 51 — fallback management SOCKS через autossh-vpn
+    step "Тест fallback management SOCKS"
+    run_test "autossh-vpn SOCKS :1183" \
+        "systemctl is-active autossh-vpn >/dev/null && nc -z 127.0.0.1 1183" \
+        "systemctl status autossh-vpn; journalctl -u autossh-vpn -n 20; systemctl status watchdog"
 
     # Шаг 52 — Watchdog API
     step "Тест Watchdog HTTP API"

@@ -171,7 +171,7 @@ CERT_WARN_CLIENT_DAYS     = 14
 CERT_WARN_CA_DAYS         = 30
 ROUTES_CACHE_ALERT_DAYS   = 3
 ALL_STACKS_DOWN_MINUTES   = 5
-TIER2_PROXY_PORT          = 1089  # Stable SOCKS5 port для tier-2 SSH туннеля
+STARTUP_FUNCTIONAL_GRACE_SECONDS = int(os.getenv("STARTUP_FUNCTIONAL_GRACE_SECONDS", "25"))
 HEALTH_SCORE_THRESHOLD    = int(os.getenv("HEALTH_SCORE_THRESHOLD", "70"))
 BACKUP_MAX_AGE_DAYS       = 3     # deep check: бэкап не старше N дней
 LATENCY_AUTO_PROMOTE_SCORE = int(os.getenv("LATENCY_AUTO_PROMOTE_SCORE", "3"))
@@ -2087,7 +2087,7 @@ async def _restart_backend_runtime_services() -> None:
     )
     if rc != 0:
         raise RuntimeError(f"failed to restart outbound containers: {err[:300]}")
-    for unit in ("autossh-tier2", "autossh-vpn"):
+    for unit in ("autossh-vpn",):
         rc, _, _ = await run_cmd(["systemctl", "list-unit-files", f"{unit}.service"], timeout=10)
         if rc == 0:
             rc, _, err = await run_cmd(["systemctl", "restart", unit], timeout=30)
@@ -5293,6 +5293,9 @@ async def _startup_reconcile() -> None:
     actions: list[str] = []
     failures: list[str] = []
 
+    if STARTUP_FUNCTIONAL_GRACE_SECONDS > 0:
+        await asyncio.sleep(STARTUP_FUNCTIONAL_GRACE_SECONDS)
+
     try:
         await check_dnsmasq()
         actions.append("dnsmasq")
@@ -5614,10 +5617,9 @@ async def _do_switch(new_stack: str, reason: str) -> bool:
     state.save()
     _write_vpn_state_files(new_stack)
 
-    # Перезапускаем tier-2 SSH туннель — он зависит от активного стека (SOCKS5).
-    # После смены стека меняется порт прокси, autossh должен переподключиться.
+    # Обновляем fallback management SOCKS после смены стека/backend.
     asyncio.create_task(run_cmd(
-        ["systemctl", "restart", "autossh-tier2"],
+        ["systemctl", "restart", "autossh-vpn"],
         timeout=15,
     ))
 
@@ -5891,7 +5893,12 @@ async def monitoring_loop() -> None:
     await check_server_repo_sync()
     state.last_monitoring_tick = time.time()
     if _functional_mode() != FUNCTIONAL_MODE_OFF:
-        asyncio.create_task(_run_functional_checks_for_tier("quick"), name="functional-warmup")
+        async def _delayed_functional_warmup() -> None:
+            if STARTUP_FUNCTIONAL_GRACE_SECONDS > 0:
+                await asyncio.sleep(STARTUP_FUNCTIONAL_GRACE_SECONDS)
+            await _run_functional_checks_for_tier("quick")
+
+        asyncio.create_task(_delayed_functional_warmup(), name="functional-warmup")
     await health_checker.run_quick()
 
     while True:
@@ -7944,80 +7951,6 @@ async def post_fail2ban_unban(request: Request, req: F2bUnbanRequest, _: bool = 
 # Startup / Shutdown / Signals
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# Tier-2 proxy — стабильный SOCKS5 порт для autossh-tier2
-# ---------------------------------------------------------------------------
-# Всегда слушает на 127.0.0.1:1089 и форвардит на socks_port активного стека.
-# При смене стека старые соединения рвутся (autossh переподключается),
-# новые соединения идут через новый стек автоматически.
-
-def _get_active_socks_port() -> int:
-    """Возвращает socks_port активного стека из metadata.yaml."""
-    plugin = plugins.get(state.active_stack)
-    if plugin:
-        sp = plugin.meta.get("socks_port")
-        if sp:
-            return int(sp)
-    return 1080  # fallback
-
-
-async def _tier2_proxy_pipe(
-    reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-) -> None:
-    try:
-        while True:
-            data = await reader.read(65536)
-            if not data:
-                break
-            writer.write(data)
-            await writer.drain()
-    except Exception:
-        pass
-    finally:
-        try:
-            writer.close()
-            await writer.wait_closed()
-        except Exception:
-            pass
-
-
-async def _tier2_proxy_handler(
-    client_reader: asyncio.StreamReader,
-    client_writer: asyncio.StreamWriter,
-) -> None:
-    socks_port = _get_active_socks_port()
-    try:
-        upstream_reader, upstream_writer = await asyncio.open_connection(
-            "127.0.0.1", socks_port
-        )
-    except Exception as exc:
-        logger.debug(f"tier2-proxy: не удалось подключиться к :{socks_port}: {exc}")
-        try:
-            client_writer.close()
-        except Exception:
-            pass
-        return
-    logger.debug(
-        f"tier2-proxy: соединение → 127.0.0.1:{socks_port} (стек: {state.active_stack})"
-    )
-    await asyncio.gather(
-        _tier2_proxy_pipe(client_reader, upstream_writer),
-        _tier2_proxy_pipe(upstream_reader, client_writer),
-        return_exceptions=True,
-    )
-
-
-async def _run_tier2_proxy() -> None:
-    server = await asyncio.start_server(
-        _tier2_proxy_handler, "127.0.0.1", TIER2_PROXY_PORT
-    )
-    logger.info(
-        f"Tier-2 proxy запущен на 127.0.0.1:{TIER2_PROXY_PORT} "
-        f"→ socks5://127.0.0.1:{_get_active_socks_port()} (стек: {state.active_stack})"
-    )
-    async with server:
-        await server.serve_forever()
-
-
 @app.on_event("startup")
 async def on_startup() -> None:
     logger.info("=" * 60)
@@ -8044,6 +7977,31 @@ async def on_startup() -> None:
         })
         logger.info(f"VPS {VPS_IP} добавлен в vps_list из конфига")
     _refresh_backend_pool()
+    if _functional_mode() == FUNCTIONAL_MODE_ACTIVE:
+        state.functional_execution_status = FUNCTIONAL_EXEC_DEGRADED
+        state.functional_execution_last_error = ""
+        state.functional_execution_auto_disabled_reason = ""
+        state.functional_results = {}
+        state.functional_evidence_store = {}
+        state.functional_summary = {
+            "status": "warming_up",
+            "reason": "startup_grace",
+            "tier": "quick",
+            "mode": _functional_mode(),
+            "execution_status": state.functional_execution_status,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        }
+        state.responsiveness_summary = {
+            "status": "warming_up",
+            "reason": "startup_grace",
+            "mode": _functional_mode(),
+            "functional_status": state.functional_execution_status,
+            "samples": 0,
+            "slow_scenarios": [],
+            "path_failures": [],
+            "by_path": {},
+            "by_class": {},
+        }
     state.save()
 
     # Поднимаем активный стек при старте
@@ -8109,7 +8067,6 @@ async def on_startup() -> None:
     asyncio.create_task(_watchdog_ping_loop(), name="watchdog-ping")
     asyncio.create_task(decision_loop(),       name="decision-loop")
     asyncio.create_task(monitoring_loop(),     name="monitoring-loop")
-    asyncio.create_task(_run_tier2_proxy(),    name="tier2-proxy")
     asyncio.create_task(_startup_reconcile(),  name="startup-reconcile")
 
     _notify_systemd(b"READY=1")

@@ -11,7 +11,19 @@
 HOST="$1"
 PORT="$2"
 
-SOCKS_PORT_FILE="/var/run/vpn-active-socks-port"
+SOCKS_PORT_FILE="${SOCKS_PORT_FILE:-/var/run/vpn-active-socks-port}"
+AUTOSSH_VPN_SOCKS_PORT="${AUTOSSH_VPN_SOCKS_PORT:-1183}"
+
+if [[ -f /opt/vpn/.env ]]; then
+    # shellcheck disable=SC1091
+    source /opt/vpn/.env
+fi
+
+port_ready() {
+    local candidate="$1"
+    [[ "$candidate" =~ ^[0-9]+$ ]] || return 1
+    nc -z -w 2 127.0.0.1 "$candidate" >/dev/null 2>&1
+}
 
 SOCKS_PORT=""
 if [[ -f "$SOCKS_PORT_FILE" ]]; then
@@ -20,9 +32,12 @@ fi
 
 EMERGENCY_PORT="8022"
 
-if [[ -n "$SOCKS_PORT" && "$SOCKS_PORT" =~ ^[0-9]+$ ]]; then
+if port_ready "$SOCKS_PORT"; then
     # Через активный SOCKS5-прокси стека
     exec nc -X 5 -x "127.0.0.1:${SOCKS_PORT}" "$HOST" "$PORT"
+elif port_ready "$AUTOSSH_VPN_SOCKS_PORT"; then
+    # Резервный management SOCKS через autossh-vpn.
+    exec nc -X 5 -x "127.0.0.1:${AUTOSSH_VPN_SOCKS_PORT}" "$HOST" "$PORT"
 else
     # Прямое подключение — watchdog не запущен или стеки недоступны.
     # Пробуем основной порт; если недоступен (DPI блокирует) — аварийный 8022.

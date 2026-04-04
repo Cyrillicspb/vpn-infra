@@ -17,6 +17,7 @@ User=root
 Environment=AUTOSSH_GATETIME=0
 Environment=AUTOSSH_PORT=0
 Environment=AUTOSSH_LOGFILE=/var/log/vpn-autossh.log
+Environment=AUTOSSH_VPN_SOCKS_PORT=1183
 
 EnvironmentFile=-/opt/vpn/.env
 
@@ -29,7 +30,7 @@ ExecStart=/usr/bin/autossh -M 0 \
     -o "ConnectTimeout=15" \
     -i /root/.ssh/vpn_id_ed25519 \
     -N \
-    -D 127.0.0.1:1083 \
+    -D 127.0.0.1:${AUTOSSH_VPN_SOCKS_PORT:-1183} \
     -p ${VPS_SSH_PORT:-22} \
     sysadmin@${VPS_IP}
 

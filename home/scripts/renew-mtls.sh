@@ -6,7 +6,7 @@
 #   renew-mtls.sh ca       — перевыпустить CA (редко, TTL 10 лет)
 #
 # CA и ключи хранятся на VPS: /opt/vpn/nginx/mtls/
-# Скрипт подключается к VPS через Tier-2 WireGuard туннель (10.177.2.2).
+# Скрипт подключается к VPS по SSH через management path.
 # Готовый .p12 файл сохраняется в /tmp/mtls-client-<date>.p12 и выводится путь.
 
 set -euo pipefail
@@ -23,9 +23,9 @@ DATE="$(date +%Y%m%d-%H%M%S)"
 P12_REMOTE="/tmp/client-${DATE}.p12"
 P12_LOCAL="/tmp/mtls-client-${DATE}.p12"
 
-# Проверка туннеля
+# Проверка management path
 if ! ssh $SSH_OPTS "${VPS_USER}@${VPS_HOST}" "echo ok" &>/dev/null; then
-    echo "ERROR: VPS недоступен через туннель (10.177.2.2). Проверьте autossh-tier2."
+    echo "ERROR: VPS недоступен по SSH (${VPS_HOST}). Проверьте ssh-proxy.sh / autossh-vpn fallback."
     exit 1
 fi
 
