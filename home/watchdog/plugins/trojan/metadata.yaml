@@ -6,7 +6,9 @@ transport: tcp
 port: 8444
 socks_port: 1086
 tun_name: tun-trojan
+experimental: true
+auto_enabled: false
 requires:
   - sing-box-trojan-client
   - tcp-8444-open
-description: "Дополнительный TCP/TLS fallback на sing-box. Участвует в full-auto ротации."
+description: "Экспериментальный TCP/TLS fallback на sing-box. Оставлен для ручных тестов, не участвует в автоматическом standby."

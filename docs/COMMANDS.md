@@ -34,7 +34,9 @@
 - `/assess` — тест доступных стэков.
 - `/switch <stack>` — переключить активный стек.
 
-Поддерживаемые `stack`: `trojan`, `cloudflare-cdn`, `vless-reality-vision`, `tuic`, `reality-xhttp`, `hysteria2`.
+Поддерживаемые `stack`: `cloudflare-cdn`, `vless-reality-vision`, `hysteria2`, `reality-xhttp`, `tuic`, `trojan`.
+
+`reality-xhttp`, `tuic`, `trojan` сейчас считаются experimental/manual stacks: они доступны для ручных тестов и ручного `/switch`, но не участвуют в automatic standby/reassessment path.
 - `/restart <service>` — перезапустить сервис или контейнер.
 - `/upgrade` — обновить Docker-образы.
 - `/reboot` — перезагрузить home-server.

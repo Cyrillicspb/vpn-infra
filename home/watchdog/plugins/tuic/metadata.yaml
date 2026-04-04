@@ -6,7 +6,9 @@ transport: quic
 port: 8448
 socks_port: 1085
 tun_name: tun-tuic
+experimental: true
+auto_enabled: false
 requires:
   - sing-box-tuic-client
   - udp-8448-open
-description: "Дополнительный QUIC-стек на sing-box. Используется как full-auto fallback."
+description: "Экспериментальный QUIC-стек на sing-box. Оставлен для ручных тестов, не участвует в автоматическом standby."

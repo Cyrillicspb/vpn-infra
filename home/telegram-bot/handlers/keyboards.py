@@ -200,10 +200,10 @@ def admin_manage_menu() -> InlineKeyboardMarkup:
 
 def admin_switch_menu(active_stack: str = "") -> InlineKeyboardMarkup:
     stacks = [
-        ("🔐 Trojan", "trojan"),
+        ("🔐 Trojan (exp)", "trojan"),
         ("☁️ Cloudflare CDN", "cloudflare-cdn"),
         ("🛡️ REALITY + Vision", "vless-reality-vision"),
-        ("🚀 TUIC", "tuic"),
+        ("🚀 TUIC (exp)", "tuic"),
         ("🧪 REALITY + XHTTP (exp)", "reality-xhttp"),
         ("⚡ Hysteria2",         "hysteria2"),
     ]

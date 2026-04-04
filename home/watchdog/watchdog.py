@@ -139,11 +139,13 @@ def _cloudflare_cdn_enabled() -> bool:
     return os.getenv("USE_CLOUDFLARE", "n").lower() == "y" and bool(os.getenv("CF_CDN_HOSTNAME", "").strip())
 
 
-STACK_ORDER = ["trojan", "vless-reality-vision", "tuic", "hysteria2", "reality-xhttp"]
+STACK_ORDER = ["hysteria2", "vless-reality-vision", "reality-xhttp", "tuic", "trojan"]
 if _cloudflare_cdn_enabled():
-    STACK_ORDER.insert(1, "cloudflare-cdn")
+    STACK_ORDER.insert(0, "cloudflare-cdn")
 
-DEFAULT_STACK = STACK_ORDER[0]
+# Дефолт должен совпадать с install-home.sh: production path остаётся на hysteria2,
+# а при включённом Cloudflare CDN — на cloudflare-cdn.
+DEFAULT_STACK = "cloudflare-cdn" if _cloudflare_cdn_enabled() else "hysteria2"
 
 # Пороги мониторинга
 RTT_DEGRADATION_FACTOR   = 3.0   # RTT > 3× baseline → деградация

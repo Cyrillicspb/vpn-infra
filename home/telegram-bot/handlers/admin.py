@@ -1045,11 +1045,15 @@ async def cmd_switch(message: Message, state: FSMContext, **kw):
         return
     await state.clear()
     args = message.text.split()
-    stacks = ["trojan", "cloudflare-cdn", "reality-xhttp", "vless-reality-vision", "tuic", "hysteria2"]
+    stacks = ["cloudflare-cdn", "vless-reality-vision", "hysteria2", "reality-xhttp", "tuic", "trojan"]
+    experimental = {"trojan", "tuic", "reality-xhttp"}
     if len(args) < 2 or args[1] not in stacks:
         await message.answer(
             "Использование: `/switch <стек>`\n\n"
-            + "\n".join(f"• `{s}`" for s in stacks)
+            + "\n".join(
+                f"• `{s}`{' (experimental)' if s in experimental else ''}"
+                for s in stacks
+            )
         )
         return
     try:

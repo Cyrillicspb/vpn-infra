@@ -143,10 +143,12 @@ class FunctionalHealthTests(unittest.TestCase):
         self.assertEqual(info["service_count"], 1)
         self.assertFalse(info["empty"])
 
-    def test_stack_order_includes_tuic_and_trojan(self) -> None:
+    def test_stack_order_marks_tuic_and_trojan_after_production_stacks(self) -> None:
         self.assertIn("tuic", watchdog.STACK_ORDER)
         self.assertIn("trojan", watchdog.STACK_ORDER)
-        self.assertLess(watchdog.STACK_ORDER.index("trojan"), watchdog.STACK_ORDER.index("hysteria2"))
+        self.assertGreater(watchdog.STACK_ORDER.index("trojan"), watchdog.STACK_ORDER.index("hysteria2"))
+        self.assertGreater(watchdog.STACK_ORDER.index("tuic"), watchdog.STACK_ORDER.index("hysteria2"))
+        self.assertEqual(watchdog.DEFAULT_STACK, "cloudflare-cdn" if watchdog._cloudflare_cdn_enabled() else "hysteria2")
 
     def test_backend_pool_is_derived_from_vps_list(self) -> None:
         watchdog.state.vps_list = [
