@@ -222,6 +222,24 @@ Home-server использует набор outbound-стэков до VPS. Watc
     - `reconciled`
     - `verified`
 
+Текущее безопасное локальное состояние контракта:
+
+- `Decision Maker` уже владеет canonical read-side shaping для:
+  - `/decision/status`
+  - `/decision/backends`
+  - `/decision/assignments`
+  - `/decision/backend-paths`
+- `hysteria2 backend_path` уже нормализован как набор отдельных shapes:
+  - target
+  - runtime record
+  - verify record
+  - path entry
+  - path status summary
+- `watchdog` на этом уровне только собирает runtime facts и передаёт их в `Decision Maker`.
+    - `applied_matches_active`
+    - `reconciled`
+    - `verified`
+
 Целевая фаза:
 
 - `Decision Maker` выбирает backend для конкретного route-class;

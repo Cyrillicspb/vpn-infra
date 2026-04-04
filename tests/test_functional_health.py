@@ -287,6 +287,62 @@ class FunctionalHealthTests(unittest.TestCase):
         self.assertEqual(rows[0]["http_code"], "204")
         self.assertEqual(rows[0]["verified_at_ts"], 123.0)
 
+    def test_functional_preflight_accepts_ssh_socket_activation(self) -> None:
+        async def _fake_run_cmd(cmd, timeout=0):
+            if cmd[:3] == ["systemctl", "is-active", "dnsmasq"]:
+                return 0, "active\n", ""
+            if cmd[:3] == ["systemctl", "is-active", "nftables"]:
+                return 0, "active\n", ""
+            if cmd[:3] == ["systemctl", "is-active", "vpn-routes"]:
+                return 0, "active\n", ""
+            if cmd[:3] == ["systemctl", "is-active", "ssh"]:
+                return 3, "inactive\n", ""
+            if cmd[:3] == ["systemctl", "is-active", "ssh.socket"]:
+                return 0, "active\n", ""
+            if cmd[:2] == ["ss", "-ltn"]:
+                return 0, "LISTEN 0 128 *:22 *:*", ""
+            return 1, "", "unexpected"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = Path(tmpdir) / "functional-scenarios.yaml"
+            manifest.write_text("scenarios: []\n", encoding="utf-8")
+            with mock.patch.object(watchdog, "_functional_manifest_path", return_value=manifest):
+                with mock.patch.object(watchdog, "run_cmd", side_effect=_fake_run_cmd):
+                    checks = asyncio.run(watchdog._functional_preflight_checks())
+
+        by_name = {item["name"]: item for item in checks}
+        self.assertEqual(by_name["systemd:ssh"]["status"], "ok")
+        self.assertIn("service=inactive; socket=active", by_name["systemd:ssh"]["detail"])
+
+    def test_reconcile_backend_path_runtime_state_sets_hysteria2_active_backend(self) -> None:
+        watchdog.state.backends = [{"id": "backend-a", "ip": "198.51.100.10", "drain": False, "status": "healthy"}]
+        watchdog.state.active_backend_id = "backend-a"
+        watchdog.state.execution_family = "hysteria2"
+        watchdog.state.active_stack = "hysteria2"
+        watchdog.state.desired_backend_path = {}
+        watchdog.state.applied_backend_path = {}
+        with mock.patch.object(watchdog, "_refresh_backend_pool", return_value=None):
+            with mock.patch.object(watchdog.state, "save", return_value=None):
+                changed = watchdog._reconcile_backend_path_runtime_state()
+        self.assertTrue(changed)
+        self.assertEqual(watchdog.state.desired_backend_path["backend_id"], "backend-a")
+        self.assertEqual(watchdog.state.desired_backend_path["reason"], "startup_reconcile")
+        self.assertEqual(watchdog.state.applied_backend_path["backend_id"], "backend-a")
+        self.assertEqual(watchdog.state.applied_backend_path["reason"], "startup_reconcile")
+
+    def test_reconcile_backend_path_runtime_state_skips_non_hysteria_execution_family(self) -> None:
+        watchdog.state.backends = [{"id": "backend-a", "ip": "198.51.100.10", "drain": False, "status": "healthy"}]
+        watchdog.state.active_backend_id = "backend-a"
+        watchdog.state.execution_family = "tuic"
+        watchdog.state.active_stack = "hysteria2"
+        watchdog.state.desired_backend_path = {}
+        watchdog.state.applied_backend_path = {}
+        with mock.patch.object(watchdog, "_refresh_backend_pool", return_value=None):
+            changed = watchdog._reconcile_backend_path_runtime_state()
+        self.assertFalse(changed)
+        self.assertEqual(watchdog.state.desired_backend_path, {})
+        self.assertEqual(watchdog.state.applied_backend_path, {})
+
     def test_balancer_snapshot_reports_backend_path_reconciliation_status(self) -> None:
         watchdog.state.backends = [
             {"id": "backend-a", "ip": "198.51.100.10", "drain": False, "status": "healthy"},

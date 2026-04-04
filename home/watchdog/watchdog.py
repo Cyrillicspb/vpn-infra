@@ -55,6 +55,9 @@ if str(WATCHDOG_DIR) not in sys.path:
 from decision_maker import (
     backend_by_id as dm_backend_by_id,
     build_backends_view as dm_build_backends_view,
+    build_backend_path_entry as dm_build_backend_path_entry,
+    build_backend_path_runtime_record as dm_build_backend_path_runtime_record,
+    build_backend_path_verify_record as dm_build_backend_path_verify_record,
     backend_effective_status as dm_backend_effective_status,
     build_assignments_view as dm_build_assignments_view,
     build_backend_paths_view as dm_build_backend_paths_view,
@@ -1761,43 +1764,62 @@ def _decision_state() -> dict[str, Any]:
 
 
 def _set_desired_backend_path(backend_id: str, reason: str) -> None:
-    state.desired_backend_path = {
-        **dm_build_backend_path_target(
-            str(backend_id or ""),
-            family=state.execution_family,
-            execution_mode="single_active_backend",
-            route_classes=sorted((state.backend_assignments or {}).keys()),
-        ),
-        "reason": str(reason or ""),
-        "updated_at_ts": _now_ts(),
-    }
+    state.desired_backend_path = dm_build_backend_path_runtime_record(
+        str(backend_id or ""),
+        family=state.execution_family,
+        execution_mode="single_active_backend",
+        route_classes=sorted((state.backend_assignments or {}).keys()),
+        reason=str(reason or ""),
+        updated_at_ts=_now_ts(),
+    )
     state.save()
 
 
 def _set_applied_backend_path(backend_id: str, reason: str) -> None:
-    state.applied_backend_path = {
-        **dm_build_backend_path_target(
-            str(backend_id or ""),
-            family=state.execution_family,
-            execution_mode="single_active_backend",
-            route_classes=sorted((state.backend_assignments or {}).keys()),
-        ),
-        "reason": str(reason or ""),
-        "updated_at_ts": _now_ts(),
-    }
+    state.applied_backend_path = dm_build_backend_path_runtime_record(
+        str(backend_id or ""),
+        family=state.execution_family,
+        execution_mode="single_active_backend",
+        route_classes=sorted((state.backend_assignments or {}).keys()),
+        reason=str(reason or ""),
+        updated_at_ts=_now_ts(),
+    )
     state.save()
 
 
 def _record_backend_path_verify(backend_id: str, verify: dict[str, Any]) -> None:
-    state.backend_path_health[str(backend_id or "")] = {
-        "family": state.execution_family,
-        "backend_id": str(backend_id or ""),
-        "verified": bool(verify.get("ok")),
-        "verify_reason": str(verify.get("reason") or ""),
-        "verified_at_ts": _now_ts(),
-        "http_code": str(verify.get("http_code") or ""),
-    }
+    state.backend_path_health[str(backend_id or "")] = dm_build_backend_path_verify_record(
+        str(backend_id or ""),
+        family=state.execution_family,
+        verified=bool(verify.get("ok")),
+        verify_reason=str(verify.get("reason") or ""),
+        verified_at_ts=_now_ts(),
+        http_code=str(verify.get("http_code") or ""),
+    )
     state.save()
+
+
+def _reconcile_backend_path_runtime_state() -> bool:
+    _refresh_backend_pool()
+    active_backend = state.active_backend
+    backend_id = str((active_backend or {}).get("id") or "")
+    if state.execution_family != "hysteria2" or not backend_id:
+        return False
+
+    changed = False
+    desired_backend_id = str((state.desired_backend_path or {}).get("backend_id") or "")
+    desired_family = str((state.desired_backend_path or {}).get("family") or "")
+    if desired_backend_id != backend_id or desired_family != state.execution_family:
+        _set_desired_backend_path(backend_id, "startup_reconcile")
+        changed = True
+
+    applied_backend_id = str((state.applied_backend_path or {}).get("backend_id") or "")
+    applied_family = str((state.applied_backend_path or {}).get("family") or "")
+    if state.active_stack == "hysteria2" and (applied_backend_id != backend_id or applied_family != state.execution_family):
+        _set_applied_backend_path(backend_id, "startup_reconcile")
+        changed = True
+
+    return changed
 
 
 def _load_client_backend_prefs(chat_id: str = "") -> list[dict[str, Any]]:
@@ -1992,28 +2014,26 @@ def _backend_path_snapshot() -> list[dict[str, Any]]:
         desired = backend_id == desired_backend_id
         applied = backend_id == applied_backend_id and bool(rendered) and rendered == active_rendered
         paths.append(
-            {
-                **dm_build_backend_path_target(
-                    backend_id,
-                    family="hysteria2",
-                    execution_mode="single_active_backend",
-                    route_classes=sorted(route_classes_by_backend.get(backend_id, [])),
-                ),
-                "config_path": str(config_path),
-                "applied_config_path": str(active_config_path),
-                "systemd_unit": "hysteria2.service",
-                "local_bind": "127.0.0.1:1083",
-                "tun_interface": "tun-hysteria2",
-                "desired": desired,
-                "applied": applied,
-                "rendered": config_path.exists(),
-                "active": backend_id == active_backend_id,
-                "verified": bool(verify_state.get("verified", False)),
-                "verified_at_ts": float(verify_state.get("verified_at_ts", 0.0) or 0.0),
-                "verify_reason": str(verify_state.get("verify_reason") or ""),
-                "http_code": str(verify_state.get("http_code") or ""),
-                "backend_status": _backend_effective_status(backend),
-            }
+            dm_build_backend_path_entry(
+                backend_id,
+                family="hysteria2",
+                execution_mode="single_active_backend",
+                route_classes=sorted(route_classes_by_backend.get(backend_id, [])),
+                config_path=str(config_path),
+                applied_config_path=str(active_config_path),
+                systemd_unit="hysteria2.service",
+                local_bind="127.0.0.1:1083",
+                tun_interface="tun-hysteria2",
+                desired=desired,
+                applied=applied,
+                rendered=config_path.exists(),
+                active=backend_id == active_backend_id,
+                verified=bool(verify_state.get("verified", False)),
+                verified_at_ts=float(verify_state.get("verified_at_ts", 0.0) or 0.0),
+                verify_reason=str(verify_state.get("verify_reason") or ""),
+                http_code=str(verify_state.get("http_code") or ""),
+                backend_status=_backend_effective_status(backend),
+            )
         )
     return paths
 
@@ -2336,10 +2356,24 @@ async def _functional_preflight_checks() -> list[dict[str, Any]]:
             str(manifest_path) if manifest_path else "missing",
         )
     )
-    for unit in ("dnsmasq", "nftables", "vpn-routes", "ssh"):
+    for unit in ("dnsmasq", "nftables", "vpn-routes"):
         rc, out, err = await run_cmd(["systemctl", "is-active", unit], timeout=8)
         detail = (out or err).strip() or "unknown"
         checks.append(_functional_infra_check(f"systemd:{unit}", rc == 0 and detail == "active", detail))
+    ssh_service_rc, ssh_service_out, ssh_service_err = await run_cmd(["systemctl", "is-active", "ssh"], timeout=8)
+    ssh_service_detail = (ssh_service_out or ssh_service_err).strip() or "unknown"
+    ssh_socket_rc, ssh_socket_out, ssh_socket_err = await run_cmd(["systemctl", "is-active", "ssh.socket"], timeout=8)
+    ssh_socket_detail = (ssh_socket_out or ssh_socket_err).strip() or "unknown"
+    ssh_ok = (
+        (ssh_service_rc == 0 and ssh_service_detail == "active")
+        or (ssh_socket_rc == 0 and ssh_socket_detail == "active")
+    )
+    ssh_detail = (
+        f"service={ssh_service_detail}; socket={ssh_socket_detail}"
+        if ssh_socket_detail
+        else ssh_service_detail
+    )
+    checks.append(_functional_infra_check("systemd:ssh", ssh_ok, ssh_detail))
     rc, _, _ = await run_cmd(["ss", "-ltn", "sport", "=", ":22"], timeout=5)
     checks.append(_functional_infra_check("ssh-listen", rc == 0, "port 22"))
     return checks
@@ -5321,6 +5355,12 @@ async def _startup_reconcile() -> None:
         actions.append("containers")
     except Exception as exc:
         failures.append(f"containers: {exc}")
+
+    try:
+        if _reconcile_backend_path_runtime_state():
+            actions.append("backend-path-runtime")
+    except Exception as exc:
+        failures.append(f"backend-path-runtime: {exc}")
 
     report = await health_checker.run_quick()
     summary = report.get("summary", {})

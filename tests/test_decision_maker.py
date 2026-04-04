@@ -125,6 +125,93 @@ class DecisionMakerTests(unittest.TestCase):
             },
         )
 
+    def test_build_backend_path_entry_normalizes_runtime_descriptor(self) -> None:
+        entry = decision_maker.build_backend_path_entry(
+            "backend-a",
+            family="hysteria2",
+            execution_mode="single_active_backend",
+            route_classes=["blocked_default", ""],
+            config_path="/etc/hysteria/backends/backend-a.yaml",
+            applied_config_path="/etc/hysteria/config.yaml",
+            systemd_unit="hysteria2.service",
+            local_bind="127.0.0.1:1083",
+            tun_interface="tun-hysteria2",
+            desired=True,
+            applied=False,
+            rendered=True,
+            active=True,
+            verified=True,
+            verified_at_ts=123.4,
+            verify_reason="ok",
+            http_code="204",
+            backend_status="healthy",
+        )
+        self.assertEqual(
+            entry,
+            {
+                "backend_id": "backend-a",
+                "family": "hysteria2",
+                "execution_mode": "single_active_backend",
+                "route_classes": ["blocked_default"],
+                "config_path": "/etc/hysteria/backends/backend-a.yaml",
+                "applied_config_path": "/etc/hysteria/config.yaml",
+                "systemd_unit": "hysteria2.service",
+                "local_bind": "127.0.0.1:1083",
+                "tun_interface": "tun-hysteria2",
+                "desired": True,
+                "applied": False,
+                "rendered": True,
+                "active": True,
+                "verified": True,
+                "verified_at_ts": 123.4,
+                "verify_reason": "ok",
+                "http_code": "204",
+                "backend_status": "healthy",
+            },
+        )
+
+    def test_build_backend_path_runtime_record_normalizes_persisted_target(self) -> None:
+        record = decision_maker.build_backend_path_runtime_record(
+            "backend-a",
+            family="hysteria2",
+            execution_mode="single_active_backend",
+            route_classes=["blocked_default", ""],
+            reason="manual_switch",
+            updated_at_ts=55.5,
+        )
+        self.assertEqual(
+            record,
+            {
+                "backend_id": "backend-a",
+                "family": "hysteria2",
+                "execution_mode": "single_active_backend",
+                "route_classes": ["blocked_default"],
+                "reason": "manual_switch",
+                "updated_at_ts": 55.5,
+            },
+        )
+
+    def test_build_backend_path_verify_record_normalizes_verify_state(self) -> None:
+        record = decision_maker.build_backend_path_verify_record(
+            "backend-a",
+            family="hysteria2",
+            verified=True,
+            verify_reason="ok",
+            verified_at_ts=77.7,
+            http_code="204",
+        )
+        self.assertEqual(
+            record,
+            {
+                "family": "hysteria2",
+                "backend_id": "backend-a",
+                "verified": True,
+                "verify_reason": "ok",
+                "verified_at_ts": 77.7,
+                "http_code": "204",
+            },
+        )
+
     def test_build_backend_path_status_reports_reconciled_verified_state(self) -> None:
         status = decision_maker.build_backend_path_status(
             desired_backend_path={

@@ -984,6 +984,7 @@ else
 Description=VPN Policy Routing
 After=network.target nftables.service awg-quick@wg0.service wg-quick@wg1.service
 Wants=nftables.service
+Before=watchdog.service docker.service
 
 [Service]
 Type=oneshot
@@ -1347,9 +1348,7 @@ else
     cat > /etc/cron.d/vpn-routes << 'EOF'
 SHELL=/bin/bash
 # Обновление баз РКН ежедневно в 03:00
-0 3 * * * root flock -n /var/run/vpn-routes.lock \
-    python3 /opt/vpn/scripts/update-routes.py \
-    >> /var/log/vpn-routes.log 2>&1
+0 3 * * * root flock -n /var/run/vpn-routes.lock python3 /opt/vpn/scripts/update-routes.py >> /var/log/vpn-routes.log 2>&1
 EOF
 
     # Резервное копирование (04:00)
@@ -1363,8 +1362,7 @@ EOF
     cat > /etc/cron.d/vpn-dns-warmup << 'EOF'
 SHELL=/bin/bash
 # DNS прогрев при старте (и раз в неделю вручную)
-@reboot root sleep 60 && bash /opt/vpn/scripts/dns-warmup.sh \
-    >> /var/log/vpn-dns-warmup.log 2>&1
+@reboot root sleep 60 && bash /opt/vpn/scripts/dns-warmup.sh >> /var/log/vpn-dns-warmup.log 2>&1
 EOF
 
     chmod 644 /etc/cron.d/vpn-routes /etc/cron.d/vpn-backup /etc/cron.d/vpn-dns-warmup

@@ -70,7 +70,7 @@
 
 #### 1. Выделить Decision Maker как отдельную подсистему
 
-- [ ] Явно вынести `resolve_route(...)`
+- [x] Явно вынести `resolve_route(...)`
 - [x] Явно вынести `explain_route(...)`
 - [x] Явно вынести backend selection API
 - [~] Не смешивать Decision Maker с runtime apply
@@ -97,7 +97,14 @@
 - bot уже смотрит в canonical Decision Maker API;
 - quick health уже refreshes sync-state без self-heal side effects;
 - `desired_backend_path` уже нормализован как отдельный decision/runtime object;
-- remaining gap: более явное отделение authoritative decision state от watchdog runtime state ownership.
+- read-side shaping для `/decision/status`, `/decision/backends`, `/decision/assignments`, `/decision/backend-paths` уже собран в canonical builders внутри `Decision Maker`;
+- `hysteria2 backend_path` shape уже централизован как:
+  - target
+  - runtime record
+  - verify record
+  - path entry
+  - status summary;
+- remaining gap: более явное отделение authoritative decision state от watchdog runtime state ownership и реальный multi-backend dataplane ниже этого контракта.
 
 ### PHASE 3 — VPN CLIENT PREFERENCES
 
@@ -160,7 +167,9 @@
 - `backend_path_status` теперь canonical machine-readable summary для `desired/applied/verified/reconciled`;
 - bot client и bot UI уже читают canonical runtime status вместо ручной сборки reconciliation;
 - `backend apply` для `hysteria2` теперь проходит через `verify` и делает rollback на предыдущий backend при failed probe;
+- startup reconcile now normalizes `desired_backend_path` / `applied_backend_path` for active `hysteria2` backend after reboot;
 - required runtime checks теперь отделяют optional residue (`extra-stacks`) от core default execution path;
+- functional preflight already treats `ssh.socket` as a valid execution prerequisite instead of failing on `ssh.service=inactive`;
 - remaining gap: controlled rebalance и настоящий per-class execution path ниже decision layer.
 
 ### PHASE 6 — MULTI-BACKEND DEPLOY / ROLLBACK

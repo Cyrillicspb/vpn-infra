@@ -47,6 +47,88 @@ def build_backend_path_target(
     }
 
 
+def build_backend_path_entry(
+    backend_id: str,
+    family: str = "hysteria2",
+    execution_mode: str = "single_active_backend",
+    route_classes: Optional[list[str]] = None,
+    config_path: str = "",
+    applied_config_path: str = "",
+    systemd_unit: str = "",
+    local_bind: str = "",
+    tun_interface: str = "",
+    desired: bool = False,
+    applied: bool = False,
+    rendered: bool = False,
+    active: bool = False,
+    verified: bool = False,
+    verified_at_ts: float = 0.0,
+    verify_reason: str = "",
+    http_code: str = "",
+    backend_status: str = "unknown",
+) -> dict[str, Any]:
+    return {
+        **build_backend_path_target(
+            backend_id,
+            family=family,
+            execution_mode=execution_mode,
+            route_classes=route_classes,
+        ),
+        "config_path": str(config_path or ""),
+        "applied_config_path": str(applied_config_path or ""),
+        "systemd_unit": str(systemd_unit or ""),
+        "local_bind": str(local_bind or ""),
+        "tun_interface": str(tun_interface or ""),
+        "desired": bool(desired),
+        "applied": bool(applied),
+        "rendered": bool(rendered),
+        "active": bool(active),
+        "verified": bool(verified),
+        "verified_at_ts": float(verified_at_ts or 0.0),
+        "verify_reason": str(verify_reason or ""),
+        "http_code": str(http_code or ""),
+        "backend_status": str(backend_status or "unknown"),
+    }
+
+
+def build_backend_path_runtime_record(
+    backend_id: str,
+    family: str = "hysteria2",
+    execution_mode: str = "single_active_backend",
+    route_classes: Optional[list[str]] = None,
+    reason: str = "",
+    updated_at_ts: float = 0.0,
+) -> dict[str, Any]:
+    return {
+        **build_backend_path_target(
+            backend_id,
+            family=family,
+            execution_mode=execution_mode,
+            route_classes=route_classes,
+        ),
+        "reason": str(reason or ""),
+        "updated_at_ts": float(updated_at_ts or 0.0),
+    }
+
+
+def build_backend_path_verify_record(
+    backend_id: str,
+    family: str = "hysteria2",
+    verified: bool = False,
+    verify_reason: str = "",
+    verified_at_ts: float = 0.0,
+    http_code: str = "",
+) -> dict[str, Any]:
+    return {
+        "family": str(family or "hysteria2"),
+        "backend_id": str(backend_id or ""),
+        "verified": bool(verified),
+        "verify_reason": str(verify_reason or ""),
+        "verified_at_ts": float(verified_at_ts or 0.0),
+        "http_code": str(http_code or ""),
+    }
+
+
 def build_backend_path_status(
     desired_backend_path: Optional[dict[str, Any]],
     applied_backend_path: Optional[dict[str, Any]],
