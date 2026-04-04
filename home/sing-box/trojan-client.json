@@ -7,7 +7,6 @@
       "type": "socks",
       "listen": "127.0.0.1",
       "listen_port": ${TROJAN_SOCKS_PORT},
-      "sniff": true,
       "tag": "socks-in"
     }
   ],

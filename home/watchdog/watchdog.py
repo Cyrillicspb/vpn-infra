@@ -1316,6 +1316,10 @@ class WatchdogState:
         self.backends: list[dict[str, Any]] = []
         self.backend_assignments: dict[str, dict[str, Any]] = {}
         self.balancer_idle_ttl_seconds: int = BALANCER_IDLE_TTL_SECONDS
+        self.execution_family: str = "hysteria2"
+        self.desired_backend_path: dict[str, Any] = {}
+        self.applied_backend_path: dict[str, Any] = {}
+        self.backend_path_health: dict[str, dict[str, Any]] = {}
         self.external_ip: str = ""
         self.started_at: datetime = datetime.now()
         self.degraded_mode: bool = False
@@ -1431,6 +1435,10 @@ class WatchdogState:
             "backends": self.backends,
             "backend_assignments": self.backend_assignments,
             "balancer_idle_ttl_seconds": self.balancer_idle_ttl_seconds,
+            "execution_family": self.execution_family,
+            "desired_backend_path": self.desired_backend_path,
+            "applied_backend_path": self.applied_backend_path,
+            "backend_path_health": self.backend_path_health,
             "dpi_enabled": self.dpi_enabled,
             "dpi_experimental_opt_in": self.dpi_experimental_opt_in,
             "dpi_services": self.dpi_services,
@@ -1516,6 +1524,10 @@ class WatchdogState:
                 self.balancer_idle_ttl_seconds = int(
                     data.get("balancer_idle_ttl_seconds", BALANCER_IDLE_TTL_SECONDS) or BALANCER_IDLE_TTL_SECONDS
                 )
+                self.execution_family = str(data.get("execution_family") or "hysteria2")
+                self.desired_backend_path = data.get("desired_backend_path", {}) or {}
+                self.applied_backend_path = data.get("applied_backend_path", {}) or {}
+                self.backend_path_health = data.get("backend_path_health", {}) or {}
                 self.degraded_mode  = data.get("degraded_mode", False)
                 self.is_first_run   = data.get("is_first_run", True)
                 self.dpi_enabled    = data.get("dpi_enabled", False)
@@ -1721,6 +1733,9 @@ def _balancer_snapshot() -> dict[str, Any]:
         execution_mode="single_active_backend",
         now=_now_ts(),
     )
+    snapshot["execution_family"] = state.execution_family
+    snapshot["desired_backend_path"] = dict(state.desired_backend_path or {})
+    snapshot["applied_backend_path"] = dict(state.applied_backend_path or {})
     snapshot["backend_paths"] = _backend_path_snapshot()
     return snapshot
 
@@ -1733,7 +1748,40 @@ def _decision_state() -> dict[str, Any]:
         state.balancer_idle_ttl_seconds,
         state.active_backend_id,
         execution_mode="single_active_backend",
+        desired_backend_path_family=state.execution_family,
     )
+
+
+def _set_desired_backend_path(backend_id: str, reason: str) -> None:
+    state.desired_backend_path = {
+        "family": state.execution_family,
+        "backend_id": str(backend_id or ""),
+        "reason": str(reason or ""),
+        "updated_at_ts": _now_ts(),
+    }
+    state.save()
+
+
+def _set_applied_backend_path(backend_id: str, reason: str) -> None:
+    state.applied_backend_path = {
+        "family": state.execution_family,
+        "backend_id": str(backend_id or ""),
+        "reason": str(reason or ""),
+        "updated_at_ts": _now_ts(),
+    }
+    state.save()
+
+
+def _record_backend_path_verify(backend_id: str, verify: dict[str, Any]) -> None:
+    state.backend_path_health[str(backend_id or "")] = {
+        "family": state.execution_family,
+        "backend_id": str(backend_id or ""),
+        "verified": bool(verify.get("ok")),
+        "verify_reason": str(verify.get("reason") or ""),
+        "verified_at_ts": _now_ts(),
+        "http_code": str(verify.get("http_code") or ""),
+    }
+    state.save()
 
 
 def _load_client_backend_prefs(chat_id: str = "") -> list[dict[str, Any]]:
@@ -1903,6 +1951,13 @@ def _build_hysteria2_config(env: dict[str, str], ip: str) -> str:
 def _backend_path_snapshot() -> list[dict[str, Any]]:
     paths: list[dict[str, Any]] = []
     active_backend_id = str(state.active_backend_id or "")
+    backend_ids = {str(item.get("id") or "") for item in state.backends if str(item.get("id") or "")}
+    desired_backend_id = str((state.desired_backend_path or {}).get("backend_id") or "")
+    applied_backend_id = str((state.applied_backend_path or {}).get("backend_id") or "")
+    if desired_backend_id not in backend_ids:
+        desired_backend_id = active_backend_id
+    if applied_backend_id not in backend_ids:
+        applied_backend_id = active_backend_id
     active_config_path = _hysteria_active_config_path()
     active_rendered = active_config_path.read_text(encoding="utf-8") if active_config_path.exists() else ""
     route_classes_by_backend: dict[str, list[str]] = {}
@@ -1917,7 +1972,9 @@ def _backend_path_snapshot() -> list[dict[str, Any]]:
             continue
         config_path = _hysteria_backend_config_path(backend_id)
         rendered = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
-        desired = backend_id == active_backend_id
+        verify_state = dict((state.backend_path_health or {}).get(backend_id) or {})
+        desired = backend_id == desired_backend_id
+        applied = backend_id == applied_backend_id and bool(rendered) and rendered == active_rendered
         paths.append(
             {
                 "family": "hysteria2",
@@ -1929,9 +1986,13 @@ def _backend_path_snapshot() -> list[dict[str, Any]]:
                 "tun_interface": "tun-hysteria2",
                 "execution_mode": "single_active_backend",
                 "desired": desired,
-                "applied": desired and bool(rendered) and rendered == active_rendered,
+                "applied": applied,
                 "rendered": config_path.exists(),
-                "active": desired,
+                "active": backend_id == active_backend_id,
+                "verified": bool(verify_state.get("verified", False)),
+                "verified_at_ts": float(verify_state.get("verified_at_ts", 0.0) or 0.0),
+                "verify_reason": str(verify_state.get("verify_reason") or ""),
+                "http_code": str(verify_state.get("http_code") or ""),
                 "route_classes": sorted(route_classes_by_backend.get(backend_id, [])),
                 "backend_status": _backend_effective_status(backend),
             }
@@ -2047,6 +2108,7 @@ async def _apply_active_backend(backend_id: str, reason: str) -> dict[str, Any]:
     if backend.get("drain"):
         raise RuntimeError(f"backend {backend_id} is in drain state")
 
+    _set_desired_backend_path(backend_id, reason)
     _write_active_backend_runtime_env(backend)
     await _render_backend_runtime_configs(backend)
     await _restart_backend_runtime_services()
@@ -2060,6 +2122,7 @@ async def _apply_active_backend(backend_id: str, reason: str) -> dict[str, Any]:
         Path("/var/run/vpn-active-backend").write_text(backend_id, encoding="utf-8")
     except Exception as exc:
         logger.debug("Не удалось записать vpn-active-backend: %s", exc)
+    _set_applied_backend_path(backend_id, reason)
     state.save()
     return {
         "backend_id": backend_id,
@@ -2076,6 +2139,7 @@ async def _apply_backend_decision(decision: dict[str, Any]) -> dict[str, Any]:
     previous_backend_id = str(state.active_backend_id or "")
     applied = await _apply_active_backend(backend_id, apply_reason)
     verify = await _verify_hysteria2_backend_path(backend_id)
+    _record_backend_path_verify(backend_id, verify)
     if not verify.get("ok"):
         rollback: dict[str, Any] = {
             "status": "rollback_skipped",
@@ -2086,6 +2150,7 @@ async def _apply_backend_decision(decision: dict[str, Any]) -> dict[str, Any]:
             try:
                 rolled_back = await _apply_active_backend(previous_backend_id, "backend_apply_verify_failed")
                 rollback_verify = await _verify_hysteria2_backend_path(previous_backend_id)
+                _record_backend_path_verify(previous_backend_id, rollback_verify)
                 rollback = {
                     "status": "rollback_completed" if rollback_verify.get("ok") else "rollback_degraded",
                     "applied": rolled_back,
@@ -7083,6 +7148,7 @@ async def _check_domain_result(domain: str, persist_assignment: bool = True, cha
     result["route_class"] = route_resolution.get("route_class")
     result["decision_source"] = route_resolution.get("decision_source")
     result["effective_backend_id"] = route_resolution.get("effective_backend_id")
+    result["desired_backend_path_family"] = route_resolution.get("desired_backend_path_family")
     result["backend_assignment"] = route_resolution.get("backend_assignment")
     result["backend"] = route_resolution.get("backend")
     result["fallback_reason"] = route_resolution.get("fallback_reason")

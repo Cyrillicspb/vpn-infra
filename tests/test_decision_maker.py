@@ -87,6 +87,17 @@ class DecisionMakerTests(unittest.TestCase):
         self.assertEqual(resolution["route_mode"], "vpn")
         self.assertEqual(resolution["route_class"], "blocked_default")
         self.assertEqual(resolution["effective_backend_id"], "backend-a")
+        self.assertEqual(resolution["desired_backend_path_family"], "hysteria2")
+
+    def test_build_decision_state_carries_execution_family(self) -> None:
+        decision_state = decision_maker.build_decision_state(
+            backends=[],
+            assignments={},
+            idle_ttl_seconds=300,
+            active_backend_id="",
+            desired_backend_path_family="hysteria2",
+        )
+        self.assertEqual(decision_state["desired_backend_path_family"], "hysteria2")
 
     def test_resolve_route_prefers_client_backend_preference(self) -> None:
         decision_state = decision_maker.build_decision_state(

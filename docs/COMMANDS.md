@@ -75,7 +75,7 @@
 - `/latency learned|candidates|all`
 - `/routes update`
 
-`/check` показывает verdict, source tags, service attribution, current Decision Maker explanation и active `hysteria2` backend path state (`desired/applied/rendered`) для effective backend.
+`/check` показывает verdict, source tags, service attribution, current Decision Maker explanation и active `hysteria2` backend path state (`desired/applied/rendered/verified`) для effective backend.
 Поддерживаемые формы:
 - `/check <domain>`
 - `/check <domain> <chat_id>`
@@ -109,7 +109,7 @@
 - `/decision assignments` via diagnostics/API canonical read path
 - `/decision choose-backend` via API canonical choose path
 - `/decision apply-backend` via API canonical apply path
-  При `hysteria2` current slice apply теперь проходит через runtime verify и при failed probe откатывается на предыдущий backend.
+  При `hysteria2` current slice apply теперь проходит через runtime verify и при failed probe откатывается на предыдущий backend. Diagnostics показывают `desired vs applied` и `verify reason`.
 - `/decision reassign [route_class|all]` via menu/API canonical decision path
 - `/decision reconcile-assignments [backend-id]` via API canonical reconciliation path
 - `/balancer switch <backend-id>` via menu/API apply path

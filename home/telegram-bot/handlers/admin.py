@@ -113,8 +113,18 @@ def _render_balancer_text(payload: dict) -> str:
         "",
         f"TTL lease: `{payload.get('idle_ttl_seconds', '?')}` сек",
         f"Execution: `{payload.get('execution_mode', '?')}`",
+        f"Family: `{payload.get('execution_family', '?')}`",
         f"Backends: `{payload.get('healthy_backend_count', 0)}/{payload.get('backend_count', 0)}` healthy",
     ]
+    desired_path = payload.get("desired_backend_path") or {}
+    applied_path = payload.get("applied_backend_path") or {}
+    if desired_path or applied_path:
+        lines.append(
+            f"Desired path: `{desired_path.get('family', '?')}@{desired_path.get('backend_id', '?')}`"
+        )
+        lines.append(
+            f"Applied path: `{applied_path.get('family', '?')}@{applied_path.get('backend_id', '?')}`"
+        )
     if assignments:
         lines.append("")
         lines.append("*Assignments:*")
@@ -139,12 +149,15 @@ def _render_balancer_text(payload: dict) -> str:
                 flags.append("applied")
             if path.get("rendered"):
                 flags.append("rendered")
+            if path.get("verified"):
+                flags.append("verified")
             route_classes = ",".join(path.get("route_classes") or []) or "—"
             lines.append(
                 f"• `{path.get('backend_id', '?')}` "
                 f"[{','.join(flags) or 'standby'}] "
                 f"{path.get('backend_status', '?')} "
                 f"`{path.get('local_bind', '?')}` "
+                f"verify:{path.get('verify_reason', 'ok') or 'ok'} "
                 f"classes:{route_classes}"
             )
     return "\n".join(lines)
@@ -191,6 +204,8 @@ def _render_check_result_html(domain: str, payload: dict) -> str:
         lines.append(f"Backend: <code>{effective_backend_id}</code>")
     if execution_mode:
         lines.append(f"Execution: <code>{execution_mode}</code>")
+    if payload.get("desired_backend_path_family"):
+        lines.append(f"Family: <code>{payload.get('desired_backend_path_family')}</code>")
     path_rows = [
         item for item in (payload.get("backend_paths") or [])
         if str(item.get("backend_id") or "") == effective_backend_id
@@ -204,12 +219,16 @@ def _render_check_result_html(domain: str, payload: dict) -> str:
             path_state.append("applied")
         if path.get("rendered"):
             path_state.append("rendered")
+        if path.get("verified"):
+            path_state.append("verified")
         lines.append(
             "Path: "
             f"<code>{path.get('family')}</code> "
             f"<code>{path.get('local_bind')}</code> "
             f"<code>{','.join(path_state) or 'standby'}</code>"
         )
+        if path.get("verify_reason"):
+            lines.append(f"Path verify: <code>{path.get('verify_reason')}</code>")
     if matched_pref:
         lines.append(
             "Client pref: "

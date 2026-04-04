@@ -344,6 +344,7 @@ section "5. Docker контейнеры (домашний сервер)"
 
 docker_running() { docker inspect --format '{{.State.Running}}' "$1" 2>/dev/null | grep -q true; }
 docker_exists()  { docker inspect "$1" &>/dev/null 2>&1; }
+docker_status()  { docker inspect --format '{{.State.Status}}' "$1" 2>/dev/null || echo "не найден"; }
 
 # Фаза 1 — критичные (FAIL если не running)
 for cname in telegram-bot socket-proxy xray-client-xhttp xray-client-vision xray-client-cdn nginx; do
@@ -361,6 +362,17 @@ for cname in prometheus grafana alertmanager node-exporter; do
     else
         STATUS=$(docker inspect --format '{{.State.Status}}' "$cname" 2>/dev/null || echo "не найден")
         fail "мониторинг: $cname" "$STATUS"
+    fi
+done
+
+for cname in sing-box-tuic-client sing-box-trojan-client; do
+    if docker_exists "$cname"; then
+        STATUS=$(docker_status "$cname")
+        if [[ "$STATUS" == "running" ]]; then
+            warn "docker optional: $cname" "running вне default execution path"
+        else
+            warn "docker optional: $cname" "$STATUS"
+        fi
     fi
 done
 
@@ -499,6 +511,13 @@ if [[ -n "$VPS_IP" && -f "$SSH_KEY" ]]; then
             else
                 STATUS=$(echo "$VPS_CONTAINERS" | grep "^${cname}:" | cut -d: -f2 || echo "не найден")
                 fail "VPS docker: $cname" "${STATUS:-не найден}"
+            fi
+        done
+
+        for cname in trojan-server tuic-server cloudflared; do
+            STATUS=$(echo "$VPS_CONTAINERS" | grep "^${cname}:" | cut -d: -f2- || true)
+            if [[ -n "$STATUS" ]]; then
+                warn "VPS optional docker: $cname" "$STATUS"
             fi
         done
 

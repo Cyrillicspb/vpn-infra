@@ -25,6 +25,11 @@ OPTIONAL_CONTAINERS=(
     "nginx"
 )
 
+OPTIONAL_RESIDUAL_CONTAINERS=(
+    "sing-box-tuic-client"
+    "sing-box-trojan-client"
+)
+
 # Мониторинг (фаза 2) — устанавливается после поднятия VPN, отсутствие = норма
 MONITORING_CONTAINERS=(
     "prometheus"
@@ -122,10 +127,25 @@ fi
 
 # 5. Нет контейнеров в состоянии restart loop
 RESTARTING=$(docker ps --filter "status=restarting" --format "{{.Names}}" 2>/dev/null || true)
-if [[ -z "$RESTARTING" ]]; then
+REQUIRED_RESTARTING=()
+OPTIONAL_RESTARTING=()
+if [[ -n "$RESTARTING" ]]; then
+    while IFS= read -r cname; do
+        [[ -n "$cname" ]] || continue
+        if printf '%s\n' "${OPTIONAL_RESIDUAL_CONTAINERS[@]}" | grep -qx "$cname"; then
+            OPTIONAL_RESTARTING+=("$cname")
+        else
+            REQUIRED_RESTARTING+=("$cname")
+        fi
+    done <<< "$RESTARTING"
+fi
+if [[ ${#REQUIRED_RESTARTING[@]} -eq 0 ]]; then
     pass "Нет контейнеров в restart loop"
 else
-    fail "Контейнеры в restart loop: $RESTARTING"
+    fail "Контейнеры в restart loop: ${REQUIRED_RESTARTING[*]}"
+fi
+if [[ ${#OPTIONAL_RESTARTING[@]} -gt 0 ]]; then
+    warn "Optional stale containers in restart loop: ${OPTIONAL_RESTARTING[*]}"
 fi
 
 # 6. Docker сеть vpn существует

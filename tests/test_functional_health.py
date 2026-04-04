@@ -207,7 +207,42 @@ class FunctionalHealthTests(unittest.TestCase):
         self.assertEqual(rows[0]["family"], "hysteria2")
         self.assertTrue(rows[0]["desired"])
         self.assertTrue(rows[0]["applied"])
+        self.assertFalse(rows[0]["verified"])
         self.assertEqual(rows[0]["route_classes"], ["blocked_default"])
+
+    def test_backend_path_snapshot_reports_verified_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            hysteria_dir = tmp / "etc" / "hysteria"
+            backends_dir = hysteria_dir / "backends"
+            backends_dir.mkdir(parents=True)
+            active_config = hysteria_dir / "config.yaml"
+            candidate_config = backends_dir / "backend-198-51-100-10.yaml"
+            rendered = "server: 198.51.100.10:443\nsocks5:\n  listen: 127.0.0.1:1083\n"
+            active_config.write_text(rendered, encoding="utf-8")
+            candidate_config.write_text(rendered, encoding="utf-8")
+            watchdog.state.backends = [
+                {"id": "backend-198-51-100-10", "ip": "198.51.100.10", "drain": False, "status": "healthy"},
+            ]
+            watchdog.state.active_backend_id = "backend-198-51-100-10"
+            watchdog.state.desired_backend_path = {"family": "hysteria2", "backend_id": "backend-198-51-100-10"}
+            watchdog.state.applied_backend_path = {"family": "hysteria2", "backend_id": "backend-198-51-100-10"}
+            watchdog.state.backend_path_health = {
+                "backend-198-51-100-10": {
+                    "family": "hysteria2",
+                    "backend_id": "backend-198-51-100-10",
+                    "verified": True,
+                    "verify_reason": "",
+                    "verified_at_ts": 123.0,
+                    "http_code": "204",
+                }
+            }
+            with mock.patch.object(watchdog, "_hysteria_backend_config_path", side_effect=lambda backend_id: backends_dir / f"{backend_id}.yaml"):
+                with mock.patch.object(watchdog, "_hysteria_active_config_path", return_value=active_config):
+                    rows = watchdog._backend_path_snapshot()
+        self.assertTrue(rows[0]["verified"])
+        self.assertEqual(rows[0]["http_code"], "204")
+        self.assertEqual(rows[0]["verified_at_ts"], 123.0)
 
     def test_verify_hysteria2_backend_path_accepts_rendered_and_live_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -268,6 +303,34 @@ class FunctionalHealthTests(unittest.TestCase):
         self.assertEqual(result["status"], "verification_failed")
         self.assertEqual(result["rollback"]["status"], "rollback_completed")
         self.assertEqual(watchdog.state.active_backend_id, "backend-old")
+
+    def test_apply_backend_decision_records_desired_applied_and_verify_state(self) -> None:
+        watchdog.state.active_backend_id = "backend-old"
+        watchdog.state.execution_family = "hysteria2"
+        watchdog.state.desired_backend_path = {}
+        watchdog.state.applied_backend_path = {}
+        watchdog.state.backend_path_health = {}
+
+        async def _fake_apply_active_backend(backend_id, reason):
+            watchdog.state.active_backend_id = backend_id
+            watchdog.state.desired_backend_path = {"family": "hysteria2", "backend_id": backend_id, "reason": reason}
+            watchdog.state.applied_backend_path = {"family": "hysteria2", "backend_id": backend_id, "reason": reason}
+            return {"backend_id": backend_id, "reason": reason}
+
+        async def _fake_verify(backend_id):
+            return {"ok": True, "backend_id": backend_id, "http_code": "204"}
+
+        with mock.patch.object(watchdog, "_apply_active_backend", side_effect=_fake_apply_active_backend):
+            with mock.patch.object(watchdog, "_verify_hysteria2_backend_path", side_effect=_fake_verify):
+                result = asyncio.run(
+                    watchdog._apply_backend_decision(
+                        {"ok": True, "backend_id": "backend-new", "reason": "manual_switch"}
+                    )
+                )
+        self.assertEqual(result["status"], "applied")
+        self.assertEqual(watchdog.state.desired_backend_path["backend_id"], "backend-new")
+        self.assertEqual(watchdog.state.applied_backend_path["backend_id"], "backend-new")
+        self.assertTrue(watchdog.state.backend_path_health["backend-new"]["verified"])
 
     def test_refresh_backend_pool_tracks_active_backend_id(self) -> None:
         watchdog.state.vps_list = [{"ip": "198.51.100.10", "ssh_port": 443, "tunnel_ip": "10.177.2.2"}]

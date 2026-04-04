@@ -18,6 +18,7 @@ def build_decision_state(
     lan_clients: Optional[list[dict[str, Any]]] = None,
     lan_client_preferences: Optional[list[dict[str, Any]]] = None,
     execution_mode: str = "single_active_backend",
+    desired_backend_path_family: str = "hysteria2",
 ) -> dict[str, Any]:
     return {
         "backends": backends,
@@ -28,6 +29,7 @@ def build_decision_state(
         "lan_clients": list(lan_clients or []),
         "lan_client_preferences": list(lan_client_preferences or []),
         "execution_mode": str(execution_mode or "single_active_backend"),
+        "desired_backend_path_family": str(desired_backend_path_family or "hysteria2"),
     }
 
 
@@ -495,6 +497,7 @@ def resolve_route(
         "decision_source": explanation.get("decision_source"),
         "effective_backend_id": explanation.get("effective_backend_id"),
         "execution_mode": decision_state.get("execution_mode"),
+        "desired_backend_path_family": decision_state.get("desired_backend_path_family", "hysteria2"),
         "fallback_reason": explanation.get("fallback_reason", ""),
         "backend_assignment": explanation.get("backend_assignment"),
         "backend": explanation.get("backend"),

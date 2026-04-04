@@ -154,8 +154,9 @@
 - execution layer сейчас честно помечен как `single_active_backend`;
 - пока dataplane не умеет реальный per-class backend execution, assignment choice принудительно согласован с active backend;
 - добавлен controlled reconciliation path для lease state после смены active backend;
-- добавлен dataplane foundation для `hysteria2`: per-backend rendered configs и `backend_paths` diagnostics с `desired/applied/rendered`;
+- добавлен dataplane foundation для `hysteria2`: per-backend rendered configs и `backend_paths` diagnostics с `desired/applied/rendered/verified`;
 - `backend apply` для `hysteria2` теперь проходит через `verify` и делает rollback на предыдущий backend при failed probe;
+- required runtime checks теперь отделяют optional residue (`extra-stacks`) от core default execution path;
 - remaining gap: controlled rebalance и настоящий per-class execution path ниже decision layer.
 
 ### PHASE 6 — MULTI-BACKEND DEPLOY / ROLLBACK
