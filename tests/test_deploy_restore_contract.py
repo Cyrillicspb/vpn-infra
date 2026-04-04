@@ -130,6 +130,14 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('profiles: ["manual"]', vps_compose)
         self.assertNotIn('entrypoint: ["/bin/sh"]', vps_compose)
 
+    def test_default_deploy_does_not_force_start_extra_stacks(self):
+        deploy_script = DEPLOY.read_text(encoding="utf-8")
+        self.assertNotIn("docker compose --profile extra-stacks pull sing-box-tuic-client sing-box-trojan-client", deploy_script)
+        self.assertNotIn("docker compose --profile extra-stacks up -d sing-box-tuic-client sing-box-trojan-client", deploy_script)
+        self.assertNotIn("docker compose --profile extra-stacks pull trojan-server tuic-server", deploy_script)
+        self.assertNotIn("docker compose --profile extra-stacks up -d trojan-server tuic-server", deploy_script)
+        self.assertIn("docker compose up -d --force-recreate xray-client-xhttp xray-client-cdn xray-client-vision", deploy_script)
+
     def test_admin_bot_texts_match_deploy_status_contract(self):
         admin_handler = (ROOT / "home" / "telegram-bot" / "handlers" / "admin.py").read_text(encoding="utf-8")
         watchdog_client = (ROOT / "home" / "telegram-bot" / "services" / "watchdog_client.py").read_text(encoding="utf-8")

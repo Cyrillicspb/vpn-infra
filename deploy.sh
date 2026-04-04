@@ -895,10 +895,8 @@ sync_home_runtime() {
         (cd "$REPO_DIR" && docker compose build $bot_no_cache --build-arg GIT_HASH="$bot_git_hash" telegram-bot)
     fi
     if $rebuild_xray; then
-        (cd "$REPO_DIR" && docker compose up -d --force-recreate xray-client-xhttp xray-client-cdn xray-client-vision sing-box-tuic-client sing-box-trojan-client)
+        (cd "$REPO_DIR" && docker compose up -d --force-recreate xray-client-xhttp xray-client-cdn xray-client-vision)
     fi
-    (cd "$REPO_DIR" && docker compose --profile extra-stacks pull sing-box-tuic-client sing-box-trojan-client)
-    (cd "$REPO_DIR" && docker compose --profile extra-stacks up -d sing-box-tuic-client sing-box-trojan-client)
 
     (cd "$REPO_DIR" && docker compose up -d --remove-orphans)
     systemctl restart watchdog
@@ -940,7 +938,7 @@ deploy_vps() {
     envsubst < "$REPO_DIR/vps/sing-box/trojan-server.json" | vps_copy_stdin_to_file "/opt/vpn/sing-box/trojan-server.json"
 
     local cmd
-    cmd="sudo -n bash -lc 'set -euo pipefail; cd /opt/vpn; chmod +x /opt/vpn/scripts/*.sh 2>/dev/null || true; bash /opt/vpn/scripts/render-reality-xhttp-config.sh; docker compose pull; docker compose --profile extra-stacks pull trojan-server tuic-server; docker compose up -d --remove-orphans; docker compose --profile extra-stacks up -d trojan-server tuic-server; mkdir -p \"$REMOTE_STATE_DIR\"'"
+    cmd="sudo -n bash -lc 'set -euo pipefail; cd /opt/vpn; chmod +x /opt/vpn/scripts/*.sh 2>/dev/null || true; bash /opt/vpn/scripts/render-reality-xhttp-config.sh; docker compose pull; docker compose up -d --remove-orphans; mkdir -p \"$REMOTE_STATE_DIR\"'"
     vps_exec "$cmd" || die "VPS deploy завершился с ошибкой"
 }
 
