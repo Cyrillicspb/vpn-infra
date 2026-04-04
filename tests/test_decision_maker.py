@@ -397,6 +397,15 @@ class DecisionMakerTests(unittest.TestCase):
         self.assertEqual(result["changed"], 2)
         self.assertEqual(result["assignments"]["vpn_default"]["backend_id"], "backend-a")
         self.assertEqual(result["assignments"]["blocked_default"]["backend_id"], "backend-a")
+        self.assertEqual(
+            result["backend_path_target"],
+            {
+                "backend_id": "backend-a",
+                "family": "hysteria2",
+                "execution_mode": "single_active_backend",
+                "route_classes": ["blocked_default", "vpn_default"],
+            },
+        )
 
 
 if __name__ == "__main__":

@@ -287,6 +287,82 @@ class FunctionalHealthTests(unittest.TestCase):
         self.assertEqual(rows[0]["http_code"], "204")
         self.assertEqual(rows[0]["verified_at_ts"], 123.0)
 
+    def test_balancer_snapshot_reports_backend_path_reconciliation_status(self) -> None:
+        watchdog.state.backends = [
+            {"id": "backend-a", "ip": "198.51.100.10", "drain": False, "status": "healthy"},
+        ]
+        watchdog.state.active_backend_id = "backend-a"
+        watchdog.state.desired_backend_path = {
+            "backend_id": "backend-a",
+            "family": "hysteria2",
+            "execution_mode": "single_active_backend",
+            "route_classes": ["blocked_default"],
+        }
+        watchdog.state.applied_backend_path = {
+            "backend_id": "backend-a",
+            "family": "hysteria2",
+            "execution_mode": "single_active_backend",
+            "route_classes": ["blocked_default"],
+        }
+        watchdog.state.backend_path_health = {
+            "backend-a": {
+                "family": "hysteria2",
+                "backend_id": "backend-a",
+                "verified": True,
+                "verify_reason": "",
+                "verified_at_ts": 123.0,
+                "http_code": "204",
+            }
+        }
+        with mock.patch.object(watchdog, "_backend_path_snapshot", return_value=[{"backend_id": "backend-a", "verified": True}]):
+            with mock.patch.object(watchdog, "_refresh_backend_pool", return_value=None):
+                snapshot = watchdog._balancer_snapshot()
+        self.assertEqual(
+            snapshot["backend_path_status"],
+            {
+                "execution_mode": "single_active_backend",
+                "execution_family": "hysteria2",
+                "desired_backend_id": "backend-a",
+                "applied_backend_id": "backend-a",
+                "active_backend_id": "backend-a",
+                "desired_matches_applied": True,
+                "applied_matches_active": True,
+                "reconciled": True,
+                "verified": True,
+            },
+        )
+
+    def test_backend_path_state_uses_normalized_target_shape(self) -> None:
+        watchdog.state.backend_assignments = {
+            "vpn_default": {"route_class": "vpn_default", "backend_id": "backend-a", "assigned_at_ts": 1, "last_activity_ts": 1, "expires_at_ts": 2},
+            "blocked_default": {"route_class": "blocked_default", "backend_id": "backend-a", "assigned_at_ts": 1, "last_activity_ts": 1, "expires_at_ts": 2},
+        }
+        with mock.patch.object(watchdog.state, "save", return_value=None):
+            watchdog._set_desired_backend_path("backend-a", "manual_switch")
+            watchdog._set_applied_backend_path("backend-a", "manual_switch")
+        self.assertEqual(
+            watchdog.state.desired_backend_path,
+            {
+                "backend_id": "backend-a",
+                "family": "hysteria2",
+                "execution_mode": "single_active_backend",
+                "route_classes": ["blocked_default", "vpn_default"],
+                "reason": "manual_switch",
+                "updated_at_ts": watchdog.state.desired_backend_path["updated_at_ts"],
+            },
+        )
+        self.assertEqual(
+            watchdog.state.applied_backend_path,
+            {
+                "backend_id": "backend-a",
+                "family": "hysteria2",
+                "execution_mode": "single_active_backend",
+                "route_classes": ["blocked_default", "vpn_default"],
+                "reason": "manual_switch",
+                "updated_at_ts": watchdog.state.applied_backend_path["updated_at_ts"],
+            },
+        )
+
     def test_verify_hysteria2_backend_path_accepts_rendered_and_live_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

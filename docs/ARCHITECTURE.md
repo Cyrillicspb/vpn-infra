@@ -86,6 +86,7 @@ Watchdog и бот не должны определять успех deploy по
 - `route_mode`;
 - `route_class`;
 - `effective_backend_id`;
+- `desired_backend_path`;
 - `decision_source`;
 - `fallback_reason`;
 - `explanation`.
@@ -212,6 +213,14 @@ Home-server использует набор outbound-стэков до VPS. Watc
 - один `active backend` для всего `vpn`/`blocked` lane;
 - single-backend backward compatibility;
 - active backend может быть switched/drained/auto-selected.
+- runtime status уже нормализован как:
+  - `desired_backend_path`
+  - `applied_backend_path`
+  - `backend_path_status`
+    - `desired_matches_applied`
+    - `applied_matches_active`
+    - `reconciled`
+    - `verified`
 
 Целевая фаза:
 

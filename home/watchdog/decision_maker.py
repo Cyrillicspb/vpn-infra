@@ -655,4 +655,10 @@ def reconcile_assignments_to_active_backend(
         "assignments": updated,
         "changed": changed,
         "active_backend_id": active_backend_id,
+        "backend_path_target": build_backend_path_target(
+            active_backend_id,
+            family="hysteria2",
+            execution_mode="single_active_backend",
+            route_classes=sorted(updated.keys()),
+        ),
     }

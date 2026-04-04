@@ -56,6 +56,7 @@ from decision_maker import (
     backend_by_id as dm_backend_by_id,
     backend_effective_status as dm_backend_effective_status,
     balancer_snapshot as dm_balancer_snapshot,
+    build_backend_path_target as dm_build_backend_path_target,
     build_decision_state as dm_build_decision_state,
     build_domain_context as dm_build_domain_context,
     choose_auto_backend as dm_choose_auto_backend,
@@ -1739,6 +1740,27 @@ def _balancer_snapshot() -> dict[str, Any]:
     snapshot["desired_backend_path"] = dict(state.desired_backend_path or {})
     snapshot["applied_backend_path"] = dict(state.applied_backend_path or {})
     snapshot["backend_paths"] = _backend_path_snapshot()
+    desired_backend_id = str((snapshot["desired_backend_path"] or {}).get("backend_id") or "")
+    applied_backend_id = str((snapshot["applied_backend_path"] or {}).get("backend_id") or "")
+    active_backend_id = str(snapshot.get("active_backend_id") or "")
+    desired_matches_applied = bool(desired_backend_id) and desired_backend_id == applied_backend_id
+    applied_matches_active = bool(applied_backend_id) and applied_backend_id == active_backend_id
+    verified_backend_ids = {
+        str(item.get("backend_id") or "")
+        for item in snapshot["backend_paths"]
+        if item.get("verified")
+    }
+    snapshot["backend_path_status"] = {
+        "execution_mode": snapshot.get("execution_mode"),
+        "execution_family": state.execution_family,
+        "desired_backend_id": desired_backend_id,
+        "applied_backend_id": applied_backend_id,
+        "active_backend_id": active_backend_id,
+        "desired_matches_applied": desired_matches_applied,
+        "applied_matches_active": applied_matches_active,
+        "reconciled": desired_matches_applied and applied_matches_active,
+        "verified": applied_backend_id in verified_backend_ids if applied_backend_id else False,
+    }
     return snapshot
 
 
@@ -1756,8 +1778,12 @@ def _decision_state() -> dict[str, Any]:
 
 def _set_desired_backend_path(backend_id: str, reason: str) -> None:
     state.desired_backend_path = {
-        "family": state.execution_family,
-        "backend_id": str(backend_id or ""),
+        **dm_build_backend_path_target(
+            str(backend_id or ""),
+            family=state.execution_family,
+            execution_mode="single_active_backend",
+            route_classes=sorted((state.backend_assignments or {}).keys()),
+        ),
         "reason": str(reason or ""),
         "updated_at_ts": _now_ts(),
     }
@@ -1766,8 +1792,12 @@ def _set_desired_backend_path(backend_id: str, reason: str) -> None:
 
 def _set_applied_backend_path(backend_id: str, reason: str) -> None:
     state.applied_backend_path = {
-        "family": state.execution_family,
-        "backend_id": str(backend_id or ""),
+        **dm_build_backend_path_target(
+            str(backend_id or ""),
+            family=state.execution_family,
+            execution_mode="single_active_backend",
+            route_classes=sorted((state.backend_assignments or {}).keys()),
+        ),
         "reason": str(reason or ""),
         "updated_at_ts": _now_ts(),
     }
@@ -1979,14 +2009,17 @@ def _backend_path_snapshot() -> list[dict[str, Any]]:
         applied = backend_id == applied_backend_id and bool(rendered) and rendered == active_rendered
         paths.append(
             {
-                "family": "hysteria2",
-                "backend_id": backend_id,
+                **dm_build_backend_path_target(
+                    backend_id,
+                    family="hysteria2",
+                    execution_mode="single_active_backend",
+                    route_classes=sorted(route_classes_by_backend.get(backend_id, [])),
+                ),
                 "config_path": str(config_path),
                 "applied_config_path": str(active_config_path),
                 "systemd_unit": "hysteria2.service",
                 "local_bind": "127.0.0.1:1083",
                 "tun_interface": "tun-hysteria2",
-                "execution_mode": "single_active_backend",
                 "desired": desired,
                 "applied": applied,
                 "rendered": config_path.exists(),
@@ -1995,7 +2028,6 @@ def _backend_path_snapshot() -> list[dict[str, Any]]:
                 "verified_at_ts": float(verify_state.get("verified_at_ts", 0.0) or 0.0),
                 "verify_reason": str(verify_state.get("verify_reason") or ""),
                 "http_code": str(verify_state.get("http_code") or ""),
-                "route_classes": sorted(route_classes_by_backend.get(backend_id, [])),
                 "backend_status": _backend_effective_status(backend),
             }
         )
@@ -6443,7 +6475,11 @@ async def get_decision_backend_paths(_: bool = Depends(_auth)):
     snapshot = _balancer_snapshot()
     return {
         "execution_mode": snapshot.get("execution_mode"),
+        "execution_family": snapshot.get("execution_family"),
         "active_backend_id": snapshot.get("active_backend_id"),
+        "desired_backend_path": snapshot.get("desired_backend_path", {}),
+        "applied_backend_path": snapshot.get("applied_backend_path", {}),
+        "backend_path_status": snapshot.get("backend_path_status", {}),
         "backend_paths": snapshot.get("backend_paths", []),
     }
 

@@ -63,6 +63,15 @@ class WatchdogClient:
         path = path if path.startswith("/") else f"/{path}"
         return await self._post(path, data, timeout)
 
+    @staticmethod
+    def _normalize_decision_runtime_status(payload: Any) -> dict[str, Any]:
+        data = dict(payload or {})
+        data["desired_backend_path"] = dict(data.get("desired_backend_path") or {})
+        data["applied_backend_path"] = dict(data.get("applied_backend_path") or {})
+        data["backend_path_status"] = dict(data.get("backend_path_status") or {})
+        data["backend_paths"] = list(data.get("backend_paths") or [])
+        return data
+
     # -----------------------------------------------------------------------
     # Status / metrics
     # -----------------------------------------------------------------------
@@ -148,11 +157,14 @@ class WatchdogClient:
     async def get_backends(self) -> dict:
         return await self._get("/decision/backends")
 
+    async def get_decision_runtime_status(self) -> dict:
+        return self._normalize_decision_runtime_status(await self._get("/decision/status"))
+
     async def get_balancer_status(self) -> dict:
-        return await self._get("/decision/status")
+        return await self.get_decision_runtime_status()
 
     async def get_backend_paths(self) -> dict:
-        return await self._get("/decision/backend-paths")
+        return self._normalize_decision_runtime_status(await self._get("/decision/backend-paths"))
 
     async def choose_backend(self, backend_id: str = "", route_class: str = "vpn_default", mode: str = "auto") -> dict:
         return await self._post(

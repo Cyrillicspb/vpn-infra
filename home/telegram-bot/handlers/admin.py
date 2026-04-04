@@ -108,6 +108,7 @@ def _render_backend_lines(backends: list[dict]) -> str:
 def _render_balancer_text(payload: dict) -> str:
     assignments = payload.get("assignments", [])
     backend_paths = payload.get("backend_paths", [])
+    path_status = payload.get("backend_path_status") or {}
     lines = [
         "*Balancer*",
         "",
@@ -124,6 +125,12 @@ def _render_balancer_text(payload: dict) -> str:
         )
         lines.append(
             f"Applied path: `{applied_path.get('family', '?')}@{applied_path.get('backend_id', '?')}`"
+        )
+    if path_status:
+        lines.append(
+            "Path status: "
+            f"`reconciled={path_status.get('reconciled')}` "
+            f"`verified={path_status.get('verified')}`"
         )
     if assignments:
         lines.append("")
@@ -179,6 +186,7 @@ def _render_check_result_html(domain: str, payload: dict) -> str:
     matched_pref = payload.get("matched_preference") or {}
     preference_status = str(payload.get("preference_status") or "")
     preference_reason = str(payload.get("preference_reason") or "")
+    path_status = payload.get("backend_path_status") or {}
     identity_type = str(payload.get("identity_type") or "")
     identity_id = str(payload.get("identity_id") or "")
     source_ip = str(payload.get("source_ip") or "")
@@ -206,6 +214,12 @@ def _render_check_result_html(domain: str, payload: dict) -> str:
         lines.append(f"Execution: <code>{execution_mode}</code>")
     if payload.get("desired_backend_path_family"):
         lines.append(f"Family: <code>{payload.get('desired_backend_path_family')}</code>")
+    if path_status:
+        lines.append(
+            "Path status: "
+            f"<code>reconciled={path_status.get('reconciled')}</code> "
+            f"<code>verified={path_status.get('verified')}</code>"
+        )
     path_rows = [
         item for item in (payload.get("backend_paths") or [])
         if str(item.get("backend_id") or "") == effective_backend_id
@@ -1843,7 +1857,7 @@ async def cmd_balancer(message: Message, state: FSMContext, **kw):
         return
     await state.clear()
     try:
-        data = await _wc().get_balancer_status()
+        data = await _wc().get_decision_runtime_status()
         await message.answer(_render_balancer_text(data))
     except WatchdogError as e:
         await message.answer(f"❌ {e}")
@@ -2494,7 +2508,7 @@ async def cb_adm_vps(cb: CallbackQuery, **kw):
 async def cb_adm_balancer(cb: CallbackQuery, **kw):
     await cb.answer("Загружаю...")
     try:
-        data = await _wc().get_balancer_status()
+        data = await _wc().get_decision_runtime_status()
         await _edit_or_answer(cb, _render_balancer_text(data), admin_vps_menu())
     except WatchdogError as e:
         await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())

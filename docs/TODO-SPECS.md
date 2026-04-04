@@ -13,9 +13,9 @@
 
 - [ ] Разделить `HOME_DDNS_DOMAIN` / `WG_HOST` и отдельный VPS hostname, чтобы ingress для клиентов нельзя было случайно направить на VPS.
 - [ ] Расширить functional scenarios routing/smoke под банки, маркетплейсы, Bitrix24 и телекомы.
-- [~] Multi-VPS / Decision Maker Phase 2: вынести backend selection и route explanation в отдельный `Decision Maker` contract.
-- [~] Multi-VPS / Decision Maker Phase 3: `vpn_client` backend preferences (`service/domain/cidr`) поверх `Decision Maker`.
-- [~] Multi-VPS / Decision Maker Phase 4: `LAN client identity` и LAN backend preferences только для `gateway mode`.
+- [~] Multi-VPS / Decision Maker Phase 2: закрепить ownership и state separation между `Decision Maker` и `watchdog`.
+- [~] Multi-VPS / Decision Maker Phase 3: `vpn_client` backend preferences (`service/domain/cidr`) поверх `Decision Maker` уже есть; remaining gap только в richer UX/real dataplane use.
+- [~] Multi-VPS / Decision Maker Phase 4: `LAN client identity` и LAN backend preferences для `gateway mode` уже в control-plane; remaining gap только в richer menu UX/real dataplane use.
 
 ## Уже закрыто
 
@@ -92,10 +92,12 @@
 **Текущее состояние Phase 2:**
 
 - explanation path уже вынесен;
-- `resolve_route(...)` уже появился для domain decision path;
+- `resolve_route(...)` уже есть для domain decision path;
 - choose/apply flow уже разделён;
 - bot уже смотрит в canonical Decision Maker API;
-- remaining gap: более явное отделение decision state от watchdog runtime state и перенос preference precedence в новый resolver.
+- quick health уже refreshes sync-state без self-heal side effects;
+- `desired_backend_path` уже нормализован как отдельный decision/runtime object;
+- remaining gap: более явное отделение authoritative decision state от watchdog runtime state ownership.
 
 ### PHASE 3 — VPN CLIENT PREFERENCES
 
@@ -155,6 +157,8 @@
 - пока dataplane не умеет реальный per-class backend execution, assignment choice принудительно согласован с active backend;
 - добавлен controlled reconciliation path для lease state после смены active backend;
 - добавлен dataplane foundation для `hysteria2`: per-backend rendered configs и `backend_paths` diagnostics с `desired/applied/rendered/verified`;
+- `backend_path_status` теперь canonical machine-readable summary для `desired/applied/verified/reconciled`;
+- bot client и bot UI уже читают canonical runtime status вместо ручной сборки reconciliation;
 - `backend apply` для `hysteria2` теперь проходит через `verify` и делает rollback на предыдущий backend при failed probe;
 - required runtime checks теперь отделяют optional residue (`extra-stacks`) от core default execution path;
 - remaining gap: controlled rebalance и настоящий per-class execution path ниже decision layer.

@@ -77,7 +77,15 @@
 - `/latency learned|candidates|all`
 - `/routes update`
 
-`/check` показывает verdict, source tags, service attribution, current Decision Maker explanation и active `hysteria2` backend path state (`desired/applied/rendered/verified`) для effective backend.
+`/check` показывает verdict, source tags, service attribution, current Decision Maker explanation и active `hysteria2` backend path state для effective backend.
+Канонический runtime status теперь включает:
+- `desired_backend_path`
+- `applied_backend_path`
+- `backend_path_status`
+  - `desired_matches_applied`
+  - `applied_matches_active`
+  - `reconciled`
+  - `verified`
 Поддерживаемые формы:
 - `/check <domain>`
 - `/check <domain> <chat_id>`
@@ -119,6 +127,12 @@
 - `/vps list`
 - `/vps add <ip> [ssh_port]`
 - `/vps remove <ip>`
+
+Bot runtime теперь использует единый client-side helper для canonical decision runtime status:
+- `/decision/status`
+- `/decision/backend-paths`
+
+UI не должен собирать reconciliation вручную; он читает `backend_path_status` как источник истины.
 
 ### Gateway-only
 
