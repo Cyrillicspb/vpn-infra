@@ -7,6 +7,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -342,6 +343,43 @@ class FunctionalHealthTests(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual(watchdog.state.desired_backend_path, {})
         self.assertEqual(watchdog.state.applied_backend_path, {})
+
+    def test_functional_run_recovers_from_auto_disabled_after_preflight_ok(self) -> None:
+        scenario = SimpleNamespace(id="dummy", enabled=True, tiers={"quick"}, routing_expectation="mixed")
+        watchdog.state.functional_mode = watchdog.FUNCTIONAL_MODE_ACTIVE
+        watchdog.state.functional_execution_status = watchdog.FUNCTIONAL_EXEC_AUTO_DISABLED
+        watchdog.state.functional_execution_last_error = "systemd:ssh=inactive"
+        watchdog.state.functional_execution_auto_disabled_reason = "preflight_failed"
+        watchdog.state.functional_results = {"__execution__": {"status": "fail"}}
+        watchdog.state.functional_evidence_store = {"__execution__": {"status": "fail"}}
+
+        async def _fake_preflight():
+            return [
+                {"name": "manifest", "status": "ok", "detail": "/tmp/functional-scenarios.yaml"},
+                {"name": "systemd:ssh", "status": "ok", "detail": "service=active; socket=active"},
+            ]
+
+        async def _fake_run_scenario(_scenario):
+            result = watchdog.CheckResult("functional_dummy", "ok", "ok", weight=1, tier="functional")
+            evidence = {
+                "id": "dummy",
+                "status": "ok",
+                "detail": "ok",
+                "timestamp": "2026-04-04T21:00:00",
+            }
+            return result, evidence
+
+        with mock.patch.object(watchdog, "_functional_preflight_checks", side_effect=_fake_preflight):
+            with mock.patch.object(watchdog, "load_functional_scenarios", return_value=[scenario]):
+                with mock.patch.object(watchdog, "_run_functional_scenario", side_effect=_fake_run_scenario):
+                    with mock.patch.object(watchdog.state, "save", return_value=None):
+                        results = asyncio.run(watchdog._run_functional_checks_for_tier("quick"))
+
+        self.assertEqual([result.status for result in results], ["ok"])
+        self.assertEqual(watchdog.state.functional_execution_status, watchdog.FUNCTIONAL_EXEC_HEALTHY)
+        self.assertEqual(watchdog.state.functional_execution_last_error, "")
+        self.assertEqual(watchdog.state.functional_execution_auto_disabled_reason, "")
+        self.assertEqual(watchdog.state.functional_results["dummy"]["status"], "ok")
 
     def test_balancer_snapshot_reports_backend_path_reconciliation_status(self) -> None:
         watchdog.state.backends = [

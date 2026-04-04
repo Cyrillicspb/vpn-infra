@@ -124,6 +124,14 @@ setup_routing() {
     ip route replace "$LOCAL_SUBNET" dev "$ETH_IFACE" table $TABLE_VPN 2>/dev/null || true
     log "Table $TABLE_VPN: $LOCAL_SUBNET dev $ETH_IFACE (прямой)"
 
+    # Functional namespaces живут на локальном bridge br-fh. Без явного маршрута
+    # ответы host->namespace по source-based rule from 172.21.0.0/24 уходят через
+    # eth0, и DNS внутри vpn-fh-* перестаёт работать.
+    if ip link show br-fh &>/dev/null; then
+        ip route replace "$FUNCTIONAL_NS_SUBNET" dev br-fh table $TABLE_VPN 2>/dev/null || true
+        log "Table $TABLE_VPN: $FUNCTIONAL_NS_SUBNET dev br-fh (functional namespaces)"
+    fi
+
     # --- Table 201: DPI-bypass (fwmark 0x2) → eth0 + zapret ---
 
     ip route flush table $TABLE_DPI 2>/dev/null || true

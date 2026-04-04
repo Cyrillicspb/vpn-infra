@@ -277,6 +277,9 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn("0 3 * * * root flock -n /var/run/vpn-routes.lock python3 /opt/vpn/scripts/update-routes.py >> /var/log/vpn-routes.log 2>&1", installer)
         self.assertIn("@reboot root sleep 60 && bash /opt/vpn/scripts/dns-warmup.sh >> /var/log/vpn-dns-warmup.log 2>&1", installer)
         self.assertIn('["systemctl", "is-active", "ssh.socket"]', watchdog_source)
+        vpn_policy = (ROOT / "home" / "scripts" / "vpn-policy-routing.sh").read_text(encoding="utf-8")
+        self.assertIn('ip route replace "$FUNCTIONAL_NS_SUBNET" dev br-fh table $TABLE_VPN', vpn_policy)
+        self.assertIn('Table $TABLE_VPN: $FUNCTIONAL_NS_SUBNET dev br-fh (functional namespaces)', vpn_policy)
 
     def test_sing_box_extra_client_templates_do_not_use_removed_legacy_inbound_fields(self):
         tuic_client = (ROOT / "home" / "sing-box" / "tuic-client.json").read_text(encoding="utf-8")

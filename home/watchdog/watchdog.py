@@ -4312,10 +4312,6 @@ async def _run_functional_checks_for_tier(tier: str) -> list[CheckResult]:
         state.save()
         return []
 
-    if state.functional_execution_status == FUNCTIONAL_EXEC_AUTO_DISABLED:
-        detail = state.functional_execution_last_error or "functional execution auto-disabled"
-        return _set_functional_execution_failure(tier, state.functional_execution_auto_disabled_reason or "auto_disabled", detail)
-
     if not preflight_ok:
         detail = "; ".join(
             f"{check['name']}={check.get('detail', '')}".strip("=")
@@ -4323,6 +4319,13 @@ async def _run_functional_checks_for_tier(tier: str) -> list[CheckResult]:
             if check.get("status") != "ok"
         ) or "functional preflight failed"
         return _set_functional_execution_failure(tier, "preflight_failed", detail)
+
+    if state.functional_execution_status == FUNCTIONAL_EXEC_AUTO_DISABLED:
+        # Allow functional checks to recover automatically after transient
+        # preflight failures once the execution prerequisites are healthy again.
+        state.functional_execution_status = FUNCTIONAL_EXEC_DEGRADED
+        state.functional_execution_last_error = ""
+        state.functional_execution_auto_disabled_reason = ""
 
     results: list[CheckResult] = []
     evidence_store: dict[str, dict[str, Any]] = {}
