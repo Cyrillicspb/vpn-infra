@@ -248,6 +248,8 @@ class DeployRestoreContractTests(unittest.TestCase):
         post_install = (ROOT / "home" / "scripts" / "post-install-check.sh").read_text(encoding="utf-8")
         self.assertIn("docker optional: $cname", post_install)
         self.assertIn("VPS optional docker: $cname", post_install)
+        self.assertIn("VPS nftables 8444/tcp", post_install)
+        self.assertIn("VPS nftables 8448/udp", post_install)
 
     def test_sing_box_extra_client_templates_do_not_use_removed_legacy_inbound_fields(self):
         tuic_client = (ROOT / "home" / "sing-box" / "tuic-client.json").read_text(encoding="utf-8")

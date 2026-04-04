@@ -499,6 +499,13 @@ if [[ -n "$VPS_IP" && -f "$SSH_KEY" ]]; then
         "ping -c 2 -W 3 10.177.2.2" \
         "SSH tier-2 туннель не поднят (autossh-tier2)"
 
+    check_warn "VPS nftables 8444/tcp" \
+        "ssh -i $SSH_KEY -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes sysadmin@${VPS_IP} \"sudo nft list ruleset 2>/dev/null | grep -F 'tcp dport { 2083, 8444 }'\"" \
+        "extra-stack Trojan не пройдет через firewall VPS"
+    check_warn "VPS nftables 8448/udp" \
+        "ssh -i $SSH_KEY -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes sysadmin@${VPS_IP} \"sudo nft list ruleset 2>/dev/null | grep -F 'udp dport { 443, 8448 }'\"" \
+        "extra-stack TUIC не пройдет через firewall VPS"
+
     # Docker на VPS
     VPS_CONTAINERS=$(ssh -i "$SSH_KEY" -o ConnectTimeout=10 -o StrictHostKeyChecking=no \
         "sysadmin@${VPS_IP}" \
