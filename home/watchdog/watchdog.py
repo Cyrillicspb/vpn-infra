@@ -2694,7 +2694,8 @@ def _wg_quick_tool(iface: str) -> str:
 # ---------------------------------------------------------------------------
 PEER_STALE_REPEAT_INTERVAL = 3600  # повторный алерт о stale peer — не чаще раза в час
 BOT_DB_PATH = Path("/opt/vpn/telegram-bot/data/vpn_bot.db")
-BOT_SOURCE_DIR = Path("/opt/vpn/telegram-bot")
+BOT_RUNTIME_DIR = Path("/opt/vpn/telegram-bot")
+BOT_SOURCE_DIR = Path("/opt/vpn/home/telegram-bot")
 BOT_RUNTIME_FILES = (
     "bot.py",
     "config.py",
@@ -2958,7 +2959,7 @@ async def check_telegram_bot_runtime_sync(allow_selfheal: bool = True) -> None:
     now = time.time()
     if container_hashes and container_hashes == host_hashes:
         if state.bot_runtime_drift:
-            logger.info("telegram-bot runtime снова синхронизирован с /opt/vpn/telegram-bot")
+            logger.info("telegram-bot runtime снова синхронизирован с %s", BOT_SOURCE_DIR)
         state.bot_runtime_drift = False
         state.bot_runtime_drift_since = 0.0
         state.bot_runtime_drift_detail = ""

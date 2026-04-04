@@ -148,6 +148,11 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('ip route replace default via "$GATEWAY" dev "$ETH_IFACE" table $TABLE_DPI', setup_section)
         self.assertIn('ip route del "$FUNCTIONAL_NS_SUBNET" dev br-fh table $TABLE_VPN', setup_section)
 
+    def test_watchdog_uses_source_tree_for_telegram_repo_sync(self):
+        watchdog = (ROOT / "home" / "watchdog" / "watchdog.py").read_text(encoding="utf-8")
+        self.assertIn('BOT_RUNTIME_DIR = Path("/opt/vpn/telegram-bot")', watchdog)
+        self.assertIn('BOT_SOURCE_DIR = Path("/opt/vpn/home/telegram-bot")', watchdog)
+
     def test_admin_bot_texts_match_deploy_status_contract(self):
         admin_handler = (ROOT / "home" / "telegram-bot" / "handlers" / "admin.py").read_text(encoding="utf-8")
         watchdog_client = (ROOT / "home" / "telegram-bot" / "services" / "watchdog_client.py").read_text(encoding="utf-8")
