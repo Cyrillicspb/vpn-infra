@@ -879,7 +879,7 @@ else
 # log-queries
 
 # Слушать только на loopback (WireGuard-интерфейсы добавятся после их поднятия)
-listen-address=127.0.0.1
+listen-address=127.0.0.1,10.177.1.1,10.177.3.1,172.21.0.1
 bind-interfaces
 
 # Отключить DHCP

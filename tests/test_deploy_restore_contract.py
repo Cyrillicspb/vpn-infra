@@ -254,6 +254,8 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn("VPS optional docker: $cname", post_install)
         self.assertIn("VPS nftables 8444/tcp", post_install)
         self.assertIn("VPS nftables 8448/udp", post_install)
+        dnsmasq_conf = (ROOT / "home" / "dnsmasq" / "dnsmasq.conf").read_text(encoding="utf-8")
+        self.assertIn("listen-address=127.0.0.1,10.177.1.1,10.177.3.1,172.21.0.1", dnsmasq_conf)
 
     def test_sing_box_extra_client_templates_do_not_use_removed_legacy_inbound_fields(self):
         tuic_client = (ROOT / "home" / "sing-box" / "tuic-client.json").read_text(encoding="utf-8")

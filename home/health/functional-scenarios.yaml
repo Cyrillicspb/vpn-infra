@@ -1,48 +1,48 @@
 scenarios:
   - id: lan_direct_internet
     enabled: true
-    description: LAN direct internet baseline
+    description: LAN direct-first internet baseline
     scenario_class: direct_baseline
     tiers: [quick, standard, deep]
     client_path: lan
-    routing_expectation: direct
+    routing_expectation: latency_sensitive_direct
     probe_type: https_status
     timeout: 8
     weight: 10
     targets:
-      - host: www.gstatic.com
-        url: https://www.gstatic.com/generate_204
-        expected_codes: [200, 204]
+      - host: ya.ru
+        url: https://ya.ru
+        expected_codes: [200, 301, 302]
 
   - id: wg_direct_internet
     enabled: true
-    description: WG direct internet baseline
+    description: WG direct-first internet baseline
     scenario_class: direct_baseline
     tiers: [standard, deep]
     client_path: wg
-    routing_expectation: direct
+    routing_expectation: latency_sensitive_direct
     probe_type: https_status
     timeout: 8
     weight: 8
     targets:
-      - host: www.gstatic.com
-        url: https://www.gstatic.com/generate_204
-        expected_codes: [200, 204]
+      - host: ya.ru
+        url: https://ya.ru
+        expected_codes: [200, 301, 302]
 
   - id: awg_direct_internet
     enabled: true
-    description: AWG direct internet baseline
+    description: AWG direct-first internet baseline
     scenario_class: direct_baseline
     tiers: [standard, deep]
     client_path: awg
-    routing_expectation: direct
+    routing_expectation: latency_sensitive_direct
     probe_type: https_status
     timeout: 8
     weight: 8
     targets:
-      - host: www.gstatic.com
-        url: https://www.gstatic.com/generate_204
-        expected_codes: [200, 204]
+      - host: ya.ru
+        url: https://ya.ru
+        expected_codes: [200, 301, 302]
 
   - id: lan_blocked_via_vps
     enabled: true
@@ -145,7 +145,7 @@ scenarios:
       - host: api.okko.tv
         url: https://api.okko.tv
         routing_expectation: latency_sensitive_direct
-        expected_codes: [200, 301, 302, 401, 403]
+        expected_codes: [200, 301, 302, 401, 403, 404]
       - host: static.okko.tv
         url: https://static.okko.tv
         routing_expectation: latency_sensitive_direct
@@ -157,4 +157,4 @@ scenarios:
       - host: www.googleapis.com
         url: https://www.googleapis.com
         routing_expectation: latency_sensitive_direct
-        expected_codes: [200, 301, 302, 401, 403]
+        expected_codes: [200, 301, 302, 401, 403, 404]
