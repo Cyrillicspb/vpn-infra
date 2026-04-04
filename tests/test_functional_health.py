@@ -414,7 +414,7 @@ class FunctionalHealthTests(unittest.TestCase):
         self.assertEqual(
             snapshot["backend_path_status"],
             {
-                "execution_mode": "single_active_backend",
+                "execution_mode": "multi_backend",
                 "execution_family": "hysteria2",
                 "desired_backend_id": "backend-a",
                 "applied_backend_id": "backend-a",
@@ -439,7 +439,7 @@ class FunctionalHealthTests(unittest.TestCase):
             {
                 "backend_id": "backend-a",
                 "family": "hysteria2",
-                "execution_mode": "single_active_backend",
+                "execution_mode": "multi_backend",
                 "route_classes": ["blocked_default", "vpn_default"],
                 "reason": "manual_switch",
                 "updated_at_ts": watchdog.state.desired_backend_path["updated_at_ts"],
@@ -450,7 +450,7 @@ class FunctionalHealthTests(unittest.TestCase):
             {
                 "backend_id": "backend-a",
                 "family": "hysteria2",
-                "execution_mode": "single_active_backend",
+                "execution_mode": "multi_backend",
                 "route_classes": ["blocked_default", "vpn_default"],
                 "reason": "manual_switch",
                 "updated_at_ts": watchdog.state.applied_backend_path["updated_at_ts"],

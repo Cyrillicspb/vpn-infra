@@ -1326,6 +1326,7 @@ class WatchdogState:
         self.backends: list[dict[str, Any]] = []
         self.backend_assignments: dict[str, dict[str, Any]] = {}
         self.balancer_idle_ttl_seconds: int = BALANCER_IDLE_TTL_SECONDS
+        self.execution_mode: str = "multi_backend"
         self.execution_family: str = "hysteria2"
         self.desired_backend_path: dict[str, Any] = {}
         self.applied_backend_path: dict[str, Any] = {}
@@ -1445,6 +1446,7 @@ class WatchdogState:
             "backends": self.backends,
             "backend_assignments": self.backend_assignments,
             "balancer_idle_ttl_seconds": self.balancer_idle_ttl_seconds,
+            "execution_mode": self.execution_mode,
             "execution_family": self.execution_family,
             "desired_backend_path": self.desired_backend_path,
             "applied_backend_path": self.applied_backend_path,
@@ -1493,6 +1495,7 @@ class WatchdogState:
             "schema": 1,
             "updated_at": datetime.now().isoformat(),
             "idle_ttl_seconds": self.balancer_idle_ttl_seconds,
+            "execution_mode": self.execution_mode,
             "backends": self.backends,
             "assignments": self.backend_assignments,
         }
@@ -1534,6 +1537,9 @@ class WatchdogState:
                 self.balancer_idle_ttl_seconds = int(
                     data.get("balancer_idle_ttl_seconds", BALANCER_IDLE_TTL_SECONDS) or BALANCER_IDLE_TTL_SECONDS
                 )
+                self.execution_mode = str(data.get("execution_mode") or "multi_backend").strip() or "multi_backend"
+                if self.execution_mode not in {"single_active_backend", "multi_backend"}:
+                    self.execution_mode = "multi_backend"
                 self.execution_family = str(data.get("execution_family") or "hysteria2")
                 self.desired_backend_path = data.get("desired_backend_path", {}) or {}
                 self.applied_backend_path = data.get("applied_backend_path", {}) or {}
@@ -1611,6 +1617,9 @@ class WatchdogState:
                         self.balancer_idle_ttl_seconds = int(
                             balancer.get("idle_ttl_seconds", self.balancer_idle_ttl_seconds) or self.balancer_idle_ttl_seconds
                         )
+                        balancer_execution_mode = str(balancer.get("execution_mode") or "").strip()
+                        if balancer_execution_mode in {"single_active_backend", "multi_backend"}:
+                            self.execution_mode = balancer_execution_mode
                     except Exception as exc:
                         logger.warning("Не удалось загрузить backend balancer state: %s", exc)
                 _normalize_functional_state()
@@ -1707,7 +1716,12 @@ def _healthy_backends() -> list[dict[str, Any]]:
 
 
 def _select_backend_for_route_class(route_class: str) -> Optional[dict[str, Any]]:
-    return dm_select_backend(route_class, state.backends, active_backend_id=state.active_backend_id, execution_mode="single_active_backend")
+    return dm_select_backend(
+        route_class,
+        state.backends,
+        active_backend_id=state.active_backend_id,
+        execution_mode=state.execution_mode,
+    )
 
 
 def _ensure_backend_assignment(route_class: str, force_reassign: bool = False) -> Optional[dict[str, Any]]:
@@ -1718,7 +1732,7 @@ def _ensure_backend_assignment(route_class: str, force_reassign: bool = False) -
         state.backend_assignments,
         state.balancer_idle_ttl_seconds,
         active_backend_id=state.active_backend_id,
-        execution_mode="single_active_backend",
+        execution_mode=state.execution_mode,
         force_reassign=force_reassign,
         now=_now_ts(),
     )
@@ -1741,7 +1755,7 @@ def _balancer_snapshot() -> dict[str, Any]:
         state.backend_assignments,
         state.balancer_idle_ttl_seconds,
         state.active_backend_id,
-        execution_mode="single_active_backend",
+        execution_mode=state.execution_mode,
         execution_family=state.execution_family,
         desired_backend_path=dict(state.desired_backend_path or {}),
         applied_backend_path=dict(state.applied_backend_path or {}),
@@ -1758,7 +1772,7 @@ def _decision_state() -> dict[str, Any]:
         state.backend_assignments,
         state.balancer_idle_ttl_seconds,
         state.active_backend_id,
-        execution_mode="single_active_backend",
+        execution_mode=state.execution_mode,
         desired_backend_path_family=state.execution_family,
     )
 
@@ -1767,7 +1781,7 @@ def _set_desired_backend_path(backend_id: str, reason: str) -> None:
     state.desired_backend_path = dm_build_backend_path_runtime_record(
         str(backend_id or ""),
         family=state.execution_family,
-        execution_mode="single_active_backend",
+        execution_mode=state.execution_mode,
         route_classes=sorted((state.backend_assignments or {}).keys()),
         reason=str(reason or ""),
         updated_at_ts=_now_ts(),
@@ -1779,7 +1793,7 @@ def _set_applied_backend_path(backend_id: str, reason: str) -> None:
     state.applied_backend_path = dm_build_backend_path_runtime_record(
         str(backend_id or ""),
         family=state.execution_family,
-        execution_mode="single_active_backend",
+        execution_mode=state.execution_mode,
         route_classes=sorted((state.backend_assignments or {}).keys()),
         reason=str(reason or ""),
         updated_at_ts=_now_ts(),
@@ -2017,7 +2031,7 @@ def _backend_path_snapshot() -> list[dict[str, Any]]:
             dm_build_backend_path_entry(
                 backend_id,
                 family="hysteria2",
-                execution_mode="single_active_backend",
+                execution_mode=state.execution_mode,
                 route_classes=sorted(route_classes_by_backend.get(backend_id, [])),
                 config_path=str(config_path),
                 applied_config_path=str(active_config_path),
@@ -2211,6 +2225,7 @@ async def _apply_backend_decision(decision: dict[str, Any]) -> dict[str, Any]:
         state.backend_assignments,
         backend_id,
         state.balancer_idle_ttl_seconds,
+        execution_mode=state.execution_mode,
         now=_now_ts(),
     )
     assignments = reconcile.get("assignments")
@@ -7218,7 +7233,7 @@ async def _check_domain_result(domain: str, persist_assignment: bool = True, cha
             client_preferences=_load_client_backend_prefs(chat_id),
             lan_clients=await _list_lan_clients() if _gateway_mode_enabled() else [],
             lan_client_preferences=_list_lan_prefs() if _gateway_mode_enabled() else [],
-            execution_mode="single_active_backend",
+            execution_mode=state.execution_mode,
         ),
         now=_now_ts(),
     )
@@ -7515,7 +7530,7 @@ async def post_decision_reassign(request: Request, req: BalancerReassignRequest,
         state.backend_assignments,
         state.balancer_idle_ttl_seconds,
         active_backend_id=state.active_backend_id,
-        execution_mode="single_active_backend",
+        execution_mode=state.execution_mode,
         now=_now_ts(),
     )
     assignments = result.get("assignments")
@@ -7541,6 +7556,7 @@ async def post_decision_reconcile_assignments(request: Request, req: BalancerRec
         state.backend_assignments,
         backend_id,
         state.balancer_idle_ttl_seconds,
+        execution_mode=state.execution_mode,
         now=_now_ts(),
     )
     assignments = result.get("assignments")

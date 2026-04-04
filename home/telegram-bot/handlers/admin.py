@@ -109,6 +109,7 @@ def _render_balancer_text(payload: dict) -> str:
     assignments = payload.get("assignments", [])
     backend_paths = payload.get("backend_paths", [])
     path_status = payload.get("backend_path_status") or {}
+    active_backend = payload.get("active_backend") or {}
     lines = [
         "*Balancer*",
         "",
@@ -117,6 +118,11 @@ def _render_balancer_text(payload: dict) -> str:
         f"Family: `{payload.get('execution_family', '?')}`",
         f"Backends: `{payload.get('healthy_backend_count', 0)}/{payload.get('backend_count', 0)}` healthy",
     ]
+    if active_backend:
+        lines.append(
+            f"Runtime active: `{active_backend.get('id', payload.get('active_backend_id', '?'))}`"
+            f" → `{active_backend.get('ip', '?')}`"
+        )
     desired_path = payload.get("desired_backend_path") or {}
     applied_path = payload.get("applied_backend_path") or {}
     if desired_path or applied_path:
@@ -135,6 +141,14 @@ def _render_balancer_text(payload: dict) -> str:
     if assignments:
         lines.append("")
         lines.append("*Assignments:*")
+        grouped: dict[str, list[str]] = {}
+        for assignment in assignments:
+            backend_id = str((assignment.get("backend") or {}).get("id") or assignment.get("backend_id", "?"))
+            grouped.setdefault(backend_id, []).append(str(assignment.get("route_class", "?")))
+        for backend_id, route_classes in sorted(grouped.items()):
+            lines.append(f"• `{backend_id}` ← `{', '.join(sorted(route_classes))}`")
+        lines.append("")
+        lines.append("*Assignment leases:*")
         for assignment in assignments:
             backend = assignment.get("backend") or {}
             lines.append(

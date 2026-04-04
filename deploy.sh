@@ -35,6 +35,13 @@ REMOTE_LAST_ATTEMPT_FILE="$REMOTE_STATE_DIR/last-attempt.json"
 SSH_PROXY_CMD="$REPO_DIR/scripts/ssh-proxy.sh"
 GITHUB_REPO_URL_DEFAULT="${GITHUB_REPO_URL_DEFAULT:-https://github.com/Cyrillicspb/vpn-infra.git}"
 DEPLOY_USE_SSH_PROXY="${DEPLOY_USE_SSH_PROXY:-0}"
+WATCHDOG_STATE_FILE="${WATCHDOG_STATE_FILE:-$REPO_DIR/watchdog/state.json}"
+BACKEND_TARGETS_JSON="[]"
+BACKEND_COUNT=0
+PRIMARY_BACKEND_ID=""
+PRIMARY_BACKEND_IP="${VPS_IP:-}"
+PRIMARY_BACKEND_SSH_PORT="${VPS_SSH_PORT:-22}"
+PRIMARY_BACKEND_TUNNEL_IP="${VPS_TUNNEL_IP:-10.177.2.2}"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -142,11 +149,22 @@ mock_phase_failed() {
     local raw="${DEPLOY_FAIL_PHASES:-${DEPLOY_FAIL_PHASE:-}}"
     [[ -n "$raw" ]] || return 1
     local item
+    local aliases=("$phase")
+    case "$phase" in
+        apply-backends) aliases+=("apply-vps") ;;
+        rollback-backends) aliases+=("rollback-vps") ;;
+        verify-backends) aliases+=("verify") ;;
+        rollback-verify) aliases+=("rollback-verify") ;;
+    esac
     IFS=',' read -r -a items <<< "$raw"
     for item in "${items[@]}"; do
-        if [[ "${item// /}" == "$phase" ]]; then
-            return 0
-        fi
+        item="${item// /}"
+        local alias
+        for alias in "${aliases[@]}"; do
+            if [[ "$item" == "$alias" ]]; then
+                return 0
+            fi
+        done
     done
     return 1
 }
@@ -198,18 +216,105 @@ update_state_file() {
     write_json_file "$file" "$payload"
 }
 
+load_backend_targets() {
+    BACKEND_TARGETS_JSON="$(
+        python3 - "$WATCHDOG_STATE_FILE" "${VPS_IP:-}" "${VPS_SSH_PORT:-22}" "${VPS_TUNNEL_IP:-10.177.2.2}" <<'PY'
+import json, sys
+state_path, fallback_ip, fallback_ssh_port, fallback_tunnel_ip = sys.argv[1:5]
+targets = []
+seen = set()
+try:
+    with open(state_path, "r", encoding="utf-8") as fh:
+        state = json.load(fh)
+except Exception:
+    state = {}
+for index, item in enumerate(state.get("vps_list") or []):
+    if not isinstance(item, dict):
+        continue
+    ip = str(item.get("ip") or "").strip()
+    if not ip or ip in seen:
+        continue
+    seen.add(ip)
+    backend_id = str(item.get("id") or f"backend-{ip.replace('.', '-')}").strip()
+    targets.append(
+        {
+            "id": backend_id,
+            "ip": ip,
+            "ssh_port": int(item.get("ssh_port") or 22),
+            "tunnel_ip": str(item.get("tunnel_ip") or ""),
+            "ordinal": len(targets),
+        }
+    )
+if not targets and fallback_ip:
+    targets.append(
+        {
+            "id": f"backend-{fallback_ip.replace('.', '-')}",
+            "ip": fallback_ip,
+            "ssh_port": int(fallback_ssh_port or 22),
+            "tunnel_ip": fallback_tunnel_ip,
+            "ordinal": 0,
+        }
+    )
+print(json.dumps(targets, ensure_ascii=False))
+PY
+    )"
+    BACKEND_COUNT="$(python3 - "$BACKEND_TARGETS_JSON" <<'PY'
+import json, sys
+print(len(json.loads(sys.argv[1])))
+PY
+)"
+    if [[ "$BACKEND_COUNT" -gt 0 ]]; then
+        read -r PRIMARY_BACKEND_ID PRIMARY_BACKEND_IP PRIMARY_BACKEND_SSH_PORT PRIMARY_BACKEND_TUNNEL_IP < <(
+            python3 - "$BACKEND_TARGETS_JSON" <<'PY'
+import json, sys
+targets = json.loads(sys.argv[1])
+item = targets[0]
+print(item.get("id", ""), item.get("ip", ""), item.get("ssh_port", 22), item.get("tunnel_ip", ""))
+PY
+        )
+    else
+        PRIMARY_BACKEND_ID=""
+        PRIMARY_BACKEND_IP="${VPS_IP:-}"
+        PRIMARY_BACKEND_SSH_PORT="${VPS_SSH_PORT:-22}"
+        PRIMARY_BACKEND_TUNNEL_IP="${VPS_TUNNEL_IP:-10.177.2.2}"
+    fi
+}
+
+backend_targets_payload() {
+    printf '%s' "$BACKEND_TARGETS_JSON"
+}
+
+backend_targets_tsv() {
+    python3 - "$BACKEND_TARGETS_JSON" <<'PY'
+import json, sys
+for item in json.loads(sys.argv[1]):
+    print(
+        "\t".join(
+            [
+                str(item.get("id", "")),
+                str(item.get("ip", "")),
+                str(item.get("ssh_port", 22)),
+                str(item.get("tunnel_ip", "")),
+                str(item.get("ordinal", 0)),
+            ]
+        )
+    )
+PY
+}
+
 set_last_attempt() {
     local status="$1"
     local phase="$2"
     local message="${3:-}"
     local payload
-    payload="$(python3 - "$status" "$phase" "$message" <<'PY'
+    payload="$(python3 - "$status" "$phase" "$message" "$(backend_targets_payload)" <<'PY'
 import json, sys
-status, phase, message = sys.argv[1:4]
+status, phase, message, targets = sys.argv[1:5]
 print(json.dumps({
     "status": status,
     "phase": phase,
     "message": message,
+    "backend_targets": json.loads(targets or "[]"),
 }, ensure_ascii=False))
 PY
 )"
@@ -321,14 +426,15 @@ write_current_release_state() {
     payload="$(python3 - \
         "$CURRENT_RELEASE_ID" "$CURRENT_RELEASE_SHA" "$CURRENT_RELEASE_VERSION" \
         "$PREVIOUS_RELEASE_ID" "$PREVIOUS_RELEASE_SHA" "$PREVIOUS_RELEASE_VERSION" \
-        "$status" "$message" <<'PY'
+        "$status" "$message" "$(backend_targets_payload)" <<'PY'
 import json, sys
-cur_id, cur_sha, cur_ver, prev_id, prev_sha, prev_ver, status, message = sys.argv[1:9]
+cur_id, cur_sha, cur_ver, prev_id, prev_sha, prev_ver, status, message, targets = sys.argv[1:10]
 print(json.dumps({
     "current_release": {"id": cur_id, "sha": cur_sha, "version": cur_ver},
     "previous_release": {"id": prev_id, "sha": prev_sha, "version": prev_ver},
     "status": status,
     "message": message,
+    "backend_targets": json.loads(targets or "[]"),
 }, ensure_ascii=False))
 PY
 )"
@@ -343,15 +449,16 @@ write_pending_release_state() {
     payload="$(python3 - \
         "${TARGET_RELEASE_ID:-}" "${TARGET_RELEASE_SHA:-}" "${TARGET_RELEASE_VERSION:-}" \
         "$phase" "$status" "$message" \
-        "$CURRENT_RELEASE_ID" "$CURRENT_RELEASE_SHA" "$CURRENT_RELEASE_VERSION" <<'PY'
+        "$CURRENT_RELEASE_ID" "$CURRENT_RELEASE_SHA" "$CURRENT_RELEASE_VERSION" "$(backend_targets_payload)" <<'PY'
 import json, sys
-target_id, target_sha, target_ver, phase, status, message, base_id, base_sha, base_ver = sys.argv[1:10]
+target_id, target_sha, target_ver, phase, status, message, base_id, base_sha, base_ver, targets = sys.argv[1:11]
 print(json.dumps({
     "pending_release": {"id": target_id, "sha": target_sha, "version": target_ver},
     "base_release": {"id": base_id, "sha": base_sha, "version": base_ver},
     "phase": phase,
     "status": status,
     "message": message,
+    "backend_targets": json.loads(targets or "[]"),
 }, ensure_ascii=False))
 PY
 )"
@@ -362,68 +469,85 @@ clear_pending_state() {
     rm -f "$PENDING_STATE_FILE"
 }
 
-vps_exec() {
+backend_exec() {
+    local backend_ip="$1"
+    local backend_port="$2"
+    shift 2
     if is_mock_mode; then
         bash -lc "$*"
         return $?
     fi
-    local port="${VPS_SSH_PORT:-22}"
     local proxy_opts=()
     if [[ "$DEPLOY_USE_SSH_PROXY" == "1" && -x "$SSH_PROXY_CMD" ]]; then
         proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
     fi
-    ssh -p "$port" -i "$SSH_KEY" \
+    ssh -p "$backend_port" -i "$SSH_KEY" \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=15 \
         -o BatchMode=yes \
         "${proxy_opts[@]}" \
-        "sysadmin@${VPS_IP:-localhost}" "$@"
+        "sysadmin@${backend_ip:-localhost}" "$@"
+}
+
+vps_exec() {
+    backend_exec "${PRIMARY_BACKEND_IP:-${VPS_IP:-localhost}}" "${PRIMARY_BACKEND_SSH_PORT:-${VPS_SSH_PORT:-22}}" "$@"
+}
+
+backend_copy_stdin_to_file() {
+    local backend_ip="$1"
+    local backend_port="$2"
+    local remote_file="$3"
+    local proxy_opts=()
+    if [[ "$DEPLOY_USE_SSH_PROXY" == "1" && -x "$SSH_PROXY_CMD" ]]; then
+        proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
+    fi
+    ssh -p "$backend_port" -i "$SSH_KEY" \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=15 \
+        -o BatchMode=yes \
+        "${proxy_opts[@]}" \
+        "sysadmin@${backend_ip:-localhost}" "cat > '$remote_file'"
 }
 
 vps_copy_stdin_to_file() {
-    local remote_file="$1"
-    local port="${VPS_SSH_PORT:-22}"
+    backend_copy_stdin_to_file "${PRIMARY_BACKEND_IP:-${VPS_IP:-localhost}}" "${PRIMARY_BACKEND_SSH_PORT:-${VPS_SSH_PORT:-22}}" "$1"
+}
+
+backend_read_file() {
+    local backend_ip="$1"
+    local backend_port="$2"
+    local remote_file="$3"
     local proxy_opts=()
     if [[ "$DEPLOY_USE_SSH_PROXY" == "1" && -x "$SSH_PROXY_CMD" ]]; then
         proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
     fi
-    ssh -p "$port" -i "$SSH_KEY" \
+    ssh -p "$backend_port" -i "$SSH_KEY" \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=15 \
         -o BatchMode=yes \
         "${proxy_opts[@]}" \
-        "sysadmin@${VPS_IP:-localhost}" "cat > '$remote_file'"
+        "sysadmin@${backend_ip:-localhost}" "cat '$remote_file' 2>/dev/null"
 }
 
 vps_read_file() {
-    local remote_file="$1"
-    local port="${VPS_SSH_PORT:-22}"
-    local proxy_opts=()
-    if [[ "$DEPLOY_USE_SSH_PROXY" == "1" && -x "$SSH_PROXY_CMD" ]]; then
-        proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
-    fi
-    ssh -p "$port" -i "$SSH_KEY" \
-        -o StrictHostKeyChecking=no \
-        -o ConnectTimeout=15 \
-        -o BatchMode=yes \
-        "${proxy_opts[@]}" \
-        "sysadmin@${VPS_IP:-localhost}" "cat '$remote_file' 2>/dev/null"
+    backend_read_file "${PRIMARY_BACKEND_IP:-${VPS_IP:-localhost}}" "${PRIMARY_BACKEND_SSH_PORT:-${VPS_SSH_PORT:-22}}" "$1"
 }
 
-vps_read_json_key() {
-    local remote_file="$1"
-    local key="$2"
-    local port="${VPS_SSH_PORT:-22}"
+backend_read_json_key() {
+    local backend_ip="$1"
+    local backend_port="$2"
+    local remote_file="$3"
+    local key="$4"
     local proxy_opts=()
     if [[ "$DEPLOY_USE_SSH_PROXY" == "1" && -x "$SSH_PROXY_CMD" ]]; then
         proxy_opts+=(-o "ProxyCommand=${SSH_PROXY_CMD} %h %p")
     fi
-    ssh -p "$port" -i "$SSH_KEY" \
+    ssh -p "$backend_port" -i "$SSH_KEY" \
         -o StrictHostKeyChecking=no \
         -o ConnectTimeout=15 \
         -o BatchMode=yes \
         "${proxy_opts[@]}" \
-        "sysadmin@${VPS_IP:-localhost}" python3 - "$remote_file" "$key" <<'PY'
+        "sysadmin@${backend_ip:-localhost}" python3 - "$remote_file" "$key" <<'PY'
 import json, sys
 path, key = sys.argv[1], sys.argv[2]
 with open(path, "r", encoding="utf-8") as fh:
@@ -444,6 +568,10 @@ elif isinstance(value, (dict, list)):
 else:
     print(value)
 PY
+}
+
+vps_read_json_key() {
+    backend_read_json_key "${PRIMARY_BACKEND_IP:-${VPS_IP:-localhost}}" "${PRIMARY_BACKEND_SSH_PORT:-${VPS_SSH_PORT:-22}}" "$1" "$2"
 }
 
 vps_tmux_exec() {
@@ -489,21 +617,31 @@ vps_tmux_exec() {
     return "${rc_val:-1}"
 }
 
-vps_rsync_ssh() {
-    local ssh_port="${VPS_SSH_PORT:-22}"
-    local rsync_ssh="ssh -p $ssh_port -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes"
+backend_rsync_ssh() {
+    local backend_port="$1"
+    local rsync_ssh="ssh -p $backend_port -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes"
     if [[ "$DEPLOY_USE_SSH_PROXY" == "1" && -x "$SSH_PROXY_CMD" ]]; then
         rsync_ssh+=" -o ProxyCommand='${SSH_PROXY_CMD} %h %p'"
     fi
     echo "$rsync_ssh"
 }
 
-sync_state_to_vps() {
+vps_rsync_ssh() {
+    backend_rsync_ssh "${PRIMARY_BACKEND_SSH_PORT:-${VPS_SSH_PORT:-22}}"
+}
+
+sync_state_to_backend() {
+    local backend_id="$1"
+    local backend_ip="$2"
+    local backend_port="$3"
     local file remote_file
 
     if is_mock_mode; then
         local mock_dir="${VPS_STATE_DIR:-}"
         [[ -n "$mock_dir" ]] || return 0
+        if [[ "$BACKEND_COUNT" -gt 1 ]]; then
+            mock_dir="${mock_dir}/${backend_id}"
+        fi
         mkdir -p "$mock_dir"
         for file in current.json pending.json last-attempt.json; do
             if [[ -f "$STATE_DIR/$file" ]]; then
@@ -515,40 +653,58 @@ sync_state_to_vps() {
         return 0
     fi
 
-    [[ -n "${VPS_IP:-}" ]] || return 0
-    vps_exec "mkdir -p '$REMOTE_STATE_DIR'" >/dev/null
+    [[ -n "$backend_ip" ]] || return 0
+    backend_exec "$backend_ip" "$backend_port" "mkdir -p '$REMOTE_STATE_DIR'" >/dev/null
 
     for file in current.json pending.json last-attempt.json; do
         remote_file="$REMOTE_STATE_DIR/$file"
         if [[ -f "$STATE_DIR/$file" ]]; then
-            vps_copy_stdin_to_file "$remote_file" < "$STATE_DIR/$file"
+            backend_copy_stdin_to_file "$backend_ip" "$backend_port" "$remote_file" < "$STATE_DIR/$file"
         else
-            vps_exec "rm -f '$remote_file'" >/dev/null || true
+            backend_exec "$backend_ip" "$backend_port" "rm -f '$remote_file'" >/dev/null || true
         fi
     done
 }
 
-remote_state_get() {
-    local file="$1"
-    local key="$2"
+sync_state_to_vps() {
+    local backend_id backend_ip backend_port _
+    while IFS=$'\t' read -r backend_id backend_ip backend_port _; do
+        [[ -n "$backend_ip" ]] || continue
+        sync_state_to_backend "$backend_id" "$backend_ip" "$backend_port"
+    done < <(backend_targets_tsv)
+}
+
+remote_state_get_for_backend() {
+    local backend_id="$1"
+    local backend_ip="$2"
+    local backend_port="$3"
+    local file="$4"
+    local key="$5"
 
     if is_mock_mode; then
         local mock_dir="${VPS_STATE_DIR:-}"
         [[ -n "$mock_dir" ]] || return 0
+        if [[ "$BACKEND_COUNT" -gt 1 ]]; then
+            mock_dir="${mock_dir}/${backend_id}"
+        fi
         json_get "$mock_dir/$file" "$key"
         return 0
     fi
 
     local raw
-    raw="$(vps_read_json_key "$REMOTE_STATE_DIR/$file" "$key" 2>/dev/null | tr -d '\r\n' || true)"
+    raw="$(backend_read_json_key "$backend_ip" "$backend_port" "$REMOTE_STATE_DIR/$file" "$key" 2>/dev/null | tr -d '\r\n' || true)"
     if [[ -n "$raw" ]]; then
         printf '%s' "$raw"
         return 0
     fi
 
-    raw="$(vps_read_file "$REMOTE_STATE_DIR/$file" || true)"
+    raw="$(backend_read_file "$backend_ip" "$backend_port" "$REMOTE_STATE_DIR/$file" || true)"
     [[ -n "$raw" ]] || return 0
     printf '%s' "$raw" | json_get_string "$key"
+}
+
+remote_state_get() {
+    remote_state_get_for_backend "${PRIMARY_BACKEND_ID:-primary}" "${PRIMARY_BACKEND_IP:-${VPS_IP:-}}" "${PRIMARY_BACKEND_SSH_PORT:-${VPS_SSH_PORT:-22}}" "$1" "$2"
 }
 
 smoke_failures_from_file() {
@@ -597,16 +753,16 @@ fetch_target_release() {
 
     ensure_git_repo
 
-    if [[ -n "${VPS_IP:-}" ]]; then
-        local ssh_port="${VPS_SSH_PORT:-22}"
+    if [[ -n "${PRIMARY_BACKEND_IP:-${VPS_IP:-}}" ]]; then
+        local ssh_port="${PRIMARY_BACKEND_SSH_PORT:-${VPS_SSH_PORT:-22}}"
         local current_url
         current_url=$(git -C "$REPO_DIR" remote get-url vps-mirror 2>/dev/null || true)
         if [[ -z "$current_url" ]]; then
             git -C "$REPO_DIR" remote add vps-mirror \
-                "ssh://sysadmin@${VPS_IP}:${ssh_port}/opt/vpn/vpn-repo.git"
-        elif [[ "$current_url" != *"${VPS_IP}"* ]]; then
+                "ssh://sysadmin@${PRIMARY_BACKEND_IP}:${ssh_port}/opt/vpn/vpn-repo.git"
+        elif [[ "$current_url" != *"${PRIMARY_BACKEND_IP}"* ]]; then
             git -C "$REPO_DIR" remote set-url vps-mirror \
-                "ssh://sysadmin@${VPS_IP}:${ssh_port}/opt/vpn/vpn-repo.git"
+                "ssh://sysadmin@${PRIMARY_BACKEND_IP}:${ssh_port}/opt/vpn/vpn-repo.git"
         fi
 
         local proxy_cmd=""
@@ -731,8 +887,8 @@ validate_preflight() {
     fi
     tracked_tree_clean || die "tracked source tree dirty — deploy остановлен"
     [[ -x "$REPO_DIR/tests/run-smoke-tests.sh" ]] || die "tests/run-smoke-tests.sh не найден"
-    [[ -n "${VPS_IP:-}" ]] || die "VPS_IP не задан — consistency-first deploy невозможен"
-    vps_exec "echo ok" >/dev/null || die "VPS недоступен по SSH"
+    [[ "$BACKEND_COUNT" -gt 0 ]] || die "backend inventory пуст — consistency-first deploy невозможен"
+    vps_exec "echo ok" >/dev/null || die "Primary backend недоступен по SSH"
 }
 
 apply_migrations() {
@@ -907,39 +1063,42 @@ vps_any_changed() {
 }
 
 deploy_vps() {
-    log_step "Применение release на VPS"
-    [[ -n "${VPS_IP:-}" ]] || die "VPS_IP не задан"
+    log_step "Применение release на backend nodes"
+    [[ "$BACKEND_COUNT" -gt 0 ]] || die "backend inventory пуст"
 
     if is_mock_mode; then
-        local phase="apply-vps"
-        [[ "${ROLLBACK_MODE:-false}" == "true" ]] && phase="rollback-vps"
+        local phase="apply-backends"
+        [[ "${ROLLBACK_MODE:-false}" == "true" ]] && phase="rollback-backends"
         sync_state_to_vps
         mock_phase_failed "$phase" && die "mock failure at ${phase}"
         return 0
     fi
 
-    local rsync_ssh
-    rsync_ssh="$(vps_rsync_ssh)"
-    local vps_target="sysadmin@${VPS_IP}"
+    local backend_id backend_ip backend_port backend_tunnel_ip rsync_ssh vps_target cmd
+    while IFS=$'\t' read -r backend_id backend_ip backend_port backend_tunnel_ip _; do
+        [[ -n "$backend_ip" ]] || continue
+        log_info "Backend ${backend_id}: apply release ${TARGET_RELEASE_ID}"
+        rsync_ssh="$(backend_rsync_ssh "$backend_port")"
+        vps_target="sysadmin@${backend_ip}"
 
-    if vps_any_changed || [[ "${FORCE_DEPLOY:-false}" == "true" ]]; then
-        vps_exec "mkdir -p /opt/vpn/nginx /opt/vpn/scripts /opt/vpn/prometheus /opt/vpn/alertmanager /opt/vpn/grafana/provisioning /opt/vpn/.deploy-state /opt/vpn/sing-box" >/dev/null
-        rsync -e "$rsync_ssh" -a "$REPO_DIR/vps/docker-compose.yml" "${vps_target}:/opt/vpn/docker-compose.yml"
-        rsync -e "$rsync_ssh" -a --delete --exclude="ssl/" --exclude="mtls/" "$REPO_DIR/vps/nginx/" "${vps_target}:/opt/vpn/nginx/"
-        rsync -e "$rsync_ssh" -a --delete "$REPO_DIR/vps/sing-box/" "${vps_target}:/opt/vpn/sing-box/"
-        rsync -e "$rsync_ssh" -a --delete "$REPO_DIR/vps/scripts/" "${vps_target}:/opt/vpn/scripts/"
-        rsync -e "$rsync_ssh" -a --delete "$REPO_DIR/vps/prometheus/" "${vps_target}:/opt/vpn/prometheus/"
-        rsync -e "$rsync_ssh" -a --delete "$REPO_DIR/vps/alertmanager/" "${vps_target}:/opt/vpn/alertmanager/"
-        rsync -e "$rsync_ssh" -a --delete "$REPO_DIR/vps/grafana/provisioning/" "${vps_target}:/opt/vpn/grafana/provisioning/"
-    fi
+        if vps_any_changed || [[ "${FORCE_DEPLOY:-false}" == "true" ]]; then
+            backend_exec "$backend_ip" "$backend_port" "mkdir -p /opt/vpn/nginx /opt/vpn/scripts /opt/vpn/prometheus /opt/vpn/alertmanager /opt/vpn/grafana/provisioning /opt/vpn/.deploy-state /opt/vpn/sing-box" >/dev/null
+            rsync -e "$rsync_ssh" -a "$REPO_DIR/vps/docker-compose.yml" "${vps_target}:/opt/vpn/docker-compose.yml"
+            rsync -e "$rsync_ssh" -a --delete --exclude="ssl/" --exclude="mtls/" "$REPO_DIR/vps/nginx/" "${vps_target}:/opt/vpn/nginx/"
+            rsync -e "$rsync_ssh" -a --delete "$REPO_DIR/vps/sing-box/" "${vps_target}:/opt/vpn/sing-box/"
+            rsync -e "$rsync_ssh" -a --delete "$REPO_DIR/vps/scripts/" "${vps_target}:/opt/vpn/scripts/"
+            rsync -e "$rsync_ssh" -a --delete "$REPO_DIR/vps/prometheus/" "${vps_target}:/opt/vpn/prometheus/"
+            rsync -e "$rsync_ssh" -a --delete "$REPO_DIR/vps/alertmanager/" "${vps_target}:/opt/vpn/alertmanager/"
+            rsync -e "$rsync_ssh" -a --delete "$REPO_DIR/vps/grafana/provisioning/" "${vps_target}:/opt/vpn/grafana/provisioning/"
+        fi
 
-    sync_state_to_vps
-    envsubst < "$REPO_DIR/vps/sing-box/tuic-server.json" | vps_copy_stdin_to_file "/opt/vpn/sing-box/tuic-server.json"
-    envsubst < "$REPO_DIR/vps/sing-box/trojan-server.json" | vps_copy_stdin_to_file "/opt/vpn/sing-box/trojan-server.json"
+        sync_state_to_backend "$backend_id" "$backend_ip" "$backend_port"
+        envsubst < "$REPO_DIR/vps/sing-box/tuic-server.json" | backend_copy_stdin_to_file "$backend_ip" "$backend_port" "/opt/vpn/sing-box/tuic-server.json"
+        envsubst < "$REPO_DIR/vps/sing-box/trojan-server.json" | backend_copy_stdin_to_file "$backend_ip" "$backend_port" "/opt/vpn/sing-box/trojan-server.json"
 
-    local cmd
-    cmd="sudo -n bash -lc 'set -euo pipefail; cd /opt/vpn; chmod +x /opt/vpn/scripts/*.sh 2>/dev/null || true; bash /opt/vpn/scripts/render-reality-xhttp-config.sh; docker compose pull; docker compose up -d --remove-orphans; mkdir -p \"$REMOTE_STATE_DIR\"'"
-    vps_exec "$cmd" || die "VPS deploy завершился с ошибкой"
+        cmd="sudo -n bash -lc 'set -euo pipefail; cd /opt/vpn; chmod +x /opt/vpn/scripts/*.sh 2>/dev/null || true; bash /opt/vpn/scripts/render-reality-xhttp-config.sh; docker compose pull; docker compose up -d --remove-orphans; mkdir -p \"$REMOTE_STATE_DIR\"'"
+        backend_exec "$backend_ip" "$backend_port" "$cmd" || die "Backend ${backend_id} deploy завершился с ошибкой"
+    done < <(backend_targets_tsv)
 }
 
 run_smoke_tests() {
@@ -977,21 +1136,24 @@ watchdog_health_check() {
 }
 
 verify_vps_release_parity() {
-    local remote_sha
+    local backend_id backend_ip backend_port _ remote_sha
     sync_state_to_vps
-    if [[ -f "$PENDING_STATE_FILE" ]]; then
-        remote_sha="$(remote_state_get "pending.json" "pending_release.sha" | tr -d '\r\n' || true)"
-        [[ "$remote_sha" == "$TARGET_RELEASE_SHA" ]] || die "VPS pending release не совпадает с target SHA (expected $TARGET_RELEASE_SHA, got ${remote_sha:-empty})"
-    else
-        remote_sha="$(remote_state_get "current.json" "current_release.sha" | tr -d '\r\n' || true)"
-        [[ "$remote_sha" == "$CURRENT_RELEASE_SHA" ]] || die "VPS current release не совпадает с current SHA (expected $CURRENT_RELEASE_SHA, got ${remote_sha:-empty})"
-    fi
+    while IFS=$'\t' read -r backend_id backend_ip backend_port _; do
+        [[ -n "$backend_ip" ]] || continue
+        if [[ -f "$PENDING_STATE_FILE" ]]; then
+            remote_sha="$(remote_state_get_for_backend "$backend_id" "$backend_ip" "$backend_port" "pending.json" "pending_release.sha" | tr -d '\r\n' || true)"
+            [[ "$remote_sha" == "$TARGET_RELEASE_SHA" ]] || die "Backend ${backend_id} pending release не совпадает с target SHA (expected $TARGET_RELEASE_SHA, got ${remote_sha:-empty})"
+        else
+            remote_sha="$(remote_state_get_for_backend "$backend_id" "$backend_ip" "$backend_port" "current.json" "current_release.sha" | tr -d '\r\n' || true)"
+            [[ "$remote_sha" == "$CURRENT_RELEASE_SHA" ]] || die "Backend ${backend_id} current release не совпадает с current SHA (expected $CURRENT_RELEASE_SHA, got ${remote_sha:-empty})"
+        fi
+    done < <(backend_targets_tsv)
 }
 
 health_gate() {
     log_step "Health gate"
     if is_mock_mode; then
-        local phase="verify"
+        local phase="verify-backends"
         [[ "${ROLLBACK_MODE:-false}" == "true" ]] && phase="rollback-verify"
         verify_vps_release_parity
         mock_phase_failed "$phase" && die "mock failure at ${phase}"
@@ -1091,7 +1253,8 @@ auto_rollback_on_failure() {
     set_last_attempt "failed" "$(json_get "$PENDING_STATE_FILE" "phase")" "$reason"
     sync_state_to_vps || true
     notify "❌ *Deploy failed* — ${reason}"
-    perform_rollback
+    perform_rollback || true
+    return 1
 }
 
 show_status() {
@@ -1109,6 +1272,7 @@ show_status() {
     else
         echo "  Pending:          none"
     fi
+    echo "  Backend targets:  ${BACKEND_COUNT}"
     echo "  Last attempt:     $(json_get "$LAST_ATTEMPT_FILE" "status") / $(json_get "$LAST_ATTEMPT_FILE" "phase")"
     echo "  Last message:     $(json_get "$LAST_ATTEMPT_FILE" "message")"
     echo "  Latest snapshot:  $(cat "$SNAPSHOT_DIR/latest" 2>/dev/null || echo 'none')"
@@ -1126,6 +1290,7 @@ check_updates() {
     echo "  Target release:  ${TARGET_RELEASE_ID} (${TARGET_RELEASE_VERSION})"
     echo "  Target sha:      ${TARGET_RELEASE_SHA}"
     echo "  Source remote:   ${TARGET_SOURCE_REMOTE}"
+    echo "  Backend targets: ${BACKEND_COUNT}"
     echo "  Rollback ready:  $( [[ -f "$SNAPSHOT_DIR/latest" ]] && echo yes || echo no )"
     echo "───────────────────────────────────────────────"
 
@@ -1171,14 +1336,14 @@ do_deploy() {
         return 1
     fi
 
-    write_pending_release_state "apply-vps" "running" "applying VPS release ${TARGET_RELEASE_ID}"
+    write_pending_release_state "apply-backends" "running" "applying backend release ${TARGET_RELEASE_ID}"
     sync_state_to_vps || true
     if ! ( deploy_vps ); then
-        auto_rollback_on_failure "Применение release на VPS завершилось с ошибкой"
+        auto_rollback_on_failure "Применение release на backend nodes завершилось с ошибкой"
         return 1
     fi
 
-    write_pending_release_state "verify" "running" "verifying release ${TARGET_RELEASE_ID}"
+    write_pending_release_state "verify-backends" "running" "verifying backend release ${TARGET_RELEASE_ID}"
     sync_state_to_vps || true
     if ! ( health_gate ); then
         auto_rollback_on_failure "Health gate не пройден"
@@ -1211,6 +1376,7 @@ main() {
     echo "════ Deploy $(date '+%Y-%m-%d %H:%M:%S') ════" >> "$LOG_FILE"
 
     load_env
+    load_backend_targets
 
     exec 9>"$LOCK_FILE"
     flock -n 9 || die "Деплой уже запущен ($LOCK_FILE)"

@@ -93,7 +93,7 @@ class DecisionMakerTests(unittest.TestCase):
             {
                 "backend_id": "backend-a",
                 "family": "hysteria2",
-                "execution_mode": "single_active_backend",
+                "execution_mode": "multi_backend",
                 "route_classes": ["blocked_default"],
             },
         )
@@ -563,7 +563,7 @@ class DecisionMakerTests(unittest.TestCase):
             assignments={},
             idle_ttl_seconds=300,
             active_backend_id="backend-a",
-            execution_mode="single_active_backend",
+            execution_mode="multi_backend",
         )
         context = decision_maker.build_domain_context(
             domain="example.com",
@@ -577,7 +577,7 @@ class DecisionMakerTests(unittest.TestCase):
             sources=["blocked_static"],
         )
         resolution = decision_maker.resolve_route(context, decision_state, now=1000.0)
-        self.assertEqual(resolution["execution_mode"], "single_active_backend")
+        self.assertEqual(resolution["execution_mode"], "multi_backend")
 
     def test_choose_manual_backend_rejects_drain(self) -> None:
         decision = decision_maker.choose_manual_backend(
@@ -618,6 +618,7 @@ class DecisionMakerTests(unittest.TestCase):
             },
             "backend-a",
             ttl_seconds=300,
+            execution_mode="single_active_backend",
             now=1000.0,
         )
         self.assertEqual(result["status"], "reconciled")
@@ -633,6 +634,24 @@ class DecisionMakerTests(unittest.TestCase):
                 "route_classes": ["blocked_default", "vpn_default"],
             },
         )
+
+    def test_reconcile_assignments_to_active_backend_preserves_multi_backend_assignments(self) -> None:
+        result = decision_maker.reconcile_assignments_to_active_backend(
+            {
+                "vpn_default": {"route_class": "vpn_default", "backend_id": "backend-a", "assigned_at_ts": 1, "last_activity_ts": 1, "expires_at_ts": 1200},
+                "blocked_default": {"route_class": "blocked_default", "backend_id": "backend-b", "assigned_at_ts": 1, "last_activity_ts": 1, "expires_at_ts": 1200},
+            },
+            "backend-a",
+            ttl_seconds=300,
+            execution_mode="multi_backend",
+            now=1000.0,
+        )
+        self.assertEqual(result["status"], "preserved")
+        self.assertEqual(result["changed"], 0)
+        self.assertEqual(result["reason"], "multi_backend_assignments_preserved")
+        self.assertEqual(result["assignments"]["vpn_default"]["backend_id"], "backend-a")
+        self.assertEqual(result["assignments"]["blocked_default"]["backend_id"], "backend-b")
+        self.assertEqual(result["backend_path_target"]["execution_mode"], "multi_backend")
 
 
 if __name__ == "__main__":

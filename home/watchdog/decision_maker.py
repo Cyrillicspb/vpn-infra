@@ -17,7 +17,7 @@ def build_decision_state(
     client_preferences: Optional[list[dict[str, Any]]] = None,
     lan_clients: Optional[list[dict[str, Any]]] = None,
     lan_client_preferences: Optional[list[dict[str, Any]]] = None,
-    execution_mode: str = "single_active_backend",
+    execution_mode: str = "multi_backend",
     desired_backend_path_family: str = "hysteria2",
 ) -> dict[str, Any]:
     return {
@@ -28,7 +28,7 @@ def build_decision_state(
         "client_preferences": list(client_preferences or []),
         "lan_clients": list(lan_clients or []),
         "lan_client_preferences": list(lan_client_preferences or []),
-        "execution_mode": str(execution_mode or "single_active_backend"),
+        "execution_mode": str(execution_mode or "multi_backend"),
         "desired_backend_path_family": str(desired_backend_path_family or "hysteria2"),
     }
 
@@ -36,13 +36,13 @@ def build_decision_state(
 def build_backend_path_target(
     backend_id: str,
     family: str = "hysteria2",
-    execution_mode: str = "single_active_backend",
+    execution_mode: str = "multi_backend",
     route_classes: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     return {
         "backend_id": str(backend_id or ""),
         "family": str(family or "hysteria2"),
-        "execution_mode": str(execution_mode or "single_active_backend"),
+        "execution_mode": str(execution_mode or "multi_backend"),
         "route_classes": [str(item) for item in (route_classes or []) if str(item or "").strip()],
     }
 
@@ -50,7 +50,7 @@ def build_backend_path_target(
 def build_backend_path_entry(
     backend_id: str,
     family: str = "hysteria2",
-    execution_mode: str = "single_active_backend",
+    execution_mode: str = "multi_backend",
     route_classes: Optional[list[str]] = None,
     config_path: str = "",
     applied_config_path: str = "",
@@ -94,7 +94,7 @@ def build_backend_path_entry(
 def build_backend_path_runtime_record(
     backend_id: str,
     family: str = "hysteria2",
-    execution_mode: str = "single_active_backend",
+    execution_mode: str = "multi_backend",
     route_classes: Optional[list[str]] = None,
     reason: str = "",
     updated_at_ts: float = 0.0,
@@ -134,7 +134,7 @@ def build_backend_path_status(
     applied_backend_path: Optional[dict[str, Any]],
     backend_paths: list[dict[str, Any]],
     active_backend_id: str,
-    execution_mode: str = "single_active_backend",
+    execution_mode: str = "multi_backend",
     execution_family: str = "hysteria2",
 ) -> dict[str, Any]:
     desired_backend_id = str((desired_backend_path or {}).get("backend_id") or "")
@@ -148,7 +148,7 @@ def build_backend_path_status(
         if item.get("verified")
     }
     return {
-        "execution_mode": str(execution_mode or "single_active_backend"),
+        "execution_mode": str(execution_mode or "multi_backend"),
         "execution_family": str(execution_family or "hysteria2"),
         "desired_backend_id": desired_backend_id,
         "applied_backend_id": applied_backend_id,
@@ -454,7 +454,7 @@ def balancer_snapshot(
     assignments: dict[str, dict[str, Any]],
     idle_ttl_seconds: int,
     active_backend_id: str,
-    execution_mode: str = "single_active_backend",
+    execution_mode: str = "multi_backend",
     execution_family: str = "hysteria2",
     desired_backend_path: Optional[dict[str, Any]] = None,
     applied_backend_path: Optional[dict[str, Any]] = None,
@@ -510,7 +510,7 @@ def build_assignments_view(snapshot: dict[str, Any]) -> dict[str, Any]:
 def build_decision_status_view(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {
         "idle_ttl_seconds": int(snapshot.get("idle_ttl_seconds") or 0),
-        "execution_mode": str(snapshot.get("execution_mode") or "single_active_backend"),
+        "execution_mode": str(snapshot.get("execution_mode") or "multi_backend"),
         "execution_family": str(snapshot.get("execution_family") or "hysteria2"),
         "backend_count": int(snapshot.get("backend_count") or 0),
         "healthy_backend_count": int(snapshot.get("healthy_backend_count") or 0),
@@ -533,7 +533,7 @@ def build_backends_view(backends: list[dict[str, Any]], snapshot: dict[str, Any]
 
 def build_backend_paths_view(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {
-        "execution_mode": str(snapshot.get("execution_mode") or "single_active_backend"),
+        "execution_mode": str(snapshot.get("execution_mode") or "multi_backend"),
         "execution_family": str(snapshot.get("execution_family") or "hysteria2"),
         "active_backend_id": str(snapshot.get("active_backend_id") or ""),
         "desired_backend_path": dict(snapshot.get("desired_backend_path") or {}),
@@ -561,7 +561,7 @@ def explain_domain_route(
     assignments: dict[str, dict[str, Any]],
     ttl_seconds: int,
     active_backend_id: str,
-    execution_mode: str = "single_active_backend",
+    execution_mode: str = "multi_backend",
     now: Optional[float] = None,
 ) -> dict[str, Any]:
     current = float(now if now is not None else now_ts())
@@ -612,7 +612,7 @@ def explain_domain_context(
         dict(decision_state.get("assignments") or {}),
         int(decision_state.get("idle_ttl_seconds") or 300),
         str(decision_state.get("active_backend_id") or ""),
-        str(decision_state.get("execution_mode") or "single_active_backend"),
+        str(decision_state.get("execution_mode") or "multi_backend"),
         now=now,
     )
 
@@ -692,7 +692,7 @@ def resolve_route(
         "desired_backend_path": build_backend_path_target(
             str(explanation.get("effective_backend_id") or ""),
             family=str(decision_state.get("desired_backend_path_family") or "hysteria2"),
-            execution_mode=str(decision_state.get("execution_mode") or "single_active_backend"),
+            execution_mode=str(decision_state.get("execution_mode") or "multi_backend"),
             route_classes=[str(explanation.get("route_class") or "")] if explanation.get("route_class") else [],
         ),
         "fallback_reason": explanation.get("fallback_reason", ""),
@@ -804,9 +804,30 @@ def reconcile_assignments_to_active_backend(
     assignments: dict[str, dict[str, Any]],
     active_backend_id: str,
     ttl_seconds: int,
+    execution_mode: str = "multi_backend",
     now: Optional[float] = None,
 ) -> dict[str, Any]:
     current = float(now if now is not None else now_ts())
+    normalized_execution_mode = str(execution_mode or "multi_backend")
+    if normalized_execution_mode != "single_active_backend":
+        updated: dict[str, dict[str, Any]] = {}
+        for route_class, spec in dict(assignments).items():
+            assignment = normalize_assignment(spec, ttl_seconds, now=current)
+            if assignment:
+                updated[route_class] = assignment
+        return {
+            "status": "preserved",
+            "reason": "multi_backend_assignments_preserved",
+            "assignments": updated,
+            "changed": 0,
+            "active_backend_id": active_backend_id,
+            "backend_path_target": build_backend_path_target(
+                active_backend_id,
+                family="hysteria2",
+                execution_mode=normalized_execution_mode,
+                route_classes=sorted(updated.keys()),
+            ),
+        }
     if not active_backend_id:
         return {
             "status": "noop",
