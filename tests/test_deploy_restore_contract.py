@@ -280,6 +280,11 @@ class DeployRestoreContractTests(unittest.TestCase):
         vpn_policy = (ROOT / "home" / "scripts" / "vpn-policy-routing.sh").read_text(encoding="utf-8")
         self.assertIn('ip route replace "$FUNCTIONAL_NS_SUBNET" dev br-fh table $TABLE_VPN', vpn_policy)
         self.assertIn('Table $TABLE_VPN: $FUNCTIONAL_NS_SUBNET dev br-fh (functional namespaces)', vpn_policy)
+        self.assertIn('systemctl disable --now autossh-tier2', installer)
+        self.assertIn('rm -f /etc/systemd/system/autossh-tier2.service', installer)
+        self.assertIn('log_ok "Удалён устаревший autossh-tier2.service"', installer)
+        self.assertIn('HAS_AUTOSSH_TIER2=0', post_install)
+        self.assertIn('if [[ "$HAS_AUTOSSH_TIER2" == "1" ]]; then', post_install)
 
     def test_sing_box_extra_client_templates_do_not_use_removed_legacy_inbound_fields(self):
         tuic_client = (ROOT / "home" / "sing-box" / "tuic-client.json").read_text(encoding="utf-8")

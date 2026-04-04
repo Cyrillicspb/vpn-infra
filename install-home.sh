@@ -1100,6 +1100,12 @@ EOF
     fi
     chmod 644 /etc/cron.d/vpn-watchdog-failsafe
 
+    if systemctl list-unit-files autossh-tier2.service >/dev/null 2>&1; then
+        systemctl disable --now autossh-tier2 2>/dev/null || true
+        rm -f /etc/systemd/system/autossh-tier2.service
+        log_ok "Удалён устаревший autossh-tier2.service"
+    fi
+
     systemctl daemon-reload
     systemctl enable vpn-routes vpn-sets-restore \
         vpn-dpi-presets-update.timer vpn-latency-catalog-update.timer 2>/dev/null || true

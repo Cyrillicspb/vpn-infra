@@ -257,7 +257,9 @@ check "hysteria2"         "systemctl is-active hysteria2"            "journalctl
 check "vpn-sets-restore"  "systemctl is-active vpn-sets-restore || systemctl is-failed vpn-sets-restore | grep -v failed" \
                           "systemctl status vpn-sets-restore"
 check_warn "vpn-routes"   "systemctl is-active vpn-routes"           "нужен tier-2 туннель"
+HAS_AUTOSSH_TIER2=0
 if systemctl list-unit-files autossh-tier2.service >/dev/null 2>&1; then
+    HAS_AUTOSSH_TIER2=1
     check_warn "autossh-tier2" "systemctl is-active autossh-tier2" "нужен tier-2 туннель"
 elif systemctl list-unit-files autossh-vpn.service >/dev/null 2>&1; then
     check_warn "autossh-vpn" "systemctl is-active autossh-vpn" "fallback SOCKS tunnel не поднят"
@@ -495,9 +497,11 @@ if [[ -n "$VPS_IP" && -f "$SSH_KEY" ]]; then
         "ssh -i $SSH_KEY -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes sysadmin@${VPS_IP} echo ok" \
         "проверьте SSH ключ и доступность VPS"
 
-    check_warn "Ping tier-2 (10.177.2.2)" \
-        "ping -c 2 -W 3 10.177.2.2" \
-        "SSH tier-2 туннель не поднят (autossh-tier2)"
+    if [[ "$HAS_AUTOSSH_TIER2" == "1" ]]; then
+        check_warn "Ping tier-2 (10.177.2.2)" \
+            "ping -c 2 -W 3 10.177.2.2" \
+            "SSH tier-2 туннель не поднят (autossh-tier2)"
+    fi
 
     check_warn "VPS nftables 8444/tcp" \
         "ssh -i $SSH_KEY -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes sysadmin@${VPS_IP} \"sudo nft list ruleset 2>/dev/null | grep -F 'tcp dport { 2083, 8444 }'\"" \
