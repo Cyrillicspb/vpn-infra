@@ -54,7 +54,11 @@ if str(WATCHDOG_DIR) not in sys.path:
 
 from decision_maker import (
     backend_by_id as dm_backend_by_id,
+    build_backends_view as dm_build_backends_view,
     backend_effective_status as dm_backend_effective_status,
+    build_assignments_view as dm_build_assignments_view,
+    build_backend_paths_view as dm_build_backend_paths_view,
+    build_decision_status_view as dm_build_decision_status_view,
     balancer_snapshot as dm_balancer_snapshot,
     build_backend_path_target as dm_build_backend_path_target,
     build_decision_state as dm_build_decision_state,
@@ -1728,39 +1732,19 @@ def _backend_by_id(backend_id: str) -> Optional[dict[str, Any]]:
 
 def _balancer_snapshot() -> dict[str, Any]:
     _refresh_backend_pool()
+    backend_paths = _backend_path_snapshot()
     snapshot = dm_balancer_snapshot(
         state.backends,
         state.backend_assignments,
         state.balancer_idle_ttl_seconds,
         state.active_backend_id,
         execution_mode="single_active_backend",
+        execution_family=state.execution_family,
+        desired_backend_path=dict(state.desired_backend_path or {}),
+        applied_backend_path=dict(state.applied_backend_path or {}),
+        backend_paths=backend_paths,
         now=_now_ts(),
     )
-    snapshot["execution_family"] = state.execution_family
-    snapshot["desired_backend_path"] = dict(state.desired_backend_path or {})
-    snapshot["applied_backend_path"] = dict(state.applied_backend_path or {})
-    snapshot["backend_paths"] = _backend_path_snapshot()
-    desired_backend_id = str((snapshot["desired_backend_path"] or {}).get("backend_id") or "")
-    applied_backend_id = str((snapshot["applied_backend_path"] or {}).get("backend_id") or "")
-    active_backend_id = str(snapshot.get("active_backend_id") or "")
-    desired_matches_applied = bool(desired_backend_id) and desired_backend_id == applied_backend_id
-    applied_matches_active = bool(applied_backend_id) and applied_backend_id == active_backend_id
-    verified_backend_ids = {
-        str(item.get("backend_id") or "")
-        for item in snapshot["backend_paths"]
-        if item.get("verified")
-    }
-    snapshot["backend_path_status"] = {
-        "execution_mode": snapshot.get("execution_mode"),
-        "execution_family": state.execution_family,
-        "desired_backend_id": desired_backend_id,
-        "applied_backend_id": applied_backend_id,
-        "active_backend_id": active_backend_id,
-        "desired_matches_applied": desired_matches_applied,
-        "applied_matches_active": applied_matches_active,
-        "reconciled": desired_matches_applied and applied_matches_active,
-        "verified": applied_backend_id in verified_backend_ids if applied_backend_id else False,
-    }
     return snapshot
 
 
@@ -6446,7 +6430,7 @@ async def get_backends(_: bool = Depends(_auth)):
 @app.get("/decision/backends")
 async def get_decision_backends(_: bool = Depends(_auth)):
     _refresh_backend_pool()
-    return {"backends": state.backends, "balancer": _balancer_snapshot()}
+    return dm_build_backends_view(state.backends, _balancer_snapshot())
 
 
 @app.get("/balancer/status")
@@ -6456,7 +6440,7 @@ async def get_balancer_status(_: bool = Depends(_auth)):
 
 @app.get("/decision/status")
 async def get_decision_status(_: bool = Depends(_auth)):
-    return _balancer_snapshot()
+    return dm_build_decision_status_view(_balancer_snapshot())
 
 
 @app.get("/balancer/assignments")
@@ -6466,22 +6450,12 @@ async def get_balancer_assignments(_: bool = Depends(_auth)):
 
 @app.get("/decision/assignments")
 async def get_decision_assignments(_: bool = Depends(_auth)):
-    snapshot = _balancer_snapshot()
-    return {"assignments": snapshot["assignments"], "idle_ttl_seconds": snapshot["idle_ttl_seconds"]}
+    return dm_build_assignments_view(_balancer_snapshot())
 
 
 @app.get("/decision/backend-paths")
 async def get_decision_backend_paths(_: bool = Depends(_auth)):
-    snapshot = _balancer_snapshot()
-    return {
-        "execution_mode": snapshot.get("execution_mode"),
-        "execution_family": snapshot.get("execution_family"),
-        "active_backend_id": snapshot.get("active_backend_id"),
-        "desired_backend_path": snapshot.get("desired_backend_path", {}),
-        "applied_backend_path": snapshot.get("applied_backend_path", {}),
-        "backend_path_status": snapshot.get("backend_path_status", {}),
-        "backend_paths": snapshot.get("backend_paths", []),
-    }
+    return dm_build_backend_paths_view(_balancer_snapshot())
 
 
 @app.get("/gateway/lan-clients")

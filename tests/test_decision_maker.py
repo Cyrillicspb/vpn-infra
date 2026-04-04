@@ -125,6 +125,146 @@ class DecisionMakerTests(unittest.TestCase):
             },
         )
 
+    def test_build_backend_path_status_reports_reconciled_verified_state(self) -> None:
+        status = decision_maker.build_backend_path_status(
+            desired_backend_path={
+                "backend_id": "backend-a",
+                "family": "hysteria2",
+                "execution_mode": "single_active_backend",
+                "route_classes": ["blocked_default"],
+            },
+            applied_backend_path={
+                "backend_id": "backend-a",
+                "family": "hysteria2",
+                "execution_mode": "single_active_backend",
+                "route_classes": ["blocked_default"],
+            },
+            backend_paths=[{"backend_id": "backend-a", "verified": True}],
+            active_backend_id="backend-a",
+            execution_mode="single_active_backend",
+            execution_family="hysteria2",
+        )
+        self.assertEqual(
+            status,
+            {
+                "execution_mode": "single_active_backend",
+                "execution_family": "hysteria2",
+                "desired_backend_id": "backend-a",
+                "applied_backend_id": "backend-a",
+                "active_backend_id": "backend-a",
+                "desired_matches_applied": True,
+                "applied_matches_active": True,
+                "reconciled": True,
+                "verified": True,
+            },
+        )
+
+    def test_balancer_snapshot_can_embed_backend_path_runtime_status(self) -> None:
+        snapshot = decision_maker.balancer_snapshot(
+            backends=[{"id": "backend-a", "drain": False, "status": "healthy"}],
+            assignments={},
+            idle_ttl_seconds=300,
+            active_backend_id="backend-a",
+            execution_mode="single_active_backend",
+            execution_family="hysteria2",
+            desired_backend_path={"backend_id": "backend-a", "family": "hysteria2"},
+            applied_backend_path={"backend_id": "backend-a", "family": "hysteria2"},
+            backend_paths=[{"backend_id": "backend-a", "verified": True}],
+            now=1000.0,
+        )
+        self.assertEqual(snapshot["execution_family"], "hysteria2")
+        self.assertEqual(snapshot["desired_backend_path"]["backend_id"], "backend-a")
+        self.assertEqual(snapshot["applied_backend_path"]["backend_id"], "backend-a")
+        self.assertEqual(
+            snapshot["backend_path_status"],
+            {
+                "execution_mode": "single_active_backend",
+                "execution_family": "hysteria2",
+                "desired_backend_id": "backend-a",
+                "applied_backend_id": "backend-a",
+                "active_backend_id": "backend-a",
+                "desired_matches_applied": True,
+                "applied_matches_active": True,
+                "reconciled": True,
+                "verified": True,
+            },
+        )
+
+    def test_build_backend_paths_view_normalizes_snapshot_shape(self) -> None:
+        view = decision_maker.build_backend_paths_view(
+            {
+                "execution_mode": "single_active_backend",
+                "execution_family": "hysteria2",
+                "active_backend_id": "backend-a",
+                "desired_backend_path": {"backend_id": "backend-a"},
+                "applied_backend_path": {"backend_id": "backend-a"},
+                "backend_path_status": {"reconciled": True, "verified": True},
+                "backend_paths": [{"backend_id": "backend-a", "verified": True}],
+            }
+        )
+        self.assertEqual(view["execution_family"], "hysteria2")
+        self.assertEqual(view["active_backend_id"], "backend-a")
+        self.assertEqual(view["backend_path_status"], {"reconciled": True, "verified": True})
+        self.assertEqual(view["backend_paths"], [{"backend_id": "backend-a", "verified": True}])
+
+    def test_build_assignments_view_returns_canonical_read_shape(self) -> None:
+        view = decision_maker.build_assignments_view(
+            {"assignments": [{"route_class": "blocked_default"}], "idle_ttl_seconds": 300}
+        )
+        self.assertEqual(view, {"assignments": [{"route_class": "blocked_default"}], "idle_ttl_seconds": 300})
+
+    def test_build_decision_status_view_returns_canonical_read_shape(self) -> None:
+        view = decision_maker.build_decision_status_view(
+            {
+                "idle_ttl_seconds": 300,
+                "execution_mode": "single_active_backend",
+                "execution_family": "hysteria2",
+                "backend_count": 2,
+                "healthy_backend_count": 1,
+                "active_backend_id": "backend-a",
+                "active_backend": {"id": "backend-a"},
+                "assignments": [{"route_class": "blocked_default"}],
+                "desired_backend_path": {"backend_id": "backend-a"},
+                "applied_backend_path": {"backend_id": "backend-a"},
+                "backend_path_status": {"reconciled": True, "verified": True},
+                "backend_paths": [{"backend_id": "backend-a", "verified": True}],
+            }
+        )
+        self.assertEqual(view["idle_ttl_seconds"], 300)
+        self.assertEqual(view["execution_mode"], "single_active_backend")
+        self.assertEqual(view["execution_family"], "hysteria2")
+        self.assertEqual(view["backend_count"], 2)
+        self.assertEqual(view["healthy_backend_count"], 1)
+        self.assertEqual(view["active_backend_id"], "backend-a")
+        self.assertEqual(view["active_backend"], {"id": "backend-a"})
+        self.assertEqual(view["assignments"], [{"route_class": "blocked_default"}])
+        self.assertEqual(view["desired_backend_path"], {"backend_id": "backend-a"})
+        self.assertEqual(view["applied_backend_path"], {"backend_id": "backend-a"})
+        self.assertEqual(view["backend_path_status"], {"reconciled": True, "verified": True})
+        self.assertEqual(view["backend_paths"], [{"backend_id": "backend-a", "verified": True}])
+
+    def test_build_backends_view_wraps_balancer_status_canonically(self) -> None:
+        view = decision_maker.build_backends_view(
+            [{"id": "backend-a"}],
+            {
+                "idle_ttl_seconds": 300,
+                "execution_mode": "single_active_backend",
+                "execution_family": "hysteria2",
+                "backend_count": 1,
+                "healthy_backend_count": 1,
+                "active_backend_id": "backend-a",
+                "active_backend": {"id": "backend-a"},
+                "assignments": [],
+                "desired_backend_path": {"backend_id": "backend-a"},
+                "applied_backend_path": {"backend_id": "backend-a"},
+                "backend_path_status": {"reconciled": True, "verified": True},
+                "backend_paths": [{"backend_id": "backend-a", "verified": True}],
+            },
+        )
+        self.assertEqual(view["backends"], [{"id": "backend-a"}])
+        self.assertEqual(view["balancer"]["active_backend_id"], "backend-a")
+        self.assertEqual(view["balancer"]["backend_path_status"], {"reconciled": True, "verified": True})
+
     def test_resolve_route_prefers_client_backend_preference(self) -> None:
         decision_state = decision_maker.build_decision_state(
             backends=[

@@ -47,6 +47,37 @@ def build_backend_path_target(
     }
 
 
+def build_backend_path_status(
+    desired_backend_path: Optional[dict[str, Any]],
+    applied_backend_path: Optional[dict[str, Any]],
+    backend_paths: list[dict[str, Any]],
+    active_backend_id: str,
+    execution_mode: str = "single_active_backend",
+    execution_family: str = "hysteria2",
+) -> dict[str, Any]:
+    desired_backend_id = str((desired_backend_path or {}).get("backend_id") or "")
+    applied_backend_id = str((applied_backend_path or {}).get("backend_id") or "")
+    active_backend_id = str(active_backend_id or "")
+    desired_matches_applied = bool(desired_backend_id) and desired_backend_id == applied_backend_id
+    applied_matches_active = bool(applied_backend_id) and applied_backend_id == active_backend_id
+    verified_backend_ids = {
+        str(item.get("backend_id") or "")
+        for item in list(backend_paths or [])
+        if item.get("verified")
+    }
+    return {
+        "execution_mode": str(execution_mode or "single_active_backend"),
+        "execution_family": str(execution_family or "hysteria2"),
+        "desired_backend_id": desired_backend_id,
+        "applied_backend_id": applied_backend_id,
+        "active_backend_id": active_backend_id,
+        "desired_matches_applied": desired_matches_applied,
+        "applied_matches_active": applied_matches_active,
+        "reconciled": desired_matches_applied and applied_matches_active,
+        "verified": applied_backend_id in verified_backend_ids if applied_backend_id else False,
+    }
+
+
 def build_domain_context(
     domain: str,
     ips: list[str],
@@ -342,6 +373,10 @@ def balancer_snapshot(
     idle_ttl_seconds: int,
     active_backend_id: str,
     execution_mode: str = "single_active_backend",
+    execution_family: str = "hysteria2",
+    desired_backend_path: Optional[dict[str, Any]] = None,
+    applied_backend_path: Optional[dict[str, Any]] = None,
+    backend_paths: Optional[list[dict[str, Any]]] = None,
     now: Optional[float] = None,
 ) -> dict[str, Any]:
     current = float(now if now is not None else now_ts())
@@ -355,14 +390,74 @@ def balancer_snapshot(
             }
         )
     healthy = len([b for b in backends if backend_effective_status(b) in {"healthy", "unknown"} and not b.get("drain")])
-    return {
+    snapshot = {
         "idle_ttl_seconds": idle_ttl_seconds,
         "execution_mode": execution_mode,
+        "execution_family": execution_family,
         "backend_count": len(backends),
         "healthy_backend_count": healthy,
         "active_backend_id": active_backend_id,
         "active_backend": backend_by_id(backends, active_backend_id),
         "assignments": assignment_rows,
+    }
+    if desired_backend_path is not None:
+        snapshot["desired_backend_path"] = dict(desired_backend_path or {})
+    if applied_backend_path is not None:
+        snapshot["applied_backend_path"] = dict(applied_backend_path or {})
+    if backend_paths is not None:
+        snapshot["backend_paths"] = list(backend_paths or [])
+    if desired_backend_path is not None and applied_backend_path is not None and backend_paths is not None:
+        snapshot["backend_path_status"] = build_backend_path_status(
+            desired_backend_path,
+            applied_backend_path,
+            list(backend_paths or []),
+            active_backend_id,
+            execution_mode=execution_mode,
+            execution_family=execution_family,
+        )
+    return snapshot
+
+
+def build_assignments_view(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "assignments": list(snapshot.get("assignments") or []),
+        "idle_ttl_seconds": int(snapshot.get("idle_ttl_seconds") or 0),
+    }
+
+
+def build_decision_status_view(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "idle_ttl_seconds": int(snapshot.get("idle_ttl_seconds") or 0),
+        "execution_mode": str(snapshot.get("execution_mode") or "single_active_backend"),
+        "execution_family": str(snapshot.get("execution_family") or "hysteria2"),
+        "backend_count": int(snapshot.get("backend_count") or 0),
+        "healthy_backend_count": int(snapshot.get("healthy_backend_count") or 0),
+        "active_backend_id": str(snapshot.get("active_backend_id") or ""),
+        "active_backend": dict(snapshot.get("active_backend") or {}),
+        "assignments": list(snapshot.get("assignments") or []),
+        "desired_backend_path": dict(snapshot.get("desired_backend_path") or {}),
+        "applied_backend_path": dict(snapshot.get("applied_backend_path") or {}),
+        "backend_path_status": dict(snapshot.get("backend_path_status") or {}),
+        "backend_paths": list(snapshot.get("backend_paths") or []),
+    }
+
+
+def build_backends_view(backends: list[dict[str, Any]], snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "backends": list(backends or []),
+        "balancer": build_decision_status_view(snapshot),
+    }
+
+
+def build_backend_paths_view(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "execution_mode": str(snapshot.get("execution_mode") or "single_active_backend"),
+        "execution_family": str(snapshot.get("execution_family") or "hysteria2"),
+        "active_backend_id": str(snapshot.get("active_backend_id") or ""),
+        "desired_backend_path": dict(snapshot.get("desired_backend_path") or {}),
+        "applied_backend_path": dict(snapshot.get("applied_backend_path") or {}),
+        "backend_path_status": dict(snapshot.get("backend_path_status") or {}),
+        "backend_paths": list(snapshot.get("backend_paths") or []),
     }
 
 
