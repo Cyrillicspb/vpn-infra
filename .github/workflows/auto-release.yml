@@ -183,6 +183,12 @@ jobs:
           [[ -f installer-gui-wheels.tar.gz ]]
           echo "Reused installer-gui-wheels.tar.gz from ${{ steps.gui_wheels_plan.outputs.prev_tag }}"
 
+      - name: Build Python wheel bundles
+        run: |
+          set -euo pipefail
+          bash scripts/build-python-wheel-bundles.sh \
+            --manifest-out python-wheel-bundles-manifest.txt
+
       - name: Build repo archive
         run: |
           tar -czf /tmp/vpn-infra.tar.gz \
@@ -206,6 +212,11 @@ jobs:
           bash scripts/build-system-package-bundles.sh \
             --manifest-out system-packages-manifest.txt \
             --manifest-only
+
+      - name: Build release assets manifest
+        run: |
+          set -euo pipefail
+          bash scripts/build-release-assets-manifest.sh release-assets-manifest.txt
 
       - name: Plan Docker bundle reuse
         id: docker_plan
@@ -375,6 +386,10 @@ jobs:
           source scripts/docker-image-groups.sh
           [[ -f installer-gui-wheels.tar.gz ]]
           [[ -f installer-gui-wheels-manifest.txt ]]
+          [[ -f watchdog-wheels.tar.gz ]]
+          [[ -f telegram-bot-wheels.tar.gz ]]
+          [[ -f python-wheel-bundles-manifest.txt ]]
+          [[ -f release-assets-manifest.txt ]]
           [[ -f vpn-infra.tar.gz ]]
           [[ -f docker-bundles-manifest.txt ]]
           [[ -f system-packages-manifest.txt ]]
@@ -387,6 +402,11 @@ jobs:
             asset="$(system_package_bundle_asset_name "$group")"
             [[ -f "$asset" ]] || { echo "Missing release asset: $asset" >&2; exit 1; }
           done < <(system_package_bundle_groups)
+          source scripts/python-wheel-groups.sh
+          while IFS= read -r group; do
+            asset="$(python_wheel_bundle_asset_name "$group")"
+            [[ -f "$asset" ]] || { echo "Missing release asset: $asset" >&2; exit 1; }
+          done < <(python_wheel_bundle_groups)
 
       - name: Create tag and release
         id: create_release
@@ -419,8 +439,12 @@ jobs:
             --title "$TAG" \
             --notes "${{ steps.notes.outputs.notes }}" \
             --latest \
+            release-assets-manifest.txt \
             installer-gui-wheels.tar.gz \
             installer-gui-wheels-manifest.txt \
+            watchdog-wheels.tar.gz \
+            telegram-bot-wheels.tar.gz \
+            python-wheel-bundles-manifest.txt \
             vpn-infra.tar.gz \
             docker-bundles-manifest.txt \
             system-packages-manifest.txt \
@@ -447,8 +471,12 @@ jobs:
           current_tag = os.environ["CURRENT_TAG"]
           previous_tag = None
           target_names = {
+              "release-assets-manifest.txt",
               "installer-gui-wheels.tar.gz",
               "installer-gui-wheels-manifest.txt",
+              "watchdog-wheels.tar.gz",
+              "telegram-bot-wheels.tar.gz",
+              "python-wheel-bundles-manifest.txt",
               "system-packages-manifest.txt",
               "docker-images.tar.gz",
               "docker-images-monitoring.tar.gz",

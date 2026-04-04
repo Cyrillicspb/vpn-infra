@@ -1,0 +1,33 @@
+{
+  "log": {
+    "level": "warn"
+  },
+  "inbounds": [
+    {
+      "type": "socks",
+      "listen": "127.0.0.1",
+      "listen_port": ${TROJAN_SOCKS_PORT},
+      "sniff": true,
+      "tag": "socks-in"
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "trojan",
+      "tag": "trojan-out",
+      "server": "${TROJAN_SERVER}",
+      "server_port": ${TROJAN_PORT},
+      "password": "${TROJAN_PASSWORD}",
+      "tls": {
+        "enabled": true,
+        "server_name": "${TROJAN_SERVER_NAME}",
+        "insecure": true,
+        "alpn": ["h2", "http/1.1"]
+      }
+    }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "final": "trojan-out"
+  }
+}

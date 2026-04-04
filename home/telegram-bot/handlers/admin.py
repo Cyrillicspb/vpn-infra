@@ -7,7 +7,9 @@ handlers/admin.py — Все команды администратора
   /invite /clients /broadcast /requests
   /vpn add|remove   /direct add|remove   /list vpn|direct   /check
   /latency learned|candidates|all
-  /routes update    /vps list|add|remove  /migrate_vps
+  /routes update    /backends   /backend add|remove|drain|undrain   /backend_pref   /balancer   /rebalance
+  /lan_clients      /lan_client add|remove   /lan_backend_pref add|list|remove
+  /vps list|add|remove  /migrate_vps
   /dpi [on|off|add|remove|toggle]
   /client disable|enable|kick|limit
   /rotate_keys  /renew_cert  /renew_ca
@@ -38,7 +40,9 @@ from aiogram.types import (
 from config import config
 from database import Database
 from handlers.keyboards import (
+    admin_backend_prefs_kb,
     admin_functional_menu,
+    admin_gateway_menu,
     admin_admin_actions_kb,
     admin_admins_menu,
     admin_client_actions_kb,
@@ -73,6 +77,246 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+def _render_backend_lines(backends: list[dict]) -> str:
+    if not backends:
+        return "Backends не добавлены."
+    lines = []
+    for backend in backends:
+        status = backend.get("status", "unknown")
+        if backend.get("drain"):
+            icon = "🟡"
+            status = "drain"
+        elif status == "healthy":
+            icon = "🟢"
+        elif status == "degraded":
+            icon = "🟠"
+        elif status == "down":
+            icon = "🔴"
+        else:
+            icon = "⚪"
+        lines.append(
+            f"{icon} `{backend.get('id', '?')}` → `{backend.get('ip', '?')}`"
+            f" | {status}"
+            f" | ssh:{backend.get('ssh_port', 22)}"
+            f" | weight:{backend.get('weight', 100)}"
+        )
+    return "\n".join(lines)
+
+
+def _render_balancer_text(payload: dict) -> str:
+    assignments = payload.get("assignments", [])
+    backend_paths = payload.get("backend_paths", [])
+    lines = [
+        "*Balancer*",
+        "",
+        f"TTL lease: `{payload.get('idle_ttl_seconds', '?')}` сек",
+        f"Execution: `{payload.get('execution_mode', '?')}`",
+        f"Backends: `{payload.get('healthy_backend_count', 0)}/{payload.get('backend_count', 0)}` healthy",
+    ]
+    if assignments:
+        lines.append("")
+        lines.append("*Assignments:*")
+        for assignment in assignments:
+            backend = assignment.get("backend") or {}
+            lines.append(
+                f"• `{assignment.get('route_class', '?')}` → "
+                f"`{backend.get('id', assignment.get('backend_id', '?'))}` "
+                f"({assignment.get('ttl_seconds_left', 0)}s)"
+            )
+    else:
+        lines.append("")
+        lines.append("Assignments пока нет.")
+    if backend_paths:
+        lines.append("")
+        lines.append("*Hysteria2 paths:*")
+        for path in backend_paths[:10]:
+            flags = []
+            if path.get("desired"):
+                flags.append("desired")
+            if path.get("applied"):
+                flags.append("applied")
+            if path.get("rendered"):
+                flags.append("rendered")
+            route_classes = ",".join(path.get("route_classes") or []) or "—"
+            lines.append(
+                f"• `{path.get('backend_id', '?')}` "
+                f"[{','.join(flags) or 'standby'}] "
+                f"{path.get('backend_status', '?')} "
+                f"`{path.get('local_bind', '?')}` "
+                f"classes:{route_classes}"
+            )
+    return "\n".join(lines)
+
+
+def _render_check_result_html(domain: str, payload: dict) -> str:
+    verdict = payload.get("verdict", "unknown")
+    ips = payload.get("ips", [])
+    ip_str = ", ".join(ips[:4]) if ips else "не резолвится"
+    sources = list(payload.get("sources") or [])
+    src = " | ".join(sources) if sources else "—"
+    icon = {"vpn": "🔒", "direct": "🌐", "latency_sensitive_direct": "⚡", "unknown": "❓"}.get(verdict, "❓")
+    service = str(payload.get("latency_service") or "")
+    route_class = str(payload.get("route_class") or "")
+    decision_source = str(payload.get("decision_source") or "")
+    effective_backend_id = str(payload.get("effective_backend_id") or "")
+    execution_mode = str(payload.get("execution_mode") or "")
+    fallback_reason = str(payload.get("fallback_reason") or "")
+    matched_pref = payload.get("matched_preference") or {}
+    preference_status = str(payload.get("preference_status") or "")
+    preference_reason = str(payload.get("preference_reason") or "")
+    identity_type = str(payload.get("identity_type") or "")
+    identity_id = str(payload.get("identity_id") or "")
+    source_ip = str(payload.get("source_ip") or "")
+
+    lines = [
+        f"{icon} <code>{domain}</code>",
+        f"Вердикт: <b>{verdict}</b>",
+        f"IP: <code>{ip_str}</code>",
+    ]
+    if identity_type:
+        ident = f"{identity_type}:{identity_id}" if identity_id else identity_type
+        if source_ip:
+            ident += f" via {source_ip}"
+        lines.append(f"Identity: <code>{ident}</code>")
+    if service:
+        lines.append(f"Сервис: <b>{service}</b>")
+    lines.append(f"Источники: {src}")
+    if route_class:
+        lines.append(f"Route class: <code>{route_class}</code>")
+    if decision_source:
+        lines.append(f"Decision: <code>{decision_source}</code>")
+    if effective_backend_id:
+        lines.append(f"Backend: <code>{effective_backend_id}</code>")
+    if execution_mode:
+        lines.append(f"Execution: <code>{execution_mode}</code>")
+    path_rows = [
+        item for item in (payload.get("backend_paths") or [])
+        if str(item.get("backend_id") or "") == effective_backend_id
+    ]
+    if path_rows:
+        path = path_rows[0]
+        path_state = []
+        if path.get("desired"):
+            path_state.append("desired")
+        if path.get("applied"):
+            path_state.append("applied")
+        if path.get("rendered"):
+            path_state.append("rendered")
+        lines.append(
+            "Path: "
+            f"<code>{path.get('family')}</code> "
+            f"<code>{path.get('local_bind')}</code> "
+            f"<code>{','.join(path_state) or 'standby'}</code>"
+        )
+    if matched_pref:
+        lines.append(
+            "Client pref: "
+            f"<code>{matched_pref.get('chat_id')}</code> "
+            f"<code>{matched_pref.get('match_type')}</code>=<code>{matched_pref.get('match_value')}</code> "
+            f"→ <code>{matched_pref.get('backend_id')}</code>"
+        )
+    if preference_status:
+        lines.append(f"Pref status: <code>{preference_status}</code>")
+    if preference_reason:
+        lines.append(f"Pref reason: <code>{preference_reason}</code>")
+    if fallback_reason:
+        lines.append(f"Fallback: <code>{fallback_reason}</code>")
+    return "\n".join(lines)
+
+
+def _render_client_backend_prefs(prefs: list[dict], chat_id: str = "") -> str:
+    title = f"*Client backend prefs* for `{chat_id}`" if chat_id else "*Client backend prefs*"
+    if not prefs:
+        return title + "\n\nПока пусто.\n\n" + (
+            "Использование:\n"
+            "`/backend_pref add <chat_id> <service|domain|cidr> <value> <backend-id>`\n"
+            "`/backend_pref list [chat_id]`\n"
+            "`/backend_pref remove <id>`"
+        )
+    lines = [title, ""]
+    for pref in prefs[:30]:
+        lines.append(
+            f"• `#{pref.get('id')}` "
+            f"`{pref.get('chat_id')}` "
+            f"`{pref.get('match_type')}`=`{pref.get('match_value')}` "
+            f"→ `{pref.get('backend_id')}`"
+        )
+    lines.append("")
+    lines.append(
+        "Использование:\n"
+        "`/backend_pref add <chat_id> <service|domain|cidr> <value> <backend-id>`\n"
+        "`/backend_pref list [chat_id]`\n"
+        "`/backend_pref remove <id>`"
+    )
+    return "\n".join(lines)
+
+
+def _render_lan_clients(rows: list[dict]) -> str:
+    lines = ["*LAN clients*"]
+    if not rows:
+        lines.append("")
+        lines.append("Пока пусто.")
+        lines.append("")
+        lines.append("Использование:")
+        lines.append("`/lan_clients`")
+        lines.append("`/lan_client add <name> <src_ip>`")
+        lines.append("`/lan_client remove <id>`")
+        return "\n".join(lines)
+    lines.append("")
+    for row in rows[:30]:
+        observed = " | observed" if row.get("observed") else ""
+        lines.append(
+            f"• `#{row.get('id')}` `{row.get('name')}` `{row.get('src_ip')}`"
+            f"{observed}"
+        )
+    lines.append("")
+    lines.append("Использование:")
+    lines.append("`/lan_clients`")
+    lines.append("`/lan_client add <name> <src_ip>`")
+    lines.append("`/lan_client remove <id>`")
+    return "\n".join(lines)
+
+
+def _render_lan_backend_prefs(rows: list[dict]) -> str:
+    lines = ["*LAN backend prefs*"]
+    if not rows:
+        lines.append("")
+        lines.append("Пока пусто.")
+        lines.append("")
+        lines.append("Использование:")
+        lines.append("`/lan_backend_pref add <lan_client_id> <service|domain|cidr> <value> <backend-id>`")
+        lines.append("`/lan_backend_pref list`")
+        lines.append("`/lan_backend_pref remove <id>`")
+        return "\n".join(lines)
+    lines.append("")
+    for row in rows[:30]:
+        lines.append(
+            f"• `#{row.get('id')}` "
+            f"`{row.get('lan_client_id')}` "
+            f"`{row.get('match_type')}`=`{row.get('match_value')}` "
+            f"→ `{row.get('backend_id')}`"
+        )
+    lines.append("")
+    lines.append("Использование:")
+    lines.append("`/lan_backend_pref add <lan_client_id> <service|domain|cidr> <value> <backend-id>`")
+    lines.append("`/lan_backend_pref list`")
+    lines.append("`/lan_backend_pref remove <id>`")
+    return "\n".join(lines)
+
+
+async def _choose_and_apply_backend(
+    backend_id: str = "",
+    route_class: str = "vpn_default",
+    mode: str = "auto",
+) -> dict:
+    decision = await _wc().choose_backend(backend_id=backend_id, route_class=route_class, mode=mode)
+    return await _wc().apply_backend_decision(
+        backend_id=str(decision.get("backend_id") or backend_id),
+        reason=str(decision.get("reason") or "decision_apply"),
+        decision_source=str(decision.get("decision_source") or "decision_api"),
+    )
 
 
 def _installed_version_label() -> str:
@@ -360,6 +604,14 @@ def _wc() -> WatchdogClient:
     return WatchdogClient(config.watchdog_url, config.watchdog_token)
 
 
+async def _is_gateway_mode() -> bool:
+    try:
+        status = await _wc().get_status()
+    except WatchdogError:
+        return False
+    return str(status.get("server_mode") or "") == "gateway"
+
+
 def _uptime(s: int) -> str:
     d, r = divmod(int(s), 86400)
     h, r = divmod(r, 3600)
@@ -394,6 +646,7 @@ class AdminFSM(StatesGroup):
     vps_install_port   = State()
     vps_install_pass   = State()
     client_limit_input = State()
+    backend_pref_add   = State()
 
 
 # ---------------------------------------------------------------------------
@@ -497,6 +750,24 @@ async def cmd_status(message: Message, state: FSMContext, **kw):
                     f"last `{deploy_last.get('status', 'unknown')}`"
                     f" | {deploy_last.get('phase', 'unknown')}"
                 )
+        balancer = s.get("balancer") or {}
+        backends = s.get("backends") or []
+        active_backend = s.get("active_backend") or {}
+        if balancer or backends:
+            text += (
+                "\n\n"
+                f"*Balancer*: `{balancer.get('healthy_backend_count', 0)}/{balancer.get('backend_count', len(backends))}` healthy"
+                f" | ttl `{balancer.get('idle_ttl_seconds', '?')}`s"
+            )
+            if active_backend:
+                text += f"\nactive backend: `{active_backend.get('id', '?')}` → `{active_backend.get('ip', '?')}`"
+            assignments = balancer.get("assignments") or []
+            if assignments:
+                preview = ", ".join(
+                    f"{item.get('route_class')}→{(item.get('backend') or {}).get('id', item.get('backend_id', '?'))}"
+                    for item in assignments[:3]
+                )
+                text += f"\nleases: `{preview}`"
     except WatchdogError as e:
         text = f"❌ Watchdog недоступен: {e}"
     await message.answer(text)
@@ -549,6 +820,7 @@ async def cmd_tunnel(message: Message, state: FSMContext, **kw):
         text = (
             f"*Туннель*\n\n"
             f"Активный стек: `{s.get('active_stack')}`\n"
+            f"Активный backend: `{(s.get('active_backend') or {}).get('id', 'n/a')}`\n"
             f"Primary: `{s.get('primary_stack')}`\n"
             f"Последний failover: {s.get('last_failover') or 'никогда'}\n"
             f"Следующая ротация: {s.get('next_rotation', 'N/A')[:16]}\n\n"
@@ -662,7 +934,8 @@ async def cmd_logs(message: Message, state: FSMContext, **kw):
     await state.clear()
     args = message.text.split()
     allowed = ["watchdog", "dnsmasq", "hysteria2", "telegram-bot",
-               "xray-client-vision", "xray-client-xhttp", "cloudflared", "node-exporter"]
+               "xray-client-vision", "xray-client-xhttp", "sing-box-tuic-client",
+               "sing-box-trojan-client", "cloudflared", "node-exporter"]
     if len(args) < 2 or args[1] not in allowed:
         await message.answer(
             "Использование: `/logs <сервис> [N]`\n"
@@ -672,7 +945,7 @@ async def cmd_logs(message: Message, state: FSMContext, **kw):
     service = args[1]
     n = min(int(args[2]), 300) if len(args) > 2 and args[2].isdigit() else 50
 
-    docker_services = {"telegram-bot", "xray-client-vision", "xray-client-xhttp", "cloudflared", "node-exporter"}
+    docker_services = {"telegram-bot", "xray-client-vision", "xray-client-xhttp", "sing-box-tuic-client", "sing-box-trojan-client", "cloudflared", "node-exporter"}
     try:
         if service in docker_services:
             text = await _docker_logs(service, n)
@@ -753,7 +1026,7 @@ async def cmd_switch(message: Message, state: FSMContext, **kw):
         return
     await state.clear()
     args = message.text.split()
-    stacks = ["cloudflare-cdn", "reality-xhttp", "vless-reality-vision", "hysteria2"]
+    stacks = ["trojan", "cloudflare-cdn", "reality-xhttp", "vless-reality-vision", "tuic", "hysteria2"]
     if len(args) < 2 or args[1] not in stacks:
         await message.answer(
             "Использование: `/switch <стек>`\n\n"
@@ -1486,20 +1759,19 @@ async def cmd_check(message: Message, state: FSMContext, **kw):
         await message.answer("Использование: `/check <домен>`")
         return
     domain = args[1].lower().strip(".")
+    chat_id = ""
+    source_ip = ""
+    if len(args) > 2:
+        second = args[2]
+        if re.match(r"^\d+\.\d+\.\d+\.\d+$", second):
+            source_ip = second
+        else:
+            chat_id = second
+    if len(args) > 3 and re.match(r"^\d+\.\d+\.\d+\.\d+$", args[3]):
+        source_ip = args[3]
     try:
-        r = await _wc().check_domain(domain)
-        verdict   = r.get("verdict", "unknown")
-        ips       = r.get("ips", [])
-        ip_str    = ", ".join(ips[:4]) if ips else "не резолвится"
-        sources   = list(r.get("sources") or [])
-        src = " | ".join(sources) if sources else "—"
-        icon = {"vpn": "🔒", "direct": "🌐", "latency_sensitive_direct": "⚡", "unknown": "❓"}.get(verdict, "❓")
-        service = str(r.get("latency_service") or "")
-        service_line = f"\nСервис: <b>{service}</b>" if service else ""
-        await message.answer(
-            f"{icon} <code>{domain}</code>\nВердикт: <b>{verdict}</b>\nIP: <code>{ip_str}</code>{service_line}\nИсточники: {src}",
-            parse_mode="HTML",
-        )
+        payload = await _wc().resolve_domain_decision(domain, chat_id=chat_id, source_ip=source_ip)
+        await message.answer(_render_check_result_html(domain, payload), parse_mode="HTML")
     except WatchdogError as e:
         await message.answer(f"❌ {e}")
 
@@ -1525,6 +1797,239 @@ async def cmd_latency(message: Message, state: FSMContext, **kw):
 
 
 # ---------------------------------------------------------------------------
+# /backends
+# ---------------------------------------------------------------------------
+@router.message(Command("backends"), StateFilter("*"))
+async def cmd_backends(message: Message, state: FSMContext, **kw):
+    if not await _is_admin(message, db=kw.get("db")):
+        return
+    await state.clear()
+    try:
+        data = await _wc().get_backends()
+        await message.answer("*Backend pool:*\n" + _render_backend_lines(data.get("backends", [])))
+    except WatchdogError as e:
+        await message.answer(f"❌ {e}")
+
+
+# ---------------------------------------------------------------------------
+# /balancer
+# ---------------------------------------------------------------------------
+@router.message(Command("balancer"), StateFilter("*"))
+async def cmd_balancer(message: Message, state: FSMContext, **kw):
+    if not await _is_admin(message, db=kw.get("db")):
+        return
+    await state.clear()
+    try:
+        data = await _wc().get_balancer_status()
+        await message.answer(_render_balancer_text(data))
+    except WatchdogError as e:
+        await message.answer(f"❌ {e}")
+
+
+# ---------------------------------------------------------------------------
+# /rebalance [route_class|all]
+# ---------------------------------------------------------------------------
+@router.message(Command("rebalance"), StateFilter("*"))
+async def cmd_rebalance(message: Message, state: FSMContext, **kw):
+    if not await _is_admin(message, db=kw.get("db")):
+        return
+    await state.clear()
+    args = message.text.split(maxsplit=1)
+    route_class = args[1].strip() if len(args) > 1 else "all"
+    try:
+        data = await _wc().rebalance(route_class)
+        extra = ""
+        if "changed" in data:
+            extra = f"\nChanged: `{data.get('changed', 0)}`"
+        await message.answer(f"✅ Rebalance выполнен для `{data.get('route_class', route_class)}`{extra}")
+    except WatchdogError as e:
+        await message.answer(f"❌ {e}")
+
+
+# ---------------------------------------------------------------------------
+# /backend add|remove|drain|undrain
+# ---------------------------------------------------------------------------
+@router.message(Command("backend"), StateFilter("*"))
+async def cmd_backend(message: Message, state: FSMContext, **kw):
+    if not await _is_admin(message, db=kw.get("db")):
+        return
+    await state.clear()
+    args = message.text.split()
+    if len(args) < 3 or args[1] not in ("add", "remove", "drain", "undrain"):
+        await message.answer(
+            "Использование:\n"
+            "`/backend add <IP> [SSH_PORT]`\n"
+            "`/backend remove <IP>`\n"
+            "`/backend drain <backend-id>`\n"
+            "`/backend undrain <backend-id>`"
+        )
+        return
+    action = args[1]
+    try:
+        if action == "add":
+            ip = args[2]
+            port = int(args[3]) if len(args) > 3 else 443
+            await _wc().add_backend(ip, port)
+            await message.answer(f"✅ Backend `{ip}` добавлен")
+        elif action == "remove":
+            await _wc().remove_backend(args[2])
+            await message.answer(f"✅ Backend `{args[2]}` удалён")
+        elif action == "drain":
+            await _wc().drain_backend(args[2])
+            await message.answer(f"🟡 Backend `{args[2]}` переведён в drain")
+        else:
+            await _wc().undrain_backend(args[2])
+            await message.answer(f"🟢 Backend `{args[2]}` возвращён в healthy pool")
+    except WatchdogError as e:
+        await message.answer(f"❌ {e}")
+
+
+# ---------------------------------------------------------------------------
+# /backend_pref add|list|remove
+# ---------------------------------------------------------------------------
+@router.message(Command("backend_pref"), StateFilter("*"))
+async def cmd_backend_pref(message: Message, state: FSMContext, **kw):
+    if not await _is_admin(message, db=kw.get("db")):
+        return
+    await state.clear()
+    db: Database = kw.get("db")
+    args = message.text.split()
+    if len(args) < 2 or args[1] not in ("add", "list", "remove"):
+        await message.answer(
+            "Использование:\n"
+            "`/backend_pref add <chat_id> <service|domain|cidr> <value> <backend-id>`\n"
+            "`/backend_pref list [chat_id]`\n"
+            "`/backend_pref remove <id>`"
+        )
+        return
+    action = args[1]
+    try:
+        if action == "add":
+            if len(args) < 6:
+                raise ValueError("Использование: /backend_pref add <chat_id> <service|domain|cidr> <value> <backend-id>")
+            pref = await db.add_client_backend_pref(args[2], args[3], args[4], args[5])
+            await message.answer(
+                f"✅ Добавлен pref `#{pref.get('id')}`: "
+                f"`{pref.get('chat_id')}` "
+                f"`{pref.get('match_type')}`=`{pref.get('match_value')}` "
+                f"→ `{pref.get('backend_id')}`"
+            )
+        elif action == "list":
+            chat_id = args[2] if len(args) > 2 else ""
+            prefs = await db.list_client_backend_prefs(chat_id)
+            await message.answer(_render_client_backend_prefs(prefs, chat_id))
+        else:
+            if len(args) < 3 or not args[2].isdigit():
+                raise ValueError("Использование: /backend_pref remove <id>")
+            removed = await db.remove_client_backend_pref(int(args[2]))
+            if not removed:
+                await message.answer("❌ Pref не найден")
+                return
+            await message.answer(f"✅ Pref `{args[2]}` удалён")
+    except ValueError as e:
+        await message.answer(f"❌ {e}")
+
+
+@router.message(AdminFSM.backend_pref_add)
+async def fsm_backend_pref_add(message: Message, state: FSMContext, **kw):
+    if not await _is_admin(message, db=kw.get("db")):
+        return
+    db: Database = kw.get("db")
+    parts = message.text.strip().split()
+    await state.clear()
+    try:
+        if len(parts) != 4:
+            raise ValueError("Использование: <chat_id> <service|domain|cidr> <value> <backend-id>")
+        pref = await db.add_client_backend_pref(parts[0], parts[1], parts[2], parts[3])
+        prefs = await db.list_client_backend_prefs()
+        await message.answer(
+            "✅ Preference добавлен:\n"
+            f"`#{pref.get('id')}` `{pref.get('chat_id')}` "
+            f"`{pref.get('match_type')}`=`{pref.get('match_value')}` → `{pref.get('backend_id')}`\n\n"
+            + _render_client_backend_prefs(prefs),
+            reply_markup=admin_backend_prefs_kb(prefs),
+        )
+    except ValueError as e:
+        await message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
+@router.message(Command("lan_clients"), StateFilter("*"))
+async def cmd_lan_clients(message: Message, state: FSMContext, **kw):
+    if not await _is_admin(message, db=kw.get("db")):
+        return
+    await state.clear()
+    if not await _is_gateway_mode():
+        await message.answer("ℹ️ Gateway mode не включён.", reply_markup=back_to_admin_menu())
+        return
+    try:
+        payload = await _wc().get_gateway_lan_clients()
+        await message.answer(_render_lan_clients(payload.get("lan_clients") or []), reply_markup=admin_gateway_menu())
+    except WatchdogError as e:
+        await message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
+@router.message(Command("lan_client"), StateFilter("*"))
+async def cmd_lan_client(message: Message, state: FSMContext, **kw):
+    if not await _is_admin(message, db=kw.get("db")):
+        return
+    await state.clear()
+    if not await _is_gateway_mode():
+        await message.answer("ℹ️ Gateway mode не включён.", reply_markup=back_to_admin_menu())
+        return
+    args = message.text.split()
+    if len(args) < 2 or args[1] not in {"add", "remove"}:
+        await message.answer("Использование:\n`/lan_client add <name> <src_ip>`\n`/lan_client remove <id>`")
+        return
+    try:
+        if args[1] == "add":
+            if len(args) < 4:
+                raise ValueError("Использование: /lan_client add <name> <src_ip>")
+            await _wc().upsert_gateway_lan_client(args[2], args[3])
+            payload = await _wc().get_gateway_lan_clients()
+            await message.answer(_render_lan_clients(payload.get("lan_clients") or []), reply_markup=admin_gateway_menu())
+        else:
+            if len(args) < 3:
+                raise ValueError("Использование: /lan_client remove <id>")
+            await _wc().remove_gateway_lan_client(args[2])
+            payload = await _wc().get_gateway_lan_clients()
+            await message.answer(_render_lan_clients(payload.get("lan_clients") or []), reply_markup=admin_gateway_menu())
+    except (ValueError, WatchdogError) as e:
+        await message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
+@router.message(Command("lan_backend_pref"), StateFilter("*"))
+async def cmd_lan_backend_pref(message: Message, state: FSMContext, **kw):
+    if not await _is_admin(message, db=kw.get("db")):
+        return
+    await state.clear()
+    if not await _is_gateway_mode():
+        await message.answer("ℹ️ Gateway mode не включён.", reply_markup=back_to_admin_menu())
+        return
+    args = message.text.split()
+    if len(args) < 2 or args[1] not in {"add", "list", "remove"}:
+        await message.answer(
+            "Использование:\n"
+            "`/lan_backend_pref add <lan_client_id> <service|domain|cidr> <value> <backend-id>`\n"
+            "`/lan_backend_pref list`\n"
+            "`/lan_backend_pref remove <id>`"
+        )
+        return
+    try:
+        if args[1] == "add":
+            if len(args) < 6:
+                raise ValueError("Использование: /lan_backend_pref add <lan_client_id> <service|domain|cidr> <value> <backend-id>")
+            await _wc().add_gateway_lan_pref(args[2], args[3], args[4], args[5])
+        elif args[1] == "remove":
+            if len(args) < 3:
+                raise ValueError("Использование: /lan_backend_pref remove <id>")
+            await _wc().remove_gateway_lan_pref(args[2])
+        payload = await _wc().get_gateway_lan_prefs()
+        await message.answer(_render_lan_backend_prefs(payload.get("lan_prefs") or []), reply_markup=admin_gateway_menu())
+    except (ValueError, WatchdogError) as e:
+        await message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
+# ---------------------------------------------------------------------------
 # /routes update
 # ---------------------------------------------------------------------------
 @router.message(Command("routes"), StateFilter("*"))
@@ -1547,7 +2052,7 @@ async def cmd_routes(message: Message, state: FSMContext, **kw):
 
 
 # ---------------------------------------------------------------------------
-# /vps list|add|remove
+# /vps list|add|remove — legacy alias for backend pool
 # ---------------------------------------------------------------------------
 @router.message(Command("vps"), StateFilter("*"))
 async def cmd_vps(message: Message, state: FSMContext, **kw):
@@ -1556,34 +2061,30 @@ async def cmd_vps(message: Message, state: FSMContext, **kw):
     await state.clear()
     args = message.text.split()
     if len(args) < 2 or args[1] not in ("list", "add", "remove"):
-        await message.answer("Использование:\n`/vps list`\n`/vps add <IP>`\n`/vps remove <IP>`")
+        await message.answer("Использование:\n`/vps list`\n`/vps add <IP>`\n`/vps remove <IP>`\n\n`/vps` сейчас является alias на backend pool.")
         return
     try:
         if args[1] == "list":
-            data = await _wc().get_vps_list()
-            vps_list = data.get("vps_list", [])
-            if not vps_list:
-                await message.answer("VPS не добавлены.")
+            data = await _wc().get_backends()
+            backends = data.get("backends", [])
+            if not backends:
+                await message.answer("Backends не добавлены.")
                 return
-            lines = []
-            for i, v in enumerate(vps_list):
-                active = "✅" if i == data.get("active_idx", 0) else "⚪"
-                lines.append(f"{active} `{v['ip']}` (SSH :{v.get('ssh_port', 22)})")
-            await message.answer("*VPS серверы:*\n" + "\n".join(lines))
+            await message.answer("*Backend pool:*\n" + _render_backend_lines(backends))
         elif args[1] == "add":
             if len(args) < 3:
                 await message.answer("/vps add <IP> [SSH_PORT]")
                 return
             ip = args[2]
             port = int(args[3]) if len(args) > 3 else 443
-            await _wc().add_vps(ip, port)
-            await message.answer(f"✅ VPS `{ip}` добавлен")
+            await _wc().add_backend(ip, port)
+            await message.answer(f"✅ Backend `{ip}` добавлен")
         else:
             if len(args) < 3:
                 await message.answer("/vps remove <IP>")
                 return
-            await _wc().remove_vps(args[2])
-            await message.answer(f"✅ VPS `{args[2]}` удалён")
+            await _wc().remove_backend(args[2])
+            await message.answer(f"✅ Backend `{args[2]}` удалён")
     except WatchdogError as e:
         await message.answer(f"❌ {e}")
 
@@ -1776,6 +2277,14 @@ async def cb_adm_monitor(cb: CallbackQuery, **kw):
     await _edit_or_answer(cb, "📊 <b>Мониторинг</b>", admin_monitor_menu())
 
 
+@router.callback_query(F.data == "adm:gateway")
+async def cb_adm_gateway(cb: CallbackQuery, **kw):
+    if not await _is_gateway_mode():
+        await _edit_or_answer(cb, "🏘 <b>Gateway</b>\n\nЭтот раздел доступен только в <code>gateway mode</code>.", back_to_admin_menu())
+        return
+    await _edit_or_answer(cb, "🏘 <b>Gateway</b>", admin_gateway_menu())
+
+
 @router.callback_query(F.data == "adm:health")
 async def cb_adm_health(cb: CallbackQuery, **kw):
     await cb.answer("Обновляю health...")
@@ -1955,7 +2464,92 @@ async def cb_adm_clients(cb: CallbackQuery, **kw):
 
 @router.callback_query(F.data == "adm:vps")
 async def cb_adm_vps(cb: CallbackQuery, **kw):
-    await _edit_or_answer(cb, "🖥️ <b>VPS серверы</b>", admin_vps_menu())
+    await _edit_or_answer(cb, "🖥️ <b>Backend pool</b>", admin_vps_menu())
+
+
+@router.callback_query(F.data == "adm:balancer")
+async def cb_adm_balancer(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю...")
+    try:
+        data = await _wc().get_balancer_status()
+        await _edit_or_answer(cb, _render_balancer_text(data), admin_vps_menu())
+    except WatchdogError as e:
+        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:backend_auto")
+async def cb_adm_backend_auto(cb: CallbackQuery, **kw):
+    await cb.answer("Выбираю лучший backend...")
+    try:
+        data = await _choose_and_apply_backend(mode="auto", route_class="vpn_default")
+        applied = data.get("applied") or {}
+        await cb.message.answer(
+            f"✅ Active backend переключён на `{applied.get('backend_id', '?')}` → `{applied.get('ip', '?')}`",
+            reply_markup=back_to_admin_menu(),
+        )
+    except WatchdogError as e:
+        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:backend_prefs")
+async def cb_adm_backend_prefs(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю...")
+    db: Database = kw.get("db")
+    prefs = await db.list_client_backend_prefs()
+    await _edit_or_answer(cb, _render_client_backend_prefs(prefs), admin_backend_prefs_kb(prefs))
+
+
+@router.callback_query(F.data == "adm:lan_clients")
+async def cb_adm_lan_clients(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю...")
+    if not await _is_gateway_mode():
+        await _edit_or_answer(cb, "🏘 <b>Gateway</b>\n\nЭтот раздел доступен только в <code>gateway mode</code>.", admin_gateway_menu())
+        return
+    try:
+        payload = await _wc().get_gateway_lan_clients()
+        await _edit_or_answer(cb, _render_lan_clients(payload.get("lan_clients") or []), admin_gateway_menu())
+    except WatchdogError as e:
+        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:lan_prefs")
+async def cb_adm_lan_prefs(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю...")
+    if not await _is_gateway_mode():
+        await _edit_or_answer(cb, "🏘 <b>Gateway</b>\n\nЭтот раздел доступен только в <code>gateway mode</code>.", admin_gateway_menu())
+        return
+    try:
+        payload = await _wc().get_gateway_lan_prefs()
+        await _edit_or_answer(cb, _render_lan_backend_prefs(payload.get("lan_prefs") or []), admin_gateway_menu())
+    except WatchdogError as e:
+        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "adm:backend_pref_add")
+async def cb_adm_backend_pref_add(cb: CallbackQuery, state: FSMContext, **kw):
+    await cb.answer()
+    await state.set_state(AdminFSM.backend_pref_add)
+    await cb.message.answer(
+        "Введите preference в формате:\n"
+        "<code>&lt;chat_id&gt; &lt;service|domain|cidr&gt; &lt;value&gt; &lt;backend-id&gt;</code>",
+        parse_mode="HTML",
+        reply_markup=back_to_admin_menu(),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:backend_pref_rm:"))
+async def cb_adm_backend_pref_remove(cb: CallbackQuery, **kw):
+    db: Database = kw.get("db")
+    pref_id = cb.data[len("adm:backend_pref_rm:"):]
+    await cb.answer("Удаляю...")
+    try:
+        removed = await db.remove_client_backend_pref(int(pref_id))
+    except Exception as e:
+        await cb.answer(f"❌ {e}", show_alert=True)
+        return
+    prefs = await db.list_client_backend_prefs()
+    text = ("✅ Preference удалён.\n\n" if removed else "ℹ️ Preference уже отсутствовал.\n\n") + _render_client_backend_prefs(prefs)
+    await _edit_or_answer(cb, text, admin_backend_prefs_kb(prefs))
 
 
 @router.callback_query(F.data == "adm:security")
@@ -2785,15 +3379,15 @@ async def cb_adm_requests(cb: CallbackQuery, **kw):
 async def cb_adm_vps_list(cb: CallbackQuery, **kw):
     await cb.answer("Загружаю...")
     try:
-        data = await _wc().get_vps_list()
-        vps_list = data.get("vps_list", [])
+        data = await _wc().get_backends()
+        vps_list = data.get("backends", [])
         if not vps_list:
-            await cb.message.answer("VPS не добавлены.", reply_markup=back_to_admin_menu())
+            await cb.message.answer("Backends не добавлены.", reply_markup=back_to_admin_menu())
             return
         await _edit_or_answer(
             cb,
-            "🖥️ <b>VPS серверы</b> — выберите для управления:",
-            admin_vps_list_kb(vps_list, data.get("active_idx", 0)),
+            "🖥️ <b>Backend pool</b> — выберите backend:",
+            admin_vps_list_kb(vps_list, 0),
         )
     except WatchdogError as e:
         await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
@@ -2804,17 +3398,24 @@ async def cb_adm_vps_detail(cb: CallbackQuery, **kw):
     ip = cb.data[len("adm:vps_detail:"):]
     await cb.answer()
     try:
-        data = await _wc().get_vps_list()
-        vps_list = data.get("vps_list", [])
+        data = await _wc().get_backends()
+        vps_list = data.get("backends", [])
         vps = next((v for v in vps_list if v["ip"] == ip), None)
         if not vps:
-            await cb.message.answer("VPS не найден.", reply_markup=back_to_admin_menu())
+            await cb.message.answer("Backend не найден.", reply_markup=back_to_admin_menu())
             return
-        idx = vps_list.index(vps)
-        status = "✅ Активный" if idx == data.get("active_idx", 0) else "⚪ Резервный"
+        status = "🟡 drain" if vps.get("drain") else vps.get("status", "unknown")
         ssh_port = vps.get("ssh_port", 22)
-        text = f"🖥️ <b>VPS: {ip}</b>\nSSH порт: {ssh_port}\nСтатус: {status}"
-        await _edit_or_answer(cb, text, admin_vps_actions_kb(ip, ssh_port))
+        active = (data.get("balancer") or {}).get("active_backend_id") == vps.get("id")
+        text = (
+            f"🖥️ <b>Backend: {ip}</b>\n"
+            f"ID: <code>{vps.get('id')}</code>\n"
+            f"SSH порт: {ssh_port}\n"
+            f"Статус: {status}\n"
+            f"Weight: {vps.get('weight', 100)}\n"
+            f"{'Активный backend' if active else 'Неактивный backend'}"
+        )
+        await _edit_or_answer(cb, text, admin_vps_actions_kb(ip, ssh_port, str(vps.get("id") or ""), active=active, drain=bool(vps.get("drain"))))
     except WatchdogError as e:
         await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
 
@@ -2824,7 +3425,7 @@ async def cb_adm_vps_test(cb: CallbackQuery, **kw):
     ip = cb.data[len("adm:vps_test:"):]
     await cb.answer("Тестирую...")
     try:
-        result = await _wc().post("diagnose/vps", {"ip": ip})
+        result = await _wc().post("vps/diagnose", {"ip": ip})
         status = result.get("status", "неизвестно")
         latency = result.get("latency_ms")
         text = f"🔍 <b>Тест VPS {ip}</b>\nСтатус: {status}"
@@ -2833,6 +3434,42 @@ async def cb_adm_vps_test(cb: CallbackQuery, **kw):
         await cb.message.answer(text, reply_markup=back_to_admin_menu())
     except WatchdogError as e:
         await cb.message.answer(f"❌ Тест не удался: {e}", reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data.startswith("adm:vps_set_active:"))
+async def cb_adm_vps_set_active(cb: CallbackQuery, **kw):
+    backend_id = cb.data[len("adm:vps_set_active:"):]
+    await cb.answer("Переключаю backend...")
+    try:
+        data = await _choose_and_apply_backend(backend_id=backend_id, mode="manual")
+        applied = data.get("applied") or {}
+        await cb.message.answer(
+            f"✅ Active backend: `{applied.get('backend_id', backend_id)}` → `{applied.get('ip', '?')}`",
+            reply_markup=back_to_admin_menu(),
+        )
+    except WatchdogError as e:
+        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data.startswith("adm:vps_drain_toggle:"))
+async def cb_adm_vps_drain_toggle(cb: CallbackQuery, **kw):
+    backend_id = cb.data[len("adm:vps_drain_toggle:"):]
+    await cb.answer("Обновляю backend...")
+    try:
+        pool = await _wc().get_backends()
+        backend = next((item for item in pool.get("backends", []) if item.get("id") == backend_id), None)
+        if not backend:
+            await cb.message.answer("❌ Backend не найден", reply_markup=back_to_admin_menu())
+            return
+        if backend.get("drain"):
+            await _wc().undrain_backend(backend_id)
+            text = f"🟢 Backend `{backend_id}` возвращён в active pool"
+        else:
+            await _wc().drain_backend(backend_id)
+            text = f"🟡 Backend `{backend_id}` переведён в drain"
+        await cb.message.answer(text, reply_markup=back_to_admin_menu())
+    except WatchdogError as e:
+        await cb.message.answer(f"❌ {e}", reply_markup=back_to_admin_menu())
 
 
 @router.callback_query(F.data.startswith("adm:vps_migrate:"))
@@ -3046,7 +3683,7 @@ async def cb_adm_log(cb: CallbackQuery, **kw):
             origin = maybe_origin
             service = maybe_service
     await cb.answer(f"Загружаю логи {service}...")
-    allowed_docker = {"telegram-bot", "xray-client-vision", "xray-client-xhttp", "cloudflared", "node-exporter"}
+    allowed_docker = {"telegram-bot", "xray-client-vision", "xray-client-xhttp", "sing-box-tuic-client", "sing-box-trojan-client", "cloudflared", "node-exporter"}
     try:
         if service in allowed_docker:
             text = await _docker_logs(service, 50)
@@ -3208,21 +3845,22 @@ async def cb_adm_check(cb: CallbackQuery, state: FSMContext, **kw):
 
 @router.message(AdminFSM.check_domain)
 async def fsm_check_domain(message: Message, state: FSMContext, **kw):
-    domain = message.text.strip().lower().strip(".").split("/")[0]
+    args = message.text.strip().split()
+    domain = args[0].lower().strip(".").split("/")[0]
+    chat_id = ""
+    source_ip = ""
+    if len(args) > 1:
+        second = args[1]
+        if re.match(r"^\d+\.\d+\.\d+\.\d+$", second):
+            source_ip = second
+        else:
+            chat_id = second
+    if len(args) > 2 and re.match(r"^\d+\.\d+\.\d+\.\d+$", args[2]):
+        source_ip = args[2]
     await state.clear()
     try:
-        r = await _wc().check_domain(domain)
-        verdict = r.get("verdict", "unknown")
-        ips     = r.get("ips", [])
-        ip_str  = ", ".join(ips[:4]) if ips else "не резолвится"
-        sources = list(r.get("sources") or [])
-        src  = " | ".join(sources) if sources else "—"
-        icon = {"vpn": "🔒", "direct": "🌐", "latency_sensitive_direct": "⚡", "unknown": "❓"}.get(verdict, "❓")
-        service = str(r.get("latency_service") or "")
-        text = f"{icon} <code>{domain}</code>\nВердикт: <b>{verdict}</b>\nIP: <code>{ip_str}</code>"
-        if service:
-            text += f"\nСервис: <b>{service}</b>"
-        text += f"\nИсточники: {src}"
+        payload = await _wc().resolve_domain_decision(domain, chat_id=chat_id, source_ip=source_ip)
+        text = _render_check_result_html(domain, payload)
     except WatchdogError as e:
         text = f"❌ {e}"
     await message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")

@@ -1,0 +1,7 @@
+# Trojan client config
+# Управляется через sing-box-trojan-client Docker контейнер
+
+stack: trojan
+socks_port: 1086
+tun_interface: tun-trojan
+container: sing-box-trojan-client

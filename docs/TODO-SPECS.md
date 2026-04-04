@@ -13,6 +13,9 @@
 
 - [ ] Разделить `HOME_DDNS_DOMAIN` / `WG_HOST` и отдельный VPS hostname, чтобы ingress для клиентов нельзя было случайно направить на VPS.
 - [ ] Расширить functional scenarios routing/smoke под банки, маркетплейсы, Bitrix24 и телекомы.
+- [~] Multi-VPS / Decision Maker Phase 2: вынести backend selection и route explanation в отдельный `Decision Maker` contract.
+- [~] Multi-VPS / Decision Maker Phase 3: `vpn_client` backend preferences (`service/domain/cidr`) поверх `Decision Maker`.
+- [~] Multi-VPS / Decision Maker Phase 4: `LAN client identity` и LAN backend preferences только для `gateway mode`.
 
 ## Уже закрыто
 
@@ -23,6 +26,7 @@
 - [x] `systemd` timer для `update-latency-catalog.py` добавлен.
 - [x] Operator surface для `latency-learned` / `latency-candidates` добавлен в Telegram-бот.
 - [x] Alert на пустой или устаревший runtime latency catalog добавлен в watchdog.
+- [x] Multi-VPS Phase 1 foundation: backend pool, active backend, health/drain, menu-complete operator surface.
 
 ## Архив / не в активной разработке
 
@@ -34,6 +38,138 @@
 - Gateway Mode и Router-Zapret / Keenetic expansion.
 - Полный export/import для чистой переустановки.
 - WiFi как резервный канал.
+
+-----
+
+## ACTIVE — Multi-VPS / Decision Maker Architecture
+
+**Приоритет: высокий**
+
+### Цель
+
+Перестать разносить routing/backend-логику между watchdog, bot, scripts и runtime эвристиками.
+
+Нужен отдельный authoritative слой `Decision Maker`, который:
+
+- принимает routing/backend-решения;
+- учитывает health, policy и preferences;
+- объясняет, почему решение именно такое;
+- согласован с self-heal, monitoring, deploy и rollback.
+
+### Что уже сделано
+
+- [x] `backend pool` введён как runtime сущность.
+- [x] Есть `active backend` foundation для всего VPN lane.
+- [x] Есть backend health/drain/manual/auto switch.
+- [x] Bot menu уже знает backend-oriented operations.
+- [x] Выделен `decision_maker.py` как отдельный модуль.
+- [x] Появился canonical `/decision/*` API для read/explain/reassign/choose/apply.
+- [x] Bot `/check` и backend actions уже используют canonical Decision Maker flow.
+
+### PHASE 2 — DECISION MAKER CONTRACT
+
+#### 1. Выделить Decision Maker как отдельную подсистему
+
+- [ ] Явно вынести `resolve_route(...)`
+- [x] Явно вынести `explain_route(...)`
+- [x] Явно вынести backend selection API
+- [~] Не смешивать Decision Maker с runtime apply
+
+#### 2. Разделить ownership
+
+- [ ] `Decision Maker` владеет policy/backend decision state
+- [ ] `watchdog` владеет health/self-heal/runtime apply
+- [ ] `bot` владеет UX/CRUD/diagnostics presentation
+- [ ] `deploy` не становится policy engine
+
+#### 3. Согласовать с health/self-heal/monitoring
+
+- [ ] backend health используется как input, а не как сам decision layer
+- [ ] self-heal применяет решения, а не изобретает policy
+- [ ] monitoring объясняет effective backend и switch reason
+- [ ] no silent direct fallback для VPN-required traffic
+
+**Текущее состояние Phase 2:**
+
+- explanation path уже вынесен;
+- `resolve_route(...)` уже появился для domain decision path;
+- choose/apply flow уже разделён;
+- bot уже смотрит в canonical Decision Maker API;
+- remaining gap: более явное отделение decision state от watchdog runtime state и перенос preference precedence в новый resolver.
+
+### PHASE 3 — VPN CLIENT PREFERENCES
+
+- [~] `vpn_client` preferences (`service/domain/cidr`)
+- [~] precedence rules поверх global policy
+- [x] `Decision Maker` explanation path для `/check`
+- [x] menu-complete bot surface для preferences
+
+**Текущее состояние Phase 3:**
+
+- добавлена таблица `client_backend_prefs` в bot DB;
+- `Decision Maker resolve_route(...)` уже учитывает `vpn_client` preferences по `service/domain/cidr`;
+- `/check <domain> [chat_id]` уже показывает `matched_preference` и fallback;
+- precedence уже частично формализован: matching preference не ломает `direct`/`latency_sensitive_direct` verdict и явно показывает `ignored_by_policy`;
+- в меню есть entry point `Client backend prefs`, plus menu-path для add/remove preferences;
+- remaining gap: развить precedence поверх global policy и добавить более богатый UX фильтрации/редактирования, если это понадобится.
+
+### PHASE 4 — GATEWAY-ONLY LAN IDENTITY
+
+- [x] `LAN client identity` только в `gateway mode`
+- [x] отдельный store для LAN prefs
+- [x] не смешивать LAN clients с Telegram-managed VPN clients
+- [~] gateway-only menu and diagnostics
+
+**Текущее состояние Phase 4:**
+
+- добавлен отдельный gateway-only store:
+  - `gateway-lan-clients.json`
+  - `gateway-lan-prefs.json`
+- добавлены watchdog API:
+  - `/gateway/lan-clients`
+  - `/gateway/lan-prefs`
+  - `/gateway/lan-client/upsert|remove`
+  - `/gateway/lan-pref/add|remove`
+- bot получил gateway-only surface:
+  - `Gateway` section в меню
+  - `/lan_clients`
+  - `/lan_client ...`
+  - `/lan_backend_pref ...`
+- вне `gateway mode` эти действия отвечают `not applicable`;
+- `Decision Maker resolve_route(...)` уже умеет принимать `lan_client` identity и `LAN backend preferences`;
+- `/check <domain> <source_ip>` в `gateway mode` теперь показывает `lan_client` identity и effective backend decision;
+- remaining gap: сделать отдельный richer UX для явного выбора `lan_client` из меню, а не только через команды и diagnostics.
+
+### PHASE 5 — ROUTE-CLASS LEASES
+
+- [~] перейти от одного active backend к lease per `route_class`
+- [~] sticky assignments с TTL
+- [ ] controlled rebalance
+- [x] explanation/fallback для lease decisions
+
+**Текущее состояние Phase 5:**
+
+- lease state уже живёт в `backend_assignments` и имеет TTL;
+- `Decision Maker` и bot diagnostics уже показывают lease-driven `route_class`;
+- execution layer сейчас честно помечен как `single_active_backend`;
+- пока dataplane не умеет реальный per-class backend execution, assignment choice принудительно согласован с active backend;
+- добавлен controlled reconciliation path для lease state после смены active backend;
+- добавлен dataplane foundation для `hysteria2`: per-backend rendered configs и `backend_paths` diagnostics с `desired/applied/rendered`;
+- `backend apply` для `hysteria2` теперь проходит через `verify` и делает rollback на предыдущий backend при failed probe;
+- remaining gap: controlled rebalance и настоящий per-class execution path ниже decision layer.
+
+### PHASE 6 — MULTI-BACKEND DEPLOY / ROLLBACK
+
+- [ ] backend-aware deploy verification
+- [ ] policy/runtime reconciliation after rollback
+- [ ] explicit degraded/additional-backend semantics
+
+### Definition of Done
+
+- [ ] routing decision идёт через один authoritative layer
+- [ ] bot, diagnostics и runtime используют один decision contract
+- [ ] health/self-heal/monitoring не расходятся по ownership
+- [ ] deploy/rollback знают про multi-backend без смешения с policy
 
 -----
 

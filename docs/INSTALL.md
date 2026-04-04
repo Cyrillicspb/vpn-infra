@@ -8,7 +8,23 @@
 curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install.sh | sudo bash
 ```
 
-`install.sh` подготавливает `/opt/vpn` и запускает `setup.sh`.
+`install.sh` подготавливает `/opt/vpn`, скачивает обязательные release bundles и запускает `setup.sh`.
+
+## Bundle-first contract
+
+Обязательные release assets:
+
+- `vpn-infra.tar.gz`
+- `system-packages-*`
+- `docker-images-*`
+- `installer-gui-wheels.tar.gz`
+- `watchdog-wheels.tar.gz`
+- `telegram-bot-wheels.tar.gz`
+
+Для обязательных install-time зависимостей включён strict bundle-first режим:
+
+- если обязательный release asset отсутствует, установка завершается ошибкой сразу;
+- скрытый fallback в Docker Hub / PyPI / GitHub binary downloads для обязательных компонентов не считается поддерживаемым путём.
 
 ## Что нужно заранее
 

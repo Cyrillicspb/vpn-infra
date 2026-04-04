@@ -1,0 +1,12 @@
+name: trojan
+display_name: "Trojan (TLS fallback)"
+resilience: 4
+protocol: trojan
+transport: tcp
+port: 8444
+socks_port: 1086
+tun_name: tun-trojan
+requires:
+  - sing-box-trojan-client
+  - tcp-8444-open
+description: "Дополнительный TCP/TLS fallback на sing-box. Участвует в full-auto ротации."

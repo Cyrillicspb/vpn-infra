@@ -41,4 +41,10 @@ gh release upload "$LATEST_TAG" "${REPO_DIR}/system-packages-manifest.txt" \
     --repo "${REPO_OWNER}/${REPO_NAME}" \
     --clobber
 
+if [[ -f "${REPO_DIR}/release-assets-manifest.txt" ]]; then
+    gh release upload "$LATEST_TAG" "${REPO_DIR}/release-assets-manifest.txt" \
+        --repo "${REPO_OWNER}/${REPO_NAME}" \
+        --clobber
+fi
+
 echo "Uploaded to ${LATEST_TAG}"

@@ -136,6 +136,17 @@ class Database:
                         UNIQUE(device_id, subnet)
                     );
 
+                    CREATE TABLE IF NOT EXISTS client_backend_prefs (
+                        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                        chat_id      TEXT    NOT NULL,
+                        match_type   TEXT    NOT NULL,
+                        match_value  TEXT    NOT NULL,
+                        backend_id   TEXT    NOT NULL,
+                        enabled      INTEGER NOT NULL DEFAULT 1,
+                        created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+                        updated_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+                    );
+
                     CREATE INDEX IF NOT EXISTS idx_clients_chat_id
                         ON clients(chat_id);
                     CREATE INDEX IF NOT EXISTS idx_devices_client_id
@@ -146,6 +157,10 @@ class Database:
                         ON domain_requests(status);
                     CREATE INDEX IF NOT EXISTS idx_server_routes_device_id
                         ON server_routes(device_id);
+                    CREATE INDEX IF NOT EXISTS idx_client_backend_prefs_chat_id
+                        ON client_backend_prefs(chat_id);
+                    CREATE INDEX IF NOT EXISTS idx_client_backend_prefs_enabled
+                        ON client_backend_prefs(enabled);
                 """)
                 conn.commit()
                 # Миграция: пересоздать clients если старая схема (device_name NOT NULL)
@@ -431,6 +446,57 @@ class Database:
             return dict(row) if row else None
         finally:
             conn.close()
+
+    async def add_client_backend_pref(self, chat_id: str, match_type: str, match_value: str, backend_id: str) -> dict:
+        match_type = str(match_type).strip().lower()
+        match_value = str(match_value).strip().lower()
+        backend_id = str(backend_id).strip()
+        if match_type not in {"service", "domain", "cidr"}:
+            raise ValueError("match_type must be service|domain|cidr")
+        async with self._lock:
+            conn = self._conn()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO client_backend_prefs
+                      (chat_id, match_type, match_value, backend_id, enabled, updated_at)
+                    VALUES (?, ?, ?, ?, 1, datetime('now'))
+                    """,
+                    (str(chat_id), match_type, match_value, backend_id),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT * FROM client_backend_prefs WHERE id = last_insert_rowid()"
+                ).fetchone()
+                return dict(row) if row else {}
+            finally:
+                conn.close()
+
+    async def list_client_backend_prefs(self, chat_id: str = "") -> list[dict]:
+        conn = self._conn()
+        try:
+            if chat_id:
+                rows = conn.execute(
+                    "SELECT * FROM client_backend_prefs WHERE chat_id = ? ORDER BY created_at DESC, id DESC",
+                    (str(chat_id),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM client_backend_prefs ORDER BY created_at DESC, id DESC"
+                ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    async def remove_client_backend_pref(self, pref_id: int) -> bool:
+        async with self._lock:
+            conn = self._conn()
+            try:
+                cur = conn.execute("DELETE FROM client_backend_prefs WHERE id = ?", (pref_id,))
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
 
     # -----------------------------------------------------------------------
     # Invite codes

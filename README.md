@@ -7,9 +7,15 @@
 - обычный трафик остаётся direct по policy;
 - управление и диагностика идут через watchdog и Telegram-бота.
 
+При multi-VPS целевая архитектура строится вокруг отдельного `Decision Maker` слоя:
+- он принимает routing/backend-решения;
+- watchdog собирает health и исполняет self-heal/runtime apply;
+- bot остаётся operator surface;
+- deploy/rollback остаются release-механизмами, а не policy engine.
+
 ## Что сейчас является реальным контрактом
 
-- install path: `install.sh` → `setup.sh`
+- install path: `install.sh` → release bundles → `setup.sh`
 - release path: `deploy.sh`
 - release rollback: `deploy.sh --rollback`
 - disaster recovery: `restore.sh --full-restore <backup>`
@@ -25,6 +31,10 @@
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install.sh | sudo bash
 ```
+
+Для обязательных компонентов installer работает в strict bundle-first режиме:
+- релиз должен содержать полный комплект package/image/wheel bundles;
+- скрытый fallback в PyPI, Docker Hub или GitHub binary downloads для install contract считается ошибкой.
 
 После установки:
 

@@ -9,6 +9,7 @@ docker_image_group_names() {
             cat <<'EOF'
 python:3.12-slim
 teddysun/xray:latest
+ghcr.io/sagernet/sing-box:latest
 tecnativa/docker-socket-proxy:latest
 nginx:stable-alpine
 EOF
@@ -31,6 +32,7 @@ cloudflare/cloudflared:2024.5.0
 prom/node-exporter:v1.7.0
 networkstatic/iperf3:latest
 tobyxdd/hysteria:v2.6.1
+ghcr.io/sagernet/sing-box:latest
 EOF
             ;;
         all)

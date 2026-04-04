@@ -24,6 +24,7 @@ fi
 
 set -uo pipefail
 export DEBIAN_FRONTEND=noninteractive
+export VPN_STRICT_BUNDLE=1
 
 REPO_OWNER="Cyrillicspb"
 REPO_NAME="vpn-infra"
@@ -81,6 +82,17 @@ release_tag_name() {
         | grep -o '"tag_name": *"[^"]*"' \
         | sed -E 's/^"tag_name": *"([^"]*)"$/\1/' \
         | head -1 || true
+}
+
+require_release_asset_url() {
+    local release_json="$1" asset_name="$2"
+    local url
+    url="$(release_asset_url "$release_json" "$asset_name")"
+    [[ -n "$url" ]] || {
+        err "В релизе отсутствует обязательный asset: ${asset_name}"
+        exit 1
+    }
+    printf '%s' "$url"
 }
 
 download_with_progress() {
@@ -174,31 +186,54 @@ fi
 
 chmod +x "${OPT_VPN}/setup.sh" "${OPT_VPN}/install-home.sh" \
     "${OPT_VPN}/scripts/docker-load-cache.sh" "${OPT_VPN}/dev/save-docker-images.sh" \
-    "${OPT_VPN}/scripts/build-system-package-bundles.sh" "${OPT_VPN}/dev/save-system-packages.sh" 2>/dev/null || true
+    "${OPT_VPN}/scripts/build-system-package-bundles.sh" "${OPT_VPN}/dev/save-system-packages.sh" \
+    "${OPT_VPN}/scripts/build-python-wheel-bundles.sh" "${OPT_VPN}/scripts/build-release-assets-manifest.sh" 2>/dev/null || true
 
 _install_version="$(read_install_version "${OPT_VPN}/version" || true)"
 if [[ -n "${_install_version}" ]]; then
     info "Устанавливаемая версия: v${_install_version}"
 fi
 
-# ── 3. TUI wheels из GitHub Releases ──────────────────────────────────────────
-_installer_wheels_dir="${OPT_VPN}/installers/gui/wheels"
-if ! ls "${_installer_wheels_dir}"/*.whl >/dev/null 2>&1; then
-    _wheels_url="$(release_asset_url "$_release_json" "installer-gui-wheels.tar.gz")"
-    if [[ -n "$_wheels_url" ]]; then
-        info "Скачиваем installer-gui-wheels.tar.gz..."
-        mkdir -p "$_installer_wheels_dir"
-        if download_with_progress "$_wheels_url" /tmp/installer-gui-wheels.tar.gz installer-gui-wheels.tar.gz; then
-            tar xzf /tmp/installer-gui-wheels.tar.gz -C "$_installer_wheels_dir" \
-                --no-same-permissions --no-same-owner --overwrite 2>/dev/null || true
-            rm -f /tmp/installer-gui-wheels.tar.gz
-            ok "TUI wheels скачаны"
-        else
-            warn "Не удалось скачать TUI wheel bundle"
-        fi
-    else
-        warn "installer-gui-wheels.tar.gz не найден в релизе"
-    fi
+# ── 2.5. Проверка обязательных release assets ────────────────────────────────
+if [[ -f "${OPT_VPN}/scripts/release-bundle-assets.sh" ]]; then
+    # shellcheck source=scripts/release-bundle-assets.sh
+    source "${OPT_VPN}/scripts/release-bundle-assets.sh"
+    info "Проверяем обязательные release assets..."
+    while IFS= read -r _asset; do
+        [[ -n "$_asset" ]] || continue
+        require_release_asset_url "$_release_json" "$_asset" >/dev/null
+    done < <(release_bundle_asset_names)
+    ok "Все обязательные release assets найдены"
+fi
+
+# ── 3. Python wheel bundles из GitHub Releases ───────────────────────────────
+if [[ -f "${OPT_VPN}/scripts/python-wheel-groups.sh" ]]; then
+    # shellcheck source=scripts/python-wheel-groups.sh
+    source "${OPT_VPN}/scripts/python-wheel-groups.sh"
+    info "Скачиваем python wheel bundles..."
+    _wheel_manifest_url="$(require_release_asset_url "$_release_json" "python-wheel-bundles-manifest.txt")"
+    download_with_progress "$_wheel_manifest_url" /tmp/python-wheel-bundles-manifest.txt python-wheel-bundles-manifest.txt
+    cp /tmp/python-wheel-bundles-manifest.txt "${OPT_VPN}/python-wheel-bundles-manifest.txt"
+
+    while IFS= read -r _group; do
+        [[ -n "$_group" ]] || continue
+        _asset="$(python_wheel_bundle_asset_name "$_group")"
+        _wheel_url="$(require_release_asset_url "$_release_json" "$_asset")"
+        case "$_group" in
+            installer-gui) _target_dir="${OPT_VPN}/installers/gui/wheels" ;;
+            watchdog) _target_dir="${OPT_VPN}/home/watchdog/wheels" ;;
+            telegram-bot) _target_dir="${OPT_VPN}/home/telegram-bot/wheels" ;;
+            *) err "Неизвестная wheel group: ${_group}"; exit 1 ;;
+        esac
+        rm -rf "$_target_dir"
+        mkdir -p "$_target_dir"
+        info "Скачиваем ${_asset}..."
+        download_with_progress "$_wheel_url" "/tmp/${_asset}" "${_asset}"
+        tar xzf "/tmp/${_asset}" -C "$_target_dir" \
+            --no-same-permissions --no-same-owner --overwrite 2>/dev/null || true
+        rm -f "/tmp/${_asset}"
+        ok "${_asset} скачан и распакован"
+    done < <(python_wheel_bundle_groups)
 fi
 
 # ── 3.5. System package bundles из GitHub Releases ───────────────────────────
@@ -213,9 +248,11 @@ if [[ -f "${OPT_VPN}/scripts/system-package-groups.sh" ]]; then
     )
     info "Скачиваем system package bundles..."
     mkdir -p "$_system_pkg_dir"
+    _system_manifest_url="$(require_release_asset_url "$_release_json" "system-packages-manifest.txt")"
+    download_with_progress "$_system_manifest_url" /tmp/system-packages-manifest.txt system-packages-manifest.txt
+    cp /tmp/system-packages-manifest.txt "${OPT_VPN}/system-packages-manifest.txt"
     for _asset in "${_system_assets[@]}"; do
-        _pkg_url="$(release_asset_url "$_release_json" "$_asset")"
-        [[ -n "$_pkg_url" ]] || { err "${_asset} не найден в релизе"; exit 1; }
+        _pkg_url="$(require_release_asset_url "$_release_json" "$_asset")"
         case "$_asset" in
             system-packages-home-core.tar.gz) _extract_dir="home-core" ;;
             system-packages-home-docker.tar.gz) _extract_dir="home-docker" ;;
@@ -262,6 +299,9 @@ else
 
     info "Поиск архивов Docker-образов в GitHub Releases..."
     mkdir -p "$DOCKER_IMAGES_DIR"
+    _docker_manifest_url="$(require_release_asset_url "$_release_json" "docker-bundles-manifest.txt")"
+    download_with_progress "$_docker_manifest_url" /tmp/docker-bundles-manifest.txt docker-bundles-manifest.txt
+    cp /tmp/docker-bundles-manifest.txt "${OPT_VPN}/docker-bundles-manifest.txt"
     _downloaded=0
     _missing_required=()
 
@@ -327,7 +367,7 @@ echo ""
 info "Запускаем установщик setup.sh..."
 echo ""
 if [[ -r /dev/tty && -w /dev/tty ]]; then
-    exec </dev/tty >/dev/tty 2>/dev/tty env VPN_COMPACT_OUTPUT=1 VPN_INSTALL_VERSION="${_install_version:-}" bash "${OPT_VPN}/setup.sh"
+    exec </dev/tty >/dev/tty 2>/dev/tty env VPN_COMPACT_OUTPUT=1 VPN_INSTALL_VERSION="${_install_version:-}" VPN_STRICT_BUNDLE=1 bash "${OPT_VPN}/setup.sh"
 else
-    exec env VPN_COMPACT_OUTPUT=1 VPN_INSTALL_VERSION="${_install_version:-}" bash "${OPT_VPN}/setup.sh"
+    exec env VPN_COMPACT_OUTPUT=1 VPN_INSTALL_VERSION="${_install_version:-}" VPN_STRICT_BUNDLE=1 bash "${OPT_VPN}/setup.sh"
 fi

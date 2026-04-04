@@ -191,6 +191,48 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  sing-box-tuic-client:
+    image: ghcr.io/sagernet/sing-box:latest
+    container_name: sing-box-tuic-client
+    restart: always
+    profiles: ["extra-stacks"]
+    command: ["run", "-c", "/etc/sing-box/config.json"]
+    volumes:
+      - ./sing-box/tuic-client.json:/etc/sing-box/config.json:ro
+    network_mode: host
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z localhost 1085 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  sing-box-trojan-client:
+    image: ghcr.io/sagernet/sing-box:latest
+    container_name: sing-box-trojan-client
+    restart: always
+    profiles: ["extra-stacks"]
+    command: ["run", "-c", "/etc/sing-box/config.json"]
+    volumes:
+      - ./sing-box/trojan-client.json:/etc/sing-box/config.json:ro
+    network_mode: host
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z localhost 1086 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   # ── Prometheus — сбор метрик ─────────────────────────────────────────────────
   # Scrape: home node-exporter (host.docker.internal:9100), VPS (10.177.2.2:9100),
   #         watchdog (host.docker.internal:8080), alertmanager (alertmanager:9093)

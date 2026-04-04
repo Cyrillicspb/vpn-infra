@@ -1,0 +1,7 @@
+# TUIC client config
+# Управляется через sing-box-tuic-client Docker контейнер
+
+stack: tuic
+socks_port: 1085
+tun_interface: tun-tuic
+container: sing-box-tuic-client

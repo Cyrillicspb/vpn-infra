@@ -1,8 +1,14 @@
 #!/bin/bash
 # SSH Tier-2 tunnel: tun0, 10.177.2.1 (home) <-> 10.177.2.2 (VPS)
-# VPS_IP и VPS_SSH_PORT берутся из EnvironmentFile=/opt/vpn/.env
+# По умолчанию использует /opt/vpn/.env, но при наличии
+# /run/vpn-active-backend.env переключается на текущий active backend.
 
 set -euo pipefail
+
+if [[ -f /run/vpn-active-backend.env ]]; then
+    # shellcheck disable=SC1091
+    source /run/vpn-active-backend.env
+fi
 
 # Фоновый монитор: назначает IP на локальный tun0 при каждом появлении.
 (while true; do

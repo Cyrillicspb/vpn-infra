@@ -118,6 +118,11 @@ if [[ -f /opt/vpn/scripts/docker-load-cache.sh ]]; then
     fi
 fi
 
+if [[ "${VPN_STRICT_BUNDLE:-0}" == "1" ]] && [[ ! -d /opt/vpn/docker-images ]]; then
+    log "Strict bundle mode: /opt/vpn/docker-images отсутствует, pull monitoring из сети запрещён"
+    exit 1
+fi
+
 # ── 3.5. Повторная сборка telegram-bot после поднятия VPN ───────────────────
 cd /opt/vpn
 
@@ -169,7 +174,14 @@ MONITORING_IMAGES=(
 _failed=0
 for img in "${MONITORING_IMAGES[@]}"; do
     log "Pull: $img ..."
-    if timeout 120 docker pull "$img" >> "$LOG" 2>&1; then
+    if [[ "${VPN_STRICT_BUNDLE:-0}" == "1" ]]; then
+        if docker image inspect "$img" >/dev/null 2>&1; then
+            log "  OK: $img уже загружен локально"
+        else
+            log "  WARN: $img отсутствует в локальном cache при strict bundle mode"
+            ((_failed++)) || true
+        fi
+    elif timeout 120 docker pull "$img" >> "$LOG" 2>&1; then
         log "  OK: $img"
     else
         log "  WARN: $img не скачался"

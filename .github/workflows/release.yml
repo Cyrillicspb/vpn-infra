@@ -25,6 +25,27 @@ jobs:
         run: |
           git rev-parse --verify "refs/tags/${{ inputs.tag }}"
 
+      - name: Set up Python for wheel download
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Download bundled binaries
+        run: |
+          set -euo pipefail
+          mkdir -p tools
+          curl -fsSL "https://github.com/apernet/hysteria/releases/download/app%2Fv2.7.1/hysteria-linux-amd64" -o tools/hysteria2-linux-amd64
+          curl -fsSL "https://github.com/apernet/hysteria/releases/download/app%2Fv2.7.1/hysteria-linux-arm64" -o tools/hysteria2-linux-arm64
+          chmod +x tools/hysteria2-linux-amd64 tools/hysteria2-linux-arm64
+          mkdir -p /tmp/t2s-amd64 /tmp/t2s-arm64
+          curl -fsSL "https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-linux-amd64.zip" -o /tmp/tun2socks-amd64.zip
+          curl -fsSL "https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-linux-arm64.zip" -o /tmp/tun2socks-arm64.zip
+          unzip -qo /tmp/tun2socks-amd64.zip -d /tmp/t2s-amd64/
+          unzip -qo /tmp/tun2socks-arm64.zip -d /tmp/t2s-arm64/
+          cp "$(find /tmp/t2s-amd64/ -maxdepth 1 -type f | head -1)" tools/tun2socks-linux-amd64
+          cp "$(find /tmp/t2s-arm64/ -maxdepth 1 -type f | head -1)" tools/tun2socks-linux-arm64
+          chmod +x tools/tun2socks-linux-amd64 tools/tun2socks-linux-arm64
+
       - name: Build repo archive
         run: |
           tar -czf /tmp/vpn-infra.tar.gz \
@@ -73,6 +94,17 @@ jobs:
             -r installers/gui/requirements.txt
           tar -czf installer-gui-wheels.tar.gz -C /tmp/installer-gui-wheels .
 
+      - name: Build Python wheel bundles
+        run: |
+          set -euo pipefail
+          bash scripts/build-python-wheel-bundles.sh \
+            --manifest-out python-wheel-bundles-manifest.txt
+
+      - name: Build release assets manifest
+        run: |
+          set -euo pipefail
+          bash scripts/build-release-assets-manifest.sh release-assets-manifest.txt
+
       - name: Build Docker image bundles
         run: |
           set -euo pipefail
@@ -97,8 +129,12 @@ jobs:
 
           gh release upload "${{ inputs.tag }}" \
             --clobber \
+            release-assets-manifest.txt \
             installer-gui-wheels.tar.gz \
             installer-gui-wheels-manifest.txt \
+            watchdog-wheels.tar.gz \
+            telegram-bot-wheels.tar.gz \
+            python-wheel-bundles-manifest.txt \
             vpn-infra.tar.gz \
             docker-bundles-manifest.txt \
             system-packages-manifest.txt \

@@ -13,8 +13,19 @@ STEP=0
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _GITHUB_RAW="https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master"
 
+strict_bundle_bootstrap_enabled() {
+    case "${VPN_STRICT_BUNDLE:-0}" in
+        1|true|TRUE|yes|YES|y|Y) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Если common.sh отсутствует рядом со скриптом — скачиваем с GitHub
 if [[ ! -f "$REPO_DIR/common.sh" ]]; then
+    if strict_bundle_bootstrap_enabled; then
+        echo "ERROR: strict bundle mode: отсутствует обязательный локальный файл $REPO_DIR/common.sh" >&2
+        exit 1
+    fi
     echo "→ Загрузка common.sh с GitHub..."
     curl -fsSL "$_GITHUB_RAW/common.sh" -o "$REPO_DIR/common.sh" \
         || { echo "ERROR: не удалось скачать common.sh" >&2; exit 1; }
@@ -31,17 +42,21 @@ if [[ -z "${VPN_NONINTERACTIVE:-}" ]] && [[ "${1:-}" != "--from-export" ]]; then
     elif [[ -f "/opt/vpn/installers/gui/installer.py" ]]; then
         _TUI="/opt/vpn/installers/gui/installer.py"
     else
-        # Нет репозитория рядом — скачать в /opt/vpn и перезапустить оттуда
-        echo "→ Загрузка репозитория в /opt/vpn..."
-        mkdir -p /opt/vpn
-        if curl -fsSL --max-time 120 -L \
-            "https://github.com/Cyrillicspb/vpn-infra/archive/refs/heads/master.tar.gz" \
-            -o /tmp/vpn-infra.tar.gz 2>/dev/null; then
-            tar -xzf /tmp/vpn-infra.tar.gz -C /opt/vpn \
-                --no-same-permissions --no-same-owner --overwrite --strip-components=1 2>/dev/null
-            rm -f /tmp/vpn-infra.tar.gz
-            [[ -f "/opt/vpn/installers/gui/installer.py" ]] && \
-                _TUI="/opt/vpn/installers/gui/installer.py"
+        if strict_bundle_mode_enabled; then
+            echo "[WARN] strict bundle mode: installer GUI отсутствует локально — запускаем консольный установщик" >&2
+        else
+            # Нет репозитория рядом — скачать в /opt/vpn и перезапустить оттуда
+            echo "→ Загрузка репозитория в /opt/vpn..."
+            mkdir -p /opt/vpn
+            if curl -fsSL --max-time 120 -L \
+                "https://github.com/Cyrillicspb/vpn-infra/archive/refs/heads/master.tar.gz" \
+                -o /tmp/vpn-infra.tar.gz 2>/dev/null; then
+                tar -xzf /tmp/vpn-infra.tar.gz -C /opt/vpn \
+                    --no-same-permissions --no-same-owner --overwrite --strip-components=1 2>/dev/null
+                rm -f /tmp/vpn-infra.tar.gz
+                [[ -f "/opt/vpn/installers/gui/installer.py" ]] && \
+                    _TUI="/opt/vpn/installers/gui/installer.py"
+            fi
         fi
     fi
 
@@ -141,6 +156,8 @@ ensure_wireguard_tools() {
     if has_bundled_package_group "home-core"; then
         install_bundled_package_group "Повторная установка home-core bundle" "home-core" \
             || log_warn "Повторная установка home-core bundle завершилась с ошибкой"
+    elif strict_bundle_mode_enabled; then
+        log_warn "Strict bundle mode: home-core bundle отсутствует, восстановление wg из сети запрещено"
     else
         apt_quiet "Обновление списка пакетов" update -qq \
             || log_warn "apt update завершился с ошибкой при восстановлении wg"
@@ -273,6 +290,8 @@ phase0() {
         if has_bundled_package_group "home-core"; then
             install_bundled_package_group "Установка системных пакетов из bundle" "home-core" \
                 || die "Не удалось установить home-core bundle. Повторите загрузку system-packages и запустите снова."
+        elif strict_bundle_mode_enabled; then
+            die "Strict bundle mode: home-core bundle отсутствует на раннем bootstrap шаге"
         else
             apt_quiet "Обновление списка пакетов" update -qq \
                 || die "Не удалось обновить apt index на раннем bootstrap шаге."
@@ -1413,6 +1432,18 @@ PYEOF
 
     [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
 
+    env_set "TUIC_SERVER" "${TUIC_SERVER:-${VPS_IP:-}}"
+    env_set "TUIC_SERVER_NAME" "${TUIC_SERVER_NAME:-${TUIC_SERVER:-${VPS_IP:-}}}"
+    env_set "TUIC_PORT" "${TUIC_PORT:-8448}"
+    env_set "TUIC_UUID" "${TUIC_UUID:-$(python3 -c "import uuid; print(uuid.uuid4())")}"
+    env_set "TUIC_PASSWORD" "${TUIC_PASSWORD:-$(openssl rand -hex 16)}"
+    env_set "TUIC_SOCKS_PORT" "${TUIC_SOCKS_PORT:-1085}"
+    env_set "TROJAN_SERVER" "${TROJAN_SERVER:-${VPS_IP:-}}"
+    env_set "TROJAN_SERVER_NAME" "${TROJAN_SERVER_NAME:-${TROJAN_SERVER:-${VPS_IP:-}}}"
+    env_set "TROJAN_PORT" "${TROJAN_PORT:-8444}"
+    env_set "TROJAN_PASSWORD" "${TROJAN_PASSWORD:-$(openssl rand -hex 24)}"
+    env_set "TROJAN_SOCKS_PORT" "${TROJAN_SOCKS_PORT:-1086}"
+
     # Шаг 47 — Генерация конфигов Xray-клиента
     if is_done "step47_xray_client_configs"; then
         step_skip "step47_xray_client_configs"
@@ -1570,6 +1601,11 @@ CDNEOF
             fi
         fi
 
+        mkdir -p /opt/vpn/sing-box
+        envsubst < /opt/vpn/home/sing-box/tuic-client.json > /opt/vpn/sing-box/tuic-client.json
+        envsubst < /opt/vpn/home/sing-box/trojan-client.json > /opt/vpn/sing-box/trojan-client.json
+        log_ok "Конфиги sing-box fallback-стеков созданы: /opt/vpn/sing-box/*.json"
+
         step_done "step47_xray_client_configs"
     fi
 
@@ -1659,8 +1695,10 @@ EOF
         if command -v docker &>/dev/null && [[ -f /opt/vpn/docker-compose.yml ]]; then
             log_info "Запуск Docker-контейнеров..."
             docker compose -f /opt/vpn/docker-compose.yml up -d 2>&1 || true
+            docker compose -f /opt/vpn/docker-compose.yml --profile extra-stacks up -d \
+                sing-box-tuic-client sing-box-trojan-client 2>/dev/null || true
             sleep 5
-            for ct in telegram-bot xray-client-xhttp xray-client-vision; do
+            for ct in telegram-bot xray-client-xhttp xray-client-vision sing-box-tuic-client sing-box-trojan-client; do
                 STATUS=$(docker inspect --format='{{.State.Status}}' "$ct" 2>/dev/null || echo "not_found")
                 if [[ "$STATUS" == "running" ]]; then
                     log_ok "  ${ct}: запущен"

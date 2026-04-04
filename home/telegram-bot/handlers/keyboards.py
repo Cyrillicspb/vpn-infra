@@ -69,6 +69,9 @@ def admin_main_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📊 Мониторинг",   callback_data="adm:monitor"),
             InlineKeyboardButton(text="👤 Меню пользователя", callback_data="adm:user_menu"),
         ],
+        [
+            InlineKeyboardButton(text="🏘 Gateway", callback_data="adm:gateway"),
+        ],
     ])
 
 
@@ -85,7 +88,7 @@ def admin_tunnel_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📋 Журнал ротаций",  callback_data="adm:rotation_log"),
         ],
         [
-            InlineKeyboardButton(text="🖥️ VPS",             callback_data="adm:vps"),
+            InlineKeyboardButton(text="🖥️ Backends",        callback_data="adm:vps"),
             InlineKeyboardButton(text="🧪 DPI experimental", callback_data="adm:dpi"),
         ],
         [
@@ -197,8 +200,10 @@ def admin_manage_menu() -> InlineKeyboardMarkup:
 
 def admin_switch_menu(active_stack: str = "") -> InlineKeyboardMarkup:
     stacks = [
+        ("🔐 Trojan", "trojan"),
         ("☁️ Cloudflare CDN", "cloudflare-cdn"),
         ("🛡️ REALITY + Vision", "vless-reality-vision"),
+        ("🚀 TUIC", "tuic"),
         ("🧪 REALITY + XHTTP (exp)", "reality-xhttp"),
         ("⚡ Hysteria2",         "hysteria2"),
     ]
@@ -242,6 +247,8 @@ def admin_logs_menu(
         ("watchdog",      "watchdog"),
         ("dnsmasq",       "dnsmasq"),
         ("hysteria2",     "hysteria2"),
+        ("sing-box-tuic", "sing-box-tuic-client"),
+        ("sing-box-trojan", "sing-box-trojan-client"),
         ("xray-client-vision", "xray-client-vision"),
         ("xray-client-xhttp", "xray-client-xhttp"),
         ("cloudflared",   "cloudflared"),
@@ -434,17 +441,56 @@ def admin_client_actions_kb(chat_id: str, is_disabled: bool) -> InlineKeyboardMa
 def admin_vps_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="📄 Список VPS",  callback_data="adm:vps_list"),
-            InlineKeyboardButton(text="➕ Добавить VPS", callback_data="adm:vps_add"),
+            InlineKeyboardButton(text="📄 Backend pool", callback_data="adm:vps_list"),
+            InlineKeyboardButton(text="➕ Добавить backend", callback_data="adm:vps_add"),
+        ],
+        [
+            InlineKeyboardButton(text="⚖️ Balancer", callback_data="adm:balancer"),
+            InlineKeyboardButton(text="🧠 Auto-select", callback_data="adm:backend_auto"),
+        ],
+        [
+            InlineKeyboardButton(text="🧭 Client backend prefs", callback_data="adm:backend_prefs"),
         ],
         _nav_row("adm:tunnel_menu"),
+    ])
+
+
+def admin_backend_prefs_kb(prefs: list[dict] | None = None) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="➕ Add client pref", callback_data="adm:backend_pref_add")],
+    ]
+    for pref in (prefs or [])[:12]:
+        rows.append([
+            InlineKeyboardButton(
+                text=f"❌ #{pref.get('id')} {pref.get('chat_id')} {pref.get('match_type')}={pref.get('match_value')}",
+                callback_data=f"adm:backend_pref_rm:{pref.get('id')}",
+            )
+        ])
+    rows.append(_nav_row("adm:vps"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_gateway_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🖧 LAN clients", callback_data="adm:lan_clients")],
+        [InlineKeyboardButton(text="🧭 LAN backend prefs", callback_data="adm:lan_prefs")],
+        _nav_row("adm:menu"),
     ])
 
 
 def admin_vps_list_kb(vps_list: list[dict], active_idx: int) -> InlineKeyboardMarkup:
     rows = []
     for i, v in enumerate(vps_list):
-        icon = "✅" if i == active_idx else "⚪"
+        if v.get("drain"):
+            icon = "🟡"
+        elif v.get("status") == "healthy":
+            icon = "🟢"
+        elif v.get("status") == "degraded":
+            icon = "🟠"
+        elif v.get("status") == "down":
+            icon = "🔴"
+        else:
+            icon = "✅" if i == active_idx else "⚪"
         rows.append([InlineKeyboardButton(
             text=f"{icon} {v['ip']}:{v.get('ssh_port', 22)}",
             callback_data=f"adm:vps_detail:{v['ip']}",
@@ -453,12 +499,16 @@ def admin_vps_list_kb(vps_list: list[dict], active_idx: int) -> InlineKeyboardMa
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_vps_actions_kb(ip: str, ssh_port: int = 22) -> InlineKeyboardMarkup:
+def admin_vps_actions_kb(ip: str, ssh_port: int = 22, backend_id: str = "", active: bool = False, drain: bool = False) -> InlineKeyboardMarkup:
     """Действия с конкретным VPS."""
+    switch_label = "✅ Активный backend" if active else "🎯 Сделать активным"
+    drain_label = "🟢 Снять drain" if drain else "🟡 Drain"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔍 Тест соединения",     callback_data=f"adm:vps_test:{ip}")],
+        [InlineKeyboardButton(text=switch_label,              callback_data=f"adm:vps_set_active:{backend_id or ip}")],
+        [InlineKeyboardButton(text=drain_label,               callback_data=f"adm:vps_drain_toggle:{backend_id or ip}")],
         [InlineKeyboardButton(text="🔄 Мигрировать на этот", callback_data=f"adm:vps_migrate:{ip}")],
-        [InlineKeyboardButton(text="❌ Удалить VPS",          callback_data=f"adm:vps_rm:{ip}")],
+        [InlineKeyboardButton(text="❌ Удалить backend",      callback_data=f"adm:vps_rm:{ip}")],
         _nav_row("adm:vps_list"),
     ])
 

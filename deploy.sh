@@ -102,6 +102,30 @@ load_env() {
     export XRAY_XHTTP_PUBLIC_KEY="${XRAY_XHTTP_PUBLIC_KEY:-${XRAY_GRPC_PUBLIC_KEY:-}}"
     export XRAY_XHTTP_SHORT_ID="${XRAY_XHTTP_SHORT_ID:-${XRAY_GRPC_SHORT_ID:-}}"
     export XRAY_XHTTP_SOCKS_PORT="${XRAY_XHTTP_SOCKS_PORT:-${XRAY_GRPC_SOCKS_PORT:-1081}}"
+
+    persist_env_default "TUIC_SERVER" "${TUIC_SERVER:-${VPS_IP:-}}"
+    persist_env_default "TUIC_SERVER_NAME" "${TUIC_SERVER_NAME:-${TUIC_SERVER:-${VPS_IP:-}}}"
+    persist_env_default "TUIC_PORT" "${TUIC_PORT:-8448}"
+    persist_env_default "TUIC_UUID" "${TUIC_UUID:-$(python3 -c 'import uuid; print(uuid.uuid4())')}"
+    persist_env_default "TUIC_PASSWORD" "${TUIC_PASSWORD:-$(openssl rand -hex 16)}"
+    persist_env_default "TUIC_SOCKS_PORT" "${TUIC_SOCKS_PORT:-1085}"
+    persist_env_default "TROJAN_SERVER" "${TROJAN_SERVER:-${VPS_IP:-}}"
+    persist_env_default "TROJAN_SERVER_NAME" "${TROJAN_SERVER_NAME:-${TROJAN_SERVER:-${VPS_IP:-}}}"
+    persist_env_default "TROJAN_PORT" "${TROJAN_PORT:-8444}"
+    persist_env_default "TROJAN_PASSWORD" "${TROJAN_PASSWORD:-$(openssl rand -hex 24)}"
+    persist_env_default "TROJAN_SOCKS_PORT" "${TROJAN_SOCKS_PORT:-1086}"
+
+    export TUIC_SERVER="${TUIC_SERVER:-${VPS_IP:-}}"
+    export TUIC_SERVER_NAME="${TUIC_SERVER_NAME:-${TUIC_SERVER:-${VPS_IP:-}}}"
+    export TUIC_PORT="${TUIC_PORT:-8448}"
+    export TUIC_UUID="${TUIC_UUID:-}"
+    export TUIC_PASSWORD="${TUIC_PASSWORD:-}"
+    export TUIC_SOCKS_PORT="${TUIC_SOCKS_PORT:-1085}"
+    export TROJAN_SERVER="${TROJAN_SERVER:-${VPS_IP:-}}"
+    export TROJAN_SERVER_NAME="${TROJAN_SERVER_NAME:-${TROJAN_SERVER:-${VPS_IP:-}}}"
+    export TROJAN_PORT="${TROJAN_PORT:-8444}"
+    export TROJAN_PASSWORD="${TROJAN_PASSWORD:-}"
+    export TROJAN_SOCKS_PORT="${TROJAN_SOCKS_PORT:-1086}"
 }
 
 die() {
@@ -778,6 +802,7 @@ apply_system_configs() {
 
 render_xray_templates() {
     mkdir -p "$REPO_DIR/xray"
+    mkdir -p "$REPO_DIR/sing-box"
     export XRAY_VISION_UUID="${XRAY_VISION_UUID:-${XRAY_XHTTP_UUID:-}}"
     export XRAY_VISION_PUBLIC_KEY="${XRAY_VISION_PUBLIC_KEY:-${XRAY_XHTTP_PUBLIC_KEY:-}}"
     export XRAY_VISION_SHORT_ID="${XRAY_VISION_SHORT_ID:-${XRAY_XHTTP_SHORT_ID:-}}"
@@ -789,6 +814,14 @@ render_xray_templates() {
         unresolved="$(echo "$result" | grep -oE '\$\{[^}]+\}' | sort -u | tr '\n' ' ' || true)"
         [[ -z "$unresolved" ]] || die "Шаблон $name содержит незамещённые переменные: $unresolved"
         printf "%s" "$result" > "$REPO_DIR/xray/$name"
+    done
+    for tmpl in "$REPO_DIR/home/sing-box/"*.json; do
+        [[ -f "$tmpl" ]] || continue
+        name="$(basename "$tmpl")"
+        result="$(envsubst < "$tmpl")"
+        unresolved="$(echo "$result" | grep -oE '\$\{[^}]+\}' | sort -u | tr '\n' ' ' || true)"
+        [[ -z "$unresolved" ]] || die "Шаблон $name содержит незамещённые переменные: $unresolved"
+        printf "%s" "$result" > "$REPO_DIR/sing-box/$name"
     done
     rm -f "$REPO_DIR/xray/config-reality.json" "$REPO_DIR/xray/config-grpc.json" 2>/dev/null || true
 
@@ -827,6 +860,7 @@ sync_home_runtime() {
     rsync -a --delete "$REPO_DIR/home/grafana/" "$REPO_DIR/grafana/"
     rsync -a --delete "$REPO_DIR/home/alertmanager/" "$REPO_DIR/alertmanager/"
     rsync -a --delete "$REPO_DIR/home/nginx/" "$REPO_DIR/nginx/"
+    rsync -a --delete "$REPO_DIR/home/sing-box/" "$REPO_DIR/sing-box/"
     rsync -a "$REPO_DIR/home/watchdog/watchdog.py" "$REPO_DIR/watchdog/watchdog.py"
     rsync -a --delete "$REPO_DIR/home/watchdog/plugins/" "$REPO_DIR/watchdog/plugins/"
     rsync -a --delete "$REPO_DIR/home/scripts/" "$REPO_DIR/scripts/"
@@ -860,8 +894,10 @@ sync_home_runtime() {
         (cd "$REPO_DIR" && docker compose build $bot_no_cache --build-arg GIT_HASH="$bot_git_hash" telegram-bot)
     fi
     if $rebuild_xray; then
-        (cd "$REPO_DIR" && docker compose up -d --force-recreate xray-client-xhttp xray-client-cdn xray-client-vision)
+        (cd "$REPO_DIR" && docker compose up -d --force-recreate xray-client-xhttp xray-client-cdn xray-client-vision sing-box-tuic-client sing-box-trojan-client)
     fi
+    (cd "$REPO_DIR" && docker compose --profile extra-stacks pull sing-box-tuic-client sing-box-trojan-client)
+    (cd "$REPO_DIR" && docker compose --profile extra-stacks up -d sing-box-tuic-client sing-box-trojan-client)
 
     (cd "$REPO_DIR" && docker compose up -d --remove-orphans)
     systemctl restart watchdog
@@ -888,9 +924,10 @@ deploy_vps() {
     local vps_target="sysadmin@${VPS_IP}"
 
     if vps_any_changed || [[ "${FORCE_DEPLOY:-false}" == "true" ]]; then
-        vps_exec "mkdir -p /opt/vpn/nginx /opt/vpn/scripts /opt/vpn/prometheus /opt/vpn/alertmanager /opt/vpn/grafana/provisioning /opt/vpn/.deploy-state" >/dev/null
+        vps_exec "mkdir -p /opt/vpn/nginx /opt/vpn/scripts /opt/vpn/prometheus /opt/vpn/alertmanager /opt/vpn/grafana/provisioning /opt/vpn/.deploy-state /opt/vpn/sing-box" >/dev/null
         rsync -e "$rsync_ssh" -a "$REPO_DIR/vps/docker-compose.yml" "${vps_target}:/opt/vpn/docker-compose.yml"
         rsync -e "$rsync_ssh" -a --delete --exclude="ssl/" --exclude="mtls/" "$REPO_DIR/vps/nginx/" "${vps_target}:/opt/vpn/nginx/"
+        rsync -e "$rsync_ssh" -a --delete "$REPO_DIR/vps/sing-box/" "${vps_target}:/opt/vpn/sing-box/"
         rsync -e "$rsync_ssh" -a --delete "$REPO_DIR/vps/scripts/" "${vps_target}:/opt/vpn/scripts/"
         rsync -e "$rsync_ssh" -a --delete "$REPO_DIR/vps/prometheus/" "${vps_target}:/opt/vpn/prometheus/"
         rsync -e "$rsync_ssh" -a --delete "$REPO_DIR/vps/alertmanager/" "${vps_target}:/opt/vpn/alertmanager/"
@@ -898,9 +935,11 @@ deploy_vps() {
     fi
 
     sync_state_to_vps
+    envsubst < "$REPO_DIR/vps/sing-box/tuic-server.json" | vps_copy_stdin_to_file "/opt/vpn/sing-box/tuic-server.json"
+    envsubst < "$REPO_DIR/vps/sing-box/trojan-server.json" | vps_copy_stdin_to_file "/opt/vpn/sing-box/trojan-server.json"
 
     local cmd
-    cmd="sudo -n bash -lc 'set -euo pipefail; cd /opt/vpn; chmod +x /opt/vpn/scripts/*.sh 2>/dev/null || true; bash /opt/vpn/scripts/render-reality-xhttp-config.sh; docker compose pull; docker compose up -d --remove-orphans; mkdir -p \"$REMOTE_STATE_DIR\"'"
+    cmd="sudo -n bash -lc 'set -euo pipefail; cd /opt/vpn; chmod +x /opt/vpn/scripts/*.sh 2>/dev/null || true; bash /opt/vpn/scripts/render-reality-xhttp-config.sh; docker compose pull; docker compose --profile extra-stacks pull trojan-server tuic-server; docker compose up -d --remove-orphans; docker compose --profile extra-stacks up -d trojan-server tuic-server; mkdir -p \"$REMOTE_STATE_DIR\"'"
     vps_exec "$cmd" || die "VPS deploy завершился с ошибкой"
 }
 

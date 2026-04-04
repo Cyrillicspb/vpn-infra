@@ -1,0 +1,37 @@
+{
+  "log": {
+    "level": "warn"
+  },
+  "inbounds": [
+    {
+      "type": "socks",
+      "listen": "127.0.0.1",
+      "listen_port": ${TUIC_SOCKS_PORT},
+      "sniff": true,
+      "tag": "socks-in"
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "tuic",
+      "tag": "tuic-out",
+      "server": "${TUIC_SERVER}",
+      "server_port": ${TUIC_PORT},
+      "uuid": "${TUIC_UUID}",
+      "password": "${TUIC_PASSWORD}",
+      "congestion_control": "bbr",
+      "udp_relay_mode": "native",
+      "zero_rtt_handshake": false,
+      "tls": {
+        "enabled": true,
+        "server_name": "${TUIC_SERVER_NAME}",
+        "insecure": true,
+        "alpn": ["h3"]
+      }
+    }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "final": "tuic-out"
+  }
+}

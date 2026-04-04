@@ -34,6 +34,8 @@ else
     step "Обновление системных пакетов"
     if has_bundled_package_group "home-core"; then
         log_info "Локальный bundle найден — пропускаем apt update/upgrade"
+    elif strict_bundle_mode_enabled; then
+        die "Strict bundle mode: отсутствует обязательный bundle home-core"
     else
         apt_quiet "Обновление списка пакетов" update -qq
         apt_quiet "Установка обновлений системы" upgrade -y -qq
@@ -51,6 +53,8 @@ else
     if has_bundled_package_group "home-core"; then
         install_bundled_package_group "Установка системных пакетов" "home-core" \
             || die "Не удалось установить home-core bundle"
+    elif strict_bundle_mode_enabled; then
+        die "Strict bundle mode: отсутствует обязательный bundle home-core"
     else
         apt_quiet "Установка системных пакетов" install -y -qq \
             curl wget git jq rsync unzip \
@@ -281,6 +285,8 @@ else
         if has_bundled_package_group "home-docker"; then
             install_bundled_package_group "Установка Docker CE" "home-docker" \
                 || die "Не удалось установить home-docker bundle"
+        elif strict_bundle_mode_enabled; then
+            die "Strict bundle mode: отсутствует обязательный bundle home-docker"
         else
             install -m 0755 -d /etc/apt/keyrings
             curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
@@ -396,6 +402,8 @@ AMNEZIA_KEY_EOF
             AWG_INSTALLED=1
             log_ok "AmneziaWG установлен из локального bundle"
         fi
+    elif strict_bundle_mode_enabled; then
+        die "Strict bundle mode: отсутствует обязательный bundle home-awg"
     elif [[ -s /usr/share/keyrings/amnezia-ppa.gpg ]]; then
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/amnezia-ppa.gpg] \
 https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu noble main" \
@@ -431,6 +439,8 @@ else
         HYSTERIA_VERSION="bundled"
         log_info "Использую бандл hysteria2 (${_ARCH})..."
         cp "$_BUNDLED" /usr/local/bin/hysteria
+    elif strict_bundle_mode_enabled; then
+        die "Strict bundle mode: bundled hysteria2 (${_ARCH}) отсутствует в ${_BUNDLED}"
     else
         # Запрашиваем актуальную версию через GitHub API — не зависим от хардкода
         HYSTERIA_VERSION=$(curl -sSfL --max-time 10 \
@@ -469,6 +479,8 @@ else
         TUN2SOCKS_VER="bundled"
         log_info "Использую бандл tun2socks (${_ARCH})..."
         cp "$_BUNDLED" /usr/local/bin/tun2socks
+    elif strict_bundle_mode_enabled; then
+        die "Strict bundle mode: bundled tun2socks (${_ARCH}) отсутствует в ${_BUNDLED}"
     else
         TUN2SOCKS_VER=$(curl -sSfL --max-time 10 \
             https://api.github.com/repos/xjasonlyu/tun2socks/releases/latest \
@@ -519,7 +531,12 @@ else
         log_warn "Запустите шаг 19 вручную после установки Docker."
     else
         log_info "Загрузка образа ${XRAY_IMAGE}..."
-        docker pull "${XRAY_IMAGE}" --quiet 2>/dev/null || true
+        if ! docker image inspect "${XRAY_IMAGE}" >/dev/null 2>&1; then
+            if strict_bundle_mode_enabled; then
+                die "Strict bundle mode: образ ${XRAY_IMAGE} отсутствует локально для генерации REALITY ключей"
+            fi
+            docker pull "${XRAY_IMAGE}" --quiet 2>/dev/null || true
+        fi
 
         if [[ -z "${XRAY_XHTTP_PUBLIC_KEY:-}" ]]; then
             XRAY_GRPC_KEYS=$(docker run --rm "${XRAY_IMAGE}" xray x25519 2>/dev/null) \
@@ -1156,6 +1173,14 @@ PY
             log_info "pip install из локального wheelhouse (${wheel_dir}) ..."
             "$pip" install -q --no-cache-dir --no-index --find-links "$wheel_dir" "$@" && return 0
             log_warn "Локальный wheelhouse неполон — пробуем зеркала"
+        elif strict_bundle_mode_enabled; then
+            log_error "Strict bundle mode: wheelhouse ${wheel_dir} отсутствует или пуст"
+            return 1
+        fi
+
+        if strict_bundle_mode_enabled; then
+            log_error "Strict bundle mode запрещает PyPI fallback для ${wheel_dir}"
+            return 1
         fi
 
         local args=(-q --no-cache-dir --timeout 120 --retries 2 "$@")
@@ -1522,6 +1547,8 @@ else
                 log_warn "Часть локального Docker image cache не загрузилась"
             fi
             _BASE_IMG="python:3.12-slim"  # уже загружен через docker load
+        elif strict_bundle_mode_enabled; then
+            die "Strict bundle mode: локальный Docker image cache отсутствует в ${SAVED_IMAGES_DIR}"
         else
             # ── ФАЗА 1б: fallback — зеркала (VPN ещё не поднят) ─────────────────
             log_info "Локальный кэш образов не найден — пробуем Docker-зеркала..."
@@ -1643,6 +1670,8 @@ EOF
             2>&1 | tee /tmp/docker-up.log
         _UP_EXIT=${PIPESTATUS[0]}
         [[ $_UP_EXIT -ne 0 ]] && die "docker compose up завершился с ошибкой (код $_UP_EXIT)"
+        docker compose --profile extra-stacks pull sing-box-tuic-client sing-box-trojan-client >/dev/null 2>&1 || true
+        docker compose --profile extra-stacks up -d sing-box-tuic-client sing-box-trojan-client >/dev/null 2>&1 || true
 
         set -e; set -o pipefail
 

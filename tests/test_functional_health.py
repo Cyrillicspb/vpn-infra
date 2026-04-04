@@ -99,6 +99,8 @@ SPEC.loader.exec_module(watchdog)
 
 class FunctionalHealthTests(unittest.TestCase):
     def setUp(self) -> None:
+        self._save_patcher = mock.patch.object(watchdog.state, "save", return_value=None)
+        self._save_patcher.start()
         watchdog.state.functional_mode = watchdog.FUNCTIONAL_MODE_STAGED
         watchdog.state.functional_execution_status = watchdog.FUNCTIONAL_EXEC_DISABLED
         watchdog.state.functional_execution_last_error = ""
@@ -111,6 +113,9 @@ class FunctionalHealthTests(unittest.TestCase):
         watchdog.state.responsiveness_summary = {}
         watchdog.state.latency_learning_last_apply_ts = 0.0
         watchdog.state.latency_catalog_alert_last_ts = 0.0
+
+    def tearDown(self) -> None:
+        self._save_patcher.stop()
 
     def test_latency_catalog_status_prefers_runtime_when_present(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -137,6 +142,160 @@ class FunctionalHealthTests(unittest.TestCase):
         self.assertEqual(info["source"], "runtime")
         self.assertEqual(info["service_count"], 1)
         self.assertFalse(info["empty"])
+
+    def test_stack_order_includes_tuic_and_trojan(self) -> None:
+        self.assertIn("tuic", watchdog.STACK_ORDER)
+        self.assertIn("trojan", watchdog.STACK_ORDER)
+        self.assertLess(watchdog.STACK_ORDER.index("trojan"), watchdog.STACK_ORDER.index("hysteria2"))
+
+    def test_backend_pool_is_derived_from_vps_list(self) -> None:
+        watchdog.state.vps_list = [
+            {"ip": "198.51.100.10", "ssh_port": 443, "tunnel_ip": "10.177.2.2"},
+            {"ip": "203.0.113.20", "ssh_port": 22, "tunnel_ip": "10.177.2.6", "drain": True},
+        ]
+        watchdog.state.active_vps_idx = 0
+        watchdog.state.backends = []
+        watchdog.state.backend_assignments = {}
+        watchdog._refresh_backend_pool()
+        self.assertEqual(len(watchdog.state.backends), 2)
+        self.assertEqual(watchdog.state.backends[0]["id"], "backend-198-51-100-10")
+        self.assertTrue(any(item["drain"] for item in watchdog.state.backends))
+
+    def test_backend_assignment_creates_ttl_lease(self) -> None:
+        watchdog.state.vps_list = [{"ip": "198.51.100.10", "ssh_port": 443, "tunnel_ip": "10.177.2.2"}]
+        watchdog.state.active_vps_idx = 0
+        watchdog.state.active_backend_id = ""
+        watchdog.state.backends = []
+        watchdog.state.backend_assignments = {}
+        watchdog.state.balancer_idle_ttl_seconds = 300
+        with mock.patch.object(watchdog.state, "save", return_value=None):
+            assignment = watchdog._ensure_backend_assignment("blocked_default")
+        self.assertIsNotNone(assignment)
+        assert assignment is not None
+        self.assertEqual(assignment["route_class"], "blocked_default")
+        self.assertEqual(assignment["backend_id"], "backend-198-51-100-10")
+        self.assertGreater(assignment["expires_at_ts"], assignment["assigned_at_ts"])
+
+    def test_backend_path_snapshot_reports_hysteria2_desired_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            hysteria_dir = tmp / "etc" / "hysteria"
+            backends_dir = hysteria_dir / "backends"
+            backends_dir.mkdir(parents=True)
+            active_config = hysteria_dir / "config.yaml"
+            candidate_config = backends_dir / "backend-198-51-100-10.yaml"
+            rendered = "server: 198.51.100.10:443\nsocks5:\n  listen: 127.0.0.1:1083\n"
+            active_config.write_text(rendered, encoding="utf-8")
+            candidate_config.write_text(rendered, encoding="utf-8")
+            watchdog.state.backends = [
+                {"id": "backend-198-51-100-10", "ip": "198.51.100.10", "drain": False, "status": "healthy"},
+            ]
+            watchdog.state.active_backend_id = "backend-198-51-100-10"
+            watchdog.state.backend_assignments = {
+                "blocked_default": {
+                    "route_class": "blocked_default",
+                    "backend_id": "backend-198-51-100-10",
+                    "assigned_at_ts": 1.0,
+                    "last_activity_ts": 1.0,
+                    "expires_at_ts": 301.0,
+                }
+            }
+            with mock.patch.object(watchdog, "_hysteria_backend_config_path", side_effect=lambda backend_id: backends_dir / f"{backend_id}.yaml"):
+                with mock.patch.object(watchdog, "_hysteria_active_config_path", return_value=active_config):
+                    rows = watchdog._backend_path_snapshot()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["family"], "hysteria2")
+        self.assertTrue(rows[0]["desired"])
+        self.assertTrue(rows[0]["applied"])
+        self.assertEqual(rows[0]["route_classes"], ["blocked_default"])
+
+    def test_verify_hysteria2_backend_path_accepts_rendered_and_live_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            hysteria_dir = tmp / "etc" / "hysteria"
+            backends_dir = hysteria_dir / "backends"
+            backends_dir.mkdir(parents=True)
+            active_config = hysteria_dir / "config.yaml"
+            candidate_config = backends_dir / "backend-198-51-100-10.yaml"
+            rendered = "server: 198.51.100.10:443\nsocks5:\n  listen: 127.0.0.1:1083\n"
+            active_config.write_text(rendered, encoding="utf-8")
+            candidate_config.write_text(rendered, encoding="utf-8")
+            watchdog.state.backends = [
+                {"id": "backend-198-51-100-10", "ip": "198.51.100.10", "drain": False, "status": "healthy"},
+            ]
+            watchdog.state.active_backend_id = "backend-198-51-100-10"
+
+            async def _fake_run_cmd(cmd, timeout=30):
+                if cmd[:2] == ["systemctl", "is-active"]:
+                    return 0, "active", ""
+                if cmd[:2] == ["nc", "-z"]:
+                    return 0, "", ""
+                if cmd and cmd[0] == "curl":
+                    return 0, "204", ""
+                return 0, "", ""
+
+            with mock.patch.object(watchdog, "_hysteria_backend_config_path", side_effect=lambda backend_id: backends_dir / f"{backend_id}.yaml"):
+                with mock.patch.object(watchdog, "_hysteria_active_config_path", return_value=active_config):
+                    with mock.patch.object(watchdog, "run_cmd", side_effect=_fake_run_cmd):
+                        result = asyncio.run(watchdog._verify_hysteria2_backend_path("backend-198-51-100-10"))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["backend_id"], "backend-198-51-100-10")
+
+    def test_apply_backend_decision_rolls_back_after_failed_verify(self) -> None:
+        watchdog.state.active_backend_id = "backend-old"
+        watchdog.state.backend_assignments = {}
+        watchdog.state.balancer_idle_ttl_seconds = 300
+
+        async def _fake_apply_active_backend(backend_id, reason):
+            watchdog.state.active_backend_id = backend_id
+            return {"backend_id": backend_id, "reason": reason}
+
+        verify_results = [
+            {"ok": False, "reason": "hysteria2_probe_failed", "backend_id": "backend-new"},
+            {"ok": True, "backend_id": "backend-old"},
+        ]
+
+        async def _fake_verify(backend_id):
+            return verify_results.pop(0)
+
+        with mock.patch.object(watchdog, "_apply_active_backend", side_effect=_fake_apply_active_backend):
+            with mock.patch.object(watchdog, "_verify_hysteria2_backend_path", side_effect=_fake_verify):
+                result = asyncio.run(
+                    watchdog._apply_backend_decision(
+                        {"ok": True, "backend_id": "backend-new", "reason": "manual_switch"}
+                    )
+                )
+        self.assertEqual(result["status"], "verification_failed")
+        self.assertEqual(result["rollback"]["status"], "rollback_completed")
+        self.assertEqual(watchdog.state.active_backend_id, "backend-old")
+
+    def test_refresh_backend_pool_tracks_active_backend_id(self) -> None:
+        watchdog.state.vps_list = [{"ip": "198.51.100.10", "ssh_port": 443, "tunnel_ip": "10.177.2.2"}]
+        watchdog.state.active_vps_idx = 0
+        watchdog.state.active_backend_id = ""
+        watchdog.state.backends = []
+        watchdog._refresh_backend_pool()
+        self.assertEqual(watchdog.state.active_backend_id, "backend-198-51-100-10")
+        self.assertEqual((watchdog.state.active_backend or {}).get("ip"), "198.51.100.10")
+
+    def test_active_backend_helpers_prefer_runtime_backend_values(self) -> None:
+        watchdog.state.backends = [
+            {"id": "backend-203-0-113-20", "ip": "203.0.113.20", "tunnel_ip": "10.177.2.6", "ssh_port": 2202}
+        ]
+        watchdog.state.active_backend_id = "backend-203-0-113-20"
+        self.assertEqual(watchdog._active_backend_ip(), "203.0.113.20")
+        self.assertEqual(watchdog._active_backend_tunnel_ip(), "10.177.2.6")
+        self.assertEqual(watchdog._active_backend_ssh_port(), "2202")
+
+    def test_route_class_for_domain_check_prefers_service_assignment(self) -> None:
+        result = {
+            "verdict": "vpn",
+            "latency_service_id": "telegram",
+            "in_blocked_static": True,
+            "in_blocked_dynamic": False,
+            "in_manual_vpn": False,
+        }
+        self.assertEqual(watchdog._route_class_for_domain_check(result), "service:telegram")
 
     def test_latency_catalog_health_warns_on_missing_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

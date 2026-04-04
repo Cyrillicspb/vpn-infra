@@ -1,0 +1,32 @@
+{
+  "log": {
+    "level": "warn"
+  },
+  "inbounds": [
+    {
+      "type": "trojan",
+      "tag": "trojan-in",
+      "listen": "::",
+      "listen_port": ${TROJAN_PORT},
+      "users": [
+        {
+          "name": "home-watchdog",
+          "password": "${TROJAN_PASSWORD}"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "${TROJAN_SERVER_NAME}",
+        "alpn": ["h2", "http/1.1"],
+        "certificate_path": "/etc/sing-box/certs/server.crt",
+        "key_path": "/etc/sing-box/certs/server.key"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ]
+}

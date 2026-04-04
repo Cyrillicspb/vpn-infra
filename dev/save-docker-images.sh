@@ -98,6 +98,13 @@ gh release upload "$LATEST_TAG" docker-bundles-manifest.txt \
     --repo "${REPO_OWNER}/${REPO_NAME}" \
     --clobber
 
+if [[ -f release-assets-manifest.txt ]]; then
+    info "Загружаем release-assets-manifest.txt в релиз ${LATEST_TAG}..."
+    gh release upload "$LATEST_TAG" release-assets-manifest.txt \
+        --repo "${REPO_OWNER}/${REPO_NAME}" \
+        --clobber
+fi
+
 ok "Загружено в https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/tag/${LATEST_TAG}"
 echo ""
 echo "install.sh автоматически скачает образы при следующей установке."

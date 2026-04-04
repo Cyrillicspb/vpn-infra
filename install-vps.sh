@@ -280,6 +280,8 @@ else
         log_info "Локальный bundle для VPS найден — пропускаем apt update/upgrade"
         vps_install_bundled_package_group "Установка системных пакетов на VPS" "vps-core" \
             || die "Не удалось установить vps-core bundle"
+    elif strict_bundle_mode_enabled; then
+        die "Strict bundle mode: отсутствует обязательный bundle vps-core"
     else
         vps_apt_quiet "Обновление списка пакетов на VPS" "update -qq"
         vps_apt_quiet "Установка обновлений системы на VPS" "upgrade -y -qq"
@@ -323,6 +325,8 @@ else
         if has_bundled_package_group "vps-docker"; then
             vps_install_bundled_package_group "Установка Docker CE на VPS" "vps-docker" \
                 || die "Не удалось установить vps-docker bundle"
+        elif strict_bundle_mode_enabled; then
+            die "Strict bundle mode: отсутствует обязательный bundle vps-docker"
         else
             log_info "Установка Docker на VPS через APT + GPG..."
             vps_exec "sudo install -m 0755 -d /etc/apt/keyrings && \
@@ -368,8 +372,8 @@ if is_done "step36_vps_nftables"; then
     step_skip "step36_vps_nftables"
 else
     step "Настройка nftables на VPS (default deny + защита портов)"
-    log_info "Rate limiting: TCP/UDP 443 — 200/сек, burst 500 (защита Xray + Hysteria2)"
-    log_info "Открытые порты: 22, 80, 443, 8022, 8080, 8443 и tier-2 сервисы"
+    log_info "Rate limiting: TCP/UDP 443 и fallback-порты TUIC/Trojan"
+    log_info "Открытые порты: 22, 80, 443, 8022, 8080, 8443, 8444/tcp, 8448/udp и tier-2 сервисы"
 
     if ! vps_exec "dpkg -l nftables 2>/dev/null | grep -q '^ii'" 2>/dev/null; then
         vps_apt_quiet "Установка nftables на VPS" "install -y -qq nftables"
@@ -404,14 +408,14 @@ table inet filter {
         # CDN-стек: Cloudflare Worker → VPS:8080 (VLESS+splithttp, защищён UUID)
         tcp dport 8080 ct state new limit rate 100/second burst 200 packets accept
 
-        # Xray REALITY inbounds (прямое подключение, XTLS-Vision + gRPC)
-        tcp dport { 2083 } ct state new limit rate 200/second burst 500 packets accept
+        # Xray REALITY inbounds и fallback sing-box стеки
+        tcp dport { 2083, 8444 } ct state new limit rate 200/second burst 500 packets accept
 
         # Rate limiting TCP 443 (защита Xray/Nginx от flood)
         tcp dport 443 ct state new limit rate 200/second burst 500 packets accept
 
-        # Rate limiting UDP 443 (защита Hysteria2 от flood)
-        udp dport 443 limit rate 200/second burst 500 packets accept
+        # Rate limiting UDP 443/8448 (защита Hysteria2/TUIC от flood)
+        udp dport { 443, 8448 } limit rate 200/second burst 500 packets accept
 
         # ICMP
         icmp type { echo-request, echo-reply, destination-unreachable } limit rate 10/second accept
@@ -590,6 +594,17 @@ XRAY_GRPC_SHORT_ID='${XRAY_GRPC_SHORT_ID:-${XRAY_XHTTP_SHORT_ID:-}}'
 XHTTP_CDN_PASSWORD='${XHTTP_CDN_PASSWORD:-}'
 HYSTERIA2_AUTH='${HYSTERIA2_AUTH:-}'
 HYSTERIA2_OBFS_PASSWORD='${HYSTERIA2_OBFS_PASSWORD:-}'
+TUIC_SERVER='${TUIC_SERVER:-${VPS_IP:-}}'
+TUIC_SERVER_NAME='${TUIC_SERVER_NAME:-${TUIC_SERVER:-${VPS_IP:-}}}'
+TUIC_PORT='${TUIC_PORT:-8448}'
+TUIC_UUID='${TUIC_UUID:-}'
+TUIC_PASSWORD='${TUIC_PASSWORD:-}'
+TUIC_SOCKS_PORT='${TUIC_SOCKS_PORT:-1085}'
+TROJAN_SERVER='${TROJAN_SERVER:-${VPS_IP:-}}'
+TROJAN_SERVER_NAME='${TROJAN_SERVER_NAME:-${TROJAN_SERVER:-${VPS_IP:-}}}'
+TROJAN_PORT='${TROJAN_PORT:-8444}'
+TROJAN_PASSWORD='${TROJAN_PASSWORD:-}'
+TROJAN_SOCKS_PORT='${TROJAN_SOCKS_PORT:-1086}'
 XRAY_PANEL_PASSWORD='${XRAY_PANEL_PASSWORD:-}'
 GRAFANA_PASSWORD='${GRAFANA_PASSWORD:-}'
 VPS_IP='${VPS_IP:-}'
@@ -724,6 +739,23 @@ HYEOF"
 
     log_ok "Hysteria2 server.yaml и TLS cert сгенерированы"
 
+    vps_exec "sudo mkdir -p /opt/vpn/sing-box"
+    _tuic_b64="$(envsubst < "$REPO_DIR/vps/sing-box/tuic-server.json" | base64 -w0)"
+    _trojan_b64="$(envsubst < "$REPO_DIR/vps/sing-box/trojan-server.json" | base64 -w0)"
+    vps_exec "python3 - <<'PY'
+import base64, pathlib
+path = pathlib.Path('/tmp/tuic-server.json')
+path.write_bytes(base64.b64decode('${_tuic_b64}'))
+PY
+sudo mv /tmp/tuic-server.json /opt/vpn/sing-box/tuic-server.json"
+    vps_exec "python3 - <<'PY'
+import base64, pathlib
+path = pathlib.Path('/tmp/trojan-server.json')
+path.write_bytes(base64.b64decode('${_trojan_b64}'))
+PY
+sudo mv /tmp/trojan-server.json /opt/vpn/sing-box/trojan-server.json"
+    log_ok "Sing-box server configs (TUIC/Trojan) сгенерированы"
+
     # Рестарт hysteria2 если уже запущен — иначе подхватит старый конфиг из памяти
     if vps_exec "sudo docker inspect --format='{{.State.Status}}' hysteria2 2>/dev/null" \
             2>/dev/null | grep -q "running"; then
@@ -742,7 +774,7 @@ if is_done "step42_vps_docker_compose"; then
 else
     step "Запуск Docker Compose на VPS"
     log_info "Запускаем: 3x-ui (панель), xray-reality-vision (:443), xray-reality-xhttp (:2083), nginx (mTLS :8443),"
-    log_info "           cloudflared, prometheus, alertmanager, grafana, node-exporter, hysteria2"
+    log_info "           cloudflared, prometheus, alertmanager, grafana, node-exporter, hysteria2, trojan-server, tuic-server"
 
     # Если SSH при socat bootstrap был добавлен на порт 443 — убираем его СЕЙЧАС,
     # до запуска 3x-ui/Xray которые занимают TCP 443.
@@ -773,6 +805,7 @@ else
         log_info "Рендер standalone конфигов reality-vision и reality-xhttp..."
         vps_exec "bash /opt/vpn/scripts/render-reality-vision-config.sh"
         vps_exec "bash /opt/vpn/scripts/render-reality-xhttp-config.sh"
+        vps_exec "cd /opt/vpn && sudo docker compose --profile extra-stacks up -d trojan-server tuic-server"
 
         if [[ -f "${REPO_DIR}/scripts/docker-image-groups.sh" ]]; then
             # shellcheck source=scripts/docker-image-groups.sh

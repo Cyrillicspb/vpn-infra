@@ -1,0 +1,5 @@
+# Trojan server-side runtime config template
+# Реальный JSON генерируется install-vps.sh / deploy.sh в /opt/vpn/sing-box/trojan-server.json
+listen_port: ${TROJAN_PORT}
+cert: /etc/sing-box/certs/server.crt
+key: /etc/sing-box/certs/server.key

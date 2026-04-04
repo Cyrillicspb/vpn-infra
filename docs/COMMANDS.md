@@ -33,6 +33,8 @@
 
 - `/assess` — тест доступных стэков.
 - `/switch <stack>` — переключить активный стек.
+
+Поддерживаемые `stack`: `trojan`, `cloudflare-cdn`, `vless-reality-vision`, `tuic`, `reality-xhttp`, `hysteria2`.
 - `/restart <service>` — перезапустить сервис или контейнер.
 - `/upgrade` — обновить Docker-образы.
 - `/reboot` — перезагрузить home-server.
@@ -66,18 +68,66 @@
 - `/direct remove <domain>`
 - `/list vpn`
 - `/list direct`
-- `/check <domain>`
+- `/check <domain> [chat_id]`
+- `/backend_pref add <chat_id> <service|domain|cidr> <value> <backend-id>`
+- `/backend_pref list [chat_id]`
+- `/backend_pref remove <id>`
 - `/latency learned|candidates|all`
 - `/routes update`
 
-`/check` показывает verdict, source tags и service attribution, если домен сопоставлен с latency catalog.
+`/check` показывает verdict, source tags, service attribution, current Decision Maker explanation и active `hysteria2` backend path state (`desired/applied/rendered`) для effective backend.
+Поддерживаемые формы:
+- `/check <domain>`
+- `/check <domain> <chat_id>`
+- `/check <domain> <source_ip>` в `gateway mode`
+- `/check <domain> <chat_id> <source_ip>` для явной диагностики
+
+Если передан `chat_id`, Decision Maker дополнительно учитывает `vpn_client` backend preferences для этого клиента.
+Если передан `source_ip` в `gateway mode`, Decision Maker может резолвить `lan_client` identity и учитывать `LAN backend preferences`:
+- `identity_type`
+- `identity_id`
+- `route_class`
+- `decision_source`
+- `effective_backend_id`
+- `matched_preference`
+- `preference_status`
+- `preference_reason`
+- `fallback_reason`
 `/latency all` показывает runtime catalog status, `learned` и `candidates`.
 
 ### VPS и recovery-операции
 
+- `/backends`
+- `/backend add <ip> [ssh_port]`
+- `/backend remove <ip>`
+- `/backend drain <backend-id>`
+- `/backend undrain <backend-id>`
+- `/balancer`
+- `/rebalance [route_class|all]`
+- `/decision status` via menu/API canonical read path
+- `/decision backend-paths` via diagnostics/API canonical dataplane foundation path
+- `/decision assignments` via diagnostics/API canonical read path
+- `/decision choose-backend` via API canonical choose path
+- `/decision apply-backend` via API canonical apply path
+  При `hysteria2` current slice apply теперь проходит через runtime verify и при failed probe откатывается на предыдущий backend.
+- `/decision reassign [route_class|all]` via menu/API canonical decision path
+- `/decision reconcile-assignments [backend-id]` via API canonical reconciliation path
+- `/balancer switch <backend-id>` via menu/API apply path
+- `/balancer auto-select` via menu/API apply path
 - `/vps list`
 - `/vps add <ip> [ssh_port]`
 - `/vps remove <ip>`
+
+### Gateway-only
+
+Эти команды применимы только при `SERVER_MODE=gateway`.
+
+- `/lan_clients`
+- `/lan_client add <name> <src_ip>`
+- `/lan_client remove <id>`
+- `/lan_backend_pref add <lan_client_id> <service|domain|cidr> <value> <backend-id>`
+- `/lan_backend_pref list`
+- `/lan_backend_pref remove <id>`
 - `/migrate_vps <ip> [--from-backup]`
 - `/migrate-vps <ip> [--from-backup]`
 - `/renew_cert`
@@ -123,6 +173,9 @@
 ### Routing
 
 - `/check example.com`
+- `/check example.com 123456789`
+- `/backend_pref add 123456789 service openai backend-us-1`
+- `/backend_pref list 123456789`
 - `/vpn add example.com`
 - `/direct add example.com`
 - `/routes update`
@@ -153,4 +206,5 @@ sudo bash /opt/vpn/deploy.sh --status
 - старые обещания про команды, которых больше нет в production-contract;
 - описание alert-матрицы как гарантированного API;
 - старые версии deploy UX, где успех определялся по тексту запуска;
-- неактуальные команды для отдельного `vps-only` update path.
+- `/vps ...` сейчас legacy alias на backend pool; отдельный `vps-only` update path не является текущим контрактом.
+- `/backends` и `/balancer` остаются bot-facing surface, но canonical read/reassign API теперь идёт через `/decision/*`.

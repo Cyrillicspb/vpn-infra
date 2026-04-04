@@ -48,6 +48,9 @@ if ! python3 -c 'import textual' 2>/dev/null; then
         pip3 install --no-index --find-links="$WHEELS_DIR" textual \
             --break-system-packages --ignore-installed --quiet \
             || { err "Не удалось установить textual из wheels"; exit 1; }
+    elif [[ "${VPN_STRICT_BUNDLE:-0}" == "1" ]]; then
+        err "Локальный wheel bundle для installer GUI отсутствует, strict bundle mode запрещает PyPI fallback"
+        exit 1
     else
         info "Установка textual из PyPI..."
         pip3 install 'textual>=0.47.0' --break-system-packages --ignore-installed --quiet \

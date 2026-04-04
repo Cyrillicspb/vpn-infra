@@ -23,6 +23,7 @@ import logging
 import os
 import random
 import re
+import shlex
 import signal
 import socket
 import subprocess
@@ -47,6 +48,31 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+WATCHDOG_DIR = Path(__file__).resolve().parent
+if str(WATCHDOG_DIR) not in sys.path:
+    sys.path.insert(0, str(WATCHDOG_DIR))
+
+from decision_maker import (
+    backend_by_id as dm_backend_by_id,
+    backend_effective_status as dm_backend_effective_status,
+    balancer_snapshot as dm_balancer_snapshot,
+    build_decision_state as dm_build_decision_state,
+    build_domain_context as dm_build_domain_context,
+    choose_auto_backend as dm_choose_auto_backend,
+    choose_manual_backend as dm_choose_manual_backend,
+    ensure_assignment as dm_ensure_assignment,
+    explain_domain_context as dm_explain_domain_context,
+    explain_domain_route as dm_explain_domain_route,
+    healthy_backends as dm_healthy_backends,
+    normalize_assignment as dm_normalize_assignment,
+    prune_assignments as dm_prune_assignments,
+    reconcile_assignments_to_active_backend as dm_reconcile_assignments_to_active_backend,
+    reassign_route_class as dm_reassign_route_class,
+    resolve_route as dm_resolve_route,
+    route_class_for_domain_check as dm_route_class_for_domain_check,
+    select_backend as dm_select_backend,
+)
+
 # ---------------------------------------------------------------------------
 # Конфигурация
 # ---------------------------------------------------------------------------
@@ -70,6 +96,9 @@ NET_INTERFACE        = os.getenv("NET_INTERFACE", "eth0")
 GATEWAY_IP           = os.getenv("GATEWAY_IP", "")
 
 STATE_FILE   = Path("/opt/vpn/watchdog/state.json")
+BACKEND_BALANCER_STATE_FILE = Path("/opt/vpn/watchdog/backend-balancer-state.json")
+GATEWAY_LAN_CLIENTS_FILE = Path("/opt/vpn/watchdog/gateway-lan-clients.json")
+GATEWAY_LAN_PREFS_FILE = Path("/opt/vpn/watchdog/gateway-lan-prefs.json")
 PLUGINS_DIR  = Path("/opt/vpn/watchdog/plugins")
 ROUTES_DIR   = Path("/etc/vpn-routes")
 LOG_FILE     = "/var/log/vpn-watchdog.log"
@@ -110,9 +139,9 @@ def _cloudflare_cdn_enabled() -> bool:
     return os.getenv("USE_CLOUDFLARE", "n").lower() == "y" and bool(os.getenv("CF_CDN_HOSTNAME", "").strip())
 
 
-STACK_ORDER = ["hysteria2", "vless-reality-vision", "reality-xhttp"]
+STACK_ORDER = ["trojan", "vless-reality-vision", "tuic", "hysteria2", "reality-xhttp"]
 if _cloudflare_cdn_enabled():
-    STACK_ORDER.insert(0, "cloudflare-cdn")
+    STACK_ORDER.insert(1, "cloudflare-cdn")
 
 DEFAULT_STACK = STACK_ORDER[0]
 
@@ -138,6 +167,7 @@ BACKUP_MAX_AGE_DAYS       = 3     # deep check: бэкап не старше N �
 LATENCY_AUTO_PROMOTE_SCORE = int(os.getenv("LATENCY_AUTO_PROMOTE_SCORE", "3"))
 LATENCY_AUTO_PROMOTE_COOLDOWN = int(os.getenv("LATENCY_AUTO_PROMOTE_COOLDOWN", "600"))
 LATENCY_CANDIDATE_TTL_SECONDS = int(os.getenv("LATENCY_CANDIDATE_TTL_SECONDS", str(14 * 24 * 3600)))
+BALANCER_IDLE_TTL_SECONDS = int(os.getenv("BALANCER_IDLE_TTL_SECONDS", "300"))
 
 # ---------------------------------------------------------------------------
 # DPI bypass (zapret lane)
@@ -781,6 +811,25 @@ async def run_cmd(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
         return 1, "", str(exc)
 
 
+async def run_cmd_env(cmd: list[str], env_overrides: dict[str, str], timeout: int = 30) -> tuple[int, str, str]:
+    """Асинхронный запуск команды с дополнительными ENV overrides."""
+    env = _child_env()
+    env.update({k: str(v) for k, v in env_overrides.items() if v is not None})
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+    except asyncio.TimeoutError:
+        return 1, "", f"Timeout after {timeout}s"
+    except Exception as exc:
+        return 1, "", str(exc)
+
+
 def _notify_systemd(msg: bytes) -> None:
     """Отправка уведомления systemd через NOTIFY_SOCKET."""
     notify_socket = os.getenv("NOTIFY_SOCKET", "")
@@ -1207,6 +1256,43 @@ class FunctionalScenario:
     scenario_class: str = "baseline"
 
 
+def _now_ts() -> float:
+    return time.time()
+
+
+def _backend_id_from_ip(ip: str) -> str:
+    clean = re.sub(r"[^a-z0-9]+", "-", str(ip or "").strip().lower())
+    clean = clean.strip("-")
+    return f"backend-{clean or 'unknown'}"
+
+
+def _normalize_backend_entry(raw: dict[str, Any], default_weight: int = 100) -> dict[str, Any]:
+    ip = str(raw.get("ip") or raw.get("host") or "").strip()
+    backend_id = str(raw.get("id") or _backend_id_from_ip(ip))
+    labels = raw.get("labels") if isinstance(raw.get("labels"), list) else []
+    status = str(raw.get("status") or ("healthy" if ip else "unknown")).strip().lower()
+    if status not in {"healthy", "degraded", "down", "unknown"}:
+        status = "unknown"
+    return {
+        "id": backend_id,
+        "ip": ip,
+        "host": str(raw.get("host") or ip),
+        "ssh_port": int(raw.get("ssh_port", 22) or 22),
+        "tunnel_ip": str(raw.get("tunnel_ip") or ""),
+        "weight": max(1, int(raw.get("weight", default_weight) or default_weight)),
+        "drain": bool(raw.get("drain", False)),
+        "status": status,
+        "last_ok_ts": float(raw.get("last_ok_ts", 0.0) or 0.0),
+        "last_rtt_ms": float(raw.get("last_rtt_ms", 0.0) or 0.0),
+        "health_score": float(raw.get("health_score", 100.0) or 100.0),
+        "labels": [str(v).strip() for v in labels if str(v).strip()],
+    }
+
+
+def _normalize_assignment(raw: dict[str, Any], ttl_seconds: int) -> Optional[dict[str, Any]]:
+    return dm_normalize_assignment(raw, ttl_seconds, now=_now_ts())
+
+
 class WatchdogState:
     def __init__(self) -> None:
         self.active_stack: str = DEFAULT_STACK
@@ -1226,6 +1312,10 @@ class WatchdogState:
         self.all_stacks_down_since: Optional[datetime] = None
         self.vps_list: list[dict] = []          # [{ip, ssh_port, tunnel_ip, active}]
         self.active_vps_idx: int = 0
+        self.active_backend_id: str = ""
+        self.backends: list[dict[str, Any]] = []
+        self.backend_assignments: dict[str, dict[str, Any]] = {}
+        self.balancer_idle_ttl_seconds: int = BALANCER_IDLE_TTL_SECONDS
         self.external_ip: str = ""
         self.started_at: datetime = datetime.now()
         self.degraded_mode: bool = False
@@ -1306,6 +1396,16 @@ class WatchdogState:
             return None
         return self.vps_list[self.active_vps_idx % len(self.vps_list)]
 
+    @property
+    def active_backend(self) -> Optional[dict[str, Any]]:
+        if not self.backends:
+            return None
+        if self.active_backend_id:
+            for backend in self.backends:
+                if backend.get("id") == self.active_backend_id:
+                    return backend
+        return self.backends[0]
+
     def rtt_avg(self, stack: str) -> float:
         window = self.rtt_baseline.get(stack, deque())
         return sum(window) / len(window) if window else 0.0
@@ -1327,6 +1427,10 @@ class WatchdogState:
             "is_first_run": self.is_first_run,
             "vps_list": self.vps_list,
             "active_vps_idx": self.active_vps_idx,
+            "active_backend_id": self.active_backend_id,
+            "backends": self.backends,
+            "backend_assignments": self.backend_assignments,
+            "balancer_idle_ttl_seconds": self.balancer_idle_ttl_seconds,
             "dpi_enabled": self.dpi_enabled,
             "dpi_experimental_opt_in": self.dpi_experimental_opt_in,
             "dpi_services": self.dpi_services,
@@ -1366,10 +1470,21 @@ class WatchdogState:
             "latency_catalog_alert_last_ts": self.latency_catalog_alert_last_ts,
         }
 
+    def balancer_dict(self) -> dict[str, Any]:
+        return {
+            "schema": 1,
+            "updated_at": datetime.now().isoformat(),
+            "idle_ttl_seconds": self.balancer_idle_ttl_seconds,
+            "backends": self.backends,
+            "assignments": self.backend_assignments,
+        }
+
     def save(self) -> None:
         try:
             STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
             STATE_FILE.write_text(json.dumps(self.to_dict(), indent=2))
+            BACKEND_BALANCER_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            BACKEND_BALANCER_STATE_FILE.write_text(json.dumps(self.balancer_dict(), indent=2))
         except Exception as exc:
             logger.error(f"Не удалось сохранить состояние: {exc}")
 
@@ -1382,6 +1497,25 @@ class WatchdogState:
                 self.external_ip    = data.get("external_ip", "")
                 self.vps_list       = data.get("vps_list", [])
                 self.active_vps_idx = data.get("active_vps_idx", 0)
+                self.active_backend_id = str(data.get("active_backend_id") or "")
+                self.backends = [
+                    _normalize_backend_entry(item)
+                    for item in (data.get("backends", []) or [])
+                    if isinstance(item, dict)
+                ]
+                self.backend_assignments = {}
+                for route_class, spec in (data.get("backend_assignments", {}) or {}).items():
+                    if not isinstance(spec, dict):
+                        continue
+                    assignment = _normalize_assignment(
+                        {**spec, "route_class": route_class},
+                        int(data.get("balancer_idle_ttl_seconds", BALANCER_IDLE_TTL_SECONDS) or BALANCER_IDLE_TTL_SECONDS),
+                    )
+                    if assignment:
+                        self.backend_assignments[route_class] = assignment
+                self.balancer_idle_ttl_seconds = int(
+                    data.get("balancer_idle_ttl_seconds", BALANCER_IDLE_TTL_SECONDS) or BALANCER_IDLE_TTL_SECONDS
+                )
                 self.degraded_mode  = data.get("degraded_mode", False)
                 self.is_first_run   = data.get("is_first_run", True)
                 self.dpi_enabled    = data.get("dpi_enabled", False)
@@ -1434,6 +1568,29 @@ class WatchdogState:
                 self.functional_evidence_store = data.get("functional_evidence_store", {}) or {}
                 self.latency_learning_last_apply_ts = float(data.get("latency_learning_last_apply_ts", 0.0) or 0.0)
                 self.latency_catalog_alert_last_ts = float(data.get("latency_catalog_alert_last_ts", 0.0) or 0.0)
+                if BACKEND_BALANCER_STATE_FILE.exists():
+                    try:
+                        balancer = json.loads(BACKEND_BALANCER_STATE_FILE.read_text())
+                        self.backends = [
+                            _normalize_backend_entry(item)
+                            for item in (balancer.get("backends", []) or [])
+                            if isinstance(item, dict)
+                        ]
+                        self.backend_assignments = {}
+                        for route_class, spec in (balancer.get("assignments", {}) or {}).items():
+                            if not isinstance(spec, dict):
+                                continue
+                            assignment = _normalize_assignment(
+                                {**spec, "route_class": route_class},
+                                int(balancer.get("idle_ttl_seconds", self.balancer_idle_ttl_seconds) or self.balancer_idle_ttl_seconds),
+                            )
+                            if assignment:
+                                self.backend_assignments[route_class] = assignment
+                        self.balancer_idle_ttl_seconds = int(
+                            balancer.get("idle_ttl_seconds", self.balancer_idle_ttl_seconds) or self.balancer_idle_ttl_seconds
+                        )
+                    except Exception as exc:
+                        logger.warning("Не удалось загрузить backend balancer state: %s", exc)
                 _normalize_functional_state()
                 if self.active_stack not in STACK_ORDER:
                     self.active_stack = DEFAULT_STACK
@@ -1446,6 +1603,7 @@ class WatchdogState:
                     self.primary_stack = DEFAULT_STACK
                     self.degraded_mode = False
                     self.is_first_run = True
+                _refresh_backend_pool()
                 if self.dpi_enabled and not self.dpi_experimental_opt_in:
                     logger.warning("DPI bypass migrated to experimental-off default; disabling historical active state")
                     self.dpi_enabled = False
@@ -1456,6 +1614,569 @@ class WatchdogState:
 
 
 state = WatchdogState()
+
+
+def _refresh_backend_pool() -> None:
+    backends_by_id: dict[str, dict[str, Any]] = {}
+    for backend in state.backends:
+        normalized = _normalize_backend_entry(backend)
+        if normalized["ip"]:
+            backends_by_id[normalized["id"]] = normalized
+
+    for idx, vps in enumerate(state.vps_list):
+        if not isinstance(vps, dict):
+            continue
+        normalized = _normalize_backend_entry(
+            {
+                "id": vps.get("id") or _backend_id_from_ip(str(vps.get("ip") or "")),
+                "ip": vps.get("ip"),
+                "host": vps.get("ip"),
+                "ssh_port": vps.get("ssh_port", 22),
+                "tunnel_ip": vps.get("tunnel_ip", ""),
+                "weight": vps.get("weight", 100),
+                "drain": vps.get("drain", False),
+                "status": "healthy" if idx == state.active_vps_idx else vps.get("status", "healthy"),
+                "labels": vps.get("labels", []),
+            }
+        )
+        if normalized["ip"]:
+            existing = backends_by_id.get(normalized["id"])
+            if existing:
+                normalized["last_ok_ts"] = existing.get("last_ok_ts", 0.0)
+                normalized["last_rtt_ms"] = existing.get("last_rtt_ms", 0.0)
+                normalized["health_score"] = existing.get("health_score", 100.0)
+                if existing.get("drain"):
+                    normalized["drain"] = True
+                if existing.get("status") in {"degraded", "down"} and idx != state.active_vps_idx:
+                    normalized["status"] = existing["status"]
+            backends_by_id[normalized["id"]] = normalized
+
+    state.backends = sorted(backends_by_id.values(), key=lambda item: (item.get("drain", False), item.get("id", "")))
+    if not state.active_backend_id and state.backends:
+        if 0 <= state.active_vps_idx < len(state.vps_list):
+            state.active_backend_id = _backend_id_from_ip(str(state.vps_list[state.active_vps_idx].get("ip") or ""))
+        else:
+            state.active_backend_id = state.backends[0]["id"]
+    if state.active_backend_id and not any(b.get("id") == state.active_backend_id for b in state.backends):
+        state.active_backend_id = state.backends[0]["id"] if state.backends else ""
+    if state.active_backend_id:
+        for idx, vps in enumerate(state.vps_list):
+            if _backend_id_from_ip(str(vps.get("ip") or "")) == state.active_backend_id:
+                state.active_vps_idx = idx
+                break
+    _prune_backend_assignments()
+
+
+def _prune_backend_assignments() -> None:
+    state.backend_assignments = dm_prune_assignments(
+        state.backend_assignments,
+        state.backends,
+        state.balancer_idle_ttl_seconds,
+        now=_now_ts(),
+    )
+
+
+def _backend_effective_status(backend: dict[str, Any]) -> str:
+    return dm_backend_effective_status(backend)
+
+
+def _healthy_backends() -> list[dict[str, Any]]:
+    return dm_healthy_backends(state.backends)
+
+
+def _select_backend_for_route_class(route_class: str) -> Optional[dict[str, Any]]:
+    return dm_select_backend(route_class, state.backends, active_backend_id=state.active_backend_id, execution_mode="single_active_backend")
+
+
+def _ensure_backend_assignment(route_class: str, force_reassign: bool = False) -> Optional[dict[str, Any]]:
+    _refresh_backend_pool()
+    assignment, updated_assignments, _ = dm_ensure_assignment(
+        route_class,
+        state.backends,
+        state.backend_assignments,
+        state.balancer_idle_ttl_seconds,
+        active_backend_id=state.active_backend_id,
+        execution_mode="single_active_backend",
+        force_reassign=force_reassign,
+        now=_now_ts(),
+    )
+    if not assignment:
+        return None
+    state.backend_assignments = updated_assignments
+    state.save()
+    return assignment
+
+
+def _backend_by_id(backend_id: str) -> Optional[dict[str, Any]]:
+    return dm_backend_by_id(state.backends, backend_id)
+
+
+def _balancer_snapshot() -> dict[str, Any]:
+    _refresh_backend_pool()
+    snapshot = dm_balancer_snapshot(
+        state.backends,
+        state.backend_assignments,
+        state.balancer_idle_ttl_seconds,
+        state.active_backend_id,
+        execution_mode="single_active_backend",
+        now=_now_ts(),
+    )
+    snapshot["backend_paths"] = _backend_path_snapshot()
+    return snapshot
+
+
+def _decision_state() -> dict[str, Any]:
+    _refresh_backend_pool()
+    return dm_build_decision_state(
+        state.backends,
+        state.backend_assignments,
+        state.balancer_idle_ttl_seconds,
+        state.active_backend_id,
+        execution_mode="single_active_backend",
+    )
+
+
+def _load_client_backend_prefs(chat_id: str = "") -> list[dict[str, Any]]:
+    if not BOT_DB_PATH.exists():
+        return []
+    try:
+        import sqlite3 as _sqlite3
+        with _sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=5) as conn:
+            conn.row_factory = _sqlite3.Row
+            if chat_id:
+                rows = conn.execute(
+                    """
+                    SELECT id, chat_id, match_type, match_value, backend_id, enabled, created_at, updated_at
+                    FROM client_backend_prefs
+                    WHERE chat_id = ? AND enabled = 1
+                    ORDER BY id
+                    """,
+                    (str(chat_id),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, chat_id, match_type, match_value, backend_id, enabled, created_at, updated_at
+                    FROM client_backend_prefs
+                    WHERE enabled = 1
+                    ORDER BY id
+                    """
+                ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.warning("Не удалось прочитать client backend prefs: %s", exc)
+        return []
+
+
+def _route_class_for_domain_check(result: dict[str, Any]) -> Optional[str]:
+    return dm_route_class_for_domain_check(result)
+
+
+def _active_backend_ip() -> str:
+    active = state.active_backend
+    if active and active.get("ip"):
+        return str(active.get("ip") or "")
+    return VPS_IP or ""
+
+
+def _active_backend_tunnel_ip() -> str:
+    active = state.active_backend
+    if active and active.get("tunnel_ip"):
+        return str(active.get("tunnel_ip") or "")
+    return VPS_TUNNEL_IP or "10.177.2.2"
+
+
+def _active_backend_ssh_port() -> str:
+    active = state.active_backend
+    if active and active.get("ssh_port"):
+        return str(active.get("ssh_port") or "")
+    return str(os.getenv("VPS_SSH_PORT", "22"))
+
+
+def _write_active_backend_runtime_env(backend: dict[str, Any]) -> None:
+    env_path = Path("/run/vpn-active-backend.env")
+    lines = [
+        f"BACKEND_ID={shlex.quote(str(backend.get('id') or ''))}",
+        f"VPS_IP={shlex.quote(str(backend.get('ip') or ''))}",
+        f"VPS_TUNNEL_IP={shlex.quote(str(backend.get('tunnel_ip') or _active_backend_tunnel_ip()))}",
+        f"VPS_SSH_PORT={shlex.quote(str(backend.get('ssh_port') or _active_backend_ssh_port()))}",
+    ]
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    dropin_dir = Path("/etc/systemd/system/autossh-vpn.service.d")
+    dropin_dir.mkdir(parents=True, exist_ok=True)
+    (dropin_dir / "10-active-backend.conf").write_text(
+        "[Service]\nEnvironmentFile=-/run/vpn-active-backend.env\n",
+        encoding="utf-8",
+    )
+
+
+def _backend_runtime_env(backend: dict[str, Any]) -> dict[str, str]:
+    ip = str(backend.get("ip") or "")
+    tunnel_ip = str(backend.get("tunnel_ip") or VPS_TUNNEL_IP or "10.177.2.2")
+    env = dict(os.environ)
+    env.update(
+        {
+            "VPS_IP": ip,
+            "VPS_TUNNEL_IP": tunnel_ip,
+            "XRAY_SERVER": str(os.getenv("XRAY_SERVER", "") or ip),
+            "HYSTERIA2_SERVER": str(os.getenv("HYSTERIA2_SERVER", "") or ip),
+            "TUIC_SERVER": str(os.getenv("TUIC_SERVER", "") or ip),
+            "TUIC_SERVER_NAME": str(os.getenv("TUIC_SERVER_NAME", "") or ip),
+            "TROJAN_SERVER": str(os.getenv("TROJAN_SERVER", "") or ip),
+            "TROJAN_SERVER_NAME": str(os.getenv("TROJAN_SERVER_NAME", "") or ip),
+            "XRAY_VISION_UUID": str(os.getenv("XRAY_VISION_UUID", "") or os.getenv("XRAY_XHTTP_UUID", "")),
+            "XRAY_VISION_PUBLIC_KEY": str(os.getenv("XRAY_VISION_PUBLIC_KEY", "") or os.getenv("XRAY_XHTTP_PUBLIC_KEY", "")),
+            "XRAY_VISION_SHORT_ID": str(os.getenv("XRAY_VISION_SHORT_ID", "") or os.getenv("XRAY_XHTTP_SHORT_ID", "")),
+        }
+    )
+    return env
+
+
+async def _render_envsubst_template(src: Path, dest: Path, env: dict[str, str]) -> None:
+    proc = await asyncio.create_subprocess_exec(
+        "envsubst",
+        env={k: str(v) for k, v in env.items()},
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    raw = src.read_text(encoding="utf-8")
+    stdout, stderr = await asyncio.wait_for(proc.communicate(raw.encode()), timeout=10)
+    if proc.returncode != 0:
+        raise RuntimeError(f"envsubst failed for {src.name}: {stderr.decode(errors='replace')[:200]}")
+    rendered = stdout.decode(errors="replace")
+    unresolved = sorted(set(re.findall(r"\$\{[^}]+\}", rendered)))
+    if unresolved:
+        raise RuntimeError(f"template {src.name} has unresolved vars: {' '.join(unresolved)}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(rendered, encoding="utf-8")
+
+
+def _hysteria_backend_config_dir() -> Path:
+    return Path("/etc/hysteria/backends")
+
+
+def _hysteria_backend_config_path(backend_id: str) -> Path:
+    return _hysteria_backend_config_dir() / f"{backend_id}.yaml"
+
+
+def _hysteria_active_config_path() -> Path:
+    return Path("/etc/hysteria/config.yaml")
+
+
+def _build_hysteria2_config(env: dict[str, str], ip: str) -> str:
+    tls_lines = ["tls:", "  insecure: true"]
+    if env.get("HYSTERIA2_CERT_HASH"):
+        tls_lines.append(f"  pinSHA256: {env['HYSTERIA2_CERT_HASH']}")
+    return "\n".join(
+        [
+            "# Hysteria2 client — runtime generated by watchdog",
+            f"server: {env.get('HYSTERIA2_SERVER', ip)}:443",
+            "",
+            *tls_lines,
+            "",
+            f"auth: {env.get('HYSTERIA2_AUTH', '')}",
+            "",
+            "obfs:",
+            "  type: salamander",
+            "  salamander:",
+            f"    password: {env.get('HYSTERIA2_OBFS_PASSWORD', '')}",
+            "",
+            "bandwidth:",
+            "  up: 50 mbps",
+            "  down: 200 mbps",
+            "",
+            "quic:",
+            "  keepAlivePeriod: 20s",
+            "",
+            "socks5:",
+            "  listen: 127.0.0.1:1083",
+            "",
+            "log:",
+            "  level: warn",
+            "",
+        ]
+    )
+
+
+def _backend_path_snapshot() -> list[dict[str, Any]]:
+    paths: list[dict[str, Any]] = []
+    active_backend_id = str(state.active_backend_id or "")
+    active_config_path = _hysteria_active_config_path()
+    active_rendered = active_config_path.read_text(encoding="utf-8") if active_config_path.exists() else ""
+    route_classes_by_backend: dict[str, list[str]] = {}
+    for route_class, spec in (state.backend_assignments or {}).items():
+        backend_id = str((spec or {}).get("backend_id") or "")
+        if not backend_id:
+            continue
+        route_classes_by_backend.setdefault(backend_id, []).append(route_class)
+    for backend in state.backends:
+        backend_id = str(backend.get("id") or "")
+        if not backend_id:
+            continue
+        config_path = _hysteria_backend_config_path(backend_id)
+        rendered = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+        desired = backend_id == active_backend_id
+        paths.append(
+            {
+                "family": "hysteria2",
+                "backend_id": backend_id,
+                "config_path": str(config_path),
+                "applied_config_path": str(active_config_path),
+                "systemd_unit": "hysteria2.service",
+                "local_bind": "127.0.0.1:1083",
+                "tun_interface": "tun-hysteria2",
+                "execution_mode": "single_active_backend",
+                "desired": desired,
+                "applied": desired and bool(rendered) and rendered == active_rendered,
+                "rendered": config_path.exists(),
+                "active": desired,
+                "route_classes": sorted(route_classes_by_backend.get(backend_id, [])),
+                "backend_status": _backend_effective_status(backend),
+            }
+        )
+    return paths
+
+
+async def _render_backend_runtime_configs(backend: dict[str, Any]) -> None:
+    _refresh_backend_pool()
+    env = _backend_runtime_env(backend)
+    ip = str(backend.get("ip") or "")
+    repo_root = Path("/opt/vpn")
+    await _render_envsubst_template(repo_root / "home" / "xray" / "config-xhttp.json", repo_root / "xray" / "config-xhttp.json", env)
+    await _render_envsubst_template(repo_root / "home" / "xray" / "config-vision.json", repo_root / "xray" / "config-vision.json", env)
+    await _render_envsubst_template(repo_root / "home" / "sing-box" / "tuic-client.json", repo_root / "sing-box" / "tuic-client.json", env)
+    await _render_envsubst_template(repo_root / "home" / "sing-box" / "trojan-client.json", repo_root / "sing-box" / "trojan-client.json", env)
+
+    backend_dir = Path("/etc/hysteria/backends")
+    backend_dir.mkdir(parents=True, exist_ok=True)
+    expected_backend_ids = {str(item.get("id") or "") for item in state.backends if str(item.get("id") or "")}
+    for stale in backend_dir.glob("*.yaml"):
+        if stale.stem not in expected_backend_ids:
+            try:
+                stale.unlink()
+            except OSError:
+                logger.debug("Не удалось удалить stale hysteria config %s", stale)
+    for backend_item in state.backends:
+        backend_id = str(backend_item.get("id") or "")
+        if not backend_id:
+            continue
+        candidate_env = _backend_runtime_env(backend_item)
+        candidate_config = _build_hysteria2_config(candidate_env, str(backend_item.get("ip") or ""))
+        (backend_dir / f"{backend_id}.yaml").write_text(candidate_config, encoding="utf-8")
+
+    hysteria_config = _build_hysteria2_config(env, ip)
+    hysteria_path = _hysteria_active_config_path()
+    hysteria_path.parent.mkdir(parents=True, exist_ok=True)
+    hysteria_path.write_text(hysteria_config, encoding="utf-8")
+
+
+async def _restart_backend_runtime_services() -> None:
+    rc, _, err = await run_cmd(["systemctl", "restart", "hysteria2"], timeout=25)
+    if rc != 0:
+        raise RuntimeError(f"failed to restart hysteria2: {err[:200]}")
+    rc, _, err = await run_cmd(["systemctl", "daemon-reload"], timeout=20)
+    if rc != 0:
+        raise RuntimeError(f"failed to reload systemd after backend switch: {err[:200]}")
+    rc, _, err = await run_cmd(
+        [
+            "docker", "compose", "-f", "/opt/vpn/docker-compose.yml", "up", "-d",
+            "xray-client-xhttp", "xray-client-vision", "sing-box-tuic-client", "sing-box-trojan-client",
+        ],
+        timeout=120,
+    )
+    if rc != 0:
+        raise RuntimeError(f"failed to restart outbound containers: {err[:300]}")
+    for unit in ("autossh-tier2", "autossh-vpn"):
+        rc, _, _ = await run_cmd(["systemctl", "list-unit-files", f"{unit}.service"], timeout=10)
+        if rc == 0:
+            rc, _, err = await run_cmd(["systemctl", "restart", unit], timeout=30)
+            if rc != 0:
+                raise RuntimeError(f"failed to restart {unit}: {err[:200]}")
+
+
+async def _verify_hysteria2_backend_path(backend_id: str) -> dict[str, Any]:
+    _refresh_backend_pool()
+    path_rows = [
+        item for item in _backend_path_snapshot()
+        if str(item.get("backend_id") or "") == str(backend_id or "")
+    ]
+    if not path_rows:
+        return {"ok": False, "reason": "backend_path_not_found", "backend_id": backend_id}
+    path_row = path_rows[0]
+    if not path_row.get("rendered"):
+        return {"ok": False, "reason": "backend_path_not_rendered", "backend_id": backend_id, "path": path_row}
+    if not path_row.get("applied"):
+        return {"ok": False, "reason": "backend_path_not_applied", "backend_id": backend_id, "path": path_row}
+
+    rc, _, err = await run_cmd(["systemctl", "is-active", "hysteria2"], timeout=10)
+    if rc != 0:
+        return {"ok": False, "reason": "hysteria2_inactive", "backend_id": backend_id, "detail": err[:200], "path": path_row}
+
+    rc, _, _ = await run_cmd(["nc", "-z", "127.0.0.1", "1083"], timeout=5)
+    if rc != 0:
+        return {"ok": False, "reason": "hysteria2_socks_not_ready", "backend_id": backend_id, "path": path_row}
+
+    rc, out, err = await run_cmd(
+        [
+            "curl", "-s", "--max-time", "10",
+            "--proxy", "socks5://127.0.0.1:1083",
+            "-o", "/dev/null", "-w", "%{http_code}",
+            "http://www.gstatic.com/generate_204",
+        ],
+        timeout=15,
+    )
+    if rc != 0 or out.strip() not in ("200", "204", "301", "302"):
+        return {
+            "ok": False,
+            "reason": "hysteria2_probe_failed",
+            "backend_id": backend_id,
+            "http_code": out.strip(),
+            "detail": err[:200],
+            "path": path_row,
+        }
+    return {"ok": True, "backend_id": backend_id, "http_code": out.strip(), "path": path_row}
+
+
+async def _apply_active_backend(backend_id: str, reason: str) -> dict[str, Any]:
+    _refresh_backend_pool()
+    backend = _backend_by_id(backend_id)
+    if not backend:
+        raise RuntimeError(f"backend not found: {backend_id}")
+    if backend.get("drain"):
+        raise RuntimeError(f"backend {backend_id} is in drain state")
+
+    _write_active_backend_runtime_env(backend)
+    await _render_backend_runtime_configs(backend)
+    await _restart_backend_runtime_services()
+    state.active_backend_id = backend_id
+    for idx, vps in enumerate(state.vps_list):
+        if _backend_id_from_ip(str(vps.get("ip") or "")) == backend_id:
+            state.active_vps_idx = idx
+            break
+    await _set_marked_route_for_stack(state.active_stack)
+    try:
+        Path("/var/run/vpn-active-backend").write_text(backend_id, encoding="utf-8")
+    except Exception as exc:
+        logger.debug("Не удалось записать vpn-active-backend: %s", exc)
+    state.save()
+    return {
+        "backend_id": backend_id,
+        "ip": backend.get("ip"),
+        "reason": reason,
+    }
+
+
+async def _apply_backend_decision(decision: dict[str, Any]) -> dict[str, Any]:
+    if not decision.get("ok"):
+        raise RuntimeError(str(decision.get("reason") or "invalid_backend_decision"))
+    backend_id = str(decision.get("backend_id") or "")
+    apply_reason = str(decision.get("reason") or "decision_apply")
+    previous_backend_id = str(state.active_backend_id or "")
+    applied = await _apply_active_backend(backend_id, apply_reason)
+    verify = await _verify_hysteria2_backend_path(backend_id)
+    if not verify.get("ok"):
+        rollback: dict[str, Any] = {
+            "status": "rollback_skipped",
+            "backend_id": previous_backend_id,
+            "reason": "no_previous_backend",
+        }
+        if previous_backend_id and previous_backend_id != backend_id:
+            try:
+                rolled_back = await _apply_active_backend(previous_backend_id, "backend_apply_verify_failed")
+                rollback_verify = await _verify_hysteria2_backend_path(previous_backend_id)
+                rollback = {
+                    "status": "rollback_completed" if rollback_verify.get("ok") else "rollback_degraded",
+                    "applied": rolled_back,
+                    "verify": rollback_verify,
+                }
+            except Exception as exc:
+                rollback = {
+                    "status": "rollback_failed",
+                    "backend_id": previous_backend_id,
+                    "reason": str(exc),
+                }
+        return {
+            "decision": decision,
+            "applied": applied,
+            "verify": verify,
+            "rollback": rollback,
+            "status": "verification_failed",
+        }
+    reconcile = dm_reconcile_assignments_to_active_backend(
+        state.backend_assignments,
+        backend_id,
+        state.balancer_idle_ttl_seconds,
+        now=_now_ts(),
+    )
+    assignments = reconcile.get("assignments")
+    if isinstance(assignments, dict):
+        state.backend_assignments = assignments
+        state.save()
+    return {
+        "decision": decision,
+        "applied": applied,
+        "verify": verify,
+        "reconcile": reconcile,
+        "status": "applied",
+    }
+
+
+async def _probe_backend_health(backend: dict[str, Any]) -> dict[str, Any]:
+    result = dict(backend)
+    ip = str(backend.get("ip") or "")
+    ssh_port = int(backend.get("ssh_port", 22) or 22)
+    if not ip:
+        result["status"] = "down"
+        result["health_score"] = 0.0
+        return result
+    ping_ok = False
+    rtt_ms = 0.0
+    rc, out, _ = await run_cmd(["ping", "-c", "1", "-W", "2", ip], timeout=5)
+    if rc == 0:
+        ping_ok = True
+        m = re.search(r"time=([0-9.]+)\s*ms", out)
+        if m:
+            rtt_ms = float(m.group(1))
+    rc, _, _ = await run_cmd(["nc", "-z", "-w", "3", ip, str(ssh_port)], timeout=5)
+    ssh_ok = rc == 0
+    if ping_ok and ssh_ok:
+        result["status"] = "healthy"
+        result["health_score"] = 100.0 if rtt_ms <= 0 else max(40.0, 200.0 - rtt_ms)
+        result["last_ok_ts"] = _now_ts()
+        result["last_rtt_ms"] = rtt_ms
+    elif ping_ok or ssh_ok:
+        result["status"] = "degraded"
+        result["health_score"] = 40.0
+        result["last_rtt_ms"] = rtt_ms
+    else:
+        result["status"] = "down"
+        result["health_score"] = 0.0
+        result["last_rtt_ms"] = 0.0
+    if backend.get("drain"):
+        result["status"] = "degraded"
+    return result
+
+
+async def _refresh_backend_health() -> None:
+    _refresh_backend_pool()
+    if not state.backends:
+        return
+    updated = []
+    for backend in state.backends:
+        updated.append(await _probe_backend_health(backend))
+    state.backends = updated
+    active = state.active_backend
+    if active and active.get("status") == "down":
+        replacement = _select_backend_for_route_class("vpn_default")
+        if replacement and replacement.get("id") != active.get("id"):
+            try:
+                await _apply_active_backend(str(replacement["id"]), "active_backend_down")
+                alert(f"🔄 Active backend переключён: `{active.get('id')}` → `{replacement.get('id')}`")
+            except Exception as exc:
+                logger.error("Не удалось переключить active backend: %s", exc)
+    state.save()
 
 
 def _functional_mode() -> str:
@@ -1805,8 +2526,9 @@ async def direct_uplink_available() -> bool:
 
 async def speedtest_iperf_vps() -> float:
     """Замер download-скорости от VPS через iperf3 (tier-2 туннель). Возвращает Mbps."""
+    tunnel_ip = _active_backend_tunnel_ip()
     cmd = [
-        "iperf3", "-c", VPS_TUNNEL_IP,
+        "iperf3", "-c", tunnel_ip,
         "-p", "5201",
         "-t", "10",   # 10 секунд
         "-R",         # reverse: VPS → дом (download, как у стеков)
@@ -2577,7 +3299,16 @@ async def check_wg_peers() -> None:
 
 # Контейнеры фазы 1 — критичны, алерт если exited/unhealthy
 CRITICAL_CONTAINERS = frozenset(
-    ["telegram-bot", "socket-proxy", "nginx", "xray-client-xhttp", "xray-client-vision", "xray-client-cdn"]
+    [
+        "telegram-bot",
+        "socket-proxy",
+        "nginx",
+        "xray-client-xhttp",
+        "xray-client-vision",
+        "xray-client-cdn",
+        "sing-box-tuic-client",
+        "sing-box-trojan-client",
+    ]
 )
 # Контейнеры фазы 2 (мониторинг) — опциональны:
 # алерт только если контейнер СУЩЕСТВУЕТ но нездоров; отсутствие — норма
@@ -2829,10 +3560,11 @@ async def probe_vps_reachability() -> None:
     сервиса нет. Для health score нам важнее реальная доступность VPS по
     data-plane, поэтому используем node-exporter на `VPS_TUNNEL_IP:9100`.
     """
+    tunnel_ip = _active_backend_tunnel_ip()
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(
-                f"http://{VPS_TUNNEL_IP}:9100/metrics",
+                f"http://{tunnel_ip}:9100/metrics",
                 timeout=aiohttp.ClientTimeout(total=5),
             ) as resp:
                 if resp.status == 200:
@@ -3129,6 +3861,95 @@ async def _resolve_ipv4(host: str) -> list[str]:
         return await loop.run_in_executor(None, _do_resolve)
     except Exception:
         return []
+
+
+def _server_mode() -> str:
+    return str(os.getenv("SERVER_MODE", "hosted") or "hosted").strip().lower()
+
+
+def _gateway_mode_enabled() -> bool:
+    return _server_mode() == "gateway"
+
+
+def _read_json_list(path: Path) -> list[dict[str, Any]]:
+    try:
+        if not path.is_file():
+            return []
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, list):
+            return [item for item in raw if isinstance(item, dict)]
+    except Exception:
+        pass
+    return []
+
+
+def _write_json_list(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+async def _detect_gateway_lan_ips() -> list[str]:
+    if not _gateway_mode_enabled():
+        return []
+    lan_subnet = os.getenv("LAN_SUBNET", "")
+    home_server_ip = os.getenv("HOME_SERVER_IP", "")
+    if not lan_subnet:
+        return []
+    try:
+        rc, out, _ = await run_cmd(["conntrack", "-L", "--output", "extended"], timeout=10)
+        if rc != 0:
+            return []
+        lan_ips: set[str] = set()
+        net_prefix = ".".join(lan_subnet.split(".")[:3])
+        for line in out.splitlines():
+            m = re.search(r"src=(\d+\.\d+\.\d+\.\d+)", line)
+            if not m:
+                continue
+            ip = m.group(1)
+            if ip.startswith(net_prefix) and ip != home_server_ip:
+                lan_ips.add(ip)
+        return sorted(lan_ips)
+    except Exception:
+        return []
+
+
+async def _list_lan_clients() -> list[dict[str, Any]]:
+    rows = _read_json_list(GATEWAY_LAN_CLIENTS_FILE)
+    observed_ips = await _detect_gateway_lan_ips()
+    by_ip = {str(row.get("src_ip") or ""): dict(row) for row in rows}
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["observed"] = str(item.get("src_ip") or "") in observed_ips
+        enriched.append(item)
+    for ip in observed_ips:
+        if ip in by_ip:
+            continue
+        enriched.append(
+            {
+                "id": f"lan-{ip.replace('.', '-')}",
+                "name": ip,
+                "src_ip": ip,
+                "enabled": True,
+                "observed": True,
+                "source": "observed",
+            }
+        )
+    return enriched
+
+
+def _list_lan_prefs() -> list[dict[str, Any]]:
+    return _read_json_list(GATEWAY_LAN_PREFS_FILE)
+
+
+async def _resolve_source_identity(chat_id: str = "", source_ip: str = "") -> dict[str, str]:
+    if chat_id:
+        return {"identity_type": "vpn_client", "identity_id": str(chat_id), "source_ip": str(source_ip or "")}
+    if _gateway_mode_enabled() and source_ip:
+        for row in await _list_lan_clients():
+            if str(row.get("src_ip") or "") == str(source_ip):
+                return {"identity_type": "lan_client", "identity_id": str(row.get("id") or ""), "source_ip": str(source_ip)}
+    return {"identity_type": "unknown", "identity_id": "", "source_ip": str(source_ip or "")}
 
 
 async def _resolve_ipv4_for_path(host: str, client_path: str) -> list[str]:
@@ -3538,15 +4359,15 @@ async def _health_quick_checks() -> list[CheckResult]:
     else:
         results.append(CheckResult("wg1_active", "warn", "wg1 не найден (нет WG клиентов?)", weight=3))
 
-    # 10. xray-client* (хотя бы один)
-    xray = [k for k in state.docker_health if "xray-client" in k]
-    xray_ok = sum(1 for c in xray if state.docker_health.get(c) == 1)
-    if xray and xray_ok > 0:
-        results.append(CheckResult("xray_client", "ok", f"{xray_ok}/{len(xray)} живы", weight=3))
-    elif xray:
-        results.append(CheckResult("xray_client", "fail", "все xray-client упали", weight=3))
+    # 10. tunnel client containers (xray/sing-box)
+    vpn_clients = [k for k in state.docker_health if "xray-client" in k or "sing-box-" in k]
+    vpn_clients_ok = sum(1 for c in vpn_clients if state.docker_health.get(c) == 1)
+    if vpn_clients and vpn_clients_ok > 0:
+        results.append(CheckResult("vpn_client_containers", "ok", f"{vpn_clients_ok}/{len(vpn_clients)} живы", weight=3))
+    elif vpn_clients:
+        results.append(CheckResult("vpn_client_containers", "fail", "все client-containers упали", weight=3))
     else:
-        results.append(CheckResult("xray_client", "warn", "контейнеры не обнаружены", weight=3))
+        results.append(CheckResult("vpn_client_containers", "warn", "контейнеры не обнаружены", weight=3))
 
     return results
 
@@ -3780,7 +4601,7 @@ def _hc_fernet_key() -> CheckResult:
 async def _hc_vps_ssh() -> CheckResult:
     if state.last_rtt <= 0:
         return CheckResult("vps_ssh_audit", "warn", "tier-2 туннель не установлен, SSH пропущен", weight=3, tier="deep")
-    vps_tunnel_ip = VPS_TUNNEL_IP or "10.177.2.2"
+    vps_tunnel_ip = _active_backend_tunnel_ip()
     ssh_key  = os.getenv("VPS_SSH_KEY", "/root/.ssh/vpn_id_ed25519")
     ssh_user = os.getenv("BACKUP_VPS_USER", "sysadmin")
     rc, out, _ = await run_cmd(
@@ -4947,6 +5768,7 @@ async def monitoring_loop() -> None:
             # Каждые 60 сек: проверка доступности VPS через Tier-2
             if now - last_heartbeat >= 60:
                 await probe_vps_reachability()
+                await _refresh_backend_health()
                 last_heartbeat = now
 
             # Каждые 5 мин: внешний IP, диск, small speedtest, блок. сайты, upload
@@ -5115,6 +5937,74 @@ class VpsInstallRequest(BaseModel):
     password: str
     ssh_port: int = 22
 
+class BackendRequest(BaseModel):
+    ip: str
+    ssh_port: int = 22
+    tunnel_ip: str = ""
+    weight: int = 100
+
+
+class BackendToggleRequest(BaseModel):
+    id: str
+
+
+class BalancerReassignRequest(BaseModel):
+    route_class: str = "all"
+
+
+class BalancerSwitchRequest(BaseModel):
+    backend_id: str
+
+
+class BalancerReconcileRequest(BaseModel):
+    backend_id: str = ""
+
+
+class VpsDiagnoseRequest(BaseModel):
+    ip: str
+
+
+class DecisionExplainRequest(BaseModel):
+    domain: str
+    chat_id: str = ""
+    source_ip: str = ""
+
+
+class DecisionChooseBackendRequest(BaseModel):
+    backend_id: str = ""
+    route_class: str = "vpn_default"
+    mode: str = "auto"
+
+
+class DecisionApplyBackendRequest(BaseModel):
+    backend_id: str
+    reason: str = "decision_apply"
+    decision_source: str = "decision_api"
+
+
+class LanClientUpsertRequest(BaseModel):
+    id: str = ""
+    name: str
+    src_ip: str
+    enabled: bool = True
+
+
+class LanClientRemoveRequest(BaseModel):
+    id: str
+
+
+class LanBackendPrefAddRequest(BaseModel):
+    lan_client_id: str
+    match_type: str
+    match_value: str
+    backend_id: str
+    enabled: bool = True
+
+
+class LanBackendPrefRemoveRequest(BaseModel):
+    id: str
+
+
 class DpiServiceRequest(BaseModel):
     name: str = ""
     display: Optional[str] = None
@@ -5142,6 +6032,7 @@ class FunctionalModeRequest(BaseModel):
 @app.get("/status")
 async def get_status(_: bool = Depends(_auth)):
     _normalize_functional_state()
+    _refresh_backend_pool()
     disk = psutil.disk_usage("/")
     ram  = psutil.virtual_memory()
     result: dict[str, Any] = {
@@ -5157,6 +6048,9 @@ async def get_status(_: bool = Depends(_auth)):
         "failover_in_progress": state.failover_in_progress,
         "plugins": plugins.names_list(),
         "vps_list": state.vps_list,
+        "backends": state.backends,
+        "active_backend": state.active_backend,
+        "balancer": _balancer_snapshot(),
         "system": {
             "disk_percent": disk.percent,
             "ram_percent": ram.percent,
@@ -5171,28 +6065,11 @@ async def get_status(_: bool = Depends(_auth)):
         "latency_catalog": _latency_catalog_status(),
     }
 
-    # Gateway Mode: добавляем счётчик LAN-клиентов из conntrack
-    server_mode = os.getenv("SERVER_MODE", "hosted")
-    lan_subnet = os.getenv("LAN_SUBNET", "")
-    home_server_ip = os.getenv("HOME_SERVER_IP", "")
-    if server_mode == "gateway" and lan_subnet:
-        try:
-            rc, out, _ = await run_cmd(
-                ["conntrack", "-L", "--output", "extended"],
-                timeout=10,
-            )
-            lan_ips: set[str] = set()
-            net_prefix = ".".join(lan_subnet.split(".")[:3])  # напр. "192.168.1"
-            for line in out.splitlines():
-                m = re.search(r"src=(\d+\.\d+\.\d+\.\d+)", line)
-                if m:
-                    ip = m.group(1)
-                    if ip.startswith(net_prefix) and ip != home_server_ip:
-                        lan_ips.add(ip)
-            result["lan_clients"] = len(lan_ips)
-            result["lan_client_ips"] = sorted(lan_ips)
-        except Exception:
-            pass
+    result["server_mode"] = _server_mode()
+    if _gateway_mode_enabled():
+        lan_ips = await _detect_gateway_lan_ips()
+        result["lan_clients"] = len(lan_ips)
+        result["lan_client_ips"] = lan_ips
 
     return result
 
@@ -5435,6 +6312,7 @@ async def get_peer_list(_: bool = Depends(_auth)):
 
 @app.get("/vps/list")
 async def get_vps_list(_: bool = Depends(_auth)):
+    _refresh_backend_pool()
     vps_list = list(state.vps_list)
     # Всегда включаем первичный VPS из конфига если он не в списке
     if VPS_IP and not any(v["ip"] == VPS_IP for v in vps_list):
@@ -5443,7 +6321,114 @@ async def get_vps_list(_: bool = Depends(_auth)):
             "ssh_port": int(os.getenv("VPS_SSH_PORT", "443")),
             "tunnel_ip": VPS_TUNNEL_IP,
         })
-    return {"vps_list": vps_list, "active_idx": state.active_vps_idx}
+    return {"vps_list": vps_list, "active_idx": state.active_vps_idx, "backends": state.backends}
+
+
+@app.get("/backends")
+async def get_backends(_: bool = Depends(_auth)):
+    return await get_decision_backends(_)
+
+
+@app.get("/decision/backends")
+async def get_decision_backends(_: bool = Depends(_auth)):
+    _refresh_backend_pool()
+    return {"backends": state.backends, "balancer": _balancer_snapshot()}
+
+
+@app.get("/balancer/status")
+async def get_balancer_status(_: bool = Depends(_auth)):
+    return await get_decision_status(_)
+
+
+@app.get("/decision/status")
+async def get_decision_status(_: bool = Depends(_auth)):
+    return _balancer_snapshot()
+
+
+@app.get("/balancer/assignments")
+async def get_balancer_assignments(_: bool = Depends(_auth)):
+    return await get_decision_assignments(_)
+
+
+@app.get("/decision/assignments")
+async def get_decision_assignments(_: bool = Depends(_auth)):
+    snapshot = _balancer_snapshot()
+    return {"assignments": snapshot["assignments"], "idle_ttl_seconds": snapshot["idle_ttl_seconds"]}
+
+
+@app.get("/decision/backend-paths")
+async def get_decision_backend_paths(_: bool = Depends(_auth)):
+    snapshot = _balancer_snapshot()
+    return {
+        "execution_mode": snapshot.get("execution_mode"),
+        "active_backend_id": snapshot.get("active_backend_id"),
+        "backend_paths": snapshot.get("backend_paths", []),
+    }
+
+
+@app.get("/gateway/lan-clients")
+async def get_gateway_lan_clients(_: bool = Depends(_auth)):
+    if not _gateway_mode_enabled():
+        raise HTTPException(status_code=409, detail="gateway mode is not enabled")
+    return {"server_mode": _server_mode(), "lan_clients": await _list_lan_clients()}
+
+
+@app.get("/gateway/lan-prefs")
+async def get_gateway_lan_prefs(_: bool = Depends(_auth)):
+    if not _gateway_mode_enabled():
+        raise HTTPException(status_code=409, detail="gateway mode is not enabled")
+    return {"server_mode": _server_mode(), "lan_prefs": _list_lan_prefs()}
+
+
+@app.post("/decision/choose-backend")
+@limiter.limit("10/second")
+async def post_decision_choose_backend(request: Request, req: DecisionChooseBackendRequest, _: bool = Depends(_auth)):
+    _refresh_backend_pool()
+    mode = str(req.mode or "auto").strip().lower()
+    if mode == "manual":
+        decision = dm_choose_manual_backend(req.backend_id, state.backends, state.active_backend_id)
+    else:
+        decision = dm_choose_auto_backend(req.route_class, state.backends, state.active_backend_id)
+    if not decision.get("ok"):
+        raise HTTPException(status_code=503, detail=str(decision.get("reason") or "backend decision failed"))
+    return decision
+
+
+@app.post("/decision/apply-backend")
+@limiter.limit("10/second")
+async def post_decision_apply_backend(request: Request, req: DecisionApplyBackendRequest, _: bool = Depends(_auth)):
+    decision = {
+        "ok": True,
+        "backend_id": req.backend_id,
+        "reason": req.reason,
+        "decision_source": req.decision_source,
+        "active_backend_id": state.active_backend_id,
+    }
+    try:
+        return await _apply_backend_decision(decision)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/balancer/switch")
+@limiter.limit("10/second")
+async def post_balancer_switch(request: Request, req: BalancerSwitchRequest, _: bool = Depends(_auth)):
+    try:
+        decision = dm_choose_manual_backend(req.backend_id, state.backends, state.active_backend_id)
+        return await _apply_backend_decision(decision)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/balancer/auto-select")
+@limiter.limit("10/second")
+async def post_balancer_auto_select(request: Request, _: bool = Depends(_auth)):
+    _refresh_backend_pool()
+    try:
+        decision = dm_choose_auto_backend("vpn_default", state.backends, state.active_backend_id)
+        return await _apply_backend_decision(decision)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -6016,17 +7001,13 @@ async def post_graph(request: Request, req: GraphRequest, _: bool = Depends(_aut
         raise HTTPException(status_code=502, detail=f"Grafana недоступна: {exc}")
 
 
-@app.post("/check")
-@limiter.limit("10/second")
-async def post_check_domain(request: Request, _: bool = Depends(_auth)):
-    """Проверить домен: резолв → nft set lookup → manual lists."""
-    body = await request.json()
-    domain = body.get("domain", "").strip().lower().strip(".").split("/")[0]
+async def _check_domain_result(domain: str, persist_assignment: bool = True, chat_id: str = "", source_ip: str = "") -> dict[str, Any]:
     if not domain:
         raise HTTPException(status_code=400, detail="domain required")
     if not re.match(r'^[a-z0-9][a-z0-9.\-]*[a-z0-9]$', domain) or len(domain) > 253:
         raise HTTPException(status_code=400, detail="Invalid domain")
 
+    _refresh_backend_pool()
     result: dict[str, Any] = {"domain": domain}
 
     # 1. Резолв
@@ -6049,32 +7030,73 @@ async def post_check_domain(request: Request, _: bool = Depends(_auth)):
         if rc_d == 0:
             in_dynamic = True
 
-    result["in_latency_sensitive_direct"] = in_latency
-    result["in_blocked_static"]  = in_static
-    result["in_blocked_dynamic"] = in_dynamic
-
     # 3. Manual lists
     MANUAL_VPN    = Path("/etc/vpn-routes/manual-vpn.txt")
     MANUAL_DIRECT = Path("/etc/vpn-routes/manual-direct.txt")
-    result["in_manual_vpn"]    = MANUAL_VPN.exists()    and domain in MANUAL_VPN.read_text()
-    result["in_manual_direct"] = MANUAL_DIRECT.exists() and domain in MANUAL_DIRECT.read_text()
+    in_manual_vpn = MANUAL_VPN.exists() and domain in MANUAL_VPN.read_text()
+    in_manual_direct = MANUAL_DIRECT.exists() and domain in MANUAL_DIRECT.read_text()
     catalog_match = _match_latency_catalog_domain(domain)
-    result["latency_catalog_match"] = catalog_match
+    sources = _latency_route_source_tags(
+        domain,
+        {
+            "in_latency_sensitive_direct": in_latency,
+            "in_blocked_static": in_static,
+            "in_blocked_dynamic": in_dynamic,
+            "in_manual_vpn": in_manual_vpn,
+            "in_manual_direct": in_manual_direct,
+        },
+    )
+    source_identity = await _resolve_source_identity(chat_id=chat_id, source_ip=source_ip)
 
-    # 4. Итоговый вердикт
-    if in_latency:
-        result["verdict"] = "latency_sensitive_direct"
-    elif result["in_manual_vpn"] or in_static or in_dynamic:
-        result["verdict"] = "vpn"
-    elif result["in_manual_direct"]:
-        result["verdict"] = "direct"
-    else:
-        result["verdict"] = "unknown"
+    context = dm_build_domain_context(
+        domain=domain,
+        ips=ips,
+        in_latency_sensitive_direct=in_latency,
+        in_blocked_static=in_static,
+        in_blocked_dynamic=in_dynamic,
+        in_manual_vpn=in_manual_vpn,
+        in_manual_direct=in_manual_direct,
+        latency_catalog_match=catalog_match,
+        sources=sources,
+        chat_id=chat_id,
+        source_ip=source_identity.get("source_ip", ""),
+        identity_type=source_identity.get("identity_type", "unknown"),
+        identity_id=source_identity.get("identity_id", ""),
+    )
+    result.update(context)
 
-    result["sources"] = _latency_route_source_tags(domain, result)
-    if catalog_match:
-        result["latency_service"] = catalog_match.get("display")
-        result["latency_service_id"] = catalog_match.get("service_id")
+    route_resolution = dm_resolve_route(
+        context,
+        dm_build_decision_state(
+            state.backends,
+            state.backend_assignments,
+            state.balancer_idle_ttl_seconds,
+            state.active_backend_id,
+            client_preferences=_load_client_backend_prefs(chat_id),
+            lan_clients=await _list_lan_clients() if _gateway_mode_enabled() else [],
+            lan_client_preferences=_list_lan_prefs() if _gateway_mode_enabled() else [],
+            execution_mode="single_active_backend",
+        ),
+        now=_now_ts(),
+    )
+    result["route_mode"] = route_resolution.get("route_mode")
+    result["route_class"] = route_resolution.get("route_class")
+    result["decision_source"] = route_resolution.get("decision_source")
+    result["effective_backend_id"] = route_resolution.get("effective_backend_id")
+    result["backend_assignment"] = route_resolution.get("backend_assignment")
+    result["backend"] = route_resolution.get("backend")
+    result["fallback_reason"] = route_resolution.get("fallback_reason")
+    result["matched_preference"] = route_resolution.get("matched_preference")
+    result["preference_status"] = route_resolution.get("preference_status")
+    result["preference_reason"] = route_resolution.get("preference_reason")
+    result["identity_type"] = context.get("identity_type")
+    result["identity_id"] = context.get("identity_id")
+    result["source_ip"] = context.get("source_ip")
+    result["backend_paths"] = _backend_path_snapshot()
+    updated_assignments = route_resolution.get("updated_assignments")
+    if persist_assignment and isinstance(updated_assignments, dict):
+        state.backend_assignments = updated_assignments
+        state.save()
 
     promoted = _record_latency_learning_observation(
         domain,
@@ -6088,6 +7110,30 @@ async def post_check_domain(request: Request, _: bool = Depends(_auth)):
         asyncio.create_task(_maybe_apply_latency_learning_updates(f"/check promoted {domain}"))
 
     return result
+
+
+@app.post("/check")
+@limiter.limit("10/second")
+async def post_check_domain(request: Request, _: bool = Depends(_auth)):
+    """Проверить домен: резолв → nft set lookup → manual lists."""
+    body = await request.json()
+    domain = body.get("domain", "").strip().lower().strip(".").split("/")[0]
+    chat_id = str(body.get("chat_id", "") or "").strip()
+    source_ip = str(body.get("source_ip", "") or "").strip()
+    return await _check_domain_result(domain, persist_assignment=True, chat_id=chat_id, source_ip=source_ip)
+
+
+@app.post("/decision/explain-domain")
+@limiter.limit("10/second")
+async def post_decision_explain_domain(request: Request, req: DecisionExplainRequest, _: bool = Depends(_auth)):
+    return await post_decision_resolve_domain(request, req, _)
+
+
+@app.post("/decision/resolve-domain")
+@limiter.limit("10/second")
+async def post_decision_resolve_domain(request: Request, req: DecisionExplainRequest, _: bool = Depends(_auth)):
+    domain = req.domain.strip().lower().strip(".").split("/")[0]
+    return await _check_domain_result(domain, persist_assignment=False, chat_id=req.chat_id, source_ip=req.source_ip)
 
 
 @app.post("/diagnose/{device}")
@@ -6151,19 +7197,47 @@ async def post_diagnose(request: Request, device: str, _: bool = Depends(_auth))
     return results
 
 
+@app.post("/vps/diagnose")
+@limiter.limit("10/second")
+async def post_diagnose_vps(request: Request, req: VpsDiagnoseRequest, _: bool = Depends(_auth)):
+    backend = _backend_by_id(_backend_id_from_ip(req.ip))
+    if not backend:
+        backend = _normalize_backend_entry({"ip": req.ip, "ssh_port": 22})
+    result = await _probe_backend_health(backend)
+    return {
+        "status": result.get("status", "unknown"),
+        "latency_ms": result.get("last_rtt_ms", 0.0),
+        "backend_id": result.get("id"),
+        "ip": result.get("ip"),
+        "drain": bool(result.get("drain", False)),
+    }
+
+
 @app.post("/vps/add")
 @limiter.limit("10/second")
 async def post_vps_add(request: Request, req: VpsRequest, _: bool = Depends(_auth)):
+    backend_req = BackendRequest(ip=req.ip, ssh_port=req.ssh_port, tunnel_ip=req.tunnel_ip, weight=100)
+    return await post_backends_add(request, backend_req, _)
+
+
+@app.post("/backends/add")
+@limiter.limit("10/second")
+async def post_backends_add(request: Request, req: BackendRequest, _: bool = Depends(_auth)):
     for v in state.vps_list:
         if v["ip"] == req.ip:
-            raise HTTPException(status_code=409, detail="VPS уже добавлен")
+            raise HTTPException(status_code=409, detail="Backend уже добавлен")
     state.vps_list.append({
         "ip": req.ip, "ssh_port": req.ssh_port,
         "tunnel_ip": req.tunnel_ip or f"10.177.2.{len(state.vps_list) * 4 + 2}",
         "active": True,
+        "weight": max(1, int(req.weight or 100)),
+        "drain": False,
     })
+    _refresh_backend_pool()
+    if not state.active_backend_id:
+        state.active_backend_id = _backend_id_from_ip(req.ip)
     state.save()
-    return {"status": "added", "ip": req.ip}
+    return {"status": "added", "backend": next((b for b in state.backends if b["ip"] == req.ip), None)}
 
 
 @app.post("/vps/install")
@@ -6230,13 +7304,178 @@ async def _run_vps_install(ip: str, password: str, ssh_port: int) -> None:
 @app.post("/vps/remove")
 @limiter.limit("10/second")
 async def post_vps_remove(request: Request, req: VpsRequest, _: bool = Depends(_auth)):
+    return await post_backends_remove(request, BackendRequest(ip=req.ip, ssh_port=req.ssh_port, tunnel_ip=req.tunnel_ip), _)
+
+
+@app.post("/backends/remove")
+@limiter.limit("10/second")
+async def post_backends_remove(request: Request, req: BackendRequest, _: bool = Depends(_auth)):
     before = len(state.vps_list)
     state.vps_list = [v for v in state.vps_list if v["ip"] != req.ip]
     if len(state.vps_list) == before:
-        raise HTTPException(status_code=404, detail="VPS не найден")
+        raise HTTPException(status_code=404, detail="Backend не найден")
     state.active_vps_idx = 0
+    _refresh_backend_pool()
+    if state.active_backend:
+        try:
+            _write_active_backend_runtime_env(state.active_backend or {})
+        except Exception as exc:
+            logger.warning("Не удалось записать runtime env active backend: %s", exc)
     state.save()
     return {"status": "removed", "ip": req.ip}
+
+
+@app.post("/backends/drain")
+@limiter.limit("10/second")
+async def post_backends_drain(request: Request, req: BackendToggleRequest, _: bool = Depends(_auth)):
+    _refresh_backend_pool()
+    target = _backend_by_id(req.id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Backend не найден")
+    for v in state.vps_list:
+        if _backend_id_from_ip(str(v.get("ip") or "")) == req.id:
+            v["drain"] = True
+    _refresh_backend_pool()
+    state.save()
+    return {"status": "draining", "backend": _backend_by_id(req.id)}
+
+
+@app.post("/backends/undrain")
+@limiter.limit("10/second")
+async def post_backends_undrain(request: Request, req: BackendToggleRequest, _: bool = Depends(_auth)):
+    _refresh_backend_pool()
+    target = _backend_by_id(req.id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Backend не найден")
+    for v in state.vps_list:
+        if _backend_id_from_ip(str(v.get("ip") or "")) == req.id:
+            v["drain"] = False
+    _refresh_backend_pool()
+    state.save()
+    return {"status": "healthy", "backend": _backend_by_id(req.id)}
+
+
+@app.post("/balancer/reassign")
+@limiter.limit("10/second")
+async def post_balancer_reassign(request: Request, req: BalancerReassignRequest, _: bool = Depends(_auth)):
+    return await post_decision_reassign(request, req, _)
+
+
+@app.post("/decision/reassign")
+@limiter.limit("10/second")
+async def post_decision_reassign(request: Request, req: BalancerReassignRequest, _: bool = Depends(_auth)):
+    _refresh_backend_pool()
+    result = dm_reassign_route_class(
+        req.route_class,
+        state.backends,
+        state.backend_assignments,
+        state.balancer_idle_ttl_seconds,
+        active_backend_id=state.active_backend_id,
+        execution_mode="single_active_backend",
+        now=_now_ts(),
+    )
+    assignments = result.get("assignments")
+    if isinstance(assignments, dict):
+        state.backend_assignments = assignments
+        state.save()
+    if req.route_class == "all":
+        return {"status": "reassigned", "route_class": "all", "assignments": []}
+    return {
+        "status": "reassigned",
+        "route_class": req.route_class,
+        "assignment": result.get("assignment"),
+        "decision_source": result.get("decision_source"),
+    }
+
+
+@app.post("/decision/reconcile-assignments")
+@limiter.limit("10/second")
+async def post_decision_reconcile_assignments(request: Request, req: BalancerReconcileRequest, _: bool = Depends(_auth)):
+    _refresh_backend_pool()
+    backend_id = str(req.backend_id or state.active_backend_id or "").strip()
+    result = dm_reconcile_assignments_to_active_backend(
+        state.backend_assignments,
+        backend_id,
+        state.balancer_idle_ttl_seconds,
+        now=_now_ts(),
+    )
+    assignments = result.get("assignments")
+    if isinstance(assignments, dict):
+        state.backend_assignments = assignments
+        state.save()
+    return result
+
+
+@app.post("/gateway/lan-client/upsert")
+@limiter.limit("10/second")
+async def post_gateway_lan_client_upsert(request: Request, req: LanClientUpsertRequest, _: bool = Depends(_auth)):
+    if not _gateway_mode_enabled():
+        raise HTTPException(status_code=409, detail="gateway mode is not enabled")
+    now_iso = datetime.now().isoformat()
+    rows = _read_json_list(GATEWAY_LAN_CLIENTS_FILE)
+    item_id = str(req.id or f"lan-{req.src_ip.replace('.', '-')}")
+    new_item = {
+        "id": item_id,
+        "name": str(req.name).strip(),
+        "src_ip": str(req.src_ip).strip(),
+        "enabled": bool(req.enabled),
+        "updated_at": now_iso,
+    }
+    existing = next((row for row in rows if str(row.get("id") or "") == item_id), None)
+    if existing:
+        new_item["created_at"] = str(existing.get("created_at") or now_iso)
+        rows = [new_item if str(row.get("id") or "") == item_id else row for row in rows]
+    else:
+        new_item["created_at"] = now_iso
+        rows.append(new_item)
+    _write_json_list(GATEWAY_LAN_CLIENTS_FILE, rows)
+    return {"status": "ok", "lan_client": new_item}
+
+
+@app.post("/gateway/lan-client/remove")
+@limiter.limit("10/second")
+async def post_gateway_lan_client_remove(request: Request, req: LanClientRemoveRequest, _: bool = Depends(_auth)):
+    if not _gateway_mode_enabled():
+        raise HTTPException(status_code=409, detail="gateway mode is not enabled")
+    rows = _read_json_list(GATEWAY_LAN_CLIENTS_FILE)
+    new_rows = [row for row in rows if str(row.get("id") or "") != str(req.id)]
+    _write_json_list(GATEWAY_LAN_CLIENTS_FILE, new_rows)
+    prefs = [row for row in _read_json_list(GATEWAY_LAN_PREFS_FILE) if str(row.get("lan_client_id") or "") != str(req.id)]
+    _write_json_list(GATEWAY_LAN_PREFS_FILE, prefs)
+    return {"status": "removed", "id": req.id}
+
+
+@app.post("/gateway/lan-pref/add")
+@limiter.limit("10/second")
+async def post_gateway_lan_pref_add(request: Request, req: LanBackendPrefAddRequest, _: bool = Depends(_auth)):
+    if not _gateway_mode_enabled():
+        raise HTTPException(status_code=409, detail="gateway mode is not enabled")
+    now_iso = datetime.now().isoformat()
+    rows = _read_json_list(GATEWAY_LAN_PREFS_FILE)
+    item = {
+        "id": f"lan-pref-{int(time.time() * 1000)}",
+        "lan_client_id": str(req.lan_client_id).strip(),
+        "match_type": str(req.match_type).strip(),
+        "match_value": str(req.match_value).strip(),
+        "backend_id": str(req.backend_id).strip(),
+        "enabled": bool(req.enabled),
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    rows.append(item)
+    _write_json_list(GATEWAY_LAN_PREFS_FILE, rows)
+    return {"status": "ok", "lan_pref": item}
+
+
+@app.post("/gateway/lan-pref/remove")
+@limiter.limit("10/second")
+async def post_gateway_lan_pref_remove(request: Request, req: LanBackendPrefRemoveRequest, _: bool = Depends(_auth)):
+    if not _gateway_mode_enabled():
+        raise HTTPException(status_code=409, detail="gateway mode is not enabled")
+    rows = _read_json_list(GATEWAY_LAN_PREFS_FILE)
+    new_rows = [row for row in rows if str(row.get("id") or "") != str(req.id)]
+    _write_json_list(GATEWAY_LAN_PREFS_FILE, new_rows)
+    return {"status": "removed", "id": req.id}
 
 
 # ---------------------------------------------------------------------------
@@ -6668,6 +7907,8 @@ async def on_startup() -> None:
             "active": True,
         })
         logger.info(f"VPS {VPS_IP} добавлен в vps_list из конфига")
+    _refresh_backend_pool()
+    state.save()
 
     # Поднимаем активный стек при старте
     active_plugin = plugins.get(state.active_stack)

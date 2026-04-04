@@ -1,0 +1,34 @@
+{
+  "log": {
+    "level": "warn"
+  },
+  "inbounds": [
+    {
+      "type": "tuic",
+      "tag": "tuic-in",
+      "listen": "::",
+      "listen_port": ${TUIC_PORT},
+      "users": [
+        {
+          "uuid": "${TUIC_UUID}",
+          "password": "${TUIC_PASSWORD}"
+        }
+      ],
+      "congestion_control": "bbr",
+      "zero_rtt_handshake": false,
+      "tls": {
+        "enabled": true,
+        "server_name": "${TUIC_SERVER_NAME}",
+        "alpn": ["h3"],
+        "certificate_path": "/etc/sing-box/certs/server.crt",
+        "key_path": "/etc/sing-box/certs/server.key"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ]
+}

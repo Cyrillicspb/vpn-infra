@@ -28,6 +28,7 @@ ENV_FILE="/opt/vpn/.env"
 COMPACT_OUTPUT="${VPN_COMPACT_OUTPUT:-${VPN_NONINTERACTIVE:-}}"
 TUI_OUTPUT="${VPN_TUI:-}"
 INSTALL_RUN_STARTED_AT="${INSTALL_RUN_STARTED_AT:-$(date +%s)}"
+STRICT_BUNDLE_MODE="${VPN_STRICT_BUNDLE:-0}"
 export INSTALL_RUN_STARTED_AT
 
 # ── Логирование ───────────────────────────────────────────────────────────────
@@ -44,6 +45,13 @@ log_info()  { _log_emit "${BLUE}"   "[INFO]" "$*"; }
 log_ok()    { _log_emit "${GREEN}"  "[OK]"   "$*"; }
 log_warn()  { _log_emit "${YELLOW}" "[WARN]" "$*"; }
 log_error() { _log_emit "${RED}"    "[ERR]"  "$*" >&2; }
+
+strict_bundle_mode_enabled() {
+    case "${STRICT_BUNDLE_MODE}" in
+        1|true|TRUE|yes|YES|y|Y) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 bundled_package_root() {
     local candidates=()

@@ -145,8 +145,42 @@ class WatchdogClient:
     async def get_vps_list(self) -> dict:
         return await self._get("/vps/list")
 
+    async def get_backends(self) -> dict:
+        return await self._get("/decision/backends")
+
+    async def get_balancer_status(self) -> dict:
+        return await self._get("/decision/status")
+
+    async def get_backend_paths(self) -> dict:
+        return await self._get("/decision/backend-paths")
+
+    async def choose_backend(self, backend_id: str = "", route_class: str = "vpn_default", mode: str = "auto") -> dict:
+        return await self._post(
+            "/decision/choose-backend",
+            {"backend_id": backend_id, "route_class": route_class, "mode": mode},
+        )
+
+    async def apply_backend_decision(self, backend_id: str, reason: str = "decision_apply", decision_source: str = "decision_api") -> dict:
+        return await self._post(
+            "/decision/apply-backend",
+            {"backend_id": backend_id, "reason": reason, "decision_source": decision_source},
+            timeout=90,
+        )
+
+    async def switch_backend(self, backend_id: str) -> dict:
+        return await self._post("/balancer/switch", {"backend_id": backend_id}, timeout=90)
+
+    async def auto_select_backend(self) -> dict:
+        return await self._post("/balancer/auto-select", timeout=90)
+
     async def add_vps(self, ip: str, ssh_port: int = 443, tunnel_ip: str = "") -> dict:
         return await self._post("/vps/add", {"ip": ip, "ssh_port": ssh_port, "tunnel_ip": tunnel_ip})
+
+    async def add_backend(self, ip: str, ssh_port: int = 443, tunnel_ip: str = "", weight: int = 100) -> dict:
+        return await self._post(
+            "/backends/add",
+            {"ip": ip, "ssh_port": ssh_port, "tunnel_ip": tunnel_ip, "weight": weight},
+        )
 
     async def install_vps(self, ip: str, password: str, ssh_port: int = 22) -> dict:
         """Запустить полную установку VPS через add-vps.sh (202 Accepted, прогресс в Telegram)."""
@@ -158,6 +192,24 @@ class WatchdogClient:
 
     async def remove_vps(self, ip: str) -> dict:
         return await self._post("/vps/remove", {"ip": ip})
+
+    async def remove_backend(self, ip: str) -> dict:
+        return await self._post("/backends/remove", {"ip": ip})
+
+    async def drain_backend(self, backend_id: str) -> dict:
+        return await self._post("/backends/drain", {"id": backend_id})
+
+    async def undrain_backend(self, backend_id: str) -> dict:
+        return await self._post("/backends/undrain", {"id": backend_id})
+
+    async def rebalance(self, route_class: str = "all") -> dict:
+        return await self._post("/decision/reassign", {"route_class": route_class})
+
+    async def reconcile_assignments(self, backend_id: str = "") -> dict:
+        payload = {}
+        if backend_id:
+            payload["backend_id"] = backend_id
+        return await self._post("/decision/reconcile-assignments", payload)
 
     # -----------------------------------------------------------------------
     # Graph / diagnostics / notify
@@ -175,8 +227,24 @@ class WatchdogClient:
     async def assess(self) -> dict:
         return await self._post("/assess")
 
-    async def check_domain(self, domain: str) -> dict:
-        return await self._post("/check", {"domain": domain})
+    async def check_domain(self, domain: str, chat_id: str = "", source_ip: str = "") -> dict:
+        payload = {"domain": domain}
+        if chat_id:
+            payload["chat_id"] = chat_id
+        if source_ip:
+            payload["source_ip"] = source_ip
+        return await self._post("/check", payload)
+
+    async def resolve_domain_decision(self, domain: str, chat_id: str = "", source_ip: str = "") -> dict:
+        payload = {"domain": domain}
+        if chat_id:
+            payload["chat_id"] = chat_id
+        if source_ip:
+            payload["source_ip"] = source_ip
+        return await self._post("/decision/resolve-domain", payload)
+
+    async def explain_domain_decision(self, domain: str, chat_id: str = "", source_ip: str = "") -> dict:
+        return await self.resolve_domain_decision(domain, chat_id=chat_id, source_ip=source_ip)
 
     async def get_latency_learning(self) -> dict:
         return await self._get("/latency/learning")
@@ -253,6 +321,36 @@ class WatchdogClient:
 
     async def get_rotation_log(self) -> dict:
         return await self._get("/rotation-log")
+
+    async def get_gateway_lan_clients(self) -> dict:
+        return await self._get("/gateway/lan-clients")
+
+    async def get_gateway_lan_prefs(self) -> dict:
+        return await self._get("/gateway/lan-prefs")
+
+    async def upsert_gateway_lan_client(self, name: str, src_ip: str, client_id: str = "", enabled: bool = True) -> dict:
+        payload = {"name": name, "src_ip": src_ip, "enabled": enabled}
+        if client_id:
+            payload["id"] = client_id
+        return await self._post("/gateway/lan-client/upsert", payload)
+
+    async def remove_gateway_lan_client(self, client_id: str) -> dict:
+        return await self._post("/gateway/lan-client/remove", {"id": client_id})
+
+    async def add_gateway_lan_pref(self, lan_client_id: str, match_type: str, match_value: str, backend_id: str, enabled: bool = True) -> dict:
+        return await self._post(
+            "/gateway/lan-pref/add",
+            {
+                "lan_client_id": lan_client_id,
+                "match_type": match_type,
+                "match_value": match_value,
+                "backend_id": backend_id,
+                "enabled": enabled,
+            },
+        )
+
+    async def remove_gateway_lan_pref(self, pref_id: str) -> dict:
+        return await self._post("/gateway/lan-pref/remove", {"id": pref_id})
 
     async def dpi_test(self, domains: list | None = None) -> dict:
         return await self._post("/dpi/test", {"domains": domains}, timeout=30)

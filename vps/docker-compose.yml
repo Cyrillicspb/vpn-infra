@@ -203,3 +203,47 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  trojan-server:
+    image: ghcr.io/sagernet/sing-box:latest
+    container_name: trojan-server
+    restart: always
+    profiles: ["extra-stacks"]
+    command: ["run", "-c", "/etc/sing-box/config.json"]
+    volumes:
+      - ./sing-box/trojan-server.json:/etc/sing-box/config.json:ro
+      - ./hysteria2:/etc/sing-box/certs:ro
+    network_mode: host
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z 127.0.0.1 8444 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  tuic-server:
+    image: ghcr.io/sagernet/sing-box:latest
+    container_name: tuic-server
+    restart: always
+    profiles: ["extra-stacks"]
+    command: ["run", "-c", "/etc/sing-box/config.json"]
+    volumes:
+      - ./sing-box/tuic-server.json:/etc/sing-box/config.json:ro
+      - ./hysteria2:/etc/sing-box/certs:ro
+    network_mode: host
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -zu 127.0.0.1 8448 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

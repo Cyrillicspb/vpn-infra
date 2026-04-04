@@ -1,0 +1,12 @@
+name: tuic
+display_name: "TUIC (QUIC fallback)"
+resilience: 2
+protocol: tuic
+transport: quic
+port: 8448
+socks_port: 1085
+tun_name: tun-tuic
+requires:
+  - sing-box-tuic-client
+  - udp-8448-open
+description: "Дополнительный QUIC-стек на sing-box. Используется как full-auto fallback."
