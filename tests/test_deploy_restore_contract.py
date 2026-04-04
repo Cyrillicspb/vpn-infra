@@ -224,6 +224,8 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('snapshot["backend_paths"]', watchdog_source)
         self.assertIn('"status": "verification_failed"', watchdog_source)
         self.assertIn('"status": "rollback_completed"', watchdog_source)
+        self.assertIn('rsync -a "$REPO_DIR/home/watchdog/decision_maker.py" "$REPO_DIR/watchdog/decision_maker.py"', (ROOT / "deploy.sh").read_text(encoding="utf-8"))
+        self.assertIn('rsync -a "${REPO_DIR}/home/watchdog/decision_maker.py" /opt/vpn/watchdog/decision_maker.py', (ROOT / "install-home.sh").read_text(encoding="utf-8"))
 
     def test_deploy_status_reads_explicit_release_state(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1511,6 +1511,12 @@ else
         fi
     done
 
+    mkdir -p /opt/vpn/watchdog
+    rsync -a "${REPO_DIR}/home/watchdog/watchdog.py" /opt/vpn/watchdog/watchdog.py
+    rsync -a "${REPO_DIR}/home/watchdog/decision_maker.py" /opt/vpn/watchdog/decision_maker.py
+    rsync -a --delete "${REPO_DIR}/home/watchdog/plugins/" /opt/vpn/watchdog/plugins/
+    log_ok "watchdog runtime синхронизирован из home/"
+
     if [[ ! -f "$COMPOSE_FILE" ]]; then
         die "docker-compose.yml не найден в /opt/vpn/"
     else

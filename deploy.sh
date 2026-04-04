@@ -862,6 +862,7 @@ sync_home_runtime() {
     rsync -a --delete "$REPO_DIR/home/nginx/" "$REPO_DIR/nginx/"
     rsync -a --delete "$REPO_DIR/home/sing-box/" "$REPO_DIR/sing-box/"
     rsync -a "$REPO_DIR/home/watchdog/watchdog.py" "$REPO_DIR/watchdog/watchdog.py"
+    rsync -a "$REPO_DIR/home/watchdog/decision_maker.py" "$REPO_DIR/watchdog/decision_maker.py"
     rsync -a --delete "$REPO_DIR/home/watchdog/plugins/" "$REPO_DIR/watchdog/plugins/"
     rsync -a --delete "$REPO_DIR/home/scripts/" "$REPO_DIR/scripts/"
     chmod +x "$REPO_DIR/scripts/"*.sh 2>/dev/null || true
