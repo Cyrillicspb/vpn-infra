@@ -2895,7 +2895,7 @@ async def selfheal_telegram_bot_runtime() -> bool:
     return False
 
 
-async def check_telegram_bot_runtime_sync() -> None:
+async def check_telegram_bot_runtime_sync(allow_selfheal: bool = True) -> None:
     """Проверить, что live container собран из актуального bot source, и при drift выполнить self-heal."""
     if state.docker_health.get("telegram-bot") != 1:
         state.bot_runtime_drift = False
@@ -2924,6 +2924,8 @@ async def check_telegram_bot_runtime_sync() -> None:
         state.bot_runtime_drift_detail = detail[:300] if detail else "container hashes unavailable"
 
     if now - state.bot_runtime_drift_since < BOT_DRIFT_CONFIRM_SECONDS:
+        return
+    if not allow_selfheal:
         return
     if now - state.bot_selfheal_last_ts < BOT_SELFHEAL_COOLDOWN_SECONDS:
         return
@@ -3031,7 +3033,7 @@ async def selfheal_compose_runtime() -> bool:
     return False
 
 
-async def check_compose_runtime_sync() -> None:
+async def check_compose_runtime_sync(allow_selfheal: bool = True) -> None:
     if not COMPOSE_SOURCE_FILE.exists() or not COMPOSE_RUNTIME_FILE.exists():
         state.compose_runtime_drift = False
         state.compose_runtime_drift_since = 0.0
@@ -3054,6 +3056,8 @@ async def check_compose_runtime_sync() -> None:
     state.compose_runtime_drift = True
     state.compose_runtime_drift_detail = "docker-compose.yml hash mismatch"
     if now - state.compose_runtime_drift_since < COMPOSE_DRIFT_CONFIRM_SECONDS:
+        return
+    if not allow_selfheal:
         return
     if now - state.compose_selfheal_last_ts < COMPOSE_SELFHEAL_COOLDOWN_SECONDS:
         return
@@ -3101,7 +3105,7 @@ async def schedule_watchdog_runtime_selfheal() -> bool:
         return False
 
 
-async def check_watchdog_runtime_sync() -> None:
+async def check_watchdog_runtime_sync(allow_selfheal: bool = True) -> None:
     if not WATCHDOG_SOURCE_FILE.exists() or not WATCHDOG_RUNTIME_FILE.exists():
         state.watchdog_runtime_drift = False
         state.watchdog_runtime_drift_since = 0.0
@@ -3126,9 +3130,19 @@ async def check_watchdog_runtime_sync() -> None:
     state.watchdog_runtime_drift_detail = "watchdog.py hash mismatch"
     if now - state.watchdog_runtime_drift_since < WATCHDOG_DRIFT_CONFIRM_SECONDS:
         return
+    if not allow_selfheal:
+        return
     if now - state.watchdog_selfheal_last_ts < WATCHDOG_SELFHEAL_COOLDOWN_SECONDS:
         return
     await schedule_watchdog_runtime_selfheal()
+
+
+async def _refresh_quick_health_state() -> None:
+    await check_containers()
+    await check_telegram_bot_runtime_sync(allow_selfheal=False)
+    await check_compose_runtime_sync(allow_selfheal=False)
+    await check_watchdog_runtime_sync(allow_selfheal=False)
+    await check_server_repo_sync()
 
 
 async def _git_show_hash(repo_dir: Path, ref: str, rel_path: str) -> tuple[str, str]:
@@ -4770,6 +4784,7 @@ class HealthChecker:
             self._alert_dedup_ts = 0.0  # сброс после восстановления
 
     async def run_quick(self) -> dict:
+        await _refresh_quick_health_state()
         results = await _health_quick_checks()
         results += _cached_functional_check_results()
         report  = self._compute(results, "quick")

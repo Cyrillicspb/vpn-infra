@@ -88,6 +88,15 @@ class DecisionMakerTests(unittest.TestCase):
         self.assertEqual(resolution["route_class"], "blocked_default")
         self.assertEqual(resolution["effective_backend_id"], "backend-a")
         self.assertEqual(resolution["desired_backend_path_family"], "hysteria2")
+        self.assertEqual(
+            resolution["desired_backend_path"],
+            {
+                "backend_id": "backend-a",
+                "family": "hysteria2",
+                "execution_mode": "single_active_backend",
+                "route_classes": ["blocked_default"],
+            },
+        )
 
     def test_build_decision_state_carries_execution_family(self) -> None:
         decision_state = decision_maker.build_decision_state(
@@ -98,6 +107,23 @@ class DecisionMakerTests(unittest.TestCase):
             desired_backend_path_family="hysteria2",
         )
         self.assertEqual(decision_state["desired_backend_path_family"], "hysteria2")
+
+    def test_build_backend_path_target_normalizes_shape(self) -> None:
+        target = decision_maker.build_backend_path_target(
+            "backend-a",
+            family="hysteria2",
+            execution_mode="single_active_backend",
+            route_classes=["blocked_default", ""],
+        )
+        self.assertEqual(
+            target,
+            {
+                "backend_id": "backend-a",
+                "family": "hysteria2",
+                "execution_mode": "single_active_backend",
+                "route_classes": ["blocked_default"],
+            },
+        )
 
     def test_resolve_route_prefers_client_backend_preference(self) -> None:
         decision_state = decision_maker.build_decision_state(

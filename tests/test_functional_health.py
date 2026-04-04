@@ -178,6 +178,47 @@ class FunctionalHealthTests(unittest.TestCase):
         self.assertEqual(assignment["backend_id"], "backend-198-51-100-10")
         self.assertGreater(assignment["expires_at_ts"], assignment["assigned_at_ts"])
 
+    def test_run_quick_refreshes_runtime_sync_state_without_selfheal(self) -> None:
+        watchdog.state.docker_health = {}
+        watchdog.state.bot_runtime_drift = True
+        watchdog.state.compose_runtime_drift = True
+        watchdog.state.watchdog_runtime_drift = True
+        watchdog.state.server_repo_drift = False
+        call_order: list[str] = []
+
+        async def _fake_check_containers() -> None:
+            call_order.append("containers")
+            watchdog.state.docker_health["telegram-bot"] = 1
+
+        async def _fake_check_bot_sync(*, allow_selfheal: bool = True) -> None:
+            call_order.append(f"bot:{allow_selfheal}")
+            watchdog.state.bot_runtime_drift = False
+
+        async def _fake_check_compose_sync(*, allow_selfheal: bool = True) -> None:
+            call_order.append(f"compose:{allow_selfheal}")
+            watchdog.state.compose_runtime_drift = False
+
+        async def _fake_check_watchdog_sync(*, allow_selfheal: bool = True) -> None:
+            call_order.append(f"watchdog:{allow_selfheal}")
+            watchdog.state.watchdog_runtime_drift = False
+
+        async def _fake_check_repo_sync() -> None:
+            call_order.append("repo")
+            watchdog.state.server_repo_drift = False
+
+        with mock.patch.object(watchdog, "check_containers", side_effect=_fake_check_containers):
+            with mock.patch.object(watchdog, "check_telegram_bot_runtime_sync", side_effect=_fake_check_bot_sync):
+                with mock.patch.object(watchdog, "check_compose_runtime_sync", side_effect=_fake_check_compose_sync):
+                    with mock.patch.object(watchdog, "check_watchdog_runtime_sync", side_effect=_fake_check_watchdog_sync):
+                        with mock.patch.object(watchdog, "check_server_repo_sync", side_effect=_fake_check_repo_sync):
+                            report = asyncio.run(watchdog.health_checker.run_quick())
+
+        self.assertEqual(call_order, ["containers", "bot:False", "compose:False", "watchdog:False", "repo"])
+        checks = {item["name"]: item for item in report["checks"]}
+        self.assertEqual(checks["telegram_bot_runtime_sync"]["status"], "ok")
+        self.assertEqual(checks["compose_runtime_sync"]["status"], "ok")
+        self.assertEqual(checks["watchdog_runtime_sync"]["status"], "ok")
+
     def test_backend_path_snapshot_reports_hysteria2_desired_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)

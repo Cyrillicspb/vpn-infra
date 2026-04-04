@@ -33,6 +33,20 @@ def build_decision_state(
     }
 
 
+def build_backend_path_target(
+    backend_id: str,
+    family: str = "hysteria2",
+    execution_mode: str = "single_active_backend",
+    route_classes: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    return {
+        "backend_id": str(backend_id or ""),
+        "family": str(family or "hysteria2"),
+        "execution_mode": str(execution_mode or "single_active_backend"),
+        "route_classes": [str(item) for item in (route_classes or []) if str(item or "").strip()],
+    }
+
+
 def build_domain_context(
     domain: str,
     ips: list[str],
@@ -498,6 +512,12 @@ def resolve_route(
         "effective_backend_id": explanation.get("effective_backend_id"),
         "execution_mode": decision_state.get("execution_mode"),
         "desired_backend_path_family": decision_state.get("desired_backend_path_family", "hysteria2"),
+        "desired_backend_path": build_backend_path_target(
+            str(explanation.get("effective_backend_id") or ""),
+            family=str(decision_state.get("desired_backend_path_family") or "hysteria2"),
+            execution_mode=str(decision_state.get("execution_mode") or "single_active_backend"),
+            route_classes=[str(explanation.get("route_class") or "")] if explanation.get("route_class") else [],
+        ),
         "fallback_reason": explanation.get("fallback_reason", ""),
         "backend_assignment": explanation.get("backend_assignment"),
         "backend": explanation.get("backend"),
