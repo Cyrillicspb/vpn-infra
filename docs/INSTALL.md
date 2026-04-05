@@ -89,7 +89,15 @@ curl -fsSL https://github.com/Cyrillicspb/vpn-infra/releases/download/vX.Y.Z/ins
 - SSH port и учётные данные для первоначального доступа;
 - Telegram bot token;
 - Telegram admin chat id;
-- опциональные CDN/DDNS параметры, если они реально используются.
+- DuckDNS hostname и token, если нужен DDNS для home ingress;
+- Cloudflare CDN параметры, только если вы отдельно включаете CDN-стек.
+
+## DDNS contract
+
+- installer поддерживает DDNS только через `DuckDNS`;
+- `Cloudflare CDN` и `DDNS` не смешиваются: Cloudflare здесь отдельный CDN-стек, а не DDNS provider;
+- при включённом DDNS installer запрашивает только `DuckDNS hostname` и `DuckDNS token`;
+- в `.env` для совместимости сохраняется `DDNS_PROVIDER=duckdns`.
 
 ## Что делает установка
 

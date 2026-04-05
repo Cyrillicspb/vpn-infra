@@ -515,9 +515,9 @@ phase0() {
         echo -e "${BOLD}  Опциональные компоненты:${NC}"
         ask USE_DDNS "Настроить DDNS? (y/N)"
         if [[ "${USE_DDNS,,}" == "y" ]]; then
-            ask DDNS_PROVIDER "Провайдер DDNS (duckdns/noip/cloudflare)"
-            ask HOME_DDNS_DOMAIN "DDNS домен для клиентского Endpoint / home ingress (например: myhome.duckdns.org)"
-            ask DDNS_TOKEN "DDNS токен (для DuckDNS: UUID с сайта duckdns.org, напр. a1b2c3d4-...)" yes
+            DDNS_PROVIDER="duckdns"
+            ask HOME_DDNS_DOMAIN "DuckDNS домен для клиентского Endpoint / home ingress (например: myhome.duckdns.org)"
+            ask DDNS_TOKEN "DuckDNS token (UUID с сайта duckdns.org, например: a1b2c3d4-...)" yes
             DDNS_DOMAIN="${HOME_DDNS_DOMAIN}"
             WG_HOST="${HOME_DDNS_DOMAIN}"
         else

@@ -52,6 +52,13 @@ class InstallerBundleContractTests(unittest.TestCase):
         self.assertIn('clean install должен запускаться только из полного release bundle', content)
         self.assertIn('installer GUI отсутствует локально — запускаем консольный установщик', content)
 
+    def test_setup_sh_uses_duckdns_only_ddns_prompt(self):
+        content = (ROOT / "setup.sh").read_text(encoding="utf-8")
+        self.assertNotIn("duckdns/noip/cloudflare", content)
+        self.assertIn('DDNS_PROVIDER="duckdns"', content)
+        self.assertIn("DuckDNS домен для клиентского Endpoint / home ingress", content)
+        self.assertIn("DuckDNS token", content)
+
     def test_common_sh_disables_ansi_when_stdout_is_not_a_tty(self):
         content = (ROOT / "common.sh").read_text(encoding="utf-8")
         self.assertIn('[[ -t 1 && "${TERM:-}" != "dumb" ]]', content)
@@ -79,6 +86,22 @@ class InstallerBundleContractTests(unittest.TestCase):
         self.assertIn("основной режим установки: `TUI`", content)
         self.assertIn("консольный режим: только fallback", content)
         self.assertNotIn("GUI installer как основной путь", content)
+
+    def test_install_contract_documents_duckdns_only(self):
+        docs = (ROOT / "docs" / "INSTALL.md").read_text(encoding="utf-8")
+        env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+        self.assertIn("installer поддерживает DDNS только через `DuckDNS`", docs)
+        self.assertIn("Cloudflare CDN` и `DDNS` не смешиваются", docs)
+        self.assertIn("DDNS_PROVIDER=          # duckdns only", env_example)
+        self.assertNotIn("duckdns | noip | cloudflare", env_example)
+
+    def test_welcome_screen_is_keyboard_driven_and_small_terminal_safe(self):
+        content = (ROOT / "installers" / "gui" / "screens" / "welcome.py").read_text(encoding="utf-8")
+        self.assertIn('Binding("enter", "start"', content)
+        self.assertIn('Binding("space", "start"', content)
+        self.assertIn('self.query_one("#btn-start", Button).focus()', content)
+        self.assertIn("ScrollableContainer", content)
+        self.assertIn("max-height: 20;", content)
 
     def test_shell_installer_uses_consistent_compact_output_contract(self):
         install_sh = (ROOT / "install.sh").read_text(encoding="utf-8")
