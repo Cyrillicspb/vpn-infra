@@ -186,8 +186,24 @@ class DeployRestoreContractTests(unittest.TestCase):
 
     def test_watchdog_uses_source_tree_for_telegram_repo_sync(self):
         watchdog = (ROOT / "home" / "watchdog" / "watchdog.py").read_text(encoding="utf-8")
+        base_plugin = (ROOT / "home" / "watchdog" / "plugins" / "base.py").read_text(encoding="utf-8")
         self.assertIn('BOT_RUNTIME_DIR = Path("/opt/vpn/telegram-bot")', watchdog)
         self.assertIn('BOT_SOURCE_DIR = Path("/opt/vpn/home/telegram-bot")', watchdog)
+        self.assertIn("async def _ensure_active_stack_dataplane()", watchdog)
+        self.assertIn('table marked drift: ожидался default dev %s для стека %s, восстанавливаю маршрут', watchdog)
+        self.assertIn('Активный dataplane отсутствует: tun %s не найден для стека %s, запускаю self-heal', watchdog)
+        self.assertIn("Dataplane self-heal completed: стек %s, tun=%s", watchdog)
+        self.assertIn("await _ensure_active_stack_dataplane()", watchdog)
+        self.assertIn("ACTIVE_STACK_DATAPLANE_ALERT_COOLDOWN_SECONDS", watchdog)
+        self.assertIn("active_stack has socks but no tun", watchdog)
+        self.assertIn("active_stack_dataplane_alert_last_ts", watchdog)
+        self.assertIn("PROCESS_LOG_DIR = Path(\"/var/log/vpn\")", base_plugin)
+        self.assertIn("def process_log_path", base_plugin)
+        self.assertIn("def process_meta_path", base_plugin)
+        self.assertNotIn("stdout=subprocess.DEVNULL", base_plugin)
+        self.assertNotIn("stderr=subprocess.DEVNULL", base_plugin)
+        self.assertIn("log_file", base_plugin)
+        self.assertIn("started_at_ts", base_plugin)
 
     def test_admin_bot_texts_match_deploy_status_contract(self):
         admin_handler = (ROOT / "home" / "telegram-bot" / "handlers" / "admin.py").read_text(encoding="utf-8")

@@ -447,7 +447,7 @@ async def reg_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
         await cb.message.answer(
             "📖 <b>Как установить:</b>\n"
             "1. Скачайте AmneziaWG: "
-            "<a href='https://apps.apple.com/app/amneziawg/id6478942951'>iOS</a> | "
+            "<a href='https://apps.apple.com/ru/app/amneziawg/id6478942365'>iOS</a> | "
             "<a href='https://play.google.com/store/apps/details?id=org.amnezia.awg'>Android</a>\n"
             "2. Откройте приложение → \"+\" → \"Импортировать из QR-кода\" (или из файла)\n"
             "3. Включите переключатель — готово!\n\n"
@@ -519,7 +519,7 @@ async def reg_protocol(message: Message, state: FSMContext, **kw):
         await message.answer(
             "📖 <b>Как установить:</b>\n"
             "1. Скачайте AmneziaWG: "
-            "<a href='https://apps.apple.com/app/amneziawg/id6478942951'>iOS</a> | "
+            "<a href='https://apps.apple.com/ru/app/amneziawg/id6478942365'>iOS</a> | "
             "<a href='https://play.google.com/store/apps/details?id=org.amnezia.awg'>Android</a>\n"
             "2. Откройте приложение → \"+\" → \"Импортировать из QR-кода\" (или из файла)\n"
             "3. Включите переключатель — готово!\n\n"
@@ -1093,7 +1093,7 @@ async def cmd_help(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 # Кнопка «📋 Меню» (постоянная ReplyKeyboard)
 # ---------------------------------------------------------------------------
-@router.message(F.text == "📋 Меню", StateFilter("*"))
+@router.message(F.text.in_({"📋 Меню", "Меню"}), StateFilter("*"))
 async def btn_menu(message: Message, state: FSMContext, **kw):
     await state.clear()
     db: Database = kw.get("db")
@@ -2251,7 +2251,7 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
             "⚠️ <b>Конфигурация содержит приватный ключ!</b> Не передавайте никому.\n\n"
             "📱 <b>Установка на iOS/Android:</b>\n"
             "1. Установите приложение:\n"
-            "   • iOS: <a href='https://apps.apple.com/app/amneziawg/id6478942951'>AmneziaWG</a> / <a href='https://apps.apple.com/app/wireguard/id1441195209'>WireGuard</a>\n"
+            "   • iOS: <a href='https://apps.apple.com/ru/app/amneziawg/id6478942365'>AmneziaWG</a> / <a href='https://apps.apple.com/app/wireguard/id1441195209'>WireGuard</a>\n"
             "   • Android: <a href='https://play.google.com/store/apps/details?id=org.amnezia.awg'>AmneziaWG</a> / <a href='https://play.google.com/store/apps/details?id=com.wireguard.android'>WireGuard</a>\n"
             "2. Отсканируйте QR-код ниже или импортируйте .conf файл.",
             parse_mode="HTML",

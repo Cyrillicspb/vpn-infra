@@ -259,7 +259,7 @@ set -e
 TUNNEL_NAME="{name}"
 PROTOCOL="{protocol}"
 
-# Ручная установка: https://apps.apple.com/app/amneziavpn/id1600529900 (AWG)
+# Ручная установка: https://apps.apple.com/ru/app/amneziawg/id6478942365 (AWG)
 #                   https://apps.apple.com/app/wireguard/id1451685025 (WG)
 
 echo "============================================"
@@ -278,9 +278,9 @@ if [ "$PROTOCOL" = "awg" ]; then
     echo "[1/2] Проверка AmneziaVPN..."
     if ! [ -d "/Applications/AmneziaVPN.app" ]; then
         echo "  AmneziaVPN не установлен."
-        echo "  Установите из App Store: https://apps.apple.com/app/amneziavpn/id1600529900"
+        echo "  Установите из App Store: https://apps.apple.com/ru/app/amneziawg/id6478942365"
         echo "  Затем запустите этот скрипт ещё раз."
-        open "https://apps.apple.com/app/amneziavpn/id1600529900"
+        open "https://apps.apple.com/ru/app/amneziawg/id6478942365"
         read -p "  Нажмите Enter после установки..."
     fi
     echo "[2/2] Импорт конфига..."

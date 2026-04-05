@@ -1384,6 +1384,7 @@ class WatchdogState:
         self.watchdog_runtime_drift_detail: str = ""
         self.watchdog_runtime_drift_since: float = 0.0
         self.watchdog_selfheal_last_ts: float = 0.0
+        self.active_stack_dataplane_alert_last_ts: float = 0.0
         self.server_repo_drift: bool = False
         self.server_repo_drift_detail: str = ""
         self.server_repo_drift_since: float = 0.0
@@ -1468,6 +1469,7 @@ class WatchdogState:
             "watchdog_runtime_drift_detail": self.watchdog_runtime_drift_detail,
             "watchdog_runtime_drift_since": self.watchdog_runtime_drift_since,
             "watchdog_selfheal_last_ts": self.watchdog_selfheal_last_ts,
+            "active_stack_dataplane_alert_last_ts": self.active_stack_dataplane_alert_last_ts,
             "server_repo_drift": self.server_repo_drift,
             "server_repo_drift_detail": self.server_repo_drift_detail,
             "server_repo_drift_since": self.server_repo_drift_since,
@@ -1563,6 +1565,9 @@ class WatchdogState:
                 self.watchdog_runtime_drift_detail = data.get("watchdog_runtime_drift_detail", "")
                 self.watchdog_runtime_drift_since = float(data.get("watchdog_runtime_drift_since", 0.0) or 0.0)
                 self.watchdog_selfheal_last_ts = float(data.get("watchdog_selfheal_last_ts", 0.0) or 0.0)
+                self.active_stack_dataplane_alert_last_ts = float(
+                    data.get("active_stack_dataplane_alert_last_ts", 0.0) or 0.0
+                )
                 self.server_repo_drift = data.get("server_repo_drift", False)
                 self.server_repo_drift_detail = data.get("server_repo_drift_detail", "")
                 self.server_repo_drift_since = float(data.get("server_repo_drift_since", 0.0) or 0.0)
@@ -2750,6 +2755,7 @@ SERVER_REPO_DIR = Path("/opt/vpn")
 REPO_SYNC_CONFIRM_SECONDS = int(os.getenv("REPO_SYNC_CONFIRM_SECONDS", "600"))
 REPO_SYNC_FETCH_COOLDOWN_SECONDS = int(os.getenv("REPO_SYNC_FETCH_COOLDOWN_SECONDS", "1800"))
 REPO_SYNC_ALERT_COOLDOWN_SECONDS = int(os.getenv("REPO_SYNC_ALERT_COOLDOWN_SECONDS", "3600"))
+ACTIVE_STACK_DATAPLANE_ALERT_COOLDOWN_SECONDS = int(os.getenv("ACTIVE_STACK_DATAPLANE_ALERT_COOLDOWN_SECONDS", "900"))
 
 
 def _sha256_file(path: Path) -> str:
@@ -5593,6 +5599,73 @@ async def _set_marked_route_unreachable() -> None:
     logger.warning("table marked переведена в unreachable — активный tun отсутствует")
 
 
+async def _ensure_active_stack_dataplane() -> bool:
+    """Self-heal для активного стека: восстанавливает tun и table marked.
+
+    Нужен для случая, когда transport жив (например SOCKS hysteria2),
+    но tun2socks умер и policy-routing для клиентов/LAN остался без dataplane.
+    """
+    plugin = plugins.get(state.active_stack)
+    if not plugin or plugin.meta.get("direct_mode"):
+        return True
+
+    tun_name = plugin.meta.get("tun_name", f"tun-{state.active_stack}")
+    socks_port = _get_stack_socks_port(state.active_stack)
+    rc_tun, _, _ = await run_cmd(["ip", "link", "show", tun_name], timeout=3)
+    rc_route, route_out, _ = await run_cmd(["ip", "route", "show", "table", "marked"], timeout=3)
+    route_ok = rc_route == 0 and f"default dev {tun_name}" in route_out
+    rc_socks, _, _ = await run_cmd(["nc", "-z", "127.0.0.1", str(socks_port)], timeout=3)
+    socks_ready = rc_socks == 0
+    process_log = plugin.process_log_path(plugin.pid_file) if getattr(plugin, "pid_file", None) else None
+
+    if rc_tun == 0 and route_ok:
+        return True
+
+    now = time.time()
+    if rc_tun != 0 and socks_ready and (
+        now - state.active_stack_dataplane_alert_last_ts >= ACTIVE_STACK_DATAPLANE_ALERT_COOLDOWN_SECONDS
+    ):
+        state.active_stack_dataplane_alert_last_ts = now
+        state.save()
+        alert(
+            "⚠️ *active_stack has socks but no tun*\n"
+            f"Стек: `{state.active_stack}`\n"
+            f"SOCKS: `127.0.0.1:{socks_port}` отвечает\n"
+            f"TUN: `{tun_name}` отсутствует\n"
+            f"Лог процесса: `{process_log or 'n/a'}`\n"
+            "Запускаю dataplane self-heal."
+        )
+
+    if rc_tun != 0:
+        logger.warning(
+            "Активный dataplane отсутствует: tun %s не найден для стека %s, запускаю self-heal",
+            tun_name,
+            state.active_stack,
+        )
+        ok = await plugin.start()
+        if not ok:
+            logger.error("Self-heal dataplane не смог поднять стек %s", state.active_stack)
+            await _set_marked_route_unreachable()
+            return False
+        rc_tun, _, _ = await run_cmd(["ip", "link", "show", tun_name], timeout=5)
+
+    if rc_tun == 0 and not route_ok:
+        logger.warning(
+            "table marked drift: ожидался default dev %s для стека %s, восстанавливаю маршрут",
+            tun_name,
+            state.active_stack,
+        )
+
+    if rc_tun == 0 and await _set_marked_route_for_stack(state.active_stack):
+        _write_vpn_state_files(state.active_stack)
+        logger.info("Dataplane self-heal completed: стек %s, tun=%s", state.active_stack, tun_name)
+        return True
+
+    logger.error("Dataplane self-heal failed for active stack %s", state.active_stack)
+    await _set_marked_route_unreachable()
+    return False
+
+
 async def _do_switch(new_stack: str, reason: str) -> bool:
     """
     Make-before-break переключение стека.
@@ -5941,6 +6014,7 @@ async def monitoring_loop() -> None:
 
             # Каждые 60 сек: проверка доступности VPS через Tier-2
             if now - last_heartbeat >= 60:
+                await _ensure_active_stack_dataplane()
                 await probe_vps_reachability()
                 await _refresh_backend_health()
                 last_heartbeat = now
