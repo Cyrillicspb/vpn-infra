@@ -947,7 +947,9 @@ remote_state_get() {
 smoke_failures_from_file() {
     local file="$1"
     [[ -f "$file" ]] || return 0
-    awk '/^[[:space:]]+\[FAIL\][[:space:]]+/ { print $2 }' "$file" | sort -u
+    awk '
+        /^[[:space:]]+\[FAIL\][[:space:]]+[a-z0-9_]+[[:space:]]*$/ { print $2 }
+    ' "$file" | sort -u
 }
 
 collect_baseline_smoke_failures() {
@@ -1414,6 +1416,15 @@ verify_home_apply() {
     head_sha="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
     [[ "$head_sha" == "$TARGET_RELEASE_SHA" ]] || die "home runtime verify failed: repo HEAD ${head_sha:-empty} != target ${TARGET_RELEASE_SHA}"
 
+    if ! systemctl is-active --quiet dnsmasq || ! timeout 10 bash -lc 'dig +time=2 +tries=1 +short github.com @127.0.0.1 | grep -q .' ; then
+        log_warn "dnsmasq runtime verify failed, retry via restart"
+        systemctl restart dnsmasq || die "home runtime verify failed: dnsmasq restart failed"
+        sleep 2
+        systemctl is-active --quiet dnsmasq || die "home runtime verify failed: dnsmasq is not active after restart"
+        timeout 10 bash -lc 'dig +time=2 +tries=1 +short github.com @127.0.0.1 | grep -q .' \
+            || die "home runtime verify failed: dnsmasq does not resolve after restart"
+    fi
+
     if changed_between "$CURRENT_RELEASE_SHA" "$TARGET_RELEASE_SHA" home/telegram-bot/ || [[ "${FORCE_DEPLOY:-false}" == "true" ]]; then
         local running_id
         running_id="$(cd "$REPO_DIR" && docker compose ps -q telegram-bot 2>/dev/null | tr -d '\r\n' || true)"
@@ -1685,14 +1696,14 @@ do_deploy() {
     fetch_target_release || die "Не удалось получить target release"
     validate_preflight
 
-    collect_baseline_smoke_failures
-
     if [[ "$CURRENT_RELEASE_SHA" == "$TARGET_RELEASE_SHA" && "${FORCE_DEPLOY:-false}" != "true" ]]; then
         set_last_attempt "noop" "check" "release ${CURRENT_RELEASE_ID} already current"
         sync_state_to_vps || true
         log_info "Commit не изменился (${CURRENT_RELEASE_ID}) — deploy не требуется"
         return 0
     fi
+
+    collect_baseline_smoke_failures
 
     create_snapshot
     write_pending_release_state "prepare" "running" "preparing ${TARGET_RELEASE_ID}"

@@ -144,6 +144,9 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('docker compose -f "$REPO_DIR/docker-compose.yml" pull "${services[@]}"', deploy_script)
         self.assertIn('home_pull_remote_services', deploy_script)
         self.assertIn('docker compose build $bot_no_cache --build-arg GIT_HASH="$bot_git_hash" telegram-bot', deploy_script)
+        self.assertIn('^[[:space:]]+\\[FAIL\\][[:space:]]+[a-z0-9_]+[[:space:]]*$', deploy_script)
+        self.assertIn('dnsmasq runtime verify failed, retry via restart', deploy_script)
+        self.assertIn('systemctl restart dnsmasq || die "home runtime verify failed: dnsmasq restart failed"', deploy_script)
 
     def test_deploy_script_repairs_state_versions_from_release_sha(self):
         deploy_script = DEPLOY.read_text(encoding="utf-8")
@@ -157,6 +160,11 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('Origin sha:', deploy_script)
         self.assertIn('Mirror parity:', deploy_script)
         self.assertIn('Repo head:', deploy_script)
+        do_deploy_section = deploy_script.split("do_deploy() {", 1)[1].split("show_status()", 1)[0]
+        self.assertLess(
+            do_deploy_section.index('if [[ "$CURRENT_RELEASE_SHA" == "$TARGET_RELEASE_SHA" && "${FORCE_DEPLOY:-false}" != "true" ]]; then'),
+            do_deploy_section.index('collect_baseline_smoke_failures')
+        )
 
     def test_update_doc_describes_origin_authority_and_local_build_split(self):
         update_doc = (ROOT / "docs" / "UPDATE.md").read_text(encoding="utf-8")
