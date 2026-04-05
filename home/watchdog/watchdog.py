@@ -119,6 +119,8 @@ LATENCY_CATALOG_FALLBACKS = [
     Path("/opt/vpn/routes/latency-catalog-default.json"),
     Path(__file__).resolve().parents[1] / "routes" / "latency-catalog-default.json",
 ]
+
+BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
 FUNCTIONAL_MODE_OFF = "off"
 FUNCTIONAL_MODE_STAGED = "staged"
 FUNCTIONAL_MODE_ACTIVE = "active"
@@ -838,6 +840,24 @@ async def run_cmd_env(cmd: list[str], env_overrides: dict[str, str], timeout: in
         return 1, "", f"Timeout after {timeout}s"
     except Exception as exc:
         return 1, "", str(exc)
+
+
+def spawn_background_job(name: str, coro: Any) -> None:
+    """Запустить фоновой task надёжно и не дать ей потеряться после ответа API."""
+
+    async def _runner() -> None:
+        logger.info("Background job started: %s", name)
+        try:
+            await coro
+        except Exception:
+            logger.exception("Background job failed: %s", name)
+            raise
+        finally:
+            logger.info("Background job finished: %s", name)
+
+    task = asyncio.create_task(_runner(), name=name)
+    BACKGROUND_TASKS.add(task)
+    task.add_done_callback(BACKGROUND_TASKS.discard)
 
 
 def _notify_systemd(msg: bytes) -> None:
@@ -6868,8 +6888,8 @@ async def _service_update_task(service: str) -> None:
 @app.post("/deploy")
 @limiter.limit("10/second")
 async def post_deploy(request: Request, req: DeployRequest,
-                      bg: BackgroundTasks, _: bool = Depends(_auth)):
-    bg.add_task(_deploy_task, req)
+                      _: bool = Depends(_auth)):
+    spawn_background_job("deploy", _deploy_task(req))
     return {"status": "accepted"}
 
 
@@ -6933,8 +6953,8 @@ async def _rollback_task() -> None:
 
 @app.post("/rollback")
 @limiter.limit("10/second")
-async def post_rollback(request: Request, bg: BackgroundTasks, _: bool = Depends(_auth)):
-    bg.add_task(_rollback_task)
+async def post_rollback(request: Request, _: bool = Depends(_auth)):
+    spawn_background_job("rollback", _rollback_task())
     return {"status": "accepted"}
 
 

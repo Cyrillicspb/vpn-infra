@@ -225,6 +225,11 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertNotIn("stderr=subprocess.DEVNULL", base_plugin)
         self.assertIn("log_file", base_plugin)
         self.assertIn("started_at_ts", base_plugin)
+        self.assertIn("BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()", watchdog)
+        self.assertIn("def spawn_background_job(name: str, coro: Any) -> None:", watchdog)
+        self.assertIn('spawn_background_job("deploy", _deploy_task(req))', watchdog)
+        self.assertIn('spawn_background_job("rollback", _rollback_task())', watchdog)
+        self.assertIn("asyncio.create_task(_runner(), name=name)", watchdog)
 
     def test_admin_bot_texts_match_deploy_status_contract(self):
         admin_handler = (ROOT / "home" / "telegram-bot" / "handlers" / "admin.py").read_text(encoding="utf-8")
