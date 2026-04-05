@@ -26,6 +26,10 @@
   },
   "status": "ready",
   "message": "release applied",
+  "target_source": "origin",
+  "origin_sha": "fedcba9876543210fedcba9876543210fedcba98",
+  "mirror_sha": "fedcba9876543210fedcba9876543210fedcba98",
+  "mirror_parity": "ok",
   "backend_targets": [
     {"id": "backend-a", "ip": "198.51.100.10", "ssh_port": 22, "tunnel_ip": "10.177.2.2", "ordinal": 0},
     {"id": "backend-b", "ip": "203.0.113.20", "ssh_port": 22, "tunnel_ip": "10.177.2.6", "ordinal": 1}
@@ -57,6 +61,10 @@
   "phase": "apply-backends",
   "status": "running",
   "message": "applying backend release fedcba987654",
+  "target_source": "origin",
+  "origin_sha": "fedcba9876543210fedcba9876543210fedcba98",
+  "mirror_sha": "fedcba9876543210fedcba9876543210fedcba98",
+  "mirror_parity": "ok",
   "backend_targets": [
     {"id": "backend-a", "ip": "198.51.100.10", "ssh_port": 22, "tunnel_ip": "10.177.2.2", "ordinal": 0},
     {"id": "backend-b", "ip": "203.0.113.20", "ssh_port": 22, "tunnel_ip": "10.177.2.6", "ordinal": 1}
@@ -84,6 +92,10 @@
   "status": "success",
   "phase": "commit",
   "message": "release fedcba987654 applied",
+  "target_source": "origin",
+  "origin_sha": "fedcba9876543210fedcba9876543210fedcba98",
+  "mirror_sha": "fedcba9876543210fedcba9876543210fedcba98",
+  "mirror_parity": "ok",
   "backend_targets": [
     {"id": "backend-a", "ip": "198.51.100.10", "ssh_port": 22, "tunnel_ip": "10.177.2.2", "ordinal": 0},
     {"id": "backend-b", "ip": "203.0.113.20", "ssh_port": 22, "tunnel_ip": "10.177.2.6", "ordinal": 1}
@@ -110,6 +122,9 @@
 
 ## Behavioral Rules
 
+- `origin/master` или `origin/main` является единственным authoritative source для выбора `target release`.
+- `vps-mirror` не выбирает target release; он используется только как parity gate перед backend rollout.
+- `mirror_parity` должен быть `ok` для strict deploy. Состояния `stale`, `unreachable`, `missing-ref` и `not-configured` считаются blocker для apply.
 - `current.json` обновляется только после успешного health gate и commit release.
 - `pending.json` создаётся до начала apply и очищается только после successful commit или successful rollback.
 - Любой unsafe state после snapshot переводит deploy в `failed`, затем запускает rollback.
@@ -117,3 +132,4 @@
 - Watchdog и бот не должны парсить stdout `deploy.sh` для определения результата; stdout допустим только как вспомогательная диагностика.
 - Home и все backend nodes должны показывать один и тот же committed release после успешного deploy и после успешного rollback.
 - Rollout policy для multi-VPS strict: если хотя бы один backend не проходит apply или verify, весь release не коммитится и запускается cluster-wide rollback.
+- `target_source`, `origin_sha`, `mirror_sha` и `mirror_parity` должны отражать фактический source/parity контекст последней операции deploy или rollback.

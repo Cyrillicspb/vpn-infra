@@ -42,6 +42,18 @@ PRIMARY_BACKEND_ID=""
 PRIMARY_BACKEND_IP="${VPS_IP:-}"
 PRIMARY_BACKEND_SSH_PORT="${VPS_SSH_PORT:-22}"
 PRIMARY_BACKEND_TUNNEL_IP="${VPS_TUNNEL_IP:-10.177.2.2}"
+TARGET_SOURCE_REMOTE=""
+TARGET_SOURCE_REF=""
+ORIGIN_SOURCE_REF=""
+ORIGIN_FETCH_STATUS="unknown"
+ORIGIN_RELEASE_SHA=""
+MIRROR_FETCH_STATUS="not-configured"
+MIRROR_SOURCE_REF=""
+MIRROR_RELEASE_SHA=""
+MIRROR_PARITY_STATUS="unknown"
+LOCAL_REPO_HEAD_SHA=""
+PREFLIGHT_REPORT=""
+PREFLIGHT_BLOCKERS=()
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -69,6 +81,19 @@ usage() {
   --status     Показать current/pending/previous release и rollback status
   --rollback   Откатить к последнему подтвержденному snapshot
 EOF
+}
+
+record_preflight_check() {
+    local name="$1"
+    local status="$2"
+    local detail="${3:-}"
+    PREFLIGHT_REPORT+="${name}"$'\t'"${status}"$'\t'"${detail}"$'\n'
+}
+
+record_preflight_blocker() {
+    local code="$1"
+    local detail="$2"
+    PREFLIGHT_BLOCKERS+=("${code}: ${detail}")
 }
 
 notify() {
@@ -307,14 +332,19 @@ set_last_attempt() {
     local phase="$2"
     local message="${3:-}"
     local payload
-    payload="$(python3 - "$status" "$phase" "$message" "$(backend_targets_payload)" <<'PY'
+    payload="$(python3 - "$status" "$phase" "$message" "$(backend_targets_payload)" \
+        "${TARGET_SOURCE_REMOTE:-origin}" "${ORIGIN_RELEASE_SHA:-}" "${MIRROR_RELEASE_SHA:-}" "${MIRROR_PARITY_STATUS:-unknown}" <<'PY'
 import json, sys
-status, phase, message, targets = sys.argv[1:5]
+status, phase, message, targets, target_source, origin_sha, mirror_sha, mirror_parity = sys.argv[1:9]
 print(json.dumps({
     "status": status,
     "phase": phase,
     "message": message,
     "backend_targets": json.loads(targets or "[]"),
+    "target_source": target_source,
+    "origin_sha": origin_sha,
+    "mirror_sha": mirror_sha,
+    "mirror_parity": mirror_parity,
 }, ensure_ascii=False))
 PY
 )"
@@ -395,6 +425,77 @@ tracked_tree_clean() {
     ! git -C "$REPO_DIR" status --porcelain --untracked-files=no | grep -q .
 }
 
+require_cmd() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+state_file_parseable() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+    python3 - "$file" <<'PY' >/dev/null
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    json.load(fh)
+PY
+}
+
+resolve_release_ref_for_remote() {
+    local remote="$1"
+    local candidate
+    for candidate in \
+        "refs/remotes/${remote}/master" \
+        "refs/remotes/${remote}/main"; do
+        if git -C "$REPO_DIR" rev-parse --verify --quiet "$candidate" >/dev/null; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+configure_vps_mirror_remote() {
+    [[ -n "${PRIMARY_BACKEND_IP:-${VPS_IP:-}}" ]] || return 1
+    local ssh_port="${PRIMARY_BACKEND_SSH_PORT:-${VPS_SSH_PORT:-22}}"
+    local current_url
+    current_url=$(git -C "$REPO_DIR" remote get-url vps-mirror 2>/dev/null || true)
+    if [[ -z "$current_url" ]]; then
+        git -C "$REPO_DIR" remote add vps-mirror \
+            "ssh://sysadmin@${PRIMARY_BACKEND_IP}:${ssh_port}/opt/vpn/vpn-repo.git"
+    elif [[ "$current_url" != *"${PRIMARY_BACKEND_IP}"* ]]; then
+        git -C "$REPO_DIR" remote set-url vps-mirror \
+            "ssh://sysadmin@${PRIMARY_BACKEND_IP}:${ssh_port}/opt/vpn/vpn-repo.git"
+    fi
+}
+
+home_pull_remote_services() {
+    local services=(
+        nginx
+        socket-proxy
+        xray-client-xhttp
+        xray-client-vision
+        xray-client-cdn
+        prometheus
+        alertmanager
+        grafana
+        grafana-renderer
+        node-exporter
+        portainer
+        homepage
+        wg-easy
+    )
+    (cd "$REPO_DIR" && docker compose -f "$REPO_DIR/docker-compose.yml" pull "${services[@]}")
+}
+
+show_preflight_report() {
+    local line name status detail
+    while IFS=$'\t' read -r name status detail; do
+        [[ -n "$name" ]] || continue
+        printf '  %-20s %s' "${name}:" "${status}"
+        [[ -n "$detail" ]] && printf ' (%s)' "$detail"
+        printf '\n'
+    done <<< "$PREFLIGHT_REPORT"
+}
+
 release_id_for_sha() {
     local sha="$1"
     echo "${sha:0:12}"
@@ -426,15 +527,20 @@ write_current_release_state() {
     payload="$(python3 - \
         "$CURRENT_RELEASE_ID" "$CURRENT_RELEASE_SHA" "$CURRENT_RELEASE_VERSION" \
         "$PREVIOUS_RELEASE_ID" "$PREVIOUS_RELEASE_SHA" "$PREVIOUS_RELEASE_VERSION" \
-        "$status" "$message" "$(backend_targets_payload)" <<'PY'
+        "$status" "$message" "$(backend_targets_payload)" \
+        "${TARGET_SOURCE_REMOTE:-origin}" "${ORIGIN_RELEASE_SHA:-}" "${MIRROR_RELEASE_SHA:-}" "${MIRROR_PARITY_STATUS:-unknown}" <<'PY'
 import json, sys
-cur_id, cur_sha, cur_ver, prev_id, prev_sha, prev_ver, status, message, targets = sys.argv[1:10]
+cur_id, cur_sha, cur_ver, prev_id, prev_sha, prev_ver, status, message, targets, target_source, origin_sha, mirror_sha, mirror_parity = sys.argv[1:14]
 print(json.dumps({
     "current_release": {"id": cur_id, "sha": cur_sha, "version": cur_ver},
     "previous_release": {"id": prev_id, "sha": prev_sha, "version": prev_ver},
     "status": status,
     "message": message,
     "backend_targets": json.loads(targets or "[]"),
+    "target_source": target_source,
+    "origin_sha": origin_sha,
+    "mirror_sha": mirror_sha,
+    "mirror_parity": mirror_parity,
 }, ensure_ascii=False))
 PY
 )"
@@ -449,9 +555,10 @@ write_pending_release_state() {
     payload="$(python3 - \
         "${TARGET_RELEASE_ID:-}" "${TARGET_RELEASE_SHA:-}" "${TARGET_RELEASE_VERSION:-}" \
         "$phase" "$status" "$message" \
-        "$CURRENT_RELEASE_ID" "$CURRENT_RELEASE_SHA" "$CURRENT_RELEASE_VERSION" "$(backend_targets_payload)" <<'PY'
+        "$CURRENT_RELEASE_ID" "$CURRENT_RELEASE_SHA" "$CURRENT_RELEASE_VERSION" "$(backend_targets_payload)" \
+        "${TARGET_SOURCE_REMOTE:-origin}" "${ORIGIN_RELEASE_SHA:-}" "${MIRROR_RELEASE_SHA:-}" "${MIRROR_PARITY_STATUS:-unknown}" <<'PY'
 import json, sys
-target_id, target_sha, target_ver, phase, status, message, base_id, base_sha, base_ver, targets = sys.argv[1:11]
+target_id, target_sha, target_ver, phase, status, message, base_id, base_sha, base_ver, targets, target_source, origin_sha, mirror_sha, mirror_parity = sys.argv[1:15]
 print(json.dumps({
     "pending_release": {"id": target_id, "sha": target_sha, "version": target_ver},
     "base_release": {"id": base_id, "sha": base_sha, "version": base_ver},
@@ -459,6 +566,10 @@ print(json.dumps({
     "status": status,
     "message": message,
     "backend_targets": json.loads(targets or "[]"),
+    "target_source": target_source,
+    "origin_sha": origin_sha,
+    "mirror_sha": mirror_sha,
+    "mirror_parity": mirror_parity,
 }, ensure_ascii=False))
 PY
 )"
@@ -741,6 +852,14 @@ collect_baseline_smoke_failures() {
 fetch_target_release() {
     local source_ref=""
     TARGET_SOURCE_REMOTE=""
+    TARGET_SOURCE_REF=""
+    ORIGIN_SOURCE_REF=""
+    ORIGIN_FETCH_STATUS="unknown"
+    ORIGIN_RELEASE_SHA=""
+    MIRROR_FETCH_STATUS="not-configured"
+    MIRROR_SOURCE_REF=""
+    MIRROR_RELEASE_SHA=""
+    MIRROR_PARITY_STATUS="unknown"
 
     if is_mock_mode; then
         TARGET_SOURCE_REMOTE="mock"
@@ -753,44 +872,47 @@ fetch_target_release() {
 
     ensure_git_repo
 
-    if [[ -n "${PRIMARY_BACKEND_IP:-${VPS_IP:-}}" ]]; then
-        local ssh_port="${PRIMARY_BACKEND_SSH_PORT:-${VPS_SSH_PORT:-22}}"
-        local current_url
-        current_url=$(git -C "$REPO_DIR" remote get-url vps-mirror 2>/dev/null || true)
-        if [[ -z "$current_url" ]]; then
-            git -C "$REPO_DIR" remote add vps-mirror \
-                "ssh://sysadmin@${PRIMARY_BACKEND_IP}:${ssh_port}/opt/vpn/vpn-repo.git"
-        elif [[ "$current_url" != *"${PRIMARY_BACKEND_IP}"* ]]; then
-            git -C "$REPO_DIR" remote set-url vps-mirror \
-                "ssh://sysadmin@${PRIMARY_BACKEND_IP}:${ssh_port}/opt/vpn/vpn-repo.git"
-        fi
+    git -C "$REPO_DIR" fetch --tags origin '+refs/heads/*:refs/remotes/origin/*' >/dev/null 2>&1 || {
+        ORIGIN_FETCH_STATUS="failed"
+        return 1
+    }
+    ORIGIN_FETCH_STATUS="ok"
+    ORIGIN_SOURCE_REF="$(resolve_release_ref_for_remote origin || true)"
+    [[ -n "$ORIGIN_SOURCE_REF" ]] || {
+        ORIGIN_FETCH_STATUS="missing-ref"
+        return 1
+    }
+    ORIGIN_RELEASE_SHA="$(git -C "$REPO_DIR" rev-parse "$ORIGIN_SOURCE_REF")"
 
+    if configure_vps_mirror_remote; then
         local proxy_cmd=""
         [[ -x "$SSH_PROXY_CMD" ]] && proxy_cmd="-o ProxyCommand='$SSH_PROXY_CMD %h %p'"
         if GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes ${proxy_cmd}" \
            git -C "$REPO_DIR" fetch --tags vps-mirror '+refs/heads/*:refs/remotes/vps-mirror/*' >/dev/null 2>&1; then
-            TARGET_SOURCE_REMOTE="vps-mirror"
+            MIRROR_FETCH_STATUS="ok"
+            MIRROR_SOURCE_REF="$(resolve_release_ref_for_remote vps-mirror || true)"
+            if [[ -n "$MIRROR_SOURCE_REF" ]]; then
+                MIRROR_RELEASE_SHA="$(git -C "$REPO_DIR" rev-parse "$MIRROR_SOURCE_REF")"
+                if [[ "$MIRROR_RELEASE_SHA" == "$ORIGIN_RELEASE_SHA" ]]; then
+                    MIRROR_PARITY_STATUS="ok"
+                else
+                    MIRROR_PARITY_STATUS="stale"
+                fi
+            else
+                MIRROR_PARITY_STATUS="missing-ref"
+            fi
+        else
+            MIRROR_FETCH_STATUS="unreachable"
+            MIRROR_PARITY_STATUS="unreachable"
         fi
+    else
+        MIRROR_FETCH_STATUS="not-configured"
+        MIRROR_PARITY_STATUS="not-configured"
     fi
 
-    if [[ -z "$TARGET_SOURCE_REMOTE" ]]; then
-        git -C "$REPO_DIR" fetch --tags origin '+refs/heads/*:refs/remotes/origin/*' >/dev/null 2>&1 || return 1
-        TARGET_SOURCE_REMOTE="origin"
-    fi
-
-    for candidate in \
-        "refs/remotes/${TARGET_SOURCE_REMOTE}/master" \
-        "refs/remotes/${TARGET_SOURCE_REMOTE}/main" \
-        "refs/remotes/origin/master" \
-        "refs/remotes/origin/main"; do
-        if git -C "$REPO_DIR" rev-parse --verify --quiet "$candidate" >/dev/null; then
-            source_ref="$candidate"
-            break
-        fi
-    done
-    [[ -n "$source_ref" ]] || return 1
-
+    source_ref="$ORIGIN_SOURCE_REF"
     TARGET_SOURCE_REF="$source_ref"
+    TARGET_SOURCE_REMOTE="origin"
     TARGET_RELEASE_SHA="$(git -C "$REPO_DIR" rev-parse "$source_ref")"
     TARGET_RELEASE_VERSION="$(git -C "$REPO_DIR" show "${source_ref}:version" 2>/dev/null | tr -d '[:space:]')"
     [[ -n "$TARGET_RELEASE_VERSION" ]] || TARGET_RELEASE_VERSION="unknown"
@@ -885,10 +1007,106 @@ validate_preflight() {
         mkdir -p "$SNAPSHOT_DIR" "$STATE_DIR"
         return 0
     fi
-    tracked_tree_clean || die "tracked source tree dirty — deploy остановлен"
-    [[ -x "$REPO_DIR/tests/run-smoke-tests.sh" ]] || die "tests/run-smoke-tests.sh не найден"
-    [[ "$BACKEND_COUNT" -gt 0 ]] || die "backend inventory пуст — consistency-first deploy невозможен"
-    vps_exec "echo ok" >/dev/null || die "Primary backend недоступен по SSH"
+    LOCAL_REPO_HEAD_SHA="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
+    PREFLIGHT_REPORT=""
+    PREFLIGHT_BLOCKERS=()
+
+    if tracked_tree_clean; then
+        record_preflight_check "tracked tree" "ok"
+    else
+        record_preflight_check "tracked tree" "failed" "tracked source tree dirty"
+        record_preflight_blocker "tracked-tree-dirty" "tracked source tree dirty"
+    fi
+
+    if [[ -x "$REPO_DIR/tests/run-smoke-tests.sh" ]]; then
+        record_preflight_check "smoke script" "ok"
+    else
+        record_preflight_check "smoke script" "failed" "tests/run-smoke-tests.sh missing"
+        record_preflight_blocker "smoke-script-missing" "tests/run-smoke-tests.sh missing"
+    fi
+
+    if [[ "$BACKEND_COUNT" -gt 0 ]]; then
+        record_preflight_check "backend inventory" "ok" "${BACKEND_COUNT} targets"
+    else
+        record_preflight_check "backend inventory" "failed" "no backend targets"
+        record_preflight_blocker "backend-inventory-empty" "backend inventory пуст"
+    fi
+
+    if [[ -r "$ENV_FILE" ]]; then
+        record_preflight_check ".env" "ok"
+    else
+        record_preflight_check ".env" "failed" "$ENV_FILE unreadable"
+        record_preflight_blocker "env-unreadable" "$ENV_FILE unreadable"
+    fi
+
+    local cmd missing=()
+    for cmd in git rsync sqlite3 docker python3 curl; do
+        require_cmd "$cmd" || missing+=("$cmd")
+    done
+    docker compose version >/dev/null 2>&1 || missing+=("docker-compose-plugin")
+    if [[ "${#missing[@]}" -eq 0 ]]; then
+        record_preflight_check "toolchain" "ok"
+    else
+        record_preflight_check "toolchain" "failed" "${missing[*]}"
+        record_preflight_blocker "toolchain-missing" "missing tools: ${missing[*]}"
+    fi
+
+    if [[ "$ORIGIN_FETCH_STATUS" == "ok" && -n "$ORIGIN_RELEASE_SHA" ]]; then
+        record_preflight_check "origin fetch" "ok" "$ORIGIN_RELEASE_SHA"
+    else
+        record_preflight_check "origin fetch" "failed" "${ORIGIN_FETCH_STATUS}"
+        record_preflight_blocker "origin-fetch-failed" "origin fetch status: ${ORIGIN_FETCH_STATUS}"
+    fi
+
+    case "$MIRROR_PARITY_STATUS" in
+        ok)
+            record_preflight_check "mirror parity" "ok" "${MIRROR_RELEASE_SHA:-unknown}"
+            ;;
+        stale)
+            record_preflight_check "mirror parity" "failed" "origin=${ORIGIN_RELEASE_SHA:-unknown} mirror=${MIRROR_RELEASE_SHA:-unknown}"
+            record_preflight_blocker "mirror-stale" "origin and vps-mirror differ"
+            ;;
+        unreachable|missing-ref|not-configured|unknown)
+            record_preflight_check "mirror parity" "failed" "${MIRROR_PARITY_STATUS}"
+            record_preflight_blocker "mirror-${MIRROR_PARITY_STATUS}" "mirror parity status: ${MIRROR_PARITY_STATUS}"
+            ;;
+        *)
+            record_preflight_check "mirror parity" "failed" "${MIRROR_PARITY_STATUS}"
+            record_preflight_blocker "mirror-check-failed" "mirror parity status: ${MIRROR_PARITY_STATUS}"
+            ;;
+    esac
+
+    if state_file_parseable "$CURRENT_STATE_FILE"; then
+        record_preflight_check "state contract" "ok"
+    else
+        record_preflight_check "state contract" "failed" "current.json invalid"
+        record_preflight_blocker "state-contract-invalid" "current.json не парсится"
+    fi
+
+    if [[ -n "$LOCAL_REPO_HEAD_SHA" && -n "$CURRENT_RELEASE_SHA" && "$LOCAL_REPO_HEAD_SHA" != "$CURRENT_RELEASE_SHA" ]]; then
+        record_preflight_check "repo/state drift" "warn" "repo=${LOCAL_REPO_HEAD_SHA} state=${CURRENT_RELEASE_SHA}"
+    else
+        record_preflight_check "repo/state drift" "ok"
+    fi
+
+    if [[ -f "$SNAPSHOT_DIR/latest" ]] || [[ -n "$CURRENT_RELEASE_SHA" ]]; then
+        record_preflight_check "rollback readiness" "ok"
+    else
+        record_preflight_check "rollback readiness" "failed" "no current release and no snapshot"
+        record_preflight_blocker "rollback-baseline-missing" "rollback baseline отсутствует"
+    fi
+
+    if vps_exec "echo ok" >/dev/null 2>&1; then
+        record_preflight_check "backend ssh" "ok"
+    else
+        record_preflight_check "backend ssh" "failed" "primary backend unreachable"
+        record_preflight_blocker "backend-ssh-failed" "Primary backend недоступен по SSH"
+    fi
+
+    show_preflight_report
+    if [[ "${#PREFLIGHT_BLOCKERS[@]}" -gt 0 ]]; then
+        die "Preflight blockers: ${PREFLIGHT_BLOCKERS[*]}"
+    fi
 }
 
 apply_migrations() {
@@ -1042,7 +1260,7 @@ sync_home_runtime() {
     changed_between "$CURRENT_RELEASE_SHA" "$TARGET_RELEASE_SHA" home/xray/ && rebuild_xray=true
     [[ "${FORCE_DEPLOY:-false}" == "true" ]] && rebuild_bot=true && rebuild_xray=true
 
-    docker compose -f "$REPO_DIR/docker-compose.yml" pull
+    home_pull_remote_services
 
     if $rebuild_bot; then
         changed_between "$CURRENT_RELEASE_SHA" "$TARGET_RELEASE_SHA" home/telegram-bot/requirements.txt && bot_no_cache="--no-cache"
@@ -1056,6 +1274,22 @@ sync_home_runtime() {
 
     (cd "$REPO_DIR" && docker compose up -d --remove-orphans)
     systemctl restart watchdog
+}
+
+verify_home_apply() {
+    if is_mock_mode; then
+        return 0
+    fi
+    local head_sha
+    head_sha="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
+    [[ "$head_sha" == "$TARGET_RELEASE_SHA" ]] || die "home runtime verify failed: repo HEAD ${head_sha:-empty} != target ${TARGET_RELEASE_SHA}"
+
+    if changed_between "$CURRENT_RELEASE_SHA" "$TARGET_RELEASE_SHA" home/telegram-bot/ || [[ "${FORCE_DEPLOY:-false}" == "true" ]]; then
+        local running_id
+        running_id="$(cd "$REPO_DIR" && docker compose ps -q telegram-bot 2>/dev/null | tr -d '\r\n' || true)"
+        [[ -n "$running_id" ]] || die "home runtime verify failed: telegram-bot container not running"
+        docker exec "$running_id" test -f /app/bot.py >/dev/null 2>&1 || die "home runtime verify failed: telegram-bot image missing /app/bot.py"
+    fi
 }
 
 vps_any_changed() {
@@ -1259,12 +1493,21 @@ auto_rollback_on_failure() {
 
 show_status() {
     read_current_release
+    if [[ -d "$REPO_DIR/.git" ]]; then
+        fetch_target_release >/dev/null 2>&1 || true
+    fi
+    LOCAL_REPO_HEAD_SHA="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
     echo ""
     echo "── Deploy Status ──────────────────────────────"
     echo "  Current release:  ${CURRENT_RELEASE_ID:-unknown} (${CURRENT_RELEASE_VERSION:-unknown})"
     echo "  Current sha:      ${CURRENT_RELEASE_SHA:-unknown}"
     echo "  Previous release: ${PREVIOUS_RELEASE_ID:-none} (${PREVIOUS_RELEASE_VERSION:-none})"
     echo "  Previous sha:     ${PREVIOUS_RELEASE_SHA:-none}"
+    echo "  Target source:    ${TARGET_SOURCE_REMOTE:-unknown}"
+    echo "  Origin sha:       ${ORIGIN_RELEASE_SHA:-unknown}"
+    echo "  Mirror sha:       ${MIRROR_RELEASE_SHA:-unknown}"
+    echo "  Mirror parity:    ${MIRROR_PARITY_STATUS:-unknown}"
+    echo "  Repo head:        ${LOCAL_REPO_HEAD_SHA:-unknown}"
     if [[ -f "$PENDING_STATE_FILE" ]]; then
         echo "  Pending:          $(json_get "$PENDING_STATE_FILE" "pending_release.id")"
         echo "  Pending phase:    $(json_get "$PENDING_STATE_FILE" "phase") / $(json_get "$PENDING_STATE_FILE" "status")"
@@ -1282,7 +1525,6 @@ show_status() {
 check_updates() {
     read_current_release
     fetch_target_release || die "Не удалось получить target release"
-    validate_preflight
 
     echo ""
     echo "── Deploy Check ───────────────────────────────"
@@ -1290,9 +1532,14 @@ check_updates() {
     echo "  Target release:  ${TARGET_RELEASE_ID} (${TARGET_RELEASE_VERSION})"
     echo "  Target sha:      ${TARGET_RELEASE_SHA}"
     echo "  Source remote:   ${TARGET_SOURCE_REMOTE}"
+    echo "  Origin sha:      ${ORIGIN_RELEASE_SHA}"
+    echo "  Mirror sha:      ${MIRROR_RELEASE_SHA:-unknown}"
+    echo "  Mirror parity:   ${MIRROR_PARITY_STATUS}"
     echo "  Backend targets: ${BACKEND_COUNT}"
     echo "  Rollback ready:  $( [[ -f "$SNAPSHOT_DIR/latest" ]] && echo yes || echo no )"
     echo "───────────────────────────────────────────────"
+
+    validate_preflight
 
     if [[ "$CURRENT_RELEASE_SHA" == "$TARGET_RELEASE_SHA" ]]; then
         log_info "Remote release уже совпадает с текущим"
@@ -1331,7 +1578,7 @@ do_deploy() {
 
     write_pending_release_state "apply-home" "running" "applying home release ${TARGET_RELEASE_ID}"
     sync_state_to_vps || true
-    if ! ( sync_home_runtime ); then
+    if ! ( sync_home_runtime && verify_home_apply ); then
         auto_rollback_on_failure "Применение release на home завершилось с ошибкой"
         return 1
     fi

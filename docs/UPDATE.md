@@ -48,6 +48,36 @@ Health gate опирается на:
 - smoke suite;
 - parity между home и VPS deploy-state.
 
+Режим deploy: `fail fast strict`.
+
+## Source of truth и mirror semantics
+
+- `origin/master` или `origin/main` является единственным источником target release.
+- `vps-mirror` больше не используется как source-of-truth для выбора release.
+- `vps-mirror` используется только как parity gate для backend rollout.
+- Термин `mirror parity` используется как operator-facing статус синхронизации `vps-mirror` относительно `origin`.
+- Если `origin` недоступен, `vps-mirror` недоступен, `vps-mirror` stale относительно `origin`, либо у mirror нет `master/main`, deploy останавливается на preflight без apply.
+- `sudo bash /opt/vpn/deploy.sh --status` и `--check` должны явно показывать:
+  - `Target source`
+  - `Origin sha`
+  - `Mirror sha`
+  - `Mirror parity`
+  - `Repo head`
+
+## Preflight blockers
+
+Deploy обязан остановиться до snapshot/apply при любом blocker:
+
+- dirty tracked tree;
+- отсутствует `tests/run-smoke-tests.sh`;
+- backend inventory пуст;
+- `.env` отсутствует или unreadable;
+- отсутствует toolchain: `git`, `rsync`, `sqlite3`, `docker`, `python3`, `curl`, `docker compose`;
+- `origin` не fetch'ится или не содержит `master/main`;
+- `vps-mirror` stale/unreachable/not-configured/missing-ref;
+- `current.json` не парсится;
+- primary backend недоступен по SSH.
+
 ## Источник истины для результата
 
 Результат deploy/rollback определяется по:
@@ -90,6 +120,16 @@ sudo bash /opt/vpn/restore.sh --full-restore <backup>
 - или ручной `docker compose pull/up` там, где это действительно нужно
 
 Использовать `/deploy` для изменения кода и generated configs.
+
+Во время `/deploy` сервисы разделены на два класса:
+
+- `build-local`:
+  - `telegram-bot`
+  - такие сервисы не участвуют в общем `docker compose pull`; вместо этого для них выполняется локальная сборка и post-apply verify
+- `pull-remote`:
+  - registry-backed сервисы, которые входят в allowlist `docker compose pull`
+
+Это убирает класс ошибок вида `docker.io/library/vpn-telegram-bot:latest not found` при нормальном deploy.
 
 ## Route data refresh
 
