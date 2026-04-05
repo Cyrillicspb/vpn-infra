@@ -11,6 +11,8 @@ set -euo pipefail
 
 STEP=0
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_SUCCESS=0
+VPS_BOOTSTRAP_STATE_FILE="/opt/vpn/.vps-ssh-bootstrap-state"
 
 strict_bundle_bootstrap_enabled() {
     case "${VPN_STRICT_BUNDLE:-0}" in
@@ -124,6 +126,257 @@ ask() {
     fi
     printf -v "$var" '%s' "$value"
     export "${var?}"
+}
+
+_quote_sh() {
+    printf "%q" "${1:-}"
+}
+
+vps_bootstrap_state_clear() {
+    rm -f "$VPS_BOOTSTRAP_STATE_FILE"
+}
+
+vps_bootstrap_state_load() {
+    [[ -f "$VPS_BOOTSTRAP_STATE_FILE" ]] || return 1
+    # shellcheck disable=SC1090
+    source "$VPS_BOOTSTRAP_STATE_FILE"
+}
+
+vps_bootstrap_state_save() {
+    local tmp_file
+    tmp_file="$(mktemp /tmp/vpn-vps-bootstrap-state.XXXXXX)"
+    cat >"$tmp_file" <<EOF
+VPS_BOOTSTRAP_ACTIVE=$(_quote_sh "${VPS_BOOTSTRAP_ACTIVE:-0}")
+VPS_BOOTSTRAP_COMMITTED=$(_quote_sh "${VPS_BOOTSTRAP_COMMITTED:-0}")
+VPS_BOOTSTRAP_IP=$(_quote_sh "${VPS_BOOTSTRAP_IP:-}")
+VPS_BOOTSTRAP_SSH_PORT=$(_quote_sh "${VPS_BOOTSTRAP_SSH_PORT:-22}")
+VPS_BOOTSTRAP_PROXY_CMD=$(_quote_sh "${VPS_BOOTSTRAP_PROXY_CMD:-}")
+VPS_BOOTSTRAP_METHOD=$(_quote_sh "${VPS_BOOTSTRAP_METHOD:-}")
+VPS_BOOTSTRAP_BACKUP_DIR=$(_quote_sh "${VPS_BOOTSTRAP_BACKUP_DIR:-}")
+EOF
+    install -m 600 "$tmp_file" "$VPS_BOOTSTRAP_STATE_FILE"
+    rm -f "$tmp_file"
+}
+
+_vps_root_exec_state() {
+    local _port="${1:-${VPS_BOOTSTRAP_SSH_PORT:-22}}"
+    local _proxy="${2:-${VPS_BOOTSTRAP_PROXY_CMD:-}}"
+    shift 2 || true
+    local _extra=()
+    [[ -n "$_proxy" ]] && _extra+=(-o "ProxyCommand=${_proxy}")
+    if ssh -p "$_port" -i /root/.ssh/vpn_id_ed25519 \
+        -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+        "${_extra[@]}" "root@${VPS_BOOTSTRAP_IP}" "$@"; then
+        return 0
+    fi
+    if [[ -n "${VPS_ROOT_PASSWORD:-}" ]]; then
+        ssh_password_exec \
+            "${VPS_ROOT_PASSWORD}" \
+            ssh -p "$_port" \
+                -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+                -o ConnectTimeout=15 -o NumberOfPasswordPrompts=1 \
+                -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+                -o PasswordAuthentication=yes -o KbdInteractiveAuthentication=no \
+                "${_extra[@]}" "root@${VPS_BOOTSTRAP_IP}" "$@"
+    fi
+}
+
+vps_bootstrap_prepare_snapshot() {
+    local ssh_port="$1"
+    local proxy_cmd="${2:-}"
+    local backup_dir backup_cmd
+
+    VPS_BOOTSTRAP_IP="${VPS_IP}"
+    VPS_BOOTSTRAP_SSH_PORT="${ssh_port}"
+    VPS_BOOTSTRAP_PROXY_CMD="${proxy_cmd}"
+
+    backup_cmd=$(
+        cat <<'EOF'
+set -euo pipefail
+backup_dir="$(mktemp -d /root/vpn-ssh-bootstrap.XXXXXX)"
+cp -a /etc/ssh/sshd_config "${backup_dir}/sshd_config"
+mkdir -p "${backup_dir}/sshd_config.d"
+if [[ -d /etc/ssh/sshd_config.d ]]; then
+    cp -a /etc/ssh/sshd_config.d/. "${backup_dir}/sshd_config.d/" 2>/dev/null || true
+fi
+if [[ -d /root/.ssh ]]; then
+    cp -a /root/.ssh "${backup_dir}/root_ssh"
+else
+    touch "${backup_dir}/root_ssh_absent"
+fi
+if id sysadmin &>/dev/null; then
+    touch "${backup_dir}/sysadmin_existed"
+    cp -a /home/sysadmin "${backup_dir}/sysadmin_home"
+    if [[ -f /etc/sudoers.d/sysadmin ]]; then
+        cp -a /etc/sudoers.d/sysadmin "${backup_dir}/sysadmin_sudoers"
+    fi
+else
+    touch "${backup_dir}/sysadmin_absent"
+fi
+operator_user="$(getent passwd 1000 2>/dev/null | cut -d: -f1 || true)"
+printf '%s\n' "${operator_user}" > "${backup_dir}/operator_user"
+if [[ -n "${operator_user}" && -f "/etc/sudoers.d/${operator_user}" ]]; then
+    cp -a "/etc/sudoers.d/${operator_user}" "${backup_dir}/operator_sudoers"
+fi
+printf '%s\n' "${backup_dir}"
+EOF
+    )
+
+    backup_dir="$(_vps_root_exec_state "$ssh_port" "$proxy_cmd" "bash -lc $(_quote_sh "$backup_cmd")")" \
+        || die "Не удалось снять snapshot SSH состояния VPS перед bootstrap"
+    [[ -n "$backup_dir" ]] || die "Snapshot SSH состояния VPS не вернул backup_dir"
+
+    VPS_BOOTSTRAP_BACKUP_DIR="$backup_dir"
+    VPS_BOOTSTRAP_ACTIVE=1
+    VPS_BOOTSTRAP_COMMITTED=0
+    vps_bootstrap_state_save
+}
+
+rollback_vps_ssh_prepare() {
+    [[ -f "$VPS_BOOTSTRAP_STATE_FILE" ]] || return 0
+    vps_bootstrap_state_load || return 0
+    [[ "${VPS_BOOTSTRAP_ACTIVE:-0}" == "1" ]] || { vps_bootstrap_state_clear; return 0; }
+    [[ "${VPS_BOOTSTRAP_COMMITTED:-0}" == "0" ]] || { vps_bootstrap_state_clear; return 0; }
+
+    [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
+
+    local rollback_cmd
+    rollback_cmd=$(
+        cat <<'EOF'
+set -euo pipefail
+backup_dir="${1:?}"
+cp -a "${backup_dir}/sshd_config" /etc/ssh/sshd_config
+rm -rf /etc/ssh/sshd_config.d
+mkdir -p /etc/ssh/sshd_config.d
+if [[ -d "${backup_dir}/sshd_config.d" ]]; then
+    cp -a "${backup_dir}/sshd_config.d/." /etc/ssh/sshd_config.d/ 2>/dev/null || true
+fi
+if [[ -f "${backup_dir}/root_ssh_absent" ]]; then
+    rm -rf /root/.ssh
+elif [[ -d "${backup_dir}/root_ssh" ]]; then
+    rm -rf /root/.ssh
+    cp -a "${backup_dir}/root_ssh" /root/.ssh
+fi
+if [[ -f "${backup_dir}/sysadmin_absent" ]]; then
+    userdel -r sysadmin 2>/dev/null || true
+    rm -f /etc/sudoers.d/sysadmin
+else
+    if [[ -d "${backup_dir}/sysadmin_home" ]]; then
+        rm -rf /home/sysadmin
+        cp -a "${backup_dir}/sysadmin_home" /home/sysadmin
+        chown -R sysadmin:sysadmin /home/sysadmin 2>/dev/null || true
+    fi
+    if [[ -f "${backup_dir}/sysadmin_sudoers" ]]; then
+        cp -a "${backup_dir}/sysadmin_sudoers" /etc/sudoers.d/sysadmin
+        chmod 440 /etc/sudoers.d/sysadmin
+    else
+        rm -f /etc/sudoers.d/sysadmin
+    fi
+fi
+operator_user="$(cat "${backup_dir}/operator_user" 2>/dev/null || true)"
+if [[ -n "${operator_user}" ]]; then
+    if [[ -f "${backup_dir}/operator_sudoers" ]]; then
+        cp -a "${backup_dir}/operator_sudoers" "/etc/sudoers.d/${operator_user}"
+        chmod 440 "/etc/sudoers.d/${operator_user}"
+    else
+        rm -f "/etc/sudoers.d/${operator_user}"
+    fi
+fi
+systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+EOF
+    )
+
+    log_warn "Установка прервана — откатываем подготовку SSH-доступа к VPS"
+    if ! _vps_root_exec_state "${VPS_BOOTSTRAP_SSH_PORT:-22}" "${VPS_BOOTSTRAP_PROXY_CMD:-}" \
+        "bash -lc $(_quote_sh "$rollback_cmd") bash $(_quote_sh "${VPS_BOOTSTRAP_BACKUP_DIR}")"; then
+        log_error "Не удалось откатить SSH bootstrap VPS автоматически"
+        return 1
+    fi
+
+    if ssh_password_exec \
+        "${VPS_ROOT_PASSWORD:-}" \
+        ssh -p 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=15 -o NumberOfPasswordPrompts=1 \
+            -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+            -o PasswordAuthentication=yes -o KbdInteractiveAuthentication=no \
+            "root@${VPS_BOOTSTRAP_IP}" "exit 0" >/dev/null 2>&1; then
+        log_ok "SSH-доступ root@${VPS_BOOTSTRAP_IP}:22 восстановлен"
+    else
+        log_warn "Rollback выполнен, но root@${VPS_BOOTSTRAP_IP}:22 не удалось подтвердить автоматически"
+    fi
+
+    vps_bootstrap_state_clear
+}
+
+commit_vps_ssh_bootstrap() {
+    [[ -f "$VPS_BOOTSTRAP_STATE_FILE" ]] || return 0
+    vps_bootstrap_state_load || return 0
+    [[ "${VPS_BOOTSTRAP_ACTIVE:-0}" == "1" ]] || { vps_bootstrap_state_clear; return 0; }
+    [[ "${VPS_BOOTSTRAP_COMMITTED:-0}" == "0" ]] || { vps_bootstrap_state_clear; return 0; }
+
+    local final_port="22"
+    local commit_cmd
+    if [[ "${VPS_BOOTSTRAP_METHOD:-}" == "socat" ]]; then
+        final_port="443"
+        commit_cmd=$(
+            cat <<'EOF'
+set -euo pipefail
+grep -q '^Port 443' /etc/ssh/sshd_config || echo 'Port 443' >> /etc/ssh/sshd_config
+sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+grep -q '^PermitRootLogin' /etc/ssh/sshd_config || echo 'PermitRootLogin no' >> /etc/ssh/sshd_config
+sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+grep -q '^PasswordAuthentication' /etc/ssh/sshd_config || echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config
+nohup bash -c 'sleep 3 && systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null; sleep 1 && pkill -f "socat.*OPENSSL-LISTEN:443" 2>/dev/null; rm -f /tmp/vpn-bootstrap.pem' >/dev/null 2>&1 &
+EOF
+        )
+    else
+        commit_cmd=$(
+            cat <<'EOF'
+set -euo pipefail
+sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+grep -q '^PermitRootLogin' /etc/ssh/sshd_config || echo 'PermitRootLogin no' >> /etc/ssh/sshd_config
+sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+grep -q '^PasswordAuthentication' /etc/ssh/sshd_config || echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config
+systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+EOF
+        )
+    fi
+
+    log_info "Финальный commit SSH-доступа к VPS..."
+    if ! _vps_root_exec_state "${VPS_BOOTSTRAP_SSH_PORT:-22}" "${VPS_BOOTSTRAP_PROXY_CMD:-}" \
+        "bash -lc $(_quote_sh "$commit_cmd")"; then
+        rollback_vps_ssh_prepare || true
+        die "Не удалось финализировать SSH hardening на VPS"
+    fi
+
+    if [[ "$final_port" == "443" ]]; then
+        sleep 6
+    fi
+    if ! ssh -p "$final_port" -i /root/.ssh/vpn_id_ed25519 \
+        -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes \
+        "sysadmin@${VPS_BOOTSTRAP_IP}" "exit 0" >/dev/null 2>&1; then
+        rollback_vps_ssh_prepare || true
+        die "После финализации SSH-доступ sysadmin@${VPS_BOOTSTRAP_IP}:${final_port} не подтвердился"
+    fi
+
+    env_set "VPS_SSH_PORT" "$final_port"
+    env_set "VPS_ROOT_PASSWORD" ""
+    unset VPS_ROOT_PASSWORD
+    VPS_SSH_PORT="$final_port"
+
+    VPS_BOOTSTRAP_COMMITTED=1
+    vps_bootstrap_state_save
+    vps_bootstrap_state_clear
+    log_ok "SSH-доступ к VPS финализирован: sysadmin@${VPS_BOOTSTRAP_IP}:${final_port}"
+}
+
+cleanup_on_exit() {
+    local rc=$?
+    if [[ "$rc" -ne 0 ]] || [[ "$INSTALL_SUCCESS" -ne 1 ]]; then
+        rollback_vps_ssh_prepare || true
+    fi
+    [[ -n "${IMPORT_DIR:-}" ]] && rm -rf "$IMPORT_DIR"
+    exit "$rc"
 }
 
 ensure_wireguard_tools() {
@@ -629,6 +882,11 @@ phase0() {
     fi
 
     # Шаг 6 — Настройка SSH-ключей и VPS bootstrap
+    if [[ -f "$VPS_BOOTSTRAP_STATE_FILE" ]]; then
+        rollback_vps_ssh_prepare || die "Обнаружено незавершённое SSH bootstrap состояние VPS, rollback не прошёл"
+        step_reset "step06_vps_ssh_bootstrap"
+    fi
+
     if is_done "step06_vps_ssh_bootstrap"; then
         step_skip "step06_vps_ssh_bootstrap"
         [[ -f "$ENV_FILE" ]] && { set -o allexport; source "$ENV_FILE"; set +o allexport; }
@@ -813,6 +1071,7 @@ phase0() {
         SSH_KEY_TEST_OPTS=(-p "${SSH_PORT}" -i /root/.ssh/vpn_id_ed25519
                            -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes)
         [[ -n "${PROXY_CMD:-}" ]] && SSH_KEY_TEST_OPTS+=(-o "ProxyCommand=${PROXY_CMD}")
+        vps_bootstrap_prepare_snapshot "${SSH_PORT}" "${PROXY_CMD:-}"
         if ssh "${SSH_KEY_TEST_OPTS[@]}" "root@${VPS_IP}" "echo ok" 2>/dev/null; then
             log_ok "SSH-ключ уже установлен на VPS, пропускаем установку"
         else
@@ -834,12 +1093,14 @@ phase0() {
         _vps_root_exec "id sysadmin &>/dev/null || ( \
             useradd -m -s /bin/bash sysadmin && \
             usermod -aG sudo sysadmin )"
-        _vps_root_exec "mkdir -p /home/sysadmin/.ssh && \
-            cp /root/.ssh/authorized_keys /home/sysadmin/.ssh/authorized_keys \
-                2>/dev/null || true && \
-            chown -R sysadmin:sysadmin /home/sysadmin/.ssh && \
-            chmod 700 /home/sysadmin/.ssh && \
-            chmod 600 /home/sysadmin/.ssh/authorized_keys 2>/dev/null || true"
+        _sysadmin_key_b64="$(base64 -w0 </root/.ssh/vpn_id_ed25519.pub)"
+        _vps_root_exec "KEY=\$(printf '%s' '${_sysadmin_key_b64}' | base64 -d); \
+            install -d -m 700 -o sysadmin -g sysadmin /home/sysadmin/.ssh; \
+            touch /home/sysadmin/.ssh/authorized_keys; \
+            grep -qxF \"\$KEY\" /home/sysadmin/.ssh/authorized_keys 2>/dev/null || \
+                printf '%s\n' \"\$KEY\" >> /home/sysadmin/.ssh/authorized_keys; \
+            chown sysadmin:sysadmin /home/sysadmin/.ssh/authorized_keys; \
+            chmod 600 /home/sysadmin/.ssh/authorized_keys"
         _vps_root_exec \
             "echo 'sysadmin ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/sysadmin && \
              chmod 440 /etc/sudoers.d/sysadmin && \
@@ -849,47 +1110,6 @@ phase0() {
                  chmod 440 /etc/sudoers.d/\${OPERATOR_USER}; \
              fi"
 
-        # Отключение root SSH и парольной аутентификации
-        log_info "Настройка SSH на VPS..."
-        _vps_root_exec \
-            "sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config; \
-             grep -q '^PermitRootLogin' /etc/ssh/sshd_config \
-                 || echo 'PermitRootLogin no' >> /etc/ssh/sshd_config; \
-             sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config; \
-             grep -q '^PasswordAuthentication' /etc/ssh/sshd_config \
-                 || echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config" 2>/dev/null || true
-
-        if [[ "$BOOTSTRAP_METHOD" == "socat" ]]; then
-            # Socat bootstrap: добавляем SSH порт 443 на VPS, затем убираем socat.
-            # nohup чтобы команда пережила разрыв соединения при kill socat.
-            log_info "Переводим VPS SSH на порт 443, убираем socat..."
-            _vps_root_exec \
-                "grep -q '^Port 443' /etc/ssh/sshd_config \
-                     || echo 'Port 443' >> /etc/ssh/sshd_config; \
-                 nohup bash -c 'sleep 3 && \
-                     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null; \
-                     sleep 1 && pkill -f \"socat.*OPENSSL-LISTEN:443\" 2>/dev/null; \
-                     rm -f /tmp/vpn-bootstrap.pem' \
-                     >/dev/null 2>&1 &" 2>/dev/null || true
-            # Соединение разорвётся через ~3 сек (socat убит), ждём прямого SSH:443
-            log_info "Ожидание прямого SSH на порту 443..."
-            sleep 6
-            _bs_wait=0
-            while ! timeout 10 bash -c ">/dev/tcp/${VPS_IP}/443" 2>/dev/null; do
-                _bs_wait=$(( _bs_wait + 1 ))
-                [[ $_bs_wait -ge 12 ]] && die \
-                    "SSH порт 443 не ответил после перезагрузки (ждали 36 сек)"
-                sleep 3
-            done
-            SSH_PORT="443"; PROXY_CMD=""
-            env_set "VPS_SSH_PORT" "443"; VPS_SSH_PORT="443"
-            log_ok "Переключились на прямой SSH:443 (socat bootstrap завершён)"
-        else
-            _vps_root_exec \
-                "systemctl reload ssh 2>/dev/null || \
-                 systemctl reload sshd 2>/dev/null || true" 2>/dev/null || true
-        fi
-
         # Cleanup: удаляем временные nfqws bootstrap правила
         if [[ "$NFQWS_BOOTSTRAP_STARTED" == "true" ]]; then
             log_info "Очистка временных nfqws bootstrap правил..."
@@ -898,12 +1118,9 @@ phase0() {
             log_ok "Временные nfqws правила удалены"
         fi
 
-        # Пароль root больше не нужен — очищаем из .env
-        env_set "VPS_ROOT_PASSWORD" ""
-        unset VPS_ROOT_PASSWORD
-        log_info "VPS_ROOT_PASSWORD очищен из .env"
-
-        log_ok "VPS настроен: sysadmin создан, SSH защищён (метод: ${BOOTSTRAP_METHOD})"
+        VPS_BOOTSTRAP_METHOD="${BOOTSTRAP_METHOD}"
+        vps_bootstrap_state_save
+        log_ok "VPS подготовлен: sysadmin создан, SSH hardening будет выполнен после успешной установки"
         step_done "step06_vps_ssh_bootstrap"
     fi
 
@@ -1856,8 +2073,7 @@ main() {
     touch "$STATE_FILE"
     chmod 600 "$STATE_FILE"
 
-    # Cleanup IMPORT_DIR on exit
-    trap '[[ -n "${IMPORT_DIR:-}" ]] && rm -rf "$IMPORT_DIR"' EXIT
+    trap cleanup_on_exit EXIT
 
     print_banner
 
@@ -1870,6 +2086,7 @@ main() {
     STEP=47  # install-vps.sh (14 шагов от 33) заканчивается на STEP=47
     phase3
     phase4
+    commit_vps_ssh_bootstrap
     phase5
 
     # ── Финальный импорт данных (если --from-export) ──────────────────────────
@@ -1929,6 +2146,7 @@ print(d.get('vpn_version', ''))
     echo "  Управление:   Telegram-бот (команда /help)"
     echo "  Повтор проверки: sudo bash /opt/vpn/scripts/post-install-check.sh"
     echo ""
+    INSTALL_SUCCESS=1
 }
 
 main "$@"

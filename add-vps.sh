@@ -121,17 +121,6 @@ BOOTSTRAP
     log_ok "sysadmin создан, SSH-ключ скопирован"
 fi
 
-# ── Закрыть root SSH ──────────────────────────────────────────────────────────
-log_info "Закрытие root SSH-доступа на VPS2..."
-vps2_exec "sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config; \
-    grep -q '^PermitRootLogin' /etc/ssh/sshd_config \
-        || echo 'PermitRootLogin no' | sudo tee -a /etc/ssh/sshd_config; \
-    sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config; \
-    grep -q '^PasswordAuthentication' /etc/ssh/sshd_config \
-        || echo 'PasswordAuthentication no' | sudo tee -a /etc/ssh/sshd_config; \
-    sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true"
-log_ok "root SSH закрыт, password auth отключён"
-
 # ── Шаг 2: Системные пакеты ───────────────────────────────────────────────────
 log_step "Шаг 2: Системные пакеты на VPS2"
 
@@ -679,6 +668,17 @@ HCEOF"
 
 vps2_exec "sudo chmod 644 /etc/cron.d/vpn-mirror /etc/cron.d/vps-healthcheck 2>/dev/null || true"
 log_ok "Git-зеркало и healthcheck cron настроены"
+
+# ── Финал: закрыть root SSH только после успешного завершения ────────────────
+log_info "Финализация SSH-доступа на VPS2..."
+vps2_exec "sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config; \
+    grep -q '^PermitRootLogin' /etc/ssh/sshd_config \
+        || echo 'PermitRootLogin no' | sudo tee -a /etc/ssh/sshd_config; \
+    sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config; \
+    grep -q '^PasswordAuthentication' /etc/ssh/sshd_config \
+        || echo 'PasswordAuthentication no' | sudo tee -a /etc/ssh/sshd_config; \
+    sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true"
+log_ok "root SSH закрыт, password auth отключён"
 
 # ── Финальный отчёт ───────────────────────────────────────────────────────────
 echo ""

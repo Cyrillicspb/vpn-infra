@@ -105,10 +105,13 @@ curl -fsSL https://github.com/Cyrillicspb/vpn-infra/releases/download/vX.Y.Z/ins
 
 - собирает ввод и пишет `/opt/vpn/.env`;
 - запускает TUI как основной install UX;
+- сначала только подготавливает `sysadmin` и SSH-ключ на VPS, а финальный SSH hardening коммитит только после успешного завершения установки;
 - ставит home-server runtime;
 - ставит VPS runtime;
 - поднимает watchdog, bot и routing;
 - выполняет post-install phase и базовые проверки.
+
+Если установка падает после начала VPS bootstrap, installer должен откатить подготовку SSH-доступа и вернуть исходный `root@VPS:22` доступ.
 
 ## Идемпотентность
 

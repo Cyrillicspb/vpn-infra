@@ -59,6 +59,20 @@ class InstallerBundleContractTests(unittest.TestCase):
         self.assertIn("DuckDNS домен для клиентского Endpoint / home ingress", content)
         self.assertIn("DuckDNS token", content)
 
+    def test_setup_sh_defers_vps_ssh_hardening_until_successful_commit(self):
+        content = (ROOT / "setup.sh").read_text(encoding="utf-8")
+        self.assertIn('VPS_BOOTSTRAP_STATE_FILE="/opt/vpn/.vps-ssh-bootstrap-state"', content)
+        self.assertIn("rollback_vps_ssh_prepare()", content)
+        self.assertIn("commit_vps_ssh_bootstrap()", content)
+        self.assertIn("VPS подготовлен: sysadmin создан, SSH hardening будет выполнен после успешной установки", content)
+        self.assertIn('env_set "VPS_ROOT_PASSWORD" ""', content)
+        self.assertIn("commit_vps_ssh_bootstrap", content)
+
+    def test_add_vps_closes_root_ssh_only_after_successful_run(self):
+        content = (ROOT / "add-vps.sh").read_text(encoding="utf-8")
+        self.assertIn("Финализация SSH-доступа на VPS2", content)
+        self.assertNotIn('log_info "Закрытие root SSH-доступа на VPS2..."', content)
+
     def test_common_sh_disables_ansi_when_stdout_is_not_a_tty(self):
         content = (ROOT / "common.sh").read_text(encoding="utf-8")
         self.assertIn('[[ -t 1 && "${TERM:-}" != "dumb" ]]', content)
