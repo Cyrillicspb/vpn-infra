@@ -120,6 +120,8 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('raw="$(backend_read_json_key "$backend_ip" "$backend_port" "$REMOTE_STATE_DIR/$file" "$key" 2>/dev/null | tr -d', deploy_script)
         self.assertIn('load_backend_targets()', deploy_script)
         self.assertIn('backend_targets_tsv()', deploy_script)
+        self.assertIn('rsync -a "$REPO_DIR/home/scripts/" "$REPO_DIR/scripts/"', deploy_script)
+        self.assertNotIn('rsync -a --delete "$REPO_DIR/home/scripts/" "$REPO_DIR/scripts/"', deploy_script)
         self.assertIn('export XRAY_VISION_PUBLIC_KEY="${XRAY_VISION_PUBLIC_KEY:-${XRAY_XHTTP_PUBLIC_KEY:-}}"', deploy_script)
         self.assertIn("grep -oE '\\$\\{[^}]+\\}'", deploy_script)
 

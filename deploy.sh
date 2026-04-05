@@ -1020,7 +1020,7 @@ sync_home_runtime() {
     rsync -a "$REPO_DIR/home/watchdog/watchdog.py" "$REPO_DIR/watchdog/watchdog.py"
     rsync -a "$REPO_DIR/home/watchdog/decision_maker.py" "$REPO_DIR/watchdog/decision_maker.py"
     rsync -a --delete "$REPO_DIR/home/watchdog/plugins/" "$REPO_DIR/watchdog/plugins/"
-    rsync -a --delete "$REPO_DIR/home/scripts/" "$REPO_DIR/scripts/"
+    rsync -a "$REPO_DIR/home/scripts/" "$REPO_DIR/scripts/"
     chmod +x "$REPO_DIR/scripts/"*.sh 2>/dev/null || true
     ln -sfn "$REPO_DIR/.env" "$REPO_DIR/home/.env"
     rm -rf "$REPO_DIR/watchdog/plugins/reality" "$REPO_DIR/watchdog/plugins/reality-grpc" 2>/dev/null || true

@@ -1823,13 +1823,23 @@ def _reconcile_backend_path_runtime_state() -> bool:
     changed = False
     desired_backend_id = str((state.desired_backend_path or {}).get("backend_id") or "")
     desired_family = str((state.desired_backend_path or {}).get("family") or "")
-    if desired_backend_id != backend_id or desired_family != state.execution_family:
+    desired_execution_mode = str((state.desired_backend_path or {}).get("execution_mode") or "")
+    if (
+        desired_backend_id != backend_id
+        or desired_family != state.execution_family
+        or desired_execution_mode != state.execution_mode
+    ):
         _set_desired_backend_path(backend_id, "startup_reconcile")
         changed = True
 
     applied_backend_id = str((state.applied_backend_path or {}).get("backend_id") or "")
     applied_family = str((state.applied_backend_path or {}).get("family") or "")
-    if state.active_stack == "hysteria2" and (applied_backend_id != backend_id or applied_family != state.execution_family):
+    applied_execution_mode = str((state.applied_backend_path or {}).get("execution_mode") or "")
+    if state.active_stack == "hysteria2" and (
+        applied_backend_id != backend_id
+        or applied_family != state.execution_family
+        or applied_execution_mode != state.execution_mode
+    ):
         _set_applied_backend_path(backend_id, "startup_reconcile")
         changed = True
 

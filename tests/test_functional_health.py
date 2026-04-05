@@ -318,6 +318,7 @@ class FunctionalHealthTests(unittest.TestCase):
     def test_reconcile_backend_path_runtime_state_sets_hysteria2_active_backend(self) -> None:
         watchdog.state.backends = [{"id": "backend-a", "ip": "198.51.100.10", "drain": False, "status": "healthy"}]
         watchdog.state.active_backend_id = "backend-a"
+        watchdog.state.execution_mode = "multi_backend"
         watchdog.state.execution_family = "hysteria2"
         watchdog.state.active_stack = "hysteria2"
         watchdog.state.desired_backend_path = {}
@@ -328,8 +329,25 @@ class FunctionalHealthTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(watchdog.state.desired_backend_path["backend_id"], "backend-a")
         self.assertEqual(watchdog.state.desired_backend_path["reason"], "startup_reconcile")
+        self.assertEqual(watchdog.state.desired_backend_path["execution_mode"], "multi_backend")
         self.assertEqual(watchdog.state.applied_backend_path["backend_id"], "backend-a")
         self.assertEqual(watchdog.state.applied_backend_path["reason"], "startup_reconcile")
+        self.assertEqual(watchdog.state.applied_backend_path["execution_mode"], "multi_backend")
+
+    def test_reconcile_backend_path_runtime_state_normalizes_execution_mode_mismatch(self) -> None:
+        watchdog.state.backends = [{"id": "backend-a", "ip": "198.51.100.10", "drain": False, "status": "healthy"}]
+        watchdog.state.active_backend_id = "backend-a"
+        watchdog.state.execution_mode = "multi_backend"
+        watchdog.state.execution_family = "hysteria2"
+        watchdog.state.active_stack = "hysteria2"
+        watchdog.state.desired_backend_path = {"backend_id": "backend-a", "family": "hysteria2", "execution_mode": "single_active_backend"}
+        watchdog.state.applied_backend_path = {"backend_id": "backend-a", "family": "hysteria2", "execution_mode": "single_active_backend"}
+        with mock.patch.object(watchdog, "_refresh_backend_pool", return_value=None):
+            with mock.patch.object(watchdog.state, "save", return_value=None):
+                changed = watchdog._reconcile_backend_path_runtime_state()
+        self.assertTrue(changed)
+        self.assertEqual(watchdog.state.desired_backend_path["execution_mode"], "multi_backend")
+        self.assertEqual(watchdog.state.applied_backend_path["execution_mode"], "multi_backend")
 
     def test_reconcile_backend_path_runtime_state_skips_non_hysteria_execution_family(self) -> None:
         watchdog.state.backends = [{"id": "backend-a", "ip": "198.51.100.10", "drain": False, "status": "healthy"}]
