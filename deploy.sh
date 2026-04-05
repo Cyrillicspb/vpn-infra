@@ -442,7 +442,7 @@ PY
 resolve_release_ref_for_remote() {
     local remote="$1"
     local latest_tag=""
-    latest_tag="$(git ls-remote --tags --refs "$remote" 'v*' 2>/dev/null | awk '{sub("refs/tags/","",$2); print $2}' | sort -V | tail -1 || true)"
+    latest_tag="$(git_ls_remote_release_tags "$remote" | awk '{sub("refs/tags/","",$2); print $2}' | sort -V | tail -1 || true)"
     if [[ -n "$latest_tag" ]]; then
         printf 'refs/tags/%s\n' "$latest_tag"
         return 0
@@ -462,6 +462,54 @@ configure_vps_mirror_remote() {
         git -C "$REPO_DIR" remote set-url vps-mirror \
             "ssh://sysadmin@${PRIMARY_BACKEND_IP}:${ssh_port}/opt/vpn/vpn-repo.git"
     fi
+}
+
+active_socks_port() {
+    local state_file="/var/run/vpn-active-socks-port"
+    [[ -r "$state_file" ]] || return 1
+    local port
+    port="$(tr -d '[:space:]' < "$state_file" 2>/dev/null || true)"
+    [[ "$port" =~ ^[0-9]{2,5}$ ]] || return 1
+    printf '%s\n' "$port"
+}
+
+remote_url_for_git_remote() {
+    local remote="$1"
+    git -C "$REPO_DIR" remote get-url "$remote" 2>/dev/null || true
+}
+
+remote_supports_socks_fallback() {
+    local remote="$1"
+    local url
+    url="$(remote_url_for_git_remote "$remote")"
+    [[ "$url" == https://github.com/* || "$url" == http://github.com/* ]]
+}
+
+git_fetch_remote_with_fallback() {
+    local remote="$1"
+    shift
+    if git -C "$REPO_DIR" fetch "$remote" "$@" >/dev/null 2>&1; then
+        return 0
+    fi
+    local port=""
+    if remote_supports_socks_fallback "$remote"; then
+        port="$(active_socks_port || true)"
+    fi
+    [[ -n "$port" ]] || return 1
+    ALL_PROXY="socks5h://127.0.0.1:${port}" git -C "$REPO_DIR" fetch "$remote" "$@" >/dev/null 2>&1
+}
+
+git_ls_remote_release_tags() {
+    local remote="$1"
+    if git ls-remote --tags --refs "$remote" 'v*' 2>/dev/null; then
+        return 0
+    fi
+    local port=""
+    if remote_supports_socks_fallback "$remote"; then
+        port="$(active_socks_port || true)"
+    fi
+    [[ -n "$port" ]] || return 1
+    ALL_PROXY="socks5h://127.0.0.1:${port}" git ls-remote --tags --refs "$remote" 'v*' 2>/dev/null
 }
 
 home_pull_remote_services() {
@@ -950,7 +998,7 @@ fetch_target_release() {
 
     ensure_git_repo
 
-    git -C "$REPO_DIR" fetch --tags origin '+refs/heads/*:refs/remotes/origin/*' >/dev/null 2>&1 || {
+    git_fetch_remote_with_fallback origin --tags '+refs/heads/*:refs/remotes/origin/*' || {
         ORIGIN_FETCH_STATUS="failed"
         return 1
     }

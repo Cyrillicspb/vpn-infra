@@ -57,6 +57,7 @@ Health gate опирается на:
 - `vps-mirror` используется только как parity gate для backend rollout.
 - Термин `mirror parity` используется как operator-facing статус синхронизации `vps-mirror` относительно `origin`.
 - Если `origin` недоступен, `vps-mirror` недоступен, `vps-mirror` stale относительно `origin`, либо у mirror нет matching release tag, deploy останавливается на preflight без apply.
+- Для `origin=https://github.com/...` `deploy.sh` может использовать active SOCKS fallback (`/var/run/vpn-active-socks-port`) для `git fetch/ls-remote`, если direct DNS/HTTPS до GitHub с home-host недоступны.
 - `sudo bash /opt/vpn/deploy.sh --status` и `--check` должны явно показывать:
   - `Target source`
   - `Origin sha`
