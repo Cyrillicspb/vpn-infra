@@ -37,15 +37,19 @@ from aiogram.types import (
 )
 
 from handlers.keyboards import (
+    client_connect_menu,
+    client_devices_menu,
     client_excludes_menu,
     client_main_menu,
     client_request_type_kb,
+    client_routes_hub_menu,
     device_excludes_inline_kb,
     device_excludes_menu,
     device_server_routes_inline_kb,
     device_server_routes_menu,
     client_server_routes_menu,
     client_sites_menu,
+    client_support_menu,
     confirm_kb,
     device_detail_kb,
     devices_inline_kb,
@@ -55,6 +59,7 @@ from handlers.keyboards import (
     proto_inline_kb,
     server_routes_inline_kb,
 )
+from handlers.screen import edit_or_answer, result_text, return_kb, screen_text, section_text, start_prompt
 
 from config import config
 from database import Database
@@ -67,6 +72,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 router = Router()
+_edit_or_answer = edit_or_answer
 
 # Per-user lock to prevent race condition in adddevice (TOCTOU between count check and insert)
 _adddevice_locks: dict[int, asyncio.Lock] = {}
@@ -685,6 +691,8 @@ async def adddev_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
     is_router = raw == "wg_router"
     protocol  = "wg" if is_router else raw
     data      = await state.get_data()
+    return_to = data.get("_return_to", "cl:devices_menu")
+    return_home = data.get("_return_home", "cl:menu")
     chat_id   = str(cb.from_user.id)
     await state.clear()
     await cb.answer()
@@ -694,7 +702,7 @@ async def adddev_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
         await cb.message.answer(
             f"✅ Запрос на устройство `{data['device_name']}` отправлен администратору.\n"
             f"Конфиг придёт после одобрения.",
-            reply_markup=client_main_menu(),
+            reply_markup=return_kb(return_to, return_home),
         )
         bot: "Bot" = kw.get("bot")
         if bot and device.get("id"):
@@ -713,7 +721,7 @@ async def adddev_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
                 )
             )
     except Exception as e:
-        await cb.message.answer(f"❌ {e}", reply_markup=client_main_menu())
+        await cb.message.answer(f"❌ {e}", reply_markup=return_kb(return_to, return_home))
 
 
 @router.message(AddDeviceFSM.protocol)
@@ -721,6 +729,8 @@ async def adddev_protocol(message: Message, state: FSMContext, **kw):
     db: Database = kw.get("db")
     protocol = _parse_protocol(message.text)
     data     = await state.get_data()
+    return_to = data.get("_return_to", "cl:devices_menu")
+    return_home = data.get("_return_home", "cl:menu")
     chat_id  = str(message.from_user.id)
     await state.clear()
 
@@ -731,7 +741,7 @@ async def adddev_protocol(message: Message, state: FSMContext, **kw):
             f"Конфиг придёт после одобрения.",
             reply_markup=ReplyKeyboardRemove(),
         )
-        await message.answer("Выберите действие:", reply_markup=client_main_menu())
+        await message.answer("Выберите действие:", reply_markup=return_kb(return_to, return_home))
         bot: "Bot" = kw.get("bot")
         if bot and device.get("id"):
             dev_id = device["id"]
@@ -1135,10 +1145,75 @@ async def _menu_header() -> str:
 async def cb_cl_menu(cb: CallbackQuery, **kw):
     await cb.answer()
     header = await _menu_header()
-    try:
-        await cb.message.edit_text(header, reply_markup=client_main_menu(), parse_mode="HTML")
-    except Exception:
-        await cb.message.answer(header, reply_markup=client_main_menu(), parse_mode="HTML")
+    await _edit_or_answer(
+        cb,
+        f"{header}\n\n<blockquote>Меню</blockquote>\n\n<i>Выберите, что хотите сделать: управлять устройствами, обновить подключение, настроить маршруты или обратиться за помощью.</i>",
+        client_main_menu(),
+    )
+
+
+@router.callback_query(F.data == "cl:devices_menu")
+async def cb_cl_devices_menu(cb: CallbackQuery, **kw):
+    await cb.answer()
+    await _edit_or_answer(
+        cb,
+        screen_text(
+            "Устройства",
+            "Здесь можно посмотреть свои устройства, добавить новое, удалить старое и получить конфиг.",
+            icon="📱",
+            details=["открыть карточку устройства", "получить конфиг", "добавить или удалить устройство"],
+            trail=["Меню", "Устройства"],
+        ),
+        client_devices_menu(),
+    )
+
+
+@router.callback_query(F.data == "cl:connect_menu")
+async def cb_cl_connect_menu(cb: CallbackQuery, **kw):
+    await cb.answer()
+    await _edit_or_answer(
+        cb,
+        screen_text(
+            "Подключение",
+            "Проверьте, работает ли VPN, и при необходимости обновите конфиги.",
+            icon="🔌",
+            details=["посмотреть состояние VPN", "обновить все конфиги", "заново получить конфиг"],
+            trail=["Меню", "Подключение"],
+        ),
+        client_connect_menu(),
+    )
+
+
+@router.callback_query(F.data == "cl:routes_menu")
+async def cb_cl_routes_menu(cb: CallbackQuery, **kw):
+    await cb.answer()
+    await _edit_or_answer(
+        cb,
+        screen_text(
+            "Маршруты",
+            "Здесь настраивается, что идёт через VPN, что обходится напрямую и что направляется через сервер.",
+            icon="🌐",
+            details=["запросить сайт", "добавить исключение", "направить адрес через сервер"],
+            trail=["Меню", "Маршруты"],
+        ),
+        client_routes_hub_menu(),
+    )
+
+
+@router.callback_query(F.data == "cl:support_menu")
+async def cb_cl_support_menu(cb: CallbackQuery, **kw):
+    await cb.answer()
+    await _edit_or_answer(
+        cb,
+        screen_text(
+            "Поддержка",
+            "Если что-то не работает, отсюда можно проверить ситуацию и написать администратору.",
+            icon="🆘",
+            details=["посмотреть помощь", "открыть свои запросы", "сообщить о проблеме"],
+            trail=["Меню", "Поддержка"],
+        ),
+        client_support_menu(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1150,15 +1225,18 @@ async def cb_cl_removedevice(cb: CallbackQuery, **kw):
     devices = await db.get_devices(str(cb.from_user.id))
     if not devices:
         await cb.answer("Нет устройств")
-        await cb.message.answer("Нет устройств.", reply_markup=client_main_menu())
+        await _edit_or_answer(cb, "Нет устройств.", client_devices_menu())
         return
     if len(devices) == 1:
         await cb.answer()
         await _do_remove_device(cb.message, db, devices[0])
     else:
         await cb.answer()
-        await cb.message.answer("Выберите устройство для удаления:",
-                                reply_markup=devices_inline_kb(devices, "rm:", "cl:menu"))
+        await _edit_or_answer(
+            cb,
+            "Выберите устройство для удаления:",
+            devices_inline_kb(devices, "rm:", "cl:devices_menu"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1168,40 +1246,40 @@ async def cb_cl_removedevice(cb: CallbackQuery, **kw):
 @router.callback_query(F.data == "cl:sites")
 async def cb_cl_sites(cb: CallbackQuery, **kw):
     await cb.answer()
-    try:
-        await cb.message.edit_text(
-            "🌐 <b>Сайты через VPN</b>\n\nЗапросить добавление сайта или посмотреть статус запросов.",
-            reply_markup=client_sites_menu(),
-            parse_mode="HTML",
-        )
-    except Exception:
-        await cb.message.answer(
-            "🌐 <b>Сайты через VPN</b>",
-            reply_markup=client_sites_menu(),
-            parse_mode="HTML",
-        )
+    await _edit_or_answer(
+        cb,
+        "🌐 <b>Сайты через VPN</b>\n\nЗапросить добавление сайта или посмотреть статус запросов.",
+        client_sites_menu(),
+    )
 
 
 @router.callback_query(F.data == "cl:request")
 async def cb_cl_request(cb: CallbackQuery, **kw):
     await cb.answer()
-    await cb.message.answer("Куда направить домен?", reply_markup=client_request_type_kb())
+    await edit_or_answer(cb, "Куда направить домен?", client_request_type_kb())
 
 
 @router.callback_query(F.data.startswith("cl:req:"))
 async def cb_cl_request_type(cb: CallbackQuery, state: FSMContext, **kw):
     direction = cb.data[len("cl:req:"):]
-    await cb.answer()
     label = "VPN" if direction == "vpn" else "Direct"
-    await cb.message.answer(f"Введите домен для маршрута *{label}*\n(например: `example.com`):")
-    await state.update_data(_req_direction=direction, _fsm_ts=_now())
-    await state.set_state(RequestFSM.domain)
+    await start_prompt(
+        cb,
+        state,
+        RequestFSM.domain,
+        f"Введите домен для маршрута <b>{label}</b>\n(например: <code>example.com</code>):",
+        "cl:sites",
+        home_cb="cl:menu",
+        extra_data={"_req_direction": direction},
+    )
 
 
 @router.message(RequestFSM.domain)
 async def fsm_request_domain(message: Message, state: FSMContext, **kw):
     data = await state.get_data()
     direction = data.get("_req_direction", "vpn")
+    return_to = data.get("_return_to", "cl:sites")
+    return_home = data.get("_return_home", "cl:menu")
     domain = message.text.strip().lower().strip(".")
     if not _DOMAIN_RE.match(domain) or len(domain) > 253:
         await message.answer("❌ Неверный формат домена. Пример: `example.com`")
@@ -1212,7 +1290,7 @@ async def fsm_request_domain(message: Message, state: FSMContext, **kw):
     req_id = await db.create_domain_request(str(message.from_user.id), domain, direction)
     await message.answer(
         f"✅ Запрос #{req_id} отправлен.\nДомен: `{domain}` → {direction}",
-        reply_markup=client_main_menu(),
+        reply_markup=return_kb(return_to, return_home),
     )
     if bot:
         asyncio.create_task(
@@ -1231,10 +1309,7 @@ async def fsm_request_domain(message: Message, state: FSMContext, **kw):
 @router.callback_query(F.data == "cl:excludes")
 async def cb_cl_excludes(cb: CallbackQuery, **kw):
     await cb.answer()
-    try:
-        await cb.message.edit_text("🚫 *Исключения из VPN*", reply_markup=client_excludes_menu())
-    except Exception:
-        await cb.message.answer("🚫 *Исключения из VPN*", reply_markup=client_excludes_menu())
+    await _edit_or_answer(cb, "🚫 <b>Исключения из VPN</b>", client_excludes_menu())
 
 
 @router.callback_query(F.data == "cl:ex_list")
@@ -1246,25 +1321,29 @@ async def cb_cl_ex_list(cb: CallbackQuery, **kw):
     for d in devices:
         exs = await db.get_excludes(d["id"])
         if exs:
-            lines.append(f"*{d['device_name']}:*")
-            lines.extend(f"  • `{e['subnet']}`" for e in exs)
-    text = "\n".join(lines) if lines else "Исключений нет."
-    await cb.message.answer(text, reply_markup=client_excludes_menu())
+            lines.append(f"<b>{d['device_name']}</b>")
+            lines.extend(f"• <code>{e['subnet']}</code>" for e in exs)
+            lines.append("")
+    text = "\n".join(lines).strip() if lines else "Исключений нет."
+    await _edit_or_answer(cb, text, client_excludes_menu())
 
 
 @router.callback_query(F.data == "cl:ex_add")
 async def cb_cl_ex_add(cb: CallbackQuery, state: FSMContext, **kw):
-    await cb.answer()
     db: Database = kw.get("db")
     devices = await db.get_devices(str(cb.from_user.id))
     if not devices:
-        await cb.message.answer("Нет устройств.", reply_markup=client_main_menu())
+        await cb.message.answer("Нет устройств.", reply_markup=client_devices_menu())
         return
-    await state.update_data(_ex_device_id=devices[0]["id"], _fsm_ts=_now())
-    await cb.message.answer(
-        f"Введите подсеть для исключения\n(например: `192.168.1.0/24`):"
+    await start_prompt(
+        cb,
+        state,
+        ExcludeFSM.subnet,
+        "Введите подсеть для исключения\n(например: <code>192.168.1.0/24</code>):",
+        "cl:excludes",
+        home_cb="cl:menu",
+        extra_data={"_ex_device_id": devices[0]["id"]},
     )
-    await state.set_state(ExcludeFSM.subnet)
 
 
 @router.message(ExcludeFSM.subnet)
@@ -1278,6 +1357,8 @@ async def fsm_exclude_subnet(message: Message, state: FSMContext, **kw):
     data = await state.get_data()
     device_id = data.get("_ex_device_id")
     back_to_device = data.get("_ex_back_device_id")
+    return_to = data.get("_return_to", "cl:excludes")
+    return_home = data.get("_return_home", "cl:menu")
     await state.clear()
     db: Database = kw.get("db")
     await db.remove_server_route(device_id, subnet)
@@ -1288,7 +1369,7 @@ async def fsm_exclude_subnet(message: Message, state: FSMContext, **kw):
             reply_markup=device_excludes_menu(int(back_to_device)),
         )
     else:
-        await message.answer(f"✅ `{subnet}` добавлен в исключения.", reply_markup=client_main_menu())
+        await message.answer(f"✅ `{subnet}` добавлен в исключения.", reply_markup=return_kb(return_to, return_home))
 
 
 @router.callback_query(F.data == "cl:ex_remove")
@@ -1300,12 +1381,13 @@ async def cb_cl_ex_remove(cb: CallbackQuery, **kw):
     for d in devices:
         exs = await db.get_excludes(d["id"])
         if exs:
-            await cb.message.answer(
-                f"Исключения устройства *{d['device_name']}*:",
+            await _edit_or_answer(
+                cb,
+                f"🚫 <b>Исключения устройства</b>\n<code>{d['device_name']}</code>",
                 reply_markup=excludes_inline_kb(exs, d["id"]),
             )
             return
-    await cb.message.answer("Исключений нет.", reply_markup=client_excludes_menu())
+    await _edit_or_answer(cb, "Исключений нет.", client_excludes_menu())
 
 
 @router.callback_query(F.data.startswith("cl:ex_del:"))
@@ -1330,18 +1412,13 @@ async def cb_cl_device_excludes(cb: CallbackQuery, **kw):
     db: Database = kw.get("db")
     device = await db.get_device_by_id(device_id)
     if not device:
-        await cb.message.answer("Устройство не найдено.", reply_markup=client_main_menu())
+        await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
-    try:
-        await cb.message.edit_text(
-            f"🚫 *Исключения из VPN*\nУстройство: `{device['device_name']}`",
-            reply_markup=device_excludes_menu(device_id),
-        )
-    except Exception:
-        await cb.message.answer(
-            f"🚫 *Исключения из VPN*\nУстройство: `{device['device_name']}`",
-            reply_markup=device_excludes_menu(device_id),
-        )
+    await _edit_or_answer(
+        cb,
+        f"🚫 <b>Исключения из VPN</b>\nУстройство: <code>{device['device_name']}</code>",
+        device_excludes_menu(device_id),
+    )
 
 
 @router.callback_query(F.data.startswith("cl:devex_list:"))
@@ -1351,33 +1428,36 @@ async def cb_cl_devex_list(cb: CallbackQuery, **kw):
     db: Database = kw.get("db")
     device = await db.get_device_by_id(device_id)
     if not device:
-        await cb.message.answer("Устройство не найдено.", reply_markup=client_main_menu())
+        await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
     excludes = await db.get_excludes(device_id)
     text = (
-        f"*{device['device_name']}*:\n" + "\n".join(f"  • `{item['subnet']}`" for item in excludes)
+        f"<b>{device['device_name']}</b>\n" + "\n".join(f"• <code>{item['subnet']}</code>" for item in excludes)
         if excludes else
-        f"Для `{device['device_name']}` исключений нет."
+        f"Для <code>{device['device_name']}</code> исключений нет."
     )
-    await cb.message.answer(text, reply_markup=device_excludes_menu(device_id))
+    await _edit_or_answer(cb, text, device_excludes_menu(device_id))
 
 
 @router.callback_query(F.data.startswith("cl:devex_add:"))
 async def cb_cl_devex_add(cb: CallbackQuery, state: FSMContext, **kw):
-    await cb.answer()
     device_id = int(cb.data[len("cl:devex_add:"):])
     db: Database = kw.get("db")
     device = await db.get_device_by_id(device_id)
     if not device:
-        await cb.message.answer("Устройство не найдено.", reply_markup=client_main_menu())
+        await cb.message.answer("Устройство не найдено.", reply_markup=client_devices_menu())
         return
-    await state.update_data(_ex_device_id=device_id, _ex_back_device_id=device_id, _fsm_ts=_now())
-    await cb.message.answer(
-        f"Устройство: `{device['device_name']}`\n"
+    await start_prompt(
+        cb,
+        state,
+        ExcludeFSM.subnet,
+        f"Устройство: <code>{device['device_name']}</code>\n"
         "Введите подсеть для исключения\n"
-        "(например: `192.168.1.0/24`):"
+        "(например: <code>192.168.1.0/24</code>):",
+        f"cl:devex:{device_id}",
+        home_cb="cl:devices_menu",
+        extra_data={"_ex_device_id": device_id, "_ex_back_device_id": device_id},
     )
-    await state.set_state(ExcludeFSM.subnet)
 
 
 @router.callback_query(F.data.startswith("cl:devex_remove:"))
@@ -1387,19 +1467,13 @@ async def cb_cl_devex_remove(cb: CallbackQuery, **kw):
     db: Database = kw.get("db")
     device = await db.get_device_by_id(device_id)
     if not device:
-        await cb.message.answer("Устройство не найдено.", reply_markup=client_main_menu())
+        await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
     excludes = await db.get_excludes(device_id)
     if not excludes:
-        await cb.message.answer(
-            f"Для `{device['device_name']}` исключений нет.",
-            reply_markup=device_excludes_menu(device_id),
-        )
+        await _edit_or_answer(cb, f"Для <code>{device['device_name']}</code> исключений нет.", device_excludes_menu(device_id))
         return
-    await cb.message.answer(
-        f"Исключения устройства *{device['device_name']}*:",
-        reply_markup=device_excludes_inline_kb(excludes, device_id),
-    )
+    await _edit_or_answer(cb, f"🚫 <b>Исключения устройства</b>\n<code>{device['device_name']}</code>", device_excludes_inline_kb(excludes, device_id))
 
 
 @router.callback_query(F.data.startswith("cl:devex_del:"))
@@ -1427,10 +1501,7 @@ async def cb_cl_devex_del(cb: CallbackQuery, **kw):
 @router.callback_query(F.data == "cl:sroutes")
 async def cb_cl_server_routes(cb: CallbackQuery, **kw):
     await cb.answer()
-    try:
-        await cb.message.edit_text("📍 *Маршруты через сервер*", reply_markup=client_server_routes_menu())
-    except Exception:
-        await cb.message.answer("📍 *Маршруты через сервер*", reply_markup=client_server_routes_menu())
+    await _edit_or_answer(cb, "📍 <b>Маршруты через сервер</b>", client_server_routes_menu())
 
 
 @router.callback_query(F.data.startswith("cl:devsr:"))
@@ -1440,18 +1511,13 @@ async def cb_cl_device_server_routes(cb: CallbackQuery, **kw):
     db: Database = kw.get("db")
     device = await db.get_device_by_id(device_id)
     if not device:
-        await cb.message.answer("Устройство не найдено.", reply_markup=client_main_menu())
+        await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
-    try:
-        await cb.message.edit_text(
-            f"📍 *Маршруты через сервер*\nУстройство: `{device['device_name']}`",
-            reply_markup=device_server_routes_menu(device_id),
-        )
-    except Exception:
-        await cb.message.answer(
-            f"📍 *Маршруты через сервер*\nУстройство: `{device['device_name']}`",
-            reply_markup=device_server_routes_menu(device_id),
-        )
+    await _edit_or_answer(
+        cb,
+        f"📍 <b>Маршруты через сервер</b>\nУстройство: <code>{device['device_name']}</code>",
+        device_server_routes_menu(device_id),
+    )
 
 
 @router.callback_query(F.data == "cl:sr_list")
@@ -1463,47 +1529,58 @@ async def cb_cl_sr_list(cb: CallbackQuery, **kw):
     for d in devices:
         routes = await db.get_server_routes(d["id"])
         if routes:
-            lines.append(f"*{d['device_name']}:*")
-            lines.extend(f"  • `{item['subnet']}`" for item in routes)
-    text = "\n".join(lines) if lines else "Маршрутов через сервер нет."
-    await cb.message.answer(text, reply_markup=client_server_routes_menu())
+            lines.append(f"<b>{d['device_name']}</b>")
+            lines.extend(f"• <code>{item['subnet']}</code>" for item in routes)
+            lines.append("")
+    text = "\n".join(lines).strip() if lines else "Маршрутов через сервер нет."
+    await _edit_or_answer(cb, text, client_server_routes_menu())
 
 
 @router.callback_query(F.data == "cl:sr_add")
 async def cb_cl_sr_add(cb: CallbackQuery, state: FSMContext, **kw):
-    await cb.answer()
     db: Database = kw.get("db")
     devices = await db.get_devices(str(cb.from_user.id))
     if not devices:
-        await cb.message.answer("Нет устройств.", reply_markup=client_main_menu())
+        await cb.message.answer("Нет устройств.", reply_markup=client_devices_menu())
         return
     if len(devices) == 1:
-        await state.update_data(_sr_device_id=devices[0]["id"], _fsm_ts=_now())
-        await cb.message.answer("Введите IP или подсеть для маршрута через сервер\n(например: `192.168.1.200` или `192.168.1.0/24`):")
-        await state.set_state(ServerRouteFSM.target)
+        await start_prompt(
+            cb,
+            state,
+            ServerRouteFSM.target,
+            "Введите IP или подсеть для маршрута через сервер\n"
+            "(например: <code>192.168.1.200</code> или <code>192.168.1.0/24</code>):",
+            "cl:sroutes",
+            home_cb="cl:menu",
+            extra_data={"_sr_device_id": devices[0]["id"]},
+        )
         return
-    await cb.message.answer(
+    await edit_or_answer(
+        cb,
         "Выберите устройство для добавления маршрута через сервер:",
-        reply_markup=devices_inline_kb(devices, "cl:sr_add_dev:", "cl:sroutes"),
+        devices_inline_kb(devices, "cl:sr_add_dev:", "cl:sroutes"),
     )
 
 
 @router.callback_query(F.data.startswith("cl:sr_add_dev:"))
 async def cb_cl_sr_add_dev(cb: CallbackQuery, state: FSMContext, **kw):
-    await cb.answer()
     device_id = int(cb.data[len("cl:sr_add_dev:"):])
     db: Database = kw.get("db")
     device = await db.get_device_by_id(device_id)
     if not device:
         await cb.message.answer("Устройство не найдено.", reply_markup=client_server_routes_menu())
         return
-    await state.update_data(_sr_device_id=device_id, _fsm_ts=_now())
-    await cb.message.answer(
-        f"Устройство: `{device['device_name']}`\n"
+    await start_prompt(
+        cb,
+        state,
+        ServerRouteFSM.target,
+        f"Устройство: <code>{device['device_name']}</code>\n"
         "Введите IP или подсеть для маршрута через сервер\n"
-        "(например: `192.168.1.200` или `192.168.1.0/24`):"
+        "(например: <code>192.168.1.200</code> или <code>192.168.1.0/24</code>):",
+        "cl:sroutes",
+        home_cb="cl:menu",
+        extra_data={"_sr_device_id": device_id},
     )
-    await state.set_state(ServerRouteFSM.target)
 
 
 @router.message(ServerRouteFSM.target)
@@ -1517,6 +1594,8 @@ async def fsm_server_route_target(message: Message, state: FSMContext, **kw):
     data = await state.get_data()
     device_id = data.get("_sr_device_id")
     back_to_device = data.get("_sr_back_device_id")
+    return_to = data.get("_return_to", "cl:sroutes")
+    return_home = data.get("_return_home", "cl:menu")
     await state.clear()
     if not device_id:
         await message.answer("❌ Не выбрано устройство.", reply_markup=client_server_routes_menu())
@@ -1529,7 +1608,7 @@ async def fsm_server_route_target(message: Message, state: FSMContext, **kw):
             reply_markup=device_server_routes_menu(int(back_to_device)),
         )
     else:
-        await message.answer(f"✅ `{target}` добавлен в маршруты через сервер.", reply_markup=client_main_menu())
+        await message.answer(f"✅ `{target}` добавлен в маршруты через сервер.", reply_markup=return_kb(return_to, return_home))
 
 
 @router.callback_query(F.data == "cl:sr_remove")
@@ -1540,12 +1619,13 @@ async def cb_cl_sr_remove(cb: CallbackQuery, **kw):
     for d in devices:
         routes = await db.get_server_routes(d["id"])
         if routes:
-            await cb.message.answer(
-                f"Маршруты через сервер для *{d['device_name']}*:",
+            await _edit_or_answer(
+                cb,
+                f"📍 <b>Маршруты через сервер</b>\n<code>{d['device_name']}</code>",
                 reply_markup=server_routes_inline_kb(routes, d["id"]),
             )
             return
-    await cb.message.answer("Маршрутов через сервер нет.", reply_markup=client_server_routes_menu())
+    await _edit_or_answer(cb, "Маршрутов через сервер нет.", client_server_routes_menu())
 
 
 @router.callback_query(F.data.startswith("cl:sr_del:"))
@@ -1570,33 +1650,36 @@ async def cb_cl_devsr_list(cb: CallbackQuery, **kw):
     db: Database = kw.get("db")
     device = await db.get_device_by_id(device_id)
     if not device:
-        await cb.message.answer("Устройство не найдено.", reply_markup=client_main_menu())
+        await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
     routes = await db.get_server_routes(device_id)
     text = (
-        f"*{device['device_name']}*:\n" + "\n".join(f"  • `{item['subnet']}`" for item in routes)
+        f"<b>{device['device_name']}</b>\n" + "\n".join(f"• <code>{item['subnet']}</code>" for item in routes)
         if routes else
-        f"Для `{device['device_name']}` маршрутов через сервер нет."
+        f"Для <code>{device['device_name']}</code> маршрутов через сервер нет."
     )
-    await cb.message.answer(text, reply_markup=device_server_routes_menu(device_id))
+    await _edit_or_answer(cb, text, device_server_routes_menu(device_id))
 
 
 @router.callback_query(F.data.startswith("cl:devsr_add:"))
 async def cb_cl_devsr_add(cb: CallbackQuery, state: FSMContext, **kw):
-    await cb.answer()
     device_id = int(cb.data[len("cl:devsr_add:"):])
     db: Database = kw.get("db")
     device = await db.get_device_by_id(device_id)
     if not device:
-        await cb.message.answer("Устройство не найдено.", reply_markup=client_main_menu())
+        await cb.message.answer("Устройство не найдено.", reply_markup=client_devices_menu())
         return
-    await state.update_data(_sr_device_id=device_id, _sr_back_device_id=device_id, _fsm_ts=_now())
-    await cb.message.answer(
-        f"Устройство: `{device['device_name']}`\n"
+    await start_prompt(
+        cb,
+        state,
+        ServerRouteFSM.target,
+        f"Устройство: <code>{device['device_name']}</code>\n"
         "Введите IP или подсеть для маршрута через сервер\n"
-        "(например: `192.168.1.200` или `192.168.1.0/24`):"
+        "(например: <code>192.168.1.200</code> или <code>192.168.1.0/24</code>):",
+        f"cl:devsr:{device_id}",
+        home_cb="cl:devices_menu",
+        extra_data={"_sr_device_id": device_id, "_sr_back_device_id": device_id},
     )
-    await state.set_state(ServerRouteFSM.target)
 
 
 @router.callback_query(F.data.startswith("cl:devsr_remove:"))
@@ -1606,18 +1689,20 @@ async def cb_cl_devsr_remove(cb: CallbackQuery, **kw):
     db: Database = kw.get("db")
     device = await db.get_device_by_id(device_id)
     if not device:
-        await cb.message.answer("Устройство не найдено.", reply_markup=client_main_menu())
+        await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
     routes = await db.get_server_routes(device_id)
     if not routes:
-        await cb.message.answer(
-            f"Для `{device['device_name']}` маршрутов через сервер нет.",
-            reply_markup=device_server_routes_menu(device_id),
+        await _edit_or_answer(
+            cb,
+            f"Для <code>{device['device_name']}</code> маршрутов через сервер нет.",
+            device_server_routes_menu(device_id),
         )
         return
-    await cb.message.answer(
-        f"Маршруты через сервер для *{device['device_name']}*:",
-        reply_markup=device_server_routes_inline_kb(routes, device_id),
+    await _edit_or_answer(
+        cb,
+        f"📍 <b>Маршруты через сервер</b>\n<code>{device['device_name']}</code>",
+        device_server_routes_inline_kb(routes, device_id),
     )
 
 
@@ -1645,15 +1730,22 @@ async def cb_cl_devsr_del(cb: CallbackQuery, **kw):
 
 @router.callback_query(F.data == "cl:report")
 async def cb_cl_report(cb: CallbackQuery, state: FSMContext, **kw):
-    await cb.answer()
-    await cb.message.answer("Опишите проблему:")
-    await state.update_data(_fsm_ts=_now())
-    await state.set_state(ReportFSM.text)
+    await start_prompt(
+        cb,
+        state,
+        ReportFSM.text,
+        "Опишите проблему:",
+        "cl:support_menu",
+        home_cb="cl:menu",
+    )
 
 
 @router.message(ReportFSM.text)
 async def fsm_report_text(message: Message, state: FSMContext, **kw):
     text = message.text.strip()
+    data = await state.get_data()
+    return_to = data.get("_return_to", "cl:support_menu")
+    return_home = data.get("_return_home", "cl:menu")
     await state.clear()
     bot = kw.get("bot")
     if bot:
@@ -1666,7 +1758,7 @@ async def fsm_report_text(message: Message, state: FSMContext, **kw):
                 f"{text}",
             )
         )
-    await message.answer("✅ Сообщение отправлено администратору.", reply_markup=client_main_menu())
+    await message.answer("✅ Сообщение отправлено администратору.", reply_markup=return_kb(return_to, return_home))
 
 
 # ---------------------------------------------------------------------------
@@ -1679,21 +1771,28 @@ _MANUAL_DIRECT = "/etc/vpn-routes/manual-direct.txt"
 
 @router.callback_query(F.data == "cl:checksite")
 async def cb_cl_checksite(cb: CallbackQuery, state: FSMContext, **kw):
-    await cb.answer()
     db: Database = kw.get("db")
     client = await db.get_client(str(cb.from_user.id))
     if not client:
         await cb.message.answer("Сначала зарегистрируйтесь: /start")
         return
-    await cb.message.answer("Введите адрес сайта (например: <code>youtube.com</code>):", parse_mode="HTML")
-    await state.update_data(_fsm_ts=_now())
-    await state.set_state(CheckSiteFSM.domain)
+    await start_prompt(
+        cb,
+        state,
+        CheckSiteFSM.domain,
+        "Введите адрес сайта (например: <code>youtube.com</code>):",
+        "cl:support_menu",
+        home_cb="cl:menu",
+    )
 
 
 @router.message(CheckSiteFSM.domain)
 async def fsm_checksite_domain(message: Message, state: FSMContext, **kw):
     import os as _os
     domain = message.text.strip().lower().strip(".").replace("https://", "").replace("http://", "").split("/")[0]
+    data = await state.get_data()
+    return_to = data.get("_return_to", "cl:support_menu")
+    return_home = data.get("_return_home", "cl:menu")
     await state.clear()
 
     try:
@@ -1748,7 +1847,7 @@ async def fsm_checksite_domain(message: Message, state: FSMContext, **kw):
     except Exception:
         text = f"⚠️ Не удалось проверить <b>{domain}</b>. Попробуйте позже."
 
-    await message.answer(text, reply_markup=client_main_menu(), parse_mode="HTML")
+    await message.answer(text, reply_markup=return_kb(return_to, return_home), parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------
@@ -1778,19 +1877,19 @@ async def cb_cl_mydevices(cb: CallbackQuery, **kw):
     chat_id = str(cb.from_user.id)
     devices = await db.get_devices(chat_id)
     if not devices:
-        await cb.message.answer(
+        await _edit_or_answer(
+            cb,
             "Устройств нет. Нажмите «Добавить устройство».",
-            reply_markup=client_main_menu(),
+            client_devices_menu(),
         )
         return
-    # Show device list with buttons to device detail page
-    await cb.message.answer(
+    await _edit_or_answer(
+        cb,
         "📱 <b>Ваши устройства</b> — выберите для управления:",
-        reply_markup=devices_inline_kb(
-            devices, "cl:dev:", "cl:menu",
+        devices_inline_kb(
+            devices, "cl:dev:", "cl:devices_menu",
             footer=[InlineKeyboardButton(text="🔄 Обновить все конфиги", callback_data="cl:update")],
         ),
-        parse_mode="HTML",
     )
 
 
@@ -1801,7 +1900,7 @@ async def cb_cl_device_detail(cb: CallbackQuery, **kw):
     db: Database = kw.get("db")
     device = await db.get_device_by_id(device_id)
     if not device:
-        await cb.message.answer("Устройство не найдено.", reply_markup=client_main_menu())
+        await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
     # Get peer status
     import time as _time
@@ -1823,13 +1922,15 @@ async def cb_cl_device_detail(cb: CallbackQuery, **kw):
     server_routes_count = len(await db.get_server_routes(device_id))
     icon = "⏳" if device.get("pending_approval") else "✅"
     text = (
+        f"<blockquote>Меню → Устройства → {device['device_name']}</blockquote>\n\n"
         f"{icon} <b>{device['device_name']}</b>\n"
+        f"Состояние: <b>{'⏳ ожидает одобрения' if device.get('pending_approval') else '✅ активно'}</b>\n"
         f"Протокол: <code>{device['protocol'].upper()}</code>\n"
         f"IP: <code>{device.get('ip_address', 'N/A')}</code>\n"
-        f"Последний handshake: {hs_str}\n"
+        f"Последний handshake: <b>{hs_str}</b>\n"
         f"Исключения: <code>{excludes_count}</code> · Через сервер: <code>{server_routes_count}</code>"
     )
-    await cb.message.answer(text, reply_markup=device_detail_kb(device_id), parse_mode="HTML")
+    await _edit_or_answer(cb, text, device_detail_kb(device_id))
 
 
 @router.callback_query(F.data.startswith("cl:getconf:"))
@@ -1839,18 +1940,23 @@ async def cb_cl_getconf(cb: CallbackQuery, **kw):
     db: Database = kw.get("db")
     device = await db.get_device_by_id(device_id)
     if not device:
-        await cb.message.answer("Устройство не найдено.")
-        return
-    if device.get("pending_approval"):
-        await cb.message.answer(
-            "⏳ Устройство ещё ожидает одобрения администратора.",
-            reply_markup=client_main_menu(),
+        await _edit_or_answer(
+            cb,
+            result_text("Устройство не найдено", "Возможно, оно уже было удалено.", status="warn", trail=["Меню", "Устройства"]),
+            client_devices_menu(),
         )
         return
-    await cb.message.answer(
-        f"📱 <b>{device['device_name']}</b> — выберите формат конфига:",
-        reply_markup=platform_inline_kb(device_id),
-        parse_mode="HTML",
+    if device.get("pending_approval"):
+        await _edit_or_answer(
+            cb,
+            "⏳ Устройство ещё ожидает одобрения администратора.",
+            client_devices_menu(),
+        )
+        return
+    await _edit_or_answer(
+        cb,
+        f"<blockquote>Меню → Устройства → {device['device_name']} → Получить конфиг</blockquote>\n\n📱 <b>{device['device_name']}</b> — выберите формат конфига:",
+        platform_inline_kb(device_id),
     )
 
 
@@ -1861,12 +1967,22 @@ async def cb_cl_del_device(cb: CallbackQuery, **kw):
     db: Database = kw.get("db")
     device = await db.get_device_by_id(device_id)
     if not device:
-        await cb.message.answer("Устройство не найдено.")
+        await _edit_or_answer(
+            cb,
+            result_text("Устройство не найдено", "Возможно, оно уже было удалено.", status="warn", trail=["Меню", "Устройства"]),
+            client_devices_menu(),
+        )
         return
-    await cb.message.edit_text(
-        f"🗑 <b>Удалить устройство «{device['device_name']}»?</b>",
-        reply_markup=confirm_kb(f"cl:del_ok:{device_id}", f"cl:dev:{device_id}"),
-        parse_mode="HTML",
+    await _edit_or_answer(
+        cb,
+        result_text(
+            "Удалить устройство?",
+            f"Устройство <code>{device['device_name']}</code> будет удалено вместе с его доступом.",
+            status="warn",
+            trail=["Меню", "Устройства", device["device_name"]],
+            next_steps=["подтвердите удаление", "или вернитесь в карточку устройства"],
+        ),
+        confirm_kb(f"cl:del_ok:{device_id}", f"cl:dev:{device_id}"),
     )
 
 
@@ -1877,7 +1993,11 @@ async def cb_cl_del_device_ok(cb: CallbackQuery, **kw):
     db: Database = kw.get("db")
     device = await db.get_device_by_id(device_id)
     if not device:
-        await cb.message.edit_text("Устройство не найдено.")
+        await _edit_or_answer(
+            cb,
+            result_text("Устройство не найдено", "Возможно, оно уже было удалено.", status="warn", trail=["Меню", "Устройства"]),
+            client_devices_menu(),
+        )
         return
     await _do_remove_device(cb.message, db, device)
 
@@ -1889,20 +2009,22 @@ async def cb_cl_myconfig(cb: CallbackQuery, **kw):
     chat_id = str(cb.from_user.id)
     devices = await db.get_devices(chat_id)
     if not devices:
-        await cb.message.answer("Нет устройств.", reply_markup=client_main_menu())
+        await _edit_or_answer(cb, "Нет устройств.", client_devices_menu())
         return
     if len(devices) == 1:
         if devices[0].get("pending_approval"):
-            await cb.message.answer(
+            await _edit_or_answer(
+                cb,
                 "⏳ Устройство ещё ожидает одобрения администратора.",
-                reply_markup=client_main_menu(),
+                client_devices_menu(),
             )
             return
         await _send_config(cb.message, db, devices[0], kw)
     else:
-        await cb.message.answer(
+        await _edit_or_answer(
+            cb,
             "Выберите устройство для получения конфига:",
-            reply_markup=devices_inline_kb(devices, "cfg:"),
+            devices_inline_kb(devices, "cfg:", "cl:devices_menu"),
         )
 
 
@@ -1913,7 +2035,7 @@ async def cb_cl_adddevice(cb: CallbackQuery, state: FSMContext, **kw):
     chat_id = str(cb.from_user.id)
     client = await db.get_client(chat_id)
     if not client:
-        await cb.message.answer("Сначала зарегистрируйтесь: /start")
+        await _edit_or_answer(cb, "Сначала зарегистрируйтесь: /start", client_main_menu())
         return
     if client.get("is_disabled"):
         await cb.answer("❌ Ваш аккаунт отключён", show_alert=True)
@@ -1924,14 +2046,20 @@ async def cb_cl_adddevice(cb: CallbackQuery, state: FSMContext, **kw):
         count = await db.count_devices(chat_id)
         limit = client.get("device_limit", config.device_limit_per_client)
         if count >= limit:
-            await cb.message.answer(
+            await _edit_or_answer(
+                cb,
                 f"Достигнут лимит устройств: {count}/{limit}.\nОбратитесь к администратору.",
-                reply_markup=client_main_menu(),
+                client_devices_menu(),
             )
             return
-    await cb.message.answer("Введите *имя нового устройства*:")
-    await state.update_data(_fsm_ts=_now())
-    await state.set_state(AddDeviceFSM.device_name)
+    await start_prompt(
+        cb,
+        state,
+        AddDeviceFSM.device_name,
+        "Введите <b>имя нового устройства</b>:",
+        "cl:devices_menu",
+        home_cb="cl:menu",
+    )
 
 
 @router.callback_query(F.data == "cl:update")
@@ -1941,12 +2069,12 @@ async def cb_cl_update(cb: CallbackQuery, **kw):
     chat_id = str(cb.from_user.id)
     client = await db.get_client(chat_id)
     if not client:
-        await cb.message.answer("Сначала зарегистрируйтесь: /start")
+        await _edit_or_answer(cb, "Сначала зарегистрируйтесь: /start", client_main_menu())
         return
     devices = await db.get_devices(chat_id)
     active = [d for d in devices if not d.get("pending_approval")]
     if not active:
-        await cb.message.answer("Нет активных устройств.", reply_markup=client_main_menu())
+        await _edit_or_answer(cb, "Нет активных устройств.", client_connect_menu())
         return
     builder = ConfigBuilder()
     updated = 0
@@ -1963,9 +2091,9 @@ async def cb_cl_update(cb: CallbackQuery, **kw):
         except Exception as exc:
             logger.warning(f"cb_cl_update: {device.get('device_name')}: {exc}")
     if same > 0 and updated == 0:
-        await cb.message.answer("✅ Все конфиги актуальны (версия не изменилась).", reply_markup=client_main_menu())
+        await _edit_or_answer(cb, "✅ Все конфиги актуальны (версия не изменилась).", client_connect_menu())
     elif same > 0:
-        await cb.message.answer(f"ℹ️ {same} устройств без изменений.")
+        await _edit_or_answer(cb, f"ℹ️ {same} устройств без изменений.", client_connect_menu())
 
 
 @router.callback_query(F.data.startswith("cl:upd1:"))
@@ -1976,12 +2104,13 @@ async def cb_cl_upd1_device(cb: CallbackQuery, **kw):
     db: Database = kw.get("db")
     device = await db.get_device_by_id(device_id)
     if not device:
-        await cb.message.answer("Устройство не найдено.", reply_markup=client_main_menu())
+        await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
     if device.get("pending_approval"):
-        await cb.message.answer(
+        await _edit_or_answer(
+            cb,
             "⏳ Устройство ожидает одобрения администратора.",
-            reply_markup=device_detail_kb(device_id),
+            device_detail_kb(device_id),
         )
         return
     try:
@@ -1989,14 +2118,15 @@ async def cb_cl_upd1_device(cb: CallbackQuery, **kw):
         excludes, server_routes = await _device_policy_lists(db, device_id)
         _, _, version = await builder.build(device, excludes, server_routes)
         if version == device.get("config_version"):
-            await cb.message.answer(
+            await _edit_or_answer(
+                cb,
                 "✅ Конфиг актуален, изменений нет.",
-                reply_markup=device_detail_kb(device_id),
+                device_detail_kb(device_id),
             )
         else:
             await _send_config(cb.message, db, device, kw)
     except Exception as exc:
-        await cb.message.answer(f"❌ Ошибка: {exc}", reply_markup=device_detail_kb(device_id))
+        await _edit_or_answer(cb, f"❌ Ошибка: {exc}", device_detail_kb(device_id))
 
 
 @router.callback_query(F.data == "cl:status")
@@ -2008,11 +2138,11 @@ async def cb_cl_status(cb: CallbackQuery, **kw):
         stack = s.get("active_stack", "N/A")
         text  = (
             f"{'✅ VPN работает' if ok else '⚠️ VPN деградирован'}\n"
-            f"Протокол: `{stack}`"
+            f"Протокол: <code>{stack}</code>"
         )
     except Exception:
         text = "❌ Не удалось получить статус"
-    await cb.message.answer(text, reply_markup=client_main_menu())
+    await _edit_or_answer(cb, text, client_connect_menu())
 
 
 @router.callback_query(F.data == "cl:myrequests")
@@ -2021,7 +2151,7 @@ async def cb_cl_myrequests(cb: CallbackQuery, **kw):
     db: Database = kw.get("db")
     reqs = await db.get_requests_by_client(str(cb.from_user.id))
     if not reqs:
-        await cb.message.answer("У вас нет запросов.", reply_markup=client_sites_menu())
+        await _edit_or_answer(cb, "У вас нет запросов.", client_support_menu())
         return
     icons = {"pending": "⏳", "approved": "✅", "rejected": "❌"}
     lines = ["<b>Ваши запросы:</b>\n"]
@@ -2032,10 +2162,10 @@ async def cb_cl_myrequests(cb: CallbackQuery, **kw):
             f"   {r['created_at'][:10]}"
         )
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton as IKB
-    await cb.message.answer(
+    await _edit_or_answer(
+        cb,
         "\n".join(lines),
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        InlineKeyboardMarkup(inline_keyboard=[
             [IKB(text="◀️ Назад", callback_data="cl:sites")],
         ]),
     )
@@ -2044,22 +2174,22 @@ async def cb_cl_myrequests(cb: CallbackQuery, **kw):
 @router.callback_query(F.data == "cl:help")
 async def cb_cl_help(cb: CallbackQuery, **kw):
     await cb.answer()
-    await cb.message.answer(
-        "*Доступные команды:*\n\n"
-        "/start — главная\n"
-        "/mydevices — список устройств\n"
-        "/myconfig [имя] — получить конфиг\n"
-        "/update — обновить конфиги\n"
-        "/adddevice — добавить устройство\n"
-        "/removedevice [имя] — удалить устройство\n"
-        "/request vpn|direct <домен> — запросить маршрут\n"
-        "/myrequests — мои запросы\n"
-        "/exclude add|remove|list <подсеть> — исключения\n"
-        "/route add|remove|list <ip|подсеть> — через сервер\n"
-        "/report <текст> — сообщить о проблеме\n"
-        "/status — статус VPN\n"
-        "/help — эта справка",
-        reply_markup=client_main_menu(),
+    await _edit_or_answer(
+        cb,
+        section_text(
+            "Помощь",
+            "Обычному пользователю почти всё доступно через кнопки. Команды ниже можно использовать как быстрые сокращения.",
+            icon="ℹ️",
+            details=[
+                "<code>/start</code> — открыть главное меню",
+                "<code>/mydevices</code> — список устройств",
+                "<code>/myconfig</code> — получить конфиг",
+                "<code>/update</code> — обновить конфиги",
+                "<code>/request vpn|direct &lt;домен&gt;</code> — запросить маршрут",
+                "<code>/report &lt;текст&gt;</code> — сообщить о проблеме",
+            ],
+        ),
+        client_support_menu(),
     )
 
 
@@ -2229,8 +2359,14 @@ async def _do_remove_device(message: Message, db: Database, device: dict) -> Non
             pass
     await db.delete_device(device["id"])
     await message.answer(
-        f"✅ Устройство `{device['device_name']}` удалено.",
+        result_text(
+            "Устройство удалено",
+            f"Устройство <code>{device['device_name']}</code> удалено из вашего списка.",
+            trail=["Меню", "Устройства"],
+            next_steps=["при необходимости добавьте новое устройство", "или получите конфиг для оставшихся устройств"],
+        ),
         reply_markup=client_main_menu(),
+        parse_mode="HTML",
     )
 
 
