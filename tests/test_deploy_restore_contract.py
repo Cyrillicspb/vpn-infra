@@ -137,6 +137,8 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('git_ls_remote_release_tags "$remote"', deploy_script)
         self.assertIn('ALL_PROXY="socks5h://127.0.0.1:${port}" git -C "$REPO_DIR" fetch "$remote"', deploy_script)
         self.assertIn('ALL_PROXY="socks5h://127.0.0.1:${port}" git ls-remote --tags --refs "$remote" \'v*\'', deploy_script)
+        self.assertIn('rev-parse "${ORIGIN_SOURCE_REF}^{}"', deploy_script)
+        self.assertIn('rev-parse "${source_ref}^{}"', deploy_script)
         self.assertNotIn('refs/remotes/${remote}/master', deploy_script)
         self.assertIn('home_pull_remote_services', deploy_script)
         self.assertIn('docker compose -f "$REPO_DIR/docker-compose.yml" pull "${services[@]}"', deploy_script)

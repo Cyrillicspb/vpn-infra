@@ -1008,7 +1008,7 @@ fetch_target_release() {
         ORIGIN_FETCH_STATUS="missing-ref"
         return 1
     }
-    ORIGIN_RELEASE_SHA="$(git -C "$REPO_DIR" rev-parse "$ORIGIN_SOURCE_REF")"
+    ORIGIN_RELEASE_SHA="$(git -C "$REPO_DIR" rev-parse "${ORIGIN_SOURCE_REF}^{}")"
 
     if configure_vps_mirror_remote; then
         local proxy_cmd=""
@@ -1018,7 +1018,7 @@ fetch_target_release() {
             MIRROR_FETCH_STATUS="ok"
             MIRROR_SOURCE_REF="$(resolve_release_ref_for_remote vps-mirror || true)"
             if [[ -n "$MIRROR_SOURCE_REF" ]]; then
-                MIRROR_RELEASE_SHA="$(git -C "$REPO_DIR" rev-parse "$MIRROR_SOURCE_REF")"
+                MIRROR_RELEASE_SHA="$(git -C "$REPO_DIR" rev-parse "${MIRROR_SOURCE_REF}^{}")"
                 if [[ "$MIRROR_RELEASE_SHA" == "$ORIGIN_RELEASE_SHA" ]]; then
                     MIRROR_PARITY_STATUS="ok"
                 else
@@ -1039,8 +1039,8 @@ fetch_target_release() {
     source_ref="$ORIGIN_SOURCE_REF"
     TARGET_SOURCE_REF="$source_ref"
     TARGET_SOURCE_REMOTE="origin"
-    TARGET_RELEASE_SHA="$(git -C "$REPO_DIR" rev-parse "$source_ref")"
-    TARGET_RELEASE_VERSION="$(version_for_git_ref "$source_ref" 2>/dev/null || true)"
+    TARGET_RELEASE_SHA="$(git -C "$REPO_DIR" rev-parse "${source_ref}^{}")"
+    TARGET_RELEASE_VERSION="$(version_for_git_ref "$TARGET_RELEASE_SHA" 2>/dev/null || true)"
     [[ -n "$TARGET_RELEASE_VERSION" ]] || TARGET_RELEASE_VERSION="unknown"
     TARGET_RELEASE_ID="$(release_id_for_sha "$TARGET_RELEASE_SHA")"
 }
