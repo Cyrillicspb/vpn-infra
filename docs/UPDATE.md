@@ -52,11 +52,11 @@ Health gate опирается на:
 
 ## Source of truth и mirror semantics
 
-- `origin/master` или `origin/main` является единственным источником target release.
+- latest release tag из `origin` является единственным источником target release.
 - `vps-mirror` больше не используется как source-of-truth для выбора release.
 - `vps-mirror` используется только как parity gate для backend rollout.
 - Термин `mirror parity` используется как operator-facing статус синхронизации `vps-mirror` относительно `origin`.
-- Если `origin` недоступен, `vps-mirror` недоступен, `vps-mirror` stale относительно `origin`, либо у mirror нет `master/main`, deploy останавливается на preflight без apply.
+- Если `origin` недоступен, `vps-mirror` недоступен, `vps-mirror` stale относительно `origin`, либо у mirror нет matching release tag, deploy останавливается на preflight без apply.
 - `sudo bash /opt/vpn/deploy.sh --status` и `--check` должны явно показывать:
   - `Target source`
   - `Origin sha`
@@ -81,7 +81,7 @@ Deploy обязан остановиться до snapshot/apply при любо
 - backend inventory пуст;
 - `.env` отсутствует или unreadable;
 - отсутствует toolchain: `git`, `rsync`, `sqlite3`, `docker`, `python3`, `curl`, `docker compose`;
-- `origin` не fetch'ится или не содержит `master/main`;
+- `origin` не fetch'ится или не содержит release tags;
 - `vps-mirror` stale/unreachable/not-configured/missing-ref;
 - `current.json` не парсится;
 - primary backend недоступен по SSH.

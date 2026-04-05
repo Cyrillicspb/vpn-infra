@@ -441,15 +441,12 @@ PY
 
 resolve_release_ref_for_remote() {
     local remote="$1"
-    local candidate
-    for candidate in \
-        "refs/remotes/${remote}/master" \
-        "refs/remotes/${remote}/main"; do
-        if git -C "$REPO_DIR" rev-parse --verify --quiet "$candidate" >/dev/null; then
-            printf '%s\n' "$candidate"
-            return 0
-        fi
-    done
+    local latest_tag=""
+    latest_tag="$(git ls-remote --tags --refs "$remote" 'v*' 2>/dev/null | awk '{sub("refs/tags/","",$2); print $2}' | sort -V | tail -1 || true)"
+    if [[ -n "$latest_tag" ]]; then
+        printf 'refs/tags/%s\n' "$latest_tag"
+        return 0
+    fi
     return 1
 }
 
@@ -514,7 +511,75 @@ version_for_git_ref() {
     printf '%s\n' "$version_value"
 }
 
+normalized_version_for_sha() {
+    local sha="${1:-}"
+    local fallback="${2:-unknown}"
+    local resolved
+    [[ -n "$sha" ]] || {
+        printf '%s\n' "$fallback"
+        return 0
+    }
+    resolved="$(version_for_git_ref "$sha" 2>/dev/null || true)"
+    [[ -n "$resolved" && "$resolved" != "unknown" ]] || resolved="$fallback"
+    printf '%s\n' "$resolved"
+}
+
+repair_state_versions() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+    python3 - "$file" "$REPO_DIR" <<'PY' || return 0
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+repo = sys.argv[2]
+data = json.loads(path.read_text(encoding="utf-8"))
+changed = False
+
+def version_for_sha(sha: str) -> str:
+    if not sha:
+        return ""
+    tag = subprocess.run(
+        ["git", "-C", repo, "tag", "--points-at", sha, "--list", "v*", "--sort=-v:refname"],
+        text=True,
+        capture_output=True,
+        check=False,
+    ).stdout.splitlines()
+    if tag:
+        return tag[0].removeprefix("v")
+    result = subprocess.run(
+        ["git", "-C", repo, "show", f"{sha}:version"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode == 0:
+        return "".join(result.stdout.split()) or "unknown"
+    return "unknown"
+
+for key in ("current_release", "previous_release", "pending_release", "base_release"):
+    value = data.get(key)
+    if not isinstance(value, dict):
+        continue
+    sha = str(value.get("sha") or "").strip()
+    if not sha:
+        continue
+    resolved = version_for_sha(sha)
+    if resolved and resolved != "unknown" and value.get("version") != resolved:
+        value["version"] = resolved
+        changed = True
+
+if changed:
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
 read_current_release() {
+    repair_state_versions "$CURRENT_STATE_FILE"
+    repair_state_versions "$PENDING_STATE_FILE"
+    repair_state_versions "$LAST_ATTEMPT_FILE"
     if [[ -f "$CURRENT_STATE_FILE" ]]; then
         CURRENT_RELEASE_ID="$(json_get "$CURRENT_STATE_FILE" "current_release.id")"
         CURRENT_RELEASE_SHA="$(json_get "$CURRENT_STATE_FILE" "current_release.sha")"
@@ -958,7 +1023,7 @@ create_snapshot() {
     snap_id="$(date +%Y%m%d_%H%M%S)"
     snap_path="$SNAPSHOT_DIR/$snap_id"
     mkdir -p "$snap_path"
-    current_ver="$(version_for_git_ref HEAD 2>/dev/null || echo "unknown")"
+    current_ver="$(normalized_version_for_sha "${CURRENT_RELEASE_SHA:-}" "$(version_for_git_ref HEAD 2>/dev/null || echo "unknown")")"
 
     local items=(
         "/etc/wireguard"
@@ -1456,6 +1521,8 @@ perform_rollback() {
     previous_sha="$(json_get "$ROLLBACK_META_PATH" "previous_release.sha")"
     previous_ver="$(json_get "$ROLLBACK_META_PATH" "previous_release.version")"
     [[ -n "$target_sha" ]] || die "Snapshot meta не содержит release.sha"
+    target_ver="$(normalized_version_for_sha "$target_sha" "$target_ver")"
+    previous_ver="$(normalized_version_for_sha "$previous_sha" "$previous_ver")"
 
     TARGET_RELEASE_ID="$target_id"
     TARGET_RELEASE_SHA="$target_sha"

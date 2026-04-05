@@ -134,10 +134,19 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('record_preflight_blocker "mirror-stale" "origin and vps-mirror differ"', deploy_script)
         self.assertIn('record_preflight_blocker "origin-fetch-failed"', deploy_script)
         self.assertIn('record_preflight_blocker "backend-inventory-empty"', deploy_script)
+        self.assertIn('git ls-remote --tags --refs "$remote" \'v*\'', deploy_script)
+        self.assertNotIn('refs/remotes/${remote}/master', deploy_script)
         self.assertIn('home_pull_remote_services', deploy_script)
         self.assertIn('docker compose -f "$REPO_DIR/docker-compose.yml" pull "${services[@]}"', deploy_script)
         self.assertIn('home_pull_remote_services', deploy_script)
         self.assertIn('docker compose build $bot_no_cache --build-arg GIT_HASH="$bot_git_hash" telegram-bot', deploy_script)
+
+    def test_deploy_script_repairs_state_versions_from_release_sha(self):
+        deploy_script = DEPLOY.read_text(encoding="utf-8")
+        self.assertIn('repair_state_versions "$CURRENT_STATE_FILE"', deploy_script)
+        self.assertIn('current_ver="$(normalized_version_for_sha "${CURRENT_RELEASE_SHA:-}"', deploy_script)
+        self.assertIn('target_ver="$(normalized_version_for_sha "$target_sha" "$target_ver")"', deploy_script)
+        self.assertIn('previous_ver="$(normalized_version_for_sha "$previous_sha" "$previous_ver")"', deploy_script)
         self.assertIn('verify_home_apply', deploy_script)
         self.assertIn('docker exec "$running_id" test -f /app/bot.py', deploy_script)
         self.assertIn('show_preflight_report', deploy_script)
@@ -147,7 +156,7 @@ class DeployRestoreContractTests(unittest.TestCase):
 
     def test_update_doc_describes_origin_authority_and_local_build_split(self):
         update_doc = (ROOT / "docs" / "UPDATE.md").read_text(encoding="utf-8")
-        self.assertIn("origin/master", update_doc)
+        self.assertIn("latest release tag из `origin`", update_doc)
         self.assertIn("vps-mirror", update_doc)
         self.assertIn("mirror parity", update_doc)
         self.assertIn("build-local", update_doc)

@@ -122,7 +122,7 @@
 
 ## Behavioral Rules
 
-- `origin/master` или `origin/main` является единственным authoritative source для выбора `target release`.
+- latest release tag из `origin` является единственным authoritative source для выбора `target release`.
 - `vps-mirror` не выбирает target release; он используется только как parity gate перед backend rollout.
 - `mirror_parity` должен быть `ok` для strict deploy. Состояния `stale`, `unreachable`, `missing-ref` и `not-configured` считаются blocker для apply.
 - `current.json` обновляется только после успешного health gate и commit release.
