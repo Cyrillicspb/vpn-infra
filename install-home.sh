@@ -1514,9 +1514,10 @@ else
 
         if [[ "$_img_count" -gt 0 ]]; then
             log_info "Загрузка ${_img_count} Docker-образов из локального кэша (${SAVED_IMAGES_DIR})..."
-            if bash /opt/vpn/scripts/docker-load-cache.sh \
+            if run_with_compact_progress "Загрузка локального Docker image cache" \
+                bash /opt/vpn/scripts/docker-load-cache.sh \
                     --dir "$SAVED_IMAGES_DIR" \
-                    --label "Локальный Docker image cache" 2>&1; then
+                    --label "Локальный Docker image cache"; then
                 log_ok "Образы загружены из кэша — зеркала не нужны"
             else
                 log_warn "Часть локального Docker image cache не загрузилась"
@@ -1604,11 +1605,11 @@ EOF
                 prometheus alertmanager grafana grafana-renderer node-exporter
             )
             for _svc in "${REQUIRED_SERVICES[@]}"; do
-                log_info "  pull: $_svc ..."
-                if timeout 120 docker compose --profile monitoring pull "$_svc" >> /tmp/docker-pull.log 2>&1; then
-                    log_ok "  $_svc OK"
+                if run_with_compact_progress "Docker pull: ${_svc}" \
+                    timeout 120 docker compose --profile monitoring pull "$_svc"; then
+                    log_ok "Docker pull: ${_svc}"
                 else
-                    log_warn "  $_svc не скачался"
+                    log_warn "Docker pull: ${_svc} не скачался"
                     ((_pull_failed++)) || true
                 fi
             done
@@ -1618,17 +1619,16 @@ EOF
 
         # ── Build telegram-bot (python:3.12-slim уже в docker load или зеркале) ──
         if [[ -n "$_BASE_IMG" ]]; then
-            log_info "Сборка telegram-bot (base=$_BASE_IMG, макс. 300 сек)..."
-            timeout 300 bash -c "DOCKER_BASE_PYTHON='$_BASE_IMG' docker compose build telegram-bot" \
-                2>&1 | tee /tmp/docker-build.log
-            _BUILD_EXIT=${PIPESTATUS[0]}
+            run_with_compact_progress "Сборка telegram-bot (base=${_BASE_IMG})" \
+                timeout 300 bash -c "DOCKER_BASE_PYTHON='$_BASE_IMG' docker compose build telegram-bot"
+            _BUILD_EXIT=$?
             if [[ $_BUILD_EXIT -ne 0 ]]; then
                 log_warn "docker compose build завершился с ошибкой (rc=$_BUILD_EXIT)"
                 if [[ "$_BASE_IMG" != "python:3.12-slim" ]]; then
                     log_info "Fallback build без зеркала..."
-                    timeout 300 bash -c "DOCKER_BASE_PYTHON='python:3.12-slim' docker compose build telegram-bot" \
-                        2>&1 | tee /tmp/docker-build-fallback.log
-                    _BUILD_EXIT=${PIPESTATUS[0]}
+                    run_with_compact_progress "Fallback build telegram-bot (base=python:3.12-slim)" \
+                        timeout 300 bash -c "DOCKER_BASE_PYTHON='python:3.12-slim' docker compose build telegram-bot"
+                    _BUILD_EXIT=$?
                     [[ $_BUILD_EXIT -ne 0 ]] && die "Fallback build telegram-bot провалился"
                 fi
             fi
@@ -1640,10 +1640,9 @@ EOF
             die "Локальный образ telegram-bot отсутствует после сборки"
         fi
 
-        log_info "Запуск контейнеров (включая профиль monitoring)..."
-        timeout 300 docker compose --profile monitoring up -d --no-build --pull missing --remove-orphans \
-            2>&1 | tee /tmp/docker-up.log
-        _UP_EXIT=${PIPESTATUS[0]}
+        run_with_compact_progress "Запуск Docker Compose (monitoring profile)" \
+            timeout 300 docker compose --profile monitoring up -d --no-build --pull missing --remove-orphans
+        _UP_EXIT=$?
         [[ $_UP_EXIT -ne 0 ]] && die "docker compose up завершился с ошибкой (код $_UP_EXIT)"
         docker compose --profile extra-stacks pull sing-box-tuic-client sing-box-trojan-client >/dev/null 2>&1 || true
         docker compose --profile extra-stacks up -d sing-box-tuic-client sing-box-trojan-client >/dev/null 2>&1 || true

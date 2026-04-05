@@ -45,10 +45,22 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-info()  { echo -e "${CYAN}[*]${NC} $*"; }
-ok()    { echo -e "${GREEN}[✓]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
-err()   { echo -e "${RED}[✗]${NC} $*" >&2; }
+info()  { echo -e "${CYAN}[INFO]${NC} $*"; }
+ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
+err()   { echo -e "${RED}[ERR]${NC} $*" >&2; }
+
+format_duration() {
+    local total="${1:-0}"
+    local hours=$(( total / 3600 ))
+    local minutes=$(( (total % 3600) / 60 ))
+    local seconds=$(( total % 60 ))
+    if (( hours > 0 )); then
+        printf '%02d:%02d:%02d' "$hours" "$minutes" "$seconds"
+    else
+        printf '%02d:%02d' "$minutes" "$seconds"
+    fi
+}
 
 read_install_version() {
     local version_file="$1"
@@ -103,21 +115,52 @@ require_release_asset_url() {
 
 download_with_progress() {
     local url="$1" dest="$2" label="$3"
-    local progress_log
-    progress_log="$(mktemp /tmp/vpn-curl-progress.XXXXXX)"
+    local log_file
+    log_file="$(mktemp /tmp/vpn-curl-progress.XXXXXX)"
+    local content_length=""
+    content_length="$(curl -fsSLI --connect-timeout 10 "$url" 2>/dev/null | awk 'BEGIN{IGNORECASE=1} /^content-length:/ {gsub("\r","",$2); print $2; exit}' || true)"
 
-    if [[ -t 1 && -r /dev/tty && -w /dev/tty ]]; then
-        curl -fL --connect-timeout 20 --retry 2 --retry-delay 2 \
-            --progress-bar -o "$dest" "$url" > /dev/tty 2>&1
-    else
-        curl -fL --connect-timeout 20 --retry 2 --retry-delay 2 \
-            --progress-bar -o "$dest" "$url" 2>"$progress_log"
-        sed -n "s/^#/# ${label}: /p" "$progress_log" || true
+    set +e
+    curl -fL --connect-timeout 20 --retry 2 --retry-delay 2 -o "$dest" "$url" >"$log_file" 2>&1 &
+    local pid=$!
+    local start_ts=$SECONDS
+    local last_emit=-5
+
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 1
+        kill -0 "$pid" 2>/dev/null || break
+        local elapsed=$(( SECONDS - start_ts ))
+        if (( elapsed - last_emit < 5 )); then
+            continue
+        fi
+        last_emit=$elapsed
+        local downloaded=0
+        [[ -f "$dest" ]] && downloaded="$(wc -c < "$dest" 2>/dev/null | tr -d '[:space:]' || echo 0)"
+        local elapsed_text
+        elapsed_text="$(format_duration "$elapsed")"
+        if [[ "$content_length" =~ ^[0-9]+$ ]] && (( content_length > 0 )); then
+            local percent=$(( downloaded * 100 / content_length ))
+            (( percent > 100 )) && percent=100
+            info "${label} · ${percent}% · ${elapsed_text}"
+        else
+            local mib
+            mib="$(awk -v b="${downloaded:-0}" 'BEGIN { printf "%.1f MiB", b/1048576 }')"
+            info "${label} · ${mib} · ${elapsed_text}"
+        fi
+    done
+
+    wait "$pid"
+    local rc=$?
+    set -e
+    if (( rc != 0 )); then
+        err "${label}: загрузка завершилась с ошибкой"
+        tail -n 20 "$log_file" >&2 || true
+        rm -f "$log_file"
+        return "$rc"
     fi
 
-    local rc=$?
-    rm -f "$progress_log"
-    return "$rc"
+    rm -f "$log_file"
+    return 0
 }
 
 if [[ $EUID -ne 0 ]]; then
@@ -163,7 +206,7 @@ fi
 if ! $_repo_ok; then
     info "Скачиваем vpn-infra.tar.gz из GitHub Release assets..."
     _tar_url="$(require_release_asset_url "$_release_json" "vpn-infra.tar.gz")"
-    if curl -fsSL --max-time 120 -L "$_tar_url" -o /tmp/vpn-infra.tar.gz 2>/dev/null; then
+    if download_with_progress "$_tar_url" /tmp/vpn-infra.tar.gz vpn-infra.tar.gz; then
         tar xzf /tmp/vpn-infra.tar.gz -C "$OPT_VPN" \
             --no-same-permissions --no-same-owner --overwrite --touch 2>/dev/null
         rm -f /tmp/vpn-infra.tar.gz

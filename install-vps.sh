@@ -168,7 +168,7 @@ vps_exec_long_progress() {
                 local remote_diag
                 remote_diag="$($_ssh "grep -v '^[[:space:]]*$' '$log' 2>/dev/null | tail -n 1" 2>/dev/null | tr -d '\r' || true)"
                 if [[ -n "$remote_diag" && "$remote_diag" != "$last_diag" ]]; then
-                    log_info "VPS: ${remote_diag}"
+                    log_info "${label} · этап: ${remote_diag}"
                     last_diag="$remote_diag"
                 fi
             fi
@@ -176,7 +176,6 @@ vps_exec_long_progress() {
             local stagnant_elapsed=$(( SECONDS - stagnant_since ))
             if (( stagnant_elapsed >= 300 && stagnant_elapsed - last_stall_warn >= 300 )); then
                 log_warn "${label}: нет нового вывода с VPS уже ${stagnant_elapsed} сек"
-                $_ssh "tail -n 5 '$log' 2>/dev/null" 2>/dev/null || true
                 last_stall_warn=$stagnant_elapsed
             fi
 
@@ -205,6 +204,11 @@ vps_apt_quiet() {
 vps_copy() {
     # shellcheck disable=SC2086
     scp $_SCP_OPTS "$@"
+}
+
+vps_copy_progress() {
+    local label="$1"; shift
+    run_with_compact_progress "$label" scp $_SCP_OPTS "$@"
 }
 
 vps_stage_bundled_package_group() {
@@ -546,7 +550,7 @@ else
     # Копируем директорию vps/ из репозитория
     VPS_DIR="${REPO_DIR}/vps"
     if [[ -d "$VPS_DIR" ]]; then
-        vps_copy -r "${VPS_DIR}/." "sysadmin@${VPS_IP}:/opt/vpn/"
+        vps_copy_progress "Копирование runtime-файлов на VPS" -r "${VPS_DIR}/." "sysadmin@${VPS_IP}:/opt/vpn/"
         log_ok "Файлы VPS скопированы из ${VPS_DIR}"
     else
         log_warn "Директория vps/ не найдена в ${REPO_DIR}. Пропускаем копирование файлов VPS."
@@ -617,7 +621,7 @@ CF_API_TOKEN='${CF_API_TOKEN:-}'
 SSH_ADDITIONAL_PORT='443'
 EOF
 
-    vps_copy "$VPS_ENV_TMP" "sysadmin@${VPS_IP}:/tmp/vpn.env.$$"
+    vps_copy_progress "Копирование .env на VPS" "$VPS_ENV_TMP" "sysadmin@${VPS_IP}:/tmp/vpn.env.$$"
     vps_exec "sudo install -d -m 755 /opt/vpn && \
         sudo install -m 600 /tmp/vpn.env.$$ /opt/vpn/.env && \
         rm -f /tmp/vpn.env.$$"
@@ -814,7 +818,7 @@ else
             _copied_cache=0
             vps_exec "sudo install -d -m 755 /opt/vpn/docker-images && sudo chown sysadmin:sysadmin /opt/vpn/docker-images"
             if [[ -f "${REPO_DIR}/scripts/docker-load-cache.sh" ]]; then
-                vps_copy "${REPO_DIR}/scripts/docker-load-cache.sh" "sysadmin@${VPS_IP}:/tmp/docker-load-cache.sh"
+                vps_copy_progress "Копирование docker-load-cache.sh на VPS" "${REPO_DIR}/scripts/docker-load-cache.sh" "sysadmin@${VPS_IP}:/tmp/docker-load-cache.sh"
                 vps_exec "sudo install -d -m 755 /opt/vpn/scripts && \
                     sudo install -m 755 /tmp/docker-load-cache.sh /opt/vpn/scripts/docker-load-cache.sh && \
                     rm -f /tmp/docker-load-cache.sh"
@@ -823,7 +827,7 @@ else
                 _archive_name=$(docker_image_to_archive_name "$_img")
                 if [[ -f "/opt/vpn/docker-images/${_archive_name}" ]]; then
                     log_info "Копируем Docker cache на VPS: ${_archive_name}"
-                    vps_copy "/opt/vpn/docker-images/${_archive_name}" \
+                    vps_copy_progress "Копирование Docker cache ${_archive_name} на VPS" "/opt/vpn/docker-images/${_archive_name}" \
                         "sysadmin@${VPS_IP}:/opt/vpn/docker-images/${_archive_name}"
                     ((_copied_cache++)) || true
                 fi
@@ -904,7 +908,7 @@ else
         log_warn "Файл vps/scripts/xray-setup.sh не найден — пропуск"
         log_warn "Настройте инбаунды вручную: http://${VPS_IP}:2053"
     else
-        vps_copy "$SETUP_SCRIPT" "sysadmin@${VPS_IP}:/tmp/xray-setup.sh"
+        vps_copy_progress "Копирование xray-setup.sh на VPS" "$SETUP_SCRIPT" "sysadmin@${VPS_IP}:/tmp/xray-setup.sh"
         vps_exec "chmod +x /tmp/xray-setup.sh && bash /tmp/xray-setup.sh && rm -f /tmp/xray-setup.sh"
         vps_exec "bash /opt/vpn/scripts/render-reality-vision-config.sh"
         vps_exec "bash /opt/vpn/scripts/render-reality-xhttp-config.sh"

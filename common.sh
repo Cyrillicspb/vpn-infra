@@ -56,6 +56,18 @@ log_ok()    { _log_emit "${GREEN}"  "[OK]"   "$*"; }
 log_warn()  { _log_emit "${YELLOW}" "[WARN]" "$*"; }
 log_error() { _log_emit "${RED}"    "[ERR]"  "$*" >&2; }
 
+ui_step_result() {
+    local status="$1" label="$2" extra="${3:-}"
+    local line="$label"
+    [[ -n "$extra" ]] && line="${line} · ${extra}"
+    case "$status" in
+        done) log_ok "$line" ;;
+        skip) log_info "Пропуск: $line" ;;
+        fail) log_error "$line" ;;
+        *) log_info "$line" ;;
+    esac
+}
+
 strict_bundle_mode_enabled() {
     case "${STRICT_BUNDLE_MODE}" in
         1|true|TRUE|yes|YES|y|Y) return 0 ;;
@@ -253,9 +265,9 @@ emit_compact_progress_status() {
     emit_status "$elapsed_text" "$remaining_text" "$label"
     if [[ -z "$TUI_OUTPUT" ]]; then
         if [[ "$remaining_text" == "?" ]]; then
-            log_info "${label}... ${elapsed_text}"
+            log_info "${label} · выполняется · ${elapsed_text}"
         else
-            log_info "${label}... ${elapsed_text}, осталось ~${remaining_text}"
+            log_info "${label} · выполняется · ${elapsed_text} · осталось ~${remaining_text}"
         fi
     fi
 }
@@ -270,7 +282,6 @@ run_with_compact_progress() {
 
     local log_file
     log_file="$(mktemp /tmp/vpn-install-step.XXXXXX.log)"
-    log_info "${label}..."
     emit_compact_progress_status "$label"
 
     set +e
@@ -278,6 +289,8 @@ run_with_compact_progress() {
     local pid=$!
     local start_ts=$SECONDS
     local last_emit=-30
+    local last_size=""
+    local last_diag=""
 
     while kill -0 "$pid" 2>/dev/null; do
         sleep 2
@@ -286,6 +299,17 @@ run_with_compact_progress() {
         if (( elapsed >= 15 && elapsed - last_emit >= 30 )); then
             emit_compact_progress_status "$label"
             last_emit=$elapsed
+        fi
+        local size_now
+        size_now="$(wc -c < "$log_file" 2>/dev/null | tr -d '[:space:]' || true)"
+        if [[ -n "$size_now" && "$size_now" != "$last_size" ]]; then
+            last_size="$size_now"
+            local diag
+            diag="$(grep -v '^[[:space:]]*$' "$log_file" 2>/dev/null | tail -n 1 | tr -d '\r' || true)"
+            if [[ -n "$diag" && "$diag" != "$last_diag" ]]; then
+                log_info "${label} · этап: ${diag}"
+                last_diag="$diag"
+            fi
         fi
     done
 
@@ -296,11 +320,15 @@ run_with_compact_progress() {
     if (( rc != 0 )); then
         log_error "${label}: команда завершилась с ошибкой"
         _compact_emit_failure_log "$log_file"
-        rm -f "$log_file"
+        log_warn "Полный лог: ${log_file}"
         return "$rc"
     fi
 
-    rm -f "$log_file"
+    if [[ -n "$COMPACT_OUTPUT" ]]; then
+        rm -f "$log_file"
+    else
+        rm -f "$log_file"
+    fi
     return 0
 }
 
@@ -332,12 +360,12 @@ emit_progress() {
 is_done()    { grep -qxF "$1" "$STATE_FILE" 2>/dev/null; }
 step_done()  {
     echo "$1" >> "$STATE_FILE"
-    [[ -z "$COMPACT_OUTPUT" ]] && log_ok "Готово: $1"
+    ui_step_result "done" "$1"
     emit_progress "$1" "done"
 }
 step_skip()  {
     ((STEP++)) || true
-    [[ -z "$COMPACT_OUTPUT" ]] && log_info "Пропуск (уже выполнено): $1"
+    ui_step_result "skip" "$1" "уже выполнено"
     emit_progress "$1" "skip"
 }
 step_reset() { sed -i "/^$(printf '%s' "$1" | sed 's/[.[\*^$]/\\&/g')$/d" "$STATE_FILE" 2>/dev/null || true; }

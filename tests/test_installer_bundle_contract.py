@@ -55,6 +55,9 @@ class InstallerBundleContractTests(unittest.TestCase):
     def test_common_sh_disables_ansi_when_stdout_is_not_a_tty(self):
         content = (ROOT / "common.sh").read_text(encoding="utf-8")
         self.assertIn('[[ -t 1 && "${TERM:-}" != "dumb" ]]', content)
+        self.assertIn("ui_step_result()", content)
+        self.assertIn("run_with_compact_progress()", content)
+        self.assertIn('log_info "${label} · выполняется · ${elapsed_text}"', content)
 
     def test_install_home_requires_bundled_transport_binaries(self):
         content = (ROOT / "install-home.sh").read_text(encoding="utf-8")
@@ -76,6 +79,19 @@ class InstallerBundleContractTests(unittest.TestCase):
         self.assertIn("основной режим установки: `TUI`", content)
         self.assertIn("консольный режим: только fallback", content)
         self.assertNotIn("GUI installer как основной путь", content)
+
+    def test_shell_installer_uses_consistent_compact_output_contract(self):
+        install_sh = (ROOT / "install.sh").read_text(encoding="utf-8")
+        install_home = (ROOT / "install-home.sh").read_text(encoding="utf-8")
+        install_vps = (ROOT / "install-vps.sh").read_text(encoding="utf-8")
+        self.assertIn('info()  { echo -e "${CYAN}[INFO]${NC} $*"; }', install_sh)
+        self.assertIn("download_with_progress()", install_sh)
+        self.assertNotIn("--progress-bar", install_sh)
+        self.assertIn('run_with_compact_progress "Сборка telegram-bot', install_home)
+        self.assertNotIn("| tee /tmp/docker-build.log", install_home)
+        self.assertNotIn("| tee /tmp/docker-up.log", install_home)
+        self.assertIn("vps_copy_progress()", install_vps)
+        self.assertIn('log_info "${label} · этап: ${remote_diag}"', install_vps)
 
     def test_claude_specific_artifacts_are_removed(self):
         self.assertFalse((ROOT / "CLAUDE.md").exists())
