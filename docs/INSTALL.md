@@ -5,10 +5,22 @@
 Основной путь установки:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install.sh | sudo bash
+curl -fsSL https://github.com/Cyrillicspb/vpn-infra/releases/latest/download/install.sh | sudo bash
 ```
 
-`install.sh` подготавливает `/opt/vpn`, скачивает обязательные release bundles и запускает `setup.sh`.
+Для конкретного release tag:
+
+```bash
+curl -fsSL https://github.com/Cyrillicspb/vpn-infra/releases/download/vX.Y.Z/install.sh | sudo bash
+```
+
+`install.sh` подготавливает `/opt/vpn`, скачивает обязательные release bundles именно из GitHub Release assets и запускает `setup.sh`.
+
+Поддерживаемый install contract:
+
+- latest installer разрешён только как `GitHub Releases latest`, а не как moving `master`;
+- для воспроизводимой установки использовать конкретный tag release;
+- installer не опирается на `git clone` из default branch и не должен тянуть код из raw `master`.
 
 ## Bundle-first contract
 
@@ -25,6 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/instal
 
 - если обязательный release asset отсутствует, установка завершается ошибкой сразу;
 - скрытый fallback в Docker Hub / PyPI / GitHub binary downloads для обязательных компонентов не считается поддерживаемым путём.
+- raw `master` не считается поддерживаемым install source.
 
 ## Что нужно заранее
 

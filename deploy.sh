@@ -501,6 +501,19 @@ release_id_for_sha() {
     echo "${sha:0:12}"
 }
 
+version_for_git_ref() {
+    local ref="$1"
+    local tag version_value
+    tag="$(git -C "$REPO_DIR" tag --points-at "$ref" --list 'v*' --sort=-v:refname | head -1 || true)"
+    if [[ -n "$tag" ]]; then
+        printf '%s\n' "${tag#v}"
+        return 0
+    fi
+    version_value="$(git -C "$REPO_DIR" show "${ref}:version" 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ -n "$version_value" ]] || version_value="unknown"
+    printf '%s\n' "$version_value"
+}
+
 read_current_release() {
     if [[ -f "$CURRENT_STATE_FILE" ]]; then
         CURRENT_RELEASE_ID="$(json_get "$CURRENT_STATE_FILE" "current_release.id")"
@@ -513,7 +526,7 @@ read_current_release() {
     fi
 
     CURRENT_RELEASE_SHA="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)"
-    CURRENT_RELEASE_VERSION="$(cat "$REPO_DIR/version" 2>/dev/null || echo "unknown")"
+    CURRENT_RELEASE_VERSION="$(version_for_git_ref HEAD 2>/dev/null || echo "unknown")"
     CURRENT_RELEASE_ID="$(release_id_for_sha "$CURRENT_RELEASE_SHA")"
     PREVIOUS_RELEASE_ID=""
     PREVIOUS_RELEASE_SHA=""
@@ -914,7 +927,7 @@ fetch_target_release() {
     TARGET_SOURCE_REF="$source_ref"
     TARGET_SOURCE_REMOTE="origin"
     TARGET_RELEASE_SHA="$(git -C "$REPO_DIR" rev-parse "$source_ref")"
-    TARGET_RELEASE_VERSION="$(git -C "$REPO_DIR" show "${source_ref}:version" 2>/dev/null | tr -d '[:space:]')"
+    TARGET_RELEASE_VERSION="$(version_for_git_ref "$source_ref" 2>/dev/null || true)"
     [[ -n "$TARGET_RELEASE_VERSION" ]] || TARGET_RELEASE_VERSION="unknown"
     TARGET_RELEASE_ID="$(release_id_for_sha "$TARGET_RELEASE_SHA")"
 }
@@ -945,7 +958,7 @@ create_snapshot() {
     snap_id="$(date +%Y%m%d_%H%M%S)"
     snap_path="$SNAPSHOT_DIR/$snap_id"
     mkdir -p "$snap_path"
-    current_ver="$(cat "$REPO_DIR/version" 2>/dev/null || echo "unknown")"
+    current_ver="$(version_for_git_ref HEAD 2>/dev/null || echo "unknown")"
 
     local items=(
         "/etc/wireguard"
@@ -1226,6 +1239,10 @@ sync_home_runtime() {
         [[ "${ROLLBACK_MODE:-false}" == "true" ]] && phase="rollback-home"
         mock_phase_failed "$phase" && die "mock failure at ${phase}"
         return 0
+    fi
+
+    if [[ -n "${TARGET_RELEASE_VERSION:-}" && "${TARGET_RELEASE_VERSION}" != "unknown" ]]; then
+        printf '%s\n' "${TARGET_RELEASE_VERSION#v}" > "$REPO_DIR/version"
     fi
 
     rsync -a "$REPO_DIR/home/docker-compose.yml" "$REPO_DIR/docker-compose.yml"

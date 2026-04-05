@@ -64,6 +64,14 @@ Health gate опирается на:
   - `Mirror parity`
   - `Repo head`
 
+## GitHub Release contract
+
+- merge в `master` не должен сам по себе создавать новый release commit в `master`;
+- release создаётся отдельным tag-first workflow по выбранному `ref`;
+- authoritative version для release берётся из git tag, а не из autobump-коммита в ветке;
+- installer и release assets должны собираться из exact tagged state;
+- `Rebuild Release Assets` допускается только для уже существующего tag и должен валидировать tag/commit metadata release manifest перед перезаливкой assets.
+
 ## Preflight blockers
 
 Deploy обязан остановиться до snapshot/apply при любом blocker:

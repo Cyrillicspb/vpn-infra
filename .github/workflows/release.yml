@@ -1,4 +1,4 @@
-name: Release Assets
+name: Rebuild Release Assets
 
 on:
   workflow_dispatch:
@@ -23,7 +23,14 @@ jobs:
 
       - name: Verify tag exists
         run: |
+          set -euo pipefail
           git rev-parse --verify "refs/tags/${{ inputs.tag }}"
+
+      - name: Prepare release workspace
+        run: |
+          set -euo pipefail
+          source scripts/release-version.sh
+          printf '%s\n' "$(release_version_from_tag "${{ inputs.tag }}")" > version
 
       - name: Set up Python for wheel download
         uses: actions/setup-python@v6
@@ -33,13 +40,17 @@ jobs:
       - name: Download bundled binaries
         run: |
           set -euo pipefail
+          source scripts/release-external-versions.sh
+          HYSTERIA_VERSION="$(release_pinned_hysteria_version)"
+          TUN2SOCKS_VERSION="$(release_pinned_tun2socks_version)"
+
           mkdir -p tools
-          curl -fsSL "https://github.com/apernet/hysteria/releases/download/app%2Fv2.7.1/hysteria-linux-amd64" -o tools/hysteria2-linux-amd64
-          curl -fsSL "https://github.com/apernet/hysteria/releases/download/app%2Fv2.7.1/hysteria-linux-arm64" -o tools/hysteria2-linux-arm64
+          curl -fsSL "https://github.com/apernet/hysteria/releases/download/app%2F${HYSTERIA_VERSION}/hysteria-linux-amd64" -o tools/hysteria2-linux-amd64
+          curl -fsSL "https://github.com/apernet/hysteria/releases/download/app%2F${HYSTERIA_VERSION}/hysteria-linux-arm64" -o tools/hysteria2-linux-arm64
           chmod +x tools/hysteria2-linux-amd64 tools/hysteria2-linux-arm64
           mkdir -p /tmp/t2s-amd64 /tmp/t2s-arm64
-          curl -fsSL "https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-linux-amd64.zip" -o /tmp/tun2socks-amd64.zip
-          curl -fsSL "https://github.com/xjasonlyu/tun2socks/releases/download/v2.5.2/tun2socks-linux-arm64.zip" -o /tmp/tun2socks-arm64.zip
+          curl -fsSL "https://github.com/xjasonlyu/tun2socks/releases/download/${TUN2SOCKS_VERSION}/tun2socks-linux-amd64.zip" -o /tmp/tun2socks-amd64.zip
+          curl -fsSL "https://github.com/xjasonlyu/tun2socks/releases/download/${TUN2SOCKS_VERSION}/tun2socks-linux-arm64.zip" -o /tmp/tun2socks-arm64.zip
           unzip -qo /tmp/tun2socks-amd64.zip -d /tmp/t2s-amd64/
           unzip -qo /tmp/tun2socks-arm64.zip -d /tmp/t2s-arm64/
           cp "$(find /tmp/t2s-amd64/ -maxdepth 1 -type f | head -1)" tools/tun2socks-linux-amd64
@@ -54,7 +65,6 @@ jobs:
             --exclude='*.log' --exclude='.env' \
             -C . .
           mv /tmp/vpn-infra.tar.gz vpn-infra.tar.gz
-          echo "Размер архива: $(du -sh vpn-infra.tar.gz | cut -f1)"
 
       - name: Build installer GUI wheel bundle
         run: |
@@ -63,7 +73,7 @@ jobs:
           WHEEL_BUNDLE_BUILDER_DIGEST="$(
             {
               printf '%s\n' "$WHEEL_BUNDLE_SCHEMA"
-              sed -n '/Build installer GUI wheel bundle/,/Build Docker image bundles/p' .github/workflows/release.yml
+              cat scripts/release-external-versions.sh
               cat installers/gui/requirements.txt
             } | sha256sum | awk '{print $1}'
           )"
@@ -103,6 +113,8 @@ jobs:
       - name: Build release assets manifest
         run: |
           set -euo pipefail
+          export RELEASE_TAG="${{ inputs.tag }}"
+          export RELEASE_COMMIT_SHA="$(git rev-parse HEAD)"
           bash scripts/build-release-assets-manifest.sh release-assets-manifest.txt
 
       - name: Build Docker image bundles
@@ -121,14 +133,33 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+          MANIFEST_TMP="$(mktemp -d)"
           if ! gh release view "${{ inputs.tag }}" >/dev/null 2>&1; then
             gh release create "${{ inputs.tag }}" \
               --title "${{ inputs.tag }}" \
               --notes "Release assets rebuilt for ${{ inputs.tag }}"
+          else
+            gh release download "${{ inputs.tag }}" \
+              --pattern release-assets-manifest.txt \
+              --dir "$MANIFEST_TMP"
+            if [[ ! -f "$MANIFEST_TMP/release-assets-manifest.txt" ]]; then
+              echo "Existing release ${{ inputs.tag }} is missing release-assets-manifest.txt" >&2
+              exit 1
+            fi
+            grep -Fqx "release_tag=${{ inputs.tag }}" "$MANIFEST_TMP/release-assets-manifest.txt" || {
+              echo "Existing release manifest tag mismatch for ${{ inputs.tag }}" >&2
+              exit 1
+            }
+            grep -Fqx "commit_sha=$(git rev-parse HEAD)" "$MANIFEST_TMP/release-assets-manifest.txt" || {
+              echo "Existing release manifest commit mismatch for ${{ inputs.tag }}" >&2
+              exit 1
+            }
           fi
 
           gh release upload "${{ inputs.tag }}" \
             --clobber \
+            install.sh \
             release-assets-manifest.txt \
             installer-gui-wheels.tar.gz \
             installer-gui-wheels-manifest.txt \

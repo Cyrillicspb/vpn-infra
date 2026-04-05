@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# install.sh — официальный однострочный bootstrap StackInfra
+# install.sh — официальный release bootstrap StackInfra
 #
 # Запуск на чистом Ubuntu-сервере:
-#   curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/install.sh | sudo bash
+#   curl -fsSL https://github.com/Cyrillicspb/vpn-infra/releases/latest/download/install.sh | sudo bash
+#   curl -fsSL https://github.com/Cyrillicspb/vpn-infra/releases/download/vX.Y.Z/install.sh | sudo bash
 #
 # Что делает:
-#   1. Клонирует репозиторий в /opt/vpn (git или tar-fallback из Releases)
+#   1. Скачивает release-tagged repo archive в /opt/vpn
 #   2. Скачивает docker-images*.tar.gz из GitHub Releases
 #   3. Распаковывает локальный image cache в /opt/vpn/docker-images/
 #   4. Запускает setup.sh (TUI или консольный режим)
@@ -29,7 +30,12 @@ export VPN_STRICT_BUNDLE=1
 REPO_OWNER="Cyrillicspb"
 REPO_NAME="vpn-infra"
 REPO_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}"
-RELEASE_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+RELEASE_TAG="${VPN_INSTALL_TAG:-}"
+if [[ -n "$RELEASE_TAG" ]]; then
+    RELEASE_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/tags/${RELEASE_TAG}"
+else
+    RELEASE_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+fi
 OPT_VPN="/opt/vpn"
 DOCKER_IMAGES_DIR="${OPT_VPN}/docker-images"
 
@@ -127,9 +133,9 @@ case "$_bootstrap_tag" in
 esac
 
 # ── 1. Минимальные зависимости ────────────────────────────────────────────────
-info "Проверка базовых зависимостей (curl, git)..."
+info "Проверка базовых зависимостей (curl)..."
 _missing_pkgs=()
-for pkg in curl git; do
+for pkg in curl; do
     if ! command -v "$pkg" &>/dev/null; then
         _missing_pkgs+=("$pkg")
     fi
@@ -142,8 +148,8 @@ if (( ${#_missing_pkgs[@]} > 0 )); then
 fi
 ok "Базовые зависимости готовы"
 
-# ── 2. Получение репозитория ──────────────────────────────────────────────────
-info "Загрузка репозитория в ${OPT_VPN}..."
+# ── 2. Получение release-tagged репозитория ───────────────────────────────────
+info "Загрузка release-tagged репозитория в ${OPT_VPN}..."
 mkdir -p "$OPT_VPN"
 
 _repo_ok=false
@@ -154,28 +160,15 @@ if [[ -f "${OPT_VPN}/setup.sh" && -f "${OPT_VPN}/install-home.sh" ]]; then
     _repo_ok=true
 fi
 
-# Попытка git clone
-if ! $_repo_ok && command -v git &>/dev/null; then
-    if timeout 60 git clone --depth=1 "$REPO_URL" /tmp/vpn-infra-clone 2>/dev/null; then
-        cp -rT /tmp/vpn-infra-clone "$OPT_VPN"
-        rm -rf /tmp/vpn-infra-clone
-        _repo_ok=true
-        ok "Репозиторий клонирован через git"
-    else
-        warn "git clone не удался (GitHub заблокирован?) — пробуем tar из Releases"
-    fi
-fi
-
-# Fallback: tar из GitHub Releases
 if ! $_repo_ok; then
-    info "Скачиваем vpn-infra.tar.gz из GitHub Releases..."
-    _tar_url="${REPO_URL}/releases/latest/download/vpn-infra.tar.gz"
+    info "Скачиваем vpn-infra.tar.gz из GitHub Release assets..."
+    _tar_url="$(require_release_asset_url "$_release_json" "vpn-infra.tar.gz")"
     if curl -fsSL --max-time 120 -L "$_tar_url" -o /tmp/vpn-infra.tar.gz 2>/dev/null; then
         tar xzf /tmp/vpn-infra.tar.gz -C "$OPT_VPN" \
             --no-same-permissions --no-same-owner --overwrite --touch 2>/dev/null
         rm -f /tmp/vpn-infra.tar.gz
         _repo_ok=true
-        ok "Репозиторий скачан из GitHub Releases"
+        ok "Репозиторий скачан из GitHub Release assets"
     else
         err "Не удалось скачать репозиторий."
         err "Скопируйте репозиторий вручную: scp vpn-infra.tar.gz root@server:/tmp/"
@@ -190,6 +183,12 @@ chmod +x "${OPT_VPN}/setup.sh" "${OPT_VPN}/install-home.sh" \
     "${OPT_VPN}/scripts/build-python-wheel-bundles.sh" "${OPT_VPN}/scripts/build-release-assets-manifest.sh" 2>/dev/null || true
 
 _install_version="$(read_install_version "${OPT_VPN}/version" || true)"
+if [[ -z "${_install_version}" && "${_bootstrap_tag}" == v* ]]; then
+    _install_version="${_bootstrap_tag#v}"
+fi
+if [[ -n "${_install_version}" ]]; then
+    printf '%s\n' "${_install_version}" > "${OPT_VPN}/version"
+fi
 if [[ -n "${_install_version}" ]]; then
     info "Устанавливаемая версия: v${_install_version}"
 fi

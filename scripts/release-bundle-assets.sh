@@ -19,6 +19,7 @@ EOF
 }
 
 release_bundle_asset_names() {
+    echo "install.sh"
     echo "vpn-infra.tar.gz"
     release_bundle_manifest_assets
     while IFS= read -r group; do

@@ -1,16 +1,17 @@
-name: Auto Release
+name: Create Release
 
 on:
-  push:
-    branches: [master]
-    paths-ignore:
-      - '*.md'
-      - 'docs/**'
-      - '.claude/**'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit SHA to release
+        required: true
+        default: master
+        type: string
 
 concurrency:
-  group: auto-release-master
-  cancel-in-progress: true
+  group: create-release-${{ inputs.ref }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -22,40 +23,64 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          ref: ${{ inputs.ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Read current version
-        id: version
+      - name: Resolve release metadata
+        id: meta
         run: |
-          CURRENT=$(cat version | tr -d '[:space:]')
-          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "Current version: $CURRENT"
+          set -euo pipefail
+          source scripts/release-version.sh
 
-      - name: Increment patch version
-        id: next
-        run: |
-          CURRENT="${{ steps.version.outputs.current }}"
-          # Format: 0.3.2.1 → 0.3.2.2 (last segment increments, no upper limit)
-          PREFIX=$(echo "$CURRENT" | rev | cut -d. -f2- | rev)
-          PATCH=$(echo "$CURRENT" | rev | cut -d. -f1 | rev)
-          NEXT_PATCH=$((PATCH + 1))
-          NEXT="${PREFIX}.${NEXT_PATCH}"
-          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
-          echo "Next version: $NEXT"
+          TARGET_SHA="$(git rev-parse HEAD)"
+          EXACT_TAG="$(release_tag_for_ref "$TARGET_SHA")"
+          if [[ -n "$EXACT_TAG" ]]; then
+            echo "Ref ${{ inputs.ref }} already points to release tag ${EXACT_TAG}" >&2
+            exit 1
+          fi
+          PREV_TAG="$(previous_release_tag_for_ref "$TARGET_SHA" || true)"
+          if [[ -n "$PREV_TAG" ]]; then
+            BASE_VERSION="$(release_version_from_tag "$PREV_TAG")"
+          else
+            BASE_VERSION="$(release_version_from_file version)"
+          fi
+          NEXT_VERSION="$(next_release_version "$BASE_VERSION")"
+          TAG="v${NEXT_VERSION}"
+
+          if git rev-parse --verify --quiet "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag already exists: ${TAG}" >&2
+            exit 1
+          fi
+
+          {
+            echo "target_sha=${TARGET_SHA}"
+            echo "prev_tag=${PREV_TAG}"
+            echo "version=${NEXT_VERSION}"
+            echo "tag=${TAG}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Generate release notes
         id: notes
         run: |
-          PREV_TAG=$(git tag --sort=-v:refname | head -1)
-          if [ -n "$PREV_TAG" ]; then
-            NOTES=$(git log "${PREV_TAG}..${GITHUB_SHA}" --pretty=format:"- %s" --no-merges)
+          set -euo pipefail
+          PREV_TAG="${{ steps.meta.outputs.prev_tag }}"
+          TARGET_SHA="${{ steps.meta.outputs.target_sha }}"
+          if [[ -n "$PREV_TAG" ]]; then
+            NOTES="$(git log "${PREV_TAG}..${TARGET_SHA}" --pretty=format:"- %s" --no-merges)"
           else
             NOTES="Initial release"
           fi
-          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
-          echo "notes<<$EOF" >> "$GITHUB_OUTPUT"
-          echo "$NOTES" >> "$GITHUB_OUTPUT"
-          echo "$EOF" >> "$GITHUB_OUTPUT"
+          EOF_MARKER="$(dd if=/dev/urandom bs=15 count=1 status=none | base64)"
+          {
+            echo "notes<<${EOF_MARKER}"
+            echo "$NOTES"
+            echo "${EOF_MARKER}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release workspace
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${{ steps.meta.outputs.version }}" > version
 
       - name: Set up Python for wheel download
         uses: actions/setup-python@v6
@@ -65,21 +90,11 @@ jobs:
       - name: Download bundled binaries
         run: |
           set -euo pipefail
-          HYSTERIA_VERSION=$(curl -sSfL --max-time 10 \
-            https://api.github.com/repos/apernet/hysteria/releases/latest \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'].replace('app/',''))" \
-            2>/dev/null) || HYSTERIA_VERSION="v2.7.1"
-          [[ -z "$HYSTERIA_VERSION" ]] && HYSTERIA_VERSION="v2.7.1"
+          source scripts/release-external-versions.sh
+          HYSTERIA_VERSION="$(release_pinned_hysteria_version)"
+          TUN2SOCKS_VERSION="$(release_pinned_tun2socks_version)"
 
-          TUN2SOCKS_VERSION=$(curl -sSfL --max-time 10 \
-            https://api.github.com/repos/xjasonlyu/tun2socks/releases/latest \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" \
-            2>/dev/null) || TUN2SOCKS_VERSION="v2.5.2"
-          [[ -z "$TUN2SOCKS_VERSION" ]] && TUN2SOCKS_VERSION="v2.5.2"
-
-          echo "hysteria2: ${HYSTERIA_VERSION}, tun2socks: ${TUN2SOCKS_VERSION}"
           mkdir -p tools
-
           curl -fsSL "https://github.com/apernet/hysteria/releases/download/app%2F${HYSTERIA_VERSION}/hysteria-linux-amd64" \
             -o tools/hysteria2-linux-amd64
           curl -fsSL "https://github.com/apernet/hysteria/releases/download/app%2F${HYSTERIA_VERSION}/hysteria-linux-arm64" \
@@ -96,17 +111,15 @@ jobs:
           cp "$(find /tmp/t2s-amd64/ -maxdepth 1 -type f | head -1)" tools/tun2socks-linux-amd64
           cp "$(find /tmp/t2s-arm64/ -maxdepth 1 -type f | head -1)" tools/tun2socks-linux-arm64
           chmod +x tools/tun2socks-linux-amd64 tools/tun2socks-linux-arm64
-          ls -lh tools/
 
-      - name: Resolve installer GUI wheel bundle manifest
+      - name: Build installer GUI wheel bundle
         run: |
           set -euo pipefail
           WHEEL_BUNDLE_SCHEMA=2
           WHEEL_BUNDLE_BUILDER_DIGEST="$(
             {
               printf '%s\n' "$WHEEL_BUNDLE_SCHEMA"
-              sed -n '/Resolve installer GUI wheel bundle manifest/,/Build installer GUI wheel bundle/p' .github/workflows/auto-release.yml
-              sed -n '/Build installer GUI wheel bundle/,/Reuse installer GUI wheel bundle/p' .github/workflows/auto-release.yml
+              cat scripts/release-external-versions.sh
               cat installers/gui/requirements.txt
             } | sha256sum | awk '{print $1}'
           )"
@@ -128,38 +141,6 @@ jobs:
             echo "builder_digest=${WHEEL_BUNDLE_BUILDER_DIGEST}"
             echo "pkgset|installer-gui-wheels.tar.gz|${digest}"
           } > installer-gui-wheels-manifest.txt
-
-      - name: Plan installer GUI wheel bundle reuse
-        id: gui_wheels_plan
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          PREV_TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 | awk '{print $1}' | head -1 || true)"
-          prev_digest=""
-          if [[ -n "$PREV_TAG" ]]; then
-            mkdir -p /tmp/prev-release-gui-wheels
-            if gh release download "$PREV_TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --pattern installer-gui-wheels-manifest.txt \
-              --dir /tmp/prev-release-gui-wheels 2>/dev/null; then
-              prev_digest="$(awk -F'|' '$1=="pkgset" && $2=="installer-gui-wheels.tar.gz" {print $3}' /tmp/prev-release-gui-wheels/installer-gui-wheels-manifest.txt)"
-            fi
-          fi
-
-          current_digest="$(awk -F'|' '$1=="pkgset" && $2=="installer-gui-wheels.tar.gz" {print $3}' installer-gui-wheels-manifest.txt)"
-          if [[ -n "$PREV_TAG" && -n "$prev_digest" && "$prev_digest" == "$current_digest" ]]; then
-            echo "reuse=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "reuse=false" >> "$GITHUB_OUTPUT"
-          fi
-          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
-          echo "Wheel bundle reuse: $(cat "$GITHUB_OUTPUT" | tr '\n' ' ')"
-
-      - name: Build installer GUI wheel bundle
-        if: steps.gui_wheels_plan.outputs.reuse != 'true'
-        run: |
-          set -euo pipefail
           mkdir -p /tmp/installer-gui-wheels
           python3 -m pip download \
             --dest /tmp/installer-gui-wheels \
@@ -168,20 +149,6 @@ jobs:
             pip \
             -r installers/gui/requirements.txt
           tar -czf installer-gui-wheels.tar.gz -C /tmp/installer-gui-wheels .
-          echo "Размер wheel bundle: $(du -sh installer-gui-wheels.tar.gz | cut -f1)"
-
-      - name: Reuse installer GUI wheel bundle
-        if: steps.gui_wheels_plan.outputs.reuse == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh release download "${{ steps.gui_wheels_plan.outputs.prev_tag }}" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern installer-gui-wheels.tar.gz \
-            --dir .
-          [[ -f installer-gui-wheels.tar.gz ]]
-          echo "Reused installer-gui-wheels.tar.gz from ${{ steps.gui_wheels_plan.outputs.prev_tag }}"
 
       - name: Build Python wheel bundles
         run: |
@@ -197,7 +164,6 @@ jobs:
             --exclude='*.log' --exclude='.env' \
             -C . .
           mv /tmp/vpn-infra.tar.gz vpn-infra.tar.gz
-          echo "Размер архива: $(du -sh vpn-infra.tar.gz | cut -f1)"
 
       - name: Resolve Docker bundle manifest
         run: |
@@ -216,17 +182,16 @@ jobs:
       - name: Build release assets manifest
         run: |
           set -euo pipefail
+          export RELEASE_TAG="${{ steps.meta.outputs.tag }}"
+          export RELEASE_COMMIT_SHA="${{ steps.meta.outputs.target_sha }}"
           bash scripts/build-release-assets-manifest.sh release-assets-manifest.txt
 
       - name: Plan Docker bundle reuse
         id: docker_plan
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           source scripts/docker-image-groups.sh
-
-          PREV_TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 | awk '{print $1}' | head -1 || true)"
+          PREV_TAG="${{ steps.meta.outputs.prev_tag }}"
           PREV_MANIFEST=""
           if [[ -n "$PREV_TAG" ]]; then
             mkdir -p /tmp/prev-release
@@ -237,7 +202,6 @@ jobs:
               PREV_MANIFEST="/tmp/prev-release/docker-bundles-manifest.txt"
             fi
           fi
-
           build_groups=()
           reuse_groups=()
           while IFS= read -r group; do
@@ -246,29 +210,25 @@ jobs:
             if [[ -n "$PREV_MANIFEST" ]]; then
               prev_digest="$(awk -F'|' -v g="$group" '$1=="group" && $2==g {print $4}' "$PREV_MANIFEST")"
             fi
-
             if [[ -n "$PREV_TAG" && -n "$prev_digest" && "$prev_digest" == "$current_digest" ]]; then
               reuse_groups+=("$group")
             else
               build_groups+=("$group")
             fi
           done < <(docker_image_bundle_groups)
-
-          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
-          echo "build_groups=$(IFS=,; echo "${build_groups[*]}")" >> "$GITHUB_OUTPUT"
-          echo "reuse_groups=$(IFS=,; echo "${reuse_groups[*]}")" >> "$GITHUB_OUTPUT"
-          echo "Build groups: ${build_groups[*]:-(none)}"
-          echo "Reuse groups: ${reuse_groups[*]:-(none)}"
+          {
+            echo "build_groups=$(IFS=,; echo "${build_groups[*]}")"
+            echo "reuse_groups=$(IFS=,; echo "${reuse_groups[*]}")"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Plan system package bundle reuse
         id: system_pkg_plan
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           source scripts/system-package-groups.sh
-
-          PREV_TAG="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 | awk '{print $1}' | head -1 || true)"
+          PREV_TAG="${{ steps.meta.outputs.prev_tag }}"
           PREV_MANIFEST=""
           if [[ -n "$PREV_TAG" ]]; then
             mkdir -p /tmp/prev-release-system-pkgs
@@ -279,7 +239,6 @@ jobs:
               PREV_MANIFEST="/tmp/prev-release-system-pkgs/system-packages-manifest.txt"
             fi
           fi
-
           build_groups=()
           reuse_groups=()
           while IFS= read -r group; do
@@ -288,19 +247,18 @@ jobs:
             if [[ -n "$PREV_MANIFEST" ]]; then
               prev_digest="$(awk -F'|' -v g="$group" '$1=="group" && $2==g {print $4}' "$PREV_MANIFEST")"
             fi
-
             if [[ -n "$PREV_TAG" && -n "$prev_digest" && "$prev_digest" == "$current_digest" ]]; then
               reuse_groups+=("$group")
             else
               build_groups+=("$group")
             fi
           done < <(system_package_bundle_groups)
-
-          echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
-          echo "build_groups=$(IFS=,; echo "${build_groups[*]}")" >> "$GITHUB_OUTPUT"
-          echo "reuse_groups=$(IFS=,; echo "${reuse_groups[*]}")" >> "$GITHUB_OUTPUT"
-          echo "Build system package groups: ${build_groups[*]:-(none)}"
-          echo "Reuse system package groups: ${reuse_groups[*]:-(none)}"
+          {
+            echo "build_groups=$(IFS=,; echo "${build_groups[*]}")"
+            echo "reuse_groups=$(IFS=,; echo "${reuse_groups[*]}")"
+          } >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build changed Docker bundles
         if: steps.docker_plan.outputs.build_groups != ''
@@ -313,34 +271,28 @@ jobs:
 
       - name: Reuse unchanged Docker bundles
         if: steps.docker_plan.outputs.reuse_groups != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           source scripts/docker-image-groups.sh
-
           fallback_groups=()
           IFS=',' read -r -a reuse_groups <<< "${{ steps.docker_plan.outputs.reuse_groups }}"
           for group in "${reuse_groups[@]}"; do
             [[ -n "$group" ]] || continue
             asset="$(docker_image_bundle_asset_name "$group")"
-            if gh release download "${{ steps.docker_plan.outputs.prev_tag }}" \
-              --repo "$GITHUB_REPOSITORY" \
-              --pattern "$asset" \
-              --dir .; then
-              echo "Reused $asset from ${{ steps.docker_plan.outputs.prev_tag }}"
+            if gh release download "${{ steps.meta.outputs.prev_tag }}" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir .; then
+              :
             else
-              echo "Reuse failed for $asset; rebuilding locally"
               fallback_groups+=("$group")
             fi
           done
-
           if (( ${#fallback_groups[@]} > 0 )); then
             bash scripts/build-docker-bundles.sh \
               --manifest-out docker-bundles-manifest.txt \
               --no-pull \
               --build-groups "$(IFS=,; echo "${fallback_groups[*]}")"
           fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build changed system package bundles
         if: steps.system_pkg_plan.outputs.build_groups != ''
@@ -352,38 +304,32 @@ jobs:
 
       - name: Reuse unchanged system package bundles
         if: steps.system_pkg_plan.outputs.reuse_groups != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           source scripts/system-package-groups.sh
-
           fallback_groups=()
           IFS=',' read -r -a reuse_groups <<< "${{ steps.system_pkg_plan.outputs.reuse_groups }}"
           for group in "${reuse_groups[@]}"; do
             [[ -n "$group" ]] || continue
             asset="$(system_package_bundle_asset_name "$group")"
-            if gh release download "${{ steps.system_pkg_plan.outputs.prev_tag }}" \
-              --repo "$GITHUB_REPOSITORY" \
-              --pattern "$asset" \
-              --dir .; then
-              echo "Reused $asset from ${{ steps.system_pkg_plan.outputs.prev_tag }}"
+            if gh release download "${{ steps.meta.outputs.prev_tag }}" --repo "$GITHUB_REPOSITORY" --pattern "$asset" --dir .; then
+              :
             else
-              echo "Reuse failed for $asset; rebuilding locally"
               fallback_groups+=("$group")
             fi
           done
-
           if (( ${#fallback_groups[@]} > 0 )); then
             bash scripts/build-system-package-bundles.sh \
               --manifest-out system-packages-manifest.txt \
               --build-groups "$(IFS=,; echo "${fallback_groups[*]}")"
           fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify release assets
         run: |
           set -euo pipefail
-          source scripts/docker-image-groups.sh
+          [[ -f install.sh ]]
           [[ -f installer-gui-wheels.tar.gz ]]
           [[ -f installer-gui-wheels-manifest.txt ]]
           [[ -f watchdog-wheels.tar.gz ]]
@@ -393,6 +339,7 @@ jobs:
           [[ -f vpn-infra.tar.gz ]]
           [[ -f docker-bundles-manifest.txt ]]
           [[ -f system-packages-manifest.txt ]]
+          source scripts/docker-image-groups.sh
           while IFS= read -r group; do
             asset="$(docker_image_bundle_asset_name "$group")"
             [[ -f "$asset" ]] || { echo "Missing release asset: $asset" >&2; exit 1; }
@@ -410,35 +357,24 @@ jobs:
 
       - name: Create tag and release
         id: create_release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git fetch origin master --tags
-          git checkout -B auto-release "$GITHUB_SHA"
-          git rebase origin/master
-
-          CURRENT="$(cat version | tr -d '[:space:]')"
-          PREFIX="$(echo "$CURRENT" | rev | cut -d. -f2- | rev)"
-          PATCH="$(echo "$CURRENT" | rev | cut -d. -f1 | rev)"
-          NEXT_PATCH=$((PATCH + 1))
-          NEXT="${PREFIX}.${NEXT_PATCH}"
-          TAG="v${NEXT}"
-
-          echo "version=${NEXT}" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-
-          echo "$NEXT" > version
+          set -euo pipefail
+          TARGET_SHA="${{ steps.meta.outputs.target_sha }}"
+          TAG="${{ steps.meta.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release already exists for ${TAG}" >&2
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add version
-          git commit -m "chore: bump version to $NEXT"
-          git push origin HEAD:master
-          git tag "$TAG"
+          git tag -a "$TAG" "$TARGET_SHA" -m "Release $TAG"
           git push origin "$TAG"
           gh release create "$TAG" \
+            --target "$TARGET_SHA" \
             --title "$TAG" \
             --notes "${{ steps.notes.outputs.notes }}" \
             --latest \
+            install.sh \
             release-assets-manifest.txt \
             installer-gui-wheels.tar.gz \
             installer-gui-wheels-manifest.txt \
@@ -456,11 +392,14 @@ jobs:
             system-packages-home-awg.tar.gz \
             system-packages-vps-core.tar.gz \
             system-packages-vps-docker.tar.gz
-
-      - name: Delete old Docker bundle assets
+          {
+            echo "tag=${TAG}"
+            echo "prev_tag=${{ steps.meta.outputs.prev_tag }}"
+          } >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CURRENT_TAG: ${{ steps.create_release.outputs.tag }}
+
+      - name: Delete old bundle assets from stale releases
         run: |
           set -euo pipefail
           gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > /tmp/releases.json
@@ -469,8 +408,10 @@ jobs:
           import os
 
           current_tag = os.environ["CURRENT_TAG"]
-          previous_tag = None
+          previous_tag = os.environ.get("PREVIOUS_TAG") or ""
           target_names = {
+              "install.sh",
+              "vpn-infra.tar.gz",
               "release-assets-manifest.txt",
               "installer-gui-wheels.tar.gz",
               "installer-gui-wheels-manifest.txt",
@@ -492,22 +433,18 @@ jobs:
               releases = json.load(fh)
 
           for release in releases:
-              if release["tag_name"] != current_tag:
-                  previous_tag = release["tag_name"]
-                  break
-
-          for release in releases:
-              if release["tag_name"] == current_tag:
-                  continue
-              if previous_tag and release["tag_name"] == previous_tag:
+              tag_name = release["tag_name"]
+              if tag_name in {current_tag, previous_tag}:
                   continue
               for asset in release.get("assets", []):
                   if asset["name"] in target_names:
-                      print(f'{release["tag_name"]}|{asset["id"]}|{asset["name"]}')
+                      print(f'{tag_name}|{asset["id"]}|{asset["name"]}')
           PY
-
           while IFS='|' read -r tag asset_id asset_name; do
             [[ -n "$asset_id" ]] || continue
-            echo "Delete old asset: ${tag} ${asset_name}"
             gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"
           done < /tmp/stale-assets.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURRENT_TAG: ${{ steps.create_release.outputs.tag }}
+          PREVIOUS_TAG: ${{ steps.create_release.outputs.prev_tag }}

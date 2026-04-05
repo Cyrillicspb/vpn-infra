@@ -22,6 +22,7 @@ class InstallerBundleContractTests(unittest.TestCase):
 
     def test_release_asset_script_lists_core_manifests(self):
         content = (ROOT / "scripts" / "release-bundle-assets.sh").read_text(encoding="utf-8")
+        self.assertIn('echo "install.sh"', content)
         self.assertIn("release-assets-manifest.txt", content)
         self.assertIn("docker-bundles-manifest.txt", content)
         self.assertIn("system-packages-manifest.txt", content)
@@ -31,8 +32,17 @@ class InstallerBundleContractTests(unittest.TestCase):
         content = (ROOT / "install.sh").read_text(encoding="utf-8")
         self.assertIn("export VPN_STRICT_BUNDLE=1", content)
         self.assertIn('require_release_asset_url "$_release_json" "python-wheel-bundles-manifest.txt"', content)
+        self.assertIn('RELEASE_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/tags/${RELEASE_TAG}"', content)
         self.assertIn('python_wheel_bundle_groups', content)
         self.assertIn('VPN_STRICT_BUNDLE=1 bash "${OPT_VPN}/setup.sh"', content)
+        self.assertNotIn("for pkg in curl git; do", content)
+        self.assertNotIn('git clone --depth=1 "$REPO_URL"', content)
+
+    def test_release_assets_manifest_embeds_release_metadata(self):
+        content = (ROOT / "scripts" / "build-release-assets-manifest.sh").read_text(encoding="utf-8")
+        self.assertIn('echo "release_tag=${RELEASE_TAG:-unknown}"', content)
+        self.assertIn('echo "commit_sha=${RELEASE_COMMIT_SHA:-unknown}"', content)
+        self.assertIn('echo "builder_digest=', content)
 
     def test_setup_sh_blocks_bootstrap_network_fallback_in_strict_mode(self):
         content = (ROOT / "setup.sh").read_text(encoding="utf-8")
