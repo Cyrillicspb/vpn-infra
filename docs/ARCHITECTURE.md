@@ -37,6 +37,22 @@
 
 При multi-VPS каждый backend считается отдельным execution node с собственным health/runtime состоянием.
 
+## Runtime topology
+
+Базовая логика остаётся прежней:
+
+- клиенты всегда подключаются к `home-server`;
+- `home-server` остаётся ingress и control plane;
+- VPS выступают execution backend для `blocked` / `vpn` lane;
+- обычный direct-трафик не должен уходить на backend без policy-reason.
+
+Типовые сегменты адресов:
+
+- `10.177.1.0/24` — AWG клиенты;
+- `10.177.3.0/24` — WG клиенты;
+- `172.20.0.0/24` — home Docker;
+- дополнительные runtime/bridge сегменты допускаются, но не должны менять client-facing ingress model.
+
 ## Control Plane
 
 Источник истины для состояния системы:
@@ -188,6 +204,12 @@ Deploy не должен становиться policy engine.
 2. определить `route_class`;
 3. через `Decision Maker` выбрать `effective backend`;
 4. передать решение в Execution Layer.
+
+Серверный split tunneling по-прежнему опирается на `dnsmasq`, `nftables` и policy-routing:
+
+- `blocked_static` / `blocked_dynamic` идут в `vpn` lane;
+- `latency_sensitive_direct` остаётся direct-first исключением;
+- остальной трафик идёт direct.
 
 ## Routing Data Sources
 
@@ -371,7 +393,7 @@ Execution-facing:
 
 В текущую архитектуру не входят как active commitments:
 
-- GUI installer как основной install path;
+- консольный install path как равноправный primary UX;
 - router-zapret / Keenetic backend;
 - отдельный `vps-only` deploy;
 - определение здоровья системы по логам вместо state/API;

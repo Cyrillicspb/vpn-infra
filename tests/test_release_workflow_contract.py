@@ -21,6 +21,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("release-external-versions.sh", content)
         self.assertNotIn("api.github.com/repos/apernet/hysteria/releases/latest", content)
         self.assertNotIn("api.github.com/repos/xjasonlyu/tun2socks/releases/latest", content)
+        self.assertIn('tools/hysteria2-linux-amd64', content)
+        self.assertIn('tools/tun2socks-linux-amd64', content)
+        self.assertIn('mv /tmp/vpn-infra.tar.gz vpn-infra.tar.gz', content)
         self.assertIn("install.sh", content)
 
     def test_rebuild_release_uses_pinned_external_versions_and_uploads_install_script(self):
@@ -30,6 +33,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("release-external-versions.sh", content)
         self.assertNotIn("releases/latest", content)
         self.assertIn("install.sh", content)
+        self.assertIn('tools/hysteria2-linux-amd64', content)
+        self.assertIn('tools/tun2socks-linux-amd64', content)
+        self.assertIn('mv /tmp/vpn-infra.tar.gz vpn-infra.tar.gz', content)
         self.assertIn('gh release download "${{ inputs.tag }}"', content)
         self.assertIn('grep -Fqx "release_tag=${{ inputs.tag }}"', content)
         self.assertIn('grep -Fqx "commit_sha=$(git rev-parse HEAD)"', content)

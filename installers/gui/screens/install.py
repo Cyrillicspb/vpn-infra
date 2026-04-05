@@ -20,6 +20,22 @@ def _find_setup_sh() -> Path:
 
 
 SETUP_SH = _find_setup_sh()
+def _detect_total_steps(default: int = 61) -> int:
+    common_candidates = [
+        Path("/opt/vpn/common.sh"),
+        Path(__file__).resolve().parents[3] / "common.sh",
+    ]
+    for candidate in common_candidates:
+        if not candidate.exists():
+            continue
+        for line in candidate.read_text(encoding="utf-8").splitlines():
+            match = re.match(r"TOTAL_STEPS=(\d+)", line.strip())
+            if match:
+                return int(match.group(1))
+    return default
+
+
+TOTAL_INSTALL_STEPS = _detect_total_steps()
 # Regex для парсинга маркеров прогресса из common.sh
 _RE_PROGRESS = re.compile(r"^##PROGRESS:(\d+):(\d+):([^:]+):(\w*)$")
 _RE_STATUS = re.compile(r"^##STATUS:([^:]+):([^:]+):(.*)$")
@@ -82,7 +98,7 @@ class InstallScreen(Screen):
             id="install-header-row",
         )
         yield Static("Готов к установке.", id="install-status")
-        yield ProgressBar(total=61, show_eta=True, id="install-progress")
+        yield ProgressBar(total=TOTAL_INSTALL_STEPS, show_eta=True, id="install-progress")
         yield Static("", id="install-step")
         yield RichLog(
             highlight=False,

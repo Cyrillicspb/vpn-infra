@@ -16,6 +16,14 @@ curl -fsSL https://github.com/Cyrillicspb/vpn-infra/releases/download/vX.Y.Z/ins
 
 `install.sh` подготавливает `/opt/vpn`, скачивает обязательные release bundles именно из GitHub Release assets и запускает `setup.sh`.
 
+## Модель установки
+
+- основной режим установки: `TUI` через `setup.sh`;
+- консольный режим: только fallback, если TUI не может быть запущен из локального release bundle;
+- clean install должен стартовать только из полного release bundle, а не из `master`, raw-файлов или ad-hoc архива.
+
+`setup.sh` сначала пытается поднять Textual-интерфейс из локального bundled wheel set. Если локальный TUI недоступен, установка может продолжиться в консольном режиме, но это fallback path, а не основной UX.
+
 Поддерживаемый install contract:
 
 - latest installer разрешён только как `GitHub Releases latest`, а не как moving `master`;
@@ -36,8 +44,26 @@ curl -fsSL https://github.com/Cyrillicspb/vpn-infra/releases/download/vX.Y.Z/ins
 Для обязательных install-time зависимостей включён strict bundle-first режим:
 
 - если обязательный release asset отсутствует, установка завершается ошибкой сразу;
-- скрытый fallback в Docker Hub / PyPI / GitHub binary downloads для обязательных компонентов не считается поддерживаемым путём.
+- скрытый fallback в Docker Hub / PyPI / GitHub binary downloads для обязательных компонентов не считается поддерживаемым путём;
 - raw `master` не считается поддерживаемым install source.
+
+### Что считается обязательным bundled содержимым
+
+- `vpn-infra.tar.gz` с полным репозиторием, включая `setup.sh`, `common.sh`, TUI и bundled runtime binaries;
+- `installer-gui-wheels.tar.gz` для запуска TUI без PyPI fallback;
+- `watchdog-wheels.tar.gz` и `telegram-bot-wheels.tar.gz`;
+- `docker-images-*` и `system-packages-*`;
+- install-critical transport binaries внутри `vpn-infra.tar.gz`, например `tools/hysteria2-*`, `tools/tun2socks-*`, bundled `nfqws` для bootstrap и runtime.
+
+### Что допускается тянуть из сети
+
+Только минимальные bootstrap prerequisites, без которых installer вообще не стартует на чистой Ubuntu:
+
+- `python3` / `python3-pip` при их отсутствии;
+- `tmux` как UX-защита от обрыва SSH;
+- базовые системные пакеты из Ubuntu repository, если они относятся к documented bootstrap-minimal.
+
+Даже в этом режиме install-critical runtime binaries и TUI dependencies должны приходить из release bundle, а не из `latest`.
 
 ## Что нужно заранее
 
@@ -70,6 +96,7 @@ curl -fsSL https://github.com/Cyrillicspb/vpn-infra/releases/download/vX.Y.Z/ins
 `setup.sh`:
 
 - собирает ввод и пишет `/opt/vpn/.env`;
+- запускает TUI как основной install UX;
 - ставит home-server runtime;
 - ставит VPS runtime;
 - поднимает watchdog, bot и routing;
@@ -138,7 +165,9 @@ cd /opt/vpn && bash tests/run-smoke-tests.sh --verbose
 
 Документация больше не обещает как обязательный контракт:
 
-- GUI installer как основной путь;
+- raw `master`, `git clone` и ad-hoc архивы как install source;
+- сетевые `latest` fallback'и для install-critical binaries и TUI dependencies;
+- консольный режим как равноправный основной UX;
 - отдельные исторические фазы с фиксированными номерами шагов;
 - обязательный Cloudflare/CDN path;
 - release rollback через `restore.sh`.

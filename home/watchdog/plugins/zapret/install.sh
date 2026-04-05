@@ -31,8 +31,7 @@ apt-get install -y -qq curl wget nftables
 # ---------------------------------------------------------------------------
 # 3. Установить nfqws бинарник
 # ---------------------------------------------------------------------------
-# Приоритет: 1) бандленный из репо  →  2) GitHub Release  →  3) сборка из исходников
-# Бандленные бинарники включены в репо чтобы не зависеть от доступности GitHub (заблокирован в РФ).
+# Clean install должен использовать bundled binary из release bundle.
 
 NFQWS_INSTALLED=0
 
@@ -46,70 +45,8 @@ if [[ -f "$BUNDLED_BIN" ]]; then
     NFQWS_INSTALLED=1
 fi
 
-# 3.2 Fallback: скачать с GitHub (если доступен)
 if [[ $NFQWS_INSTALLED -eq 0 ]]; then
-    TMP_DIR="$(mktemp -d)"
-    trap "rm -rf $TMP_DIR" EXIT
-
-    log "Бандленный бинарник не найден, пробуем GitHub..."
-
-    _curl_maybe_tunnel() {
-        local url="$1" out="$2"
-        local tun_iface
-        if curl -sSfL --connect-timeout 15 -o "$out" "$url" 2>/dev/null; then
-            return 0
-        fi
-        tun_iface="$(ip route show table 200 2>/dev/null | grep default | awk '{print $5}' | head -1)"
-        if [[ -n "$tun_iface" ]] && curl -sSfL --connect-timeout 15 \
-             --interface "$tun_iface" -o "$out" "$url" 2>/dev/null; then
-            return 0
-        fi
-        return 1
-    }
-
-    RELEASE_URL=""
-    if _curl_maybe_tunnel "https://api.github.com/repos/bol-van/zapret/releases/latest" \
-            "$TMP_DIR/release.json" 2>/dev/null; then
-        RELEASE_URL=$(python3 -c "
-import json
-d = json.load(open('$TMP_DIR/release.json'))
-for a in d.get('assets', []):
-    if a['name'].endswith('.tar.gz') and 'openwrt' not in a['name']:
-        print(a['browser_download_url'])
-        break
-" 2>/dev/null || true)
-    fi
-
-    [[ -z "$RELEASE_URL" ]] && RELEASE_URL="https://github.com/bol-van/zapret/archive/refs/heads/master.tar.gz"
-
-    log "Загрузка zapret (${BINARY_ARCH}) с GitHub..."
-    if _curl_maybe_tunnel "$RELEASE_URL" "$TMP_DIR/zapret.tar.gz"; then
-        tar -xzf "$TMP_DIR/zapret.tar.gz" -C "$TMP_DIR"
-        NFQWS_BINARY="$(find "$TMP_DIR" -path "*/binaries/linux-${BINARY_ARCH}/nfqws" -type f 2>/dev/null | head -1)"
-        [[ -z "$NFQWS_BINARY" ]] && NFQWS_BINARY="$(find "$TMP_DIR" -name "nfqws" -type f 2>/dev/null | head -1)"
-        if [[ -n "$NFQWS_BINARY" ]]; then
-            cp "$NFQWS_BINARY" "$INSTALL_BIN"
-            chmod +x "$INSTALL_BIN"
-            NFQWS_INSTALLED=1
-            log "Бинарник установлен из GitHub"
-        fi
-    fi
-fi
-
-# 3.3 Fallback: сборка из исходников
-if [[ $NFQWS_INSTALLED -eq 0 ]]; then
-    log "GitHub недоступен, собираем из исходников..."
-    apt-get install -y -qq build-essential libnetfilter-queue-dev libmnl-dev git
-    TMP_SRC="$(mktemp -d)"
-    trap "rm -rf $TMP_SRC" EXIT
-    git clone --depth=1 "https://github.com/bol-van/zapret.git" "$TMP_SRC/zapret-src" || \
-        err "Не удалось скачать исходники zapret (нет доступа к GitHub)"
-    cd "$TMP_SRC/zapret-src/nfq"
-    make -j"$(nproc)"
-    cp nfqws "$INSTALL_BIN"
-    chmod +x "$INSTALL_BIN"
-    cd /
-    log "Собрано из исходников"
+    err "Bundled nfqws (${BINARY_ARCH}) отсутствует. Clean install требует полный release bundle."
 fi
 
 chmod +x "$INSTALL_BIN"

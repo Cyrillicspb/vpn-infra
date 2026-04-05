@@ -430,7 +430,6 @@ if is_done "step17_install_hysteria2"; then
 else
     step "Установка Hysteria2 (бинарник)"
 
-    _HYSTERIA_FALLBACK="v2.7.1"
     _ARCH="$(uname -m)"; [[ "$_ARCH" == "aarch64" ]] && _ARCH="arm64" || _ARCH="amd64"
     _BUNDLED="$REPO_DIR/tools/hysteria2-linux-${_ARCH}"
 
@@ -439,19 +438,8 @@ else
         HYSTERIA_VERSION="bundled"
         log_info "Использую бандл hysteria2 (${_ARCH})..."
         cp "$_BUNDLED" /usr/local/bin/hysteria
-    elif strict_bundle_mode_enabled; then
-        die "Strict bundle mode: bundled hysteria2 (${_ARCH}) отсутствует в ${_BUNDLED}"
     else
-        # Запрашиваем актуальную версию через GitHub API — не зависим от хардкода
-        HYSTERIA_VERSION=$(curl -sSfL --max-time 10 \
-            https://api.github.com/repos/apernet/hysteria/releases/latest \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'].replace('app/',''))" \
-            2>/dev/null) || HYSTERIA_VERSION="$_HYSTERIA_FALLBACK"
-        [[ -z "$HYSTERIA_VERSION" ]] && HYSTERIA_VERSION="$_HYSTERIA_FALLBACK"
-        log_info "Загрузка Hysteria2 ${HYSTERIA_VERSION} с GitHub..."
-        HYSTERIA_URL="https://github.com/apernet/hysteria/releases/download/app%2F${HYSTERIA_VERSION}/hysteria-linux-${_ARCH}"
-        curl -fsSL --progress-bar "$HYSTERIA_URL" -o /usr/local/bin/hysteria \
-            || die "Не удалось загрузить Hysteria2 с ${HYSTERIA_URL}"
+        die "Отсутствует обязательный bundled hysteria2 (${_ARCH}) в ${_BUNDLED}. Clean install должен использовать полный release bundle."
     fi
     chmod +x /usr/local/bin/hysteria
 
@@ -471,7 +459,6 @@ if is_done "step18_install_tun2socks"; then
 else
     step "Установка tun2socks"
 
-    _TUN2SOCKS_FALLBACK="v2.5.2"
     _ARCH="$(uname -m)"; [[ "$_ARCH" == "aarch64" ]] && _ARCH="arm64" || _ARCH="amd64"
     _BUNDLED="$REPO_DIR/tools/tun2socks-linux-${_ARCH}"
 
@@ -479,30 +466,8 @@ else
         TUN2SOCKS_VER="bundled"
         log_info "Использую бандл tun2socks (${_ARCH})..."
         cp "$_BUNDLED" /usr/local/bin/tun2socks
-    elif strict_bundle_mode_enabled; then
-        die "Strict bundle mode: bundled tun2socks (${_ARCH}) отсутствует в ${_BUNDLED}"
     else
-        TUN2SOCKS_VER=$(curl -sSfL --max-time 10 \
-            https://api.github.com/repos/xjasonlyu/tun2socks/releases/latest \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])" \
-            2>/dev/null) || TUN2SOCKS_VER="$_TUN2SOCKS_FALLBACK"
-        [[ -z "$TUN2SOCKS_VER" ]] && TUN2SOCKS_VER="$_TUN2SOCKS_FALLBACK"
-        log_info "Загрузка tun2socks ${TUN2SOCKS_VER} с GitHub..."
-        TUN2SOCKS_URL="https://github.com/xjasonlyu/tun2socks/releases/download/${TUN2SOCKS_VER}/tun2socks-linux-${_ARCH}.zip"
-        curl -fsSL "$TUN2SOCKS_URL" -o /tmp/tun2socks.zip \
-            || die "Не удалось загрузить tun2socks"
-        cd /tmp
-        unzip -qo tun2socks.zip "tun2socks-linux-${_ARCH}" 2>/dev/null \
-            || unzip -qo tun2socks.zip 2>/dev/null \
-            || die "Не удалось распаковать tun2socks.zip"
-        if [[ -f /tmp/tun2socks-linux-${_ARCH} ]]; then
-            mv /tmp/tun2socks-linux-${_ARCH} /usr/local/bin/tun2socks
-        elif [[ -f /tmp/tun2socks ]]; then
-            mv /tmp/tun2socks /usr/local/bin/tun2socks
-        else
-            die "Бинарник tun2socks не найден после распаковки"
-        fi
-        rm -f /tmp/tun2socks.zip
+        die "Отсутствует обязательный bundled tun2socks (${_ARCH}) в ${_BUNDLED}. Clean install должен использовать полный release bundle."
     fi
 
     chmod +x /usr/local/bin/tun2socks

@@ -1,7 +1,7 @@
 """
 handlers/client.py — Команды клиентов (самообслуживание)
 
-Команды (из CLAUDE.md):
+Команды клиента:
   /start — регистрация (FSM: invite → имя → протокол)
   /mydevices /myconfig /adddevice /removedevice
   /update /request /myrequests

@@ -33,7 +33,7 @@ TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 COMBINED_CIDR = Path("/etc/vpn-routes/combined.cidr")
 QR_MAX_IPS    = int(os.getenv("QR_MAX_ALLOWED_IPS", "50"))
 
-# Параметры протоколов (CLAUDE.md)
+# Параметры клиентских протоколов.
 AWG_PARAMS = {"Jc": 4, "Jmin": 50, "Jmax": 1000, "S1": 30, "S2": 40,
               "PersistentKeepalive": 25, "MTU": 1320}
 WG_PARAMS  = {"PersistentKeepalive": 25, "MTU": 1320}

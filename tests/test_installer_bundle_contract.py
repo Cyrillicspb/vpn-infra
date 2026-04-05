@@ -47,12 +47,51 @@ class InstallerBundleContractTests(unittest.TestCase):
     def test_setup_sh_blocks_bootstrap_network_fallback_in_strict_mode(self):
         content = (ROOT / "setup.sh").read_text(encoding="utf-8")
         self.assertIn('strict_bundle_bootstrap_enabled()', content)
-        self.assertIn('strict bundle mode: отсутствует обязательный локальный файл', content)
-        self.assertIn('strict bundle mode: installer GUI отсутствует локально', content)
+        self.assertNotIn("raw.githubusercontent.com/Cyrillicspb/vpn-infra/master", content)
+        self.assertNotIn("archive/refs/heads/master.tar.gz", content)
+        self.assertIn('clean install должен запускаться только из полного release bundle', content)
+        self.assertIn('installer GUI отсутствует локально — запускаем консольный установщик', content)
+
+    def test_common_sh_disables_ansi_when_stdout_is_not_a_tty(self):
+        content = (ROOT / "common.sh").read_text(encoding="utf-8")
+        self.assertIn('[[ -t 1 && "${TERM:-}" != "dumb" ]]', content)
+
+    def test_install_home_requires_bundled_transport_binaries(self):
+        content = (ROOT / "install-home.sh").read_text(encoding="utf-8")
+        self.assertIn('tools/hysteria2-linux-${_ARCH}', content)
+        self.assertIn('tools/tun2socks-linux-${_ARCH}', content)
+        self.assertNotIn("api.github.com/repos/apernet/hysteria/releases/latest", content)
+        self.assertNotIn("api.github.com/repos/xjasonlyu/tun2socks/releases/latest", content)
+        self.assertIn("Clean install должен использовать полный release bundle", content)
+
+    def test_zapret_install_is_bundled_only(self):
+        content = (ROOT / "home" / "watchdog" / "plugins" / "zapret" / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("Clean install должен использовать bundled binary", content)
+        self.assertNotIn("api.github.com/repos/bol-van/zapret/releases/latest", content)
+        self.assertNotIn("archive/refs/heads/master.tar.gz", content)
+        self.assertNotIn("git clone --depth=1 \"https://github.com/bol-van/zapret.git\"", content)
+
+    def test_docs_state_tui_is_primary_install_mode(self):
+        content = (ROOT / "docs" / "INSTALL.md").read_text(encoding="utf-8")
+        self.assertIn("основной режим установки: `TUI`", content)
+        self.assertIn("консольный режим: только fallback", content)
+        self.assertNotIn("GUI installer как основной путь", content)
+
+    def test_claude_specific_artifacts_are_removed(self):
+        self.assertFalse((ROOT / "CLAUDE.md").exists())
+        self.assertFalse((ROOT / "home" / "scripts" / "install-claude-code.sh").exists())
+        scan = subprocess.run(
+            ["rg", "-n", "--glob", "!tests/**", "CLAUDE\\.md|INSTALL_CLAUDE_CODE|install-claude-code", "."],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(scan.returncode, 1, scan.stdout + scan.stderr)
 
     def test_install_scripts_have_no_syntax_errors(self):
         result = subprocess.run(
-            ["bash", "-n", "install.sh", "setup.sh", "install-home.sh", "install-vps.sh"],
+            ["bash", "-n", "install.sh", "setup.sh", "install-home.sh", "install-vps.sh", "installers/bootstrap.sh"],
             cwd=ROOT,
             text=True,
             capture_output=True,

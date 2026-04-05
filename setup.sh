@@ -11,7 +11,6 @@ set -euo pipefail
 
 STEP=0
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_GITHUB_RAW="https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master"
 
 strict_bundle_bootstrap_enabled() {
     case "${VPN_STRICT_BUNDLE:-0}" in
@@ -20,15 +19,11 @@ strict_bundle_bootstrap_enabled() {
     esac
 }
 
-# Если common.sh отсутствует рядом со скриптом — скачиваем с GitHub
+# Если common.sh отсутствует рядом со скриптом — release bundle повреждён.
 if [[ ! -f "$REPO_DIR/common.sh" ]]; then
-    if strict_bundle_bootstrap_enabled; then
-        echo "ERROR: strict bundle mode: отсутствует обязательный локальный файл $REPO_DIR/common.sh" >&2
-        exit 1
-    fi
-    echo "→ Загрузка common.sh с GitHub..."
-    curl -fsSL "$_GITHUB_RAW/common.sh" -o "$REPO_DIR/common.sh" \
-        || { echo "ERROR: не удалось скачать common.sh" >&2; exit 1; }
+    echo "ERROR: отсутствует обязательный локальный файл $REPO_DIR/common.sh" >&2
+    echo "ERROR: clean install должен запускаться только из полного release bundle" >&2
+    exit 1
 fi
 # shellcheck source=common.sh
 source "$REPO_DIR/common.sh"
@@ -42,22 +37,7 @@ if [[ -z "${VPN_NONINTERACTIVE:-}" ]] && [[ "${1:-}" != "--from-export" ]]; then
     elif [[ -f "/opt/vpn/installers/gui/installer.py" ]]; then
         _TUI="/opt/vpn/installers/gui/installer.py"
     else
-        if strict_bundle_mode_enabled; then
-            echo "[WARN] strict bundle mode: installer GUI отсутствует локально — запускаем консольный установщик" >&2
-        else
-            # Нет репозитория рядом — скачать в /opt/vpn и перезапустить оттуда
-            echo "→ Загрузка репозитория в /opt/vpn..."
-            mkdir -p /opt/vpn
-            if curl -fsSL --max-time 120 -L \
-                "https://github.com/Cyrillicspb/vpn-infra/archive/refs/heads/master.tar.gz" \
-                -o /tmp/vpn-infra.tar.gz 2>/dev/null; then
-                tar -xzf /tmp/vpn-infra.tar.gz -C /opt/vpn \
-                    --no-same-permissions --no-same-owner --overwrite --strip-components=1 2>/dev/null
-                rm -f /tmp/vpn-infra.tar.gz
-                [[ -f "/opt/vpn/installers/gui/installer.py" ]] && \
-                    _TUI="/opt/vpn/installers/gui/installer.py"
-            fi
-        fi
+        echo "[WARN] installer GUI отсутствует локально — запускаем консольный установщик" >&2
     fi
 
     if [[ -n "$_TUI" ]] && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null; then
@@ -714,40 +694,23 @@ phase0() {
                 if [[ -x /usr/local/bin/nfqws ]]; then
                     log_info "nfqws уже установлен, используем существующий"; return 0
                 fi
-                local arch_dir tmp_dir release_url bin
+                local arch_suffix bundled_bin
                 case "$(uname -m)" in
-                    x86_64)  arch_dir="x86_64" ;;
-                    aarch64) arch_dir="aarch64" ;;
+                    x86_64)  arch_suffix="x86_64" ;;
+                    aarch64) arch_suffix="aarch64" ;;
                     *) log_warn "Неподдерживаемая архитектура: $(uname -m)"; return 1 ;;
                 esac
-                tmp_dir=$(mktemp -d)
-                release_url=""
-                if curl -sSfL --connect-timeout 15 \
-                        "https://api.github.com/repos/bol-van/zapret/releases/latest" \
-                        -o "$tmp_dir/r.json" 2>/dev/null; then
-                    release_url=$(python3 -c "
-import json
-d=json.load(open('$tmp_dir/r.json'))
-for a in d.get('assets',[]):
-    if a['name'].endswith('.tar.gz'): print(a['browser_download_url']); break
-" 2>/dev/null || true)
-                fi
-                [[ -z "$release_url" ]] && \
-                    release_url="https://github.com/bol-van/zapret/archive/refs/heads/master.tar.gz"
-                if ! curl -sSfL --connect-timeout 60 "$release_url" \
-                        -o "$tmp_dir/z.tar.gz" 2>/dev/null; then
-                    rm -rf "$tmp_dir"; log_warn "Не удалось загрузить zapret"; return 1
-                fi
-                tar -xzf "$tmp_dir/z.tar.gz" -C "$tmp_dir" 2>/dev/null
-                bin=$(find "$tmp_dir" -path "*binaries/${arch_dir}/nfqws" -type f 2>/dev/null | head -1)
-                [[ -z "$bin" ]] && \
-                    bin=$(find "$tmp_dir" -name "nfqws" -type f 2>/dev/null | head -1)
-                if [[ -z "$bin" ]]; then
-                    rm -rf "$tmp_dir"; log_warn "nfqws бинарник не найден в архиве"; return 1
-                fi
-                cp "$bin" /usr/local/bin/nfqws && chmod +x /usr/local/bin/nfqws
-                rm -rf "$tmp_dir"
-                log_ok "nfqws установлен"
+                for bundled_bin in \
+                    "${REPO_DIR}/home/watchdog/plugins/zapret/bin/nfqws-${arch_suffix}" \
+                    "/opt/vpn/home/watchdog/plugins/zapret/bin/nfqws-${arch_suffix}"; do
+                    if [[ -x "$bundled_bin" ]]; then
+                        cp "$bundled_bin" /usr/local/bin/nfqws && chmod +x /usr/local/bin/nfqws
+                        log_ok "nfqws установлен из локального bundle"
+                        return 0
+                    fi
+                done
+                log_warn "Локальный bundled nfqws для $(uname -m) не найден"
+                return 1
             }
 
             if _install_nfqws_minimal; then
@@ -791,11 +754,8 @@ for a in d.get('assets',[]):
                     echo "  1. Зайдите в панель управления VPS-провайдера"
                     echo "  2. Откройте Console / VNC / noVNC"
                     echo "  3. Войдите как root"
-                    echo "  4. Выполните команду:"
+                    echo "  4. Выполните команды:"
                     echo ""
-                    echo -e "  ${CYAN}${BOLD}bash <(curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/bootstrap-vps.sh)${NC}"
-                    echo ""
-                    echo "  Или вручную (если GitHub недоступен):"
                     echo -e "  ${CYAN}apt install -y socat openssl"
                     echo "  openssl req -x509 -newkey rsa:2048 -keyout /tmp/k.pem -out /tmp/c.pem \\"
                     echo "    -days 1 -nodes -subj '/CN=vpn' 2>/dev/null"
@@ -807,7 +767,10 @@ for a in d.get('assets',[]):
                 else
                     log_warn "SSH к VPS заблокирован. Нужен bootstrap через веб-консоль VPS."
                     log_info "Выполните в Console/VNC как root:"
-                    log_info "bash <(curl -fsSL https://raw.githubusercontent.com/Cyrillicspb/vpn-infra/master/bootstrap-vps.sh)"
+                    log_info "apt install -y socat openssl"
+                    log_info "openssl req -x509 -newkey rsa:2048 -keyout /tmp/k.pem -out /tmp/c.pem -days 1 -nodes -subj '/CN=vpn' 2>/dev/null"
+                    log_info "cat /tmp/c.pem /tmp/k.pem > /tmp/vpn-bootstrap.pem && rm /tmp/k.pem /tmp/c.pem"
+                    log_info "socat OPENSSL-LISTEN:443,reuseaddr,fork,cert=/tmp/vpn-bootstrap.pem,verify=0 TCP:127.0.0.1:22 &"
                     log_info "Дальше скрипт сам проверит порт 443 VPS."
                 fi
 
@@ -1177,37 +1140,6 @@ phase1() {
         die "Файл install-home.sh не найден в ${REPO_DIR}"
     fi
 
-    # При INSTALL_CLAUDE_CODE=true клонируем репозиторий в /opt/vpn ДО начала
-    # установки — чтобы конфиги брались из git и работал deploy.sh (git pull).
-    if [[ "${INSTALL_CLAUDE_CODE:-false}" == "true" ]]; then
-        if [[ ! -d /opt/vpn/.git ]]; then
-            log_info "INSTALL_CLAUDE_CODE=true: клонируем репозиторий в /opt/vpn..."
-            mkdir -p /opt/vpn
-            # VPS-зеркало предпочтительнее GitHub (может быть заблокирован)
-            cloned=false
-            if [[ -n "${VPS_IP:-}" ]]; then
-                vps_mirror="ssh://sysadmin@${VPS_IP}/opt/vpn/vpn-repo.git"
-                log_info "Пробуем VPS-зеркало: $vps_mirror"
-                if git clone "$vps_mirror" /opt/vpn 2>/dev/null; then
-                    log_ok "Клонировано из VPS-зеркала."
-                    cloned=true
-                else
-                    log_warn "VPS-зеркало недоступно. Пробуем GitHub..."
-                fi
-            fi
-            if [[ "$cloned" == false ]]; then
-                github_url="${GITHUB_REPO_URL:-https://github.com/your-org/vpn-infra.git}"
-                log_info "Клонируем из GitHub: $github_url"
-                git clone "$github_url" /opt/vpn || \
-                    log_warn "git clone не удался — /opt/vpn будет создан из REPO_DIR"
-            fi
-        else
-            log_info "Репозиторий уже клонирован в /opt/vpn. git pull..."
-            git -C /opt/vpn pull --ff-only 2>/dev/null || \
-                log_warn "git pull не удался — используем текущую версию"
-        fi
-    fi
-
     STEP=8 bash "${REPO_DIR}/install-home.sh"
     STEP=33  # install-home.sh заканчивается на STEP=33 (9..33 = 25 шагов)
 
@@ -1221,17 +1153,6 @@ phase1() {
         log_ok "WireGuard конфиги восстановлены из экспорта"
     fi
 
-    # Claude Code — установка инструмента (Node.js + npm package)
-    if [[ "${INSTALL_CLAUDE_CODE:-false}" == "true" ]]; then
-        if is_done "step_install_claude_code"; then
-            log_info "Пропуск (уже выполнено): Claude Code"
-        else
-            log_info "Установка Claude Code..."
-            bash /opt/vpn/scripts/install-claude-code.sh --skip-clone && \
-                echo "step_install_claude_code" >> "$STATE_FILE" || \
-                log_warn "install-claude-code.sh завершился с ошибкой (некритично)"
-        fi
-    fi
 }
 
 # ── Фаза 2: VPS ─────────────────────────────────────────────────────────────
@@ -1631,7 +1552,7 @@ EOF
         # Включаем hysteria2 в автозапуск — конфиг уже создан в step48
         systemctl enable hysteria2 2>/dev/null || true
 
-        # Запуск в правильном порядке (согласно CLAUDE.md)
+        # Запуск в правильном порядке: firewall/dns, затем transport и watchdog.
         for svc in nftables vpn-sets-restore dnsmasq hysteria2 watchdog; do
             if systemctl list-unit-files "${svc}.service" &>/dev/null 2>&1; then
                 systemctl start "$svc" 2>/dev/null \
