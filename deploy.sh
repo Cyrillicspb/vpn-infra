@@ -422,7 +422,12 @@ ensure_git_repo() {
 }
 
 tracked_tree_clean() {
-    ! git -C "$REPO_DIR" status --porcelain --untracked-files=no | grep -q .
+    local dirty
+    dirty="$(
+        git -C "$REPO_DIR" status --porcelain --untracked-files=no \
+            | awk '{ path=substr($0,4); if (path != "version") print }'
+    )"
+    [[ -z "$dirty" ]]
 }
 
 require_cmd() {

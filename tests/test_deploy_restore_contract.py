@@ -147,6 +147,7 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('^[[:space:]]+\\[FAIL\\][[:space:]]+[a-z0-9_]+[[:space:]]*$', deploy_script)
         self.assertIn('dnsmasq runtime verify failed, retry via restart', deploy_script)
         self.assertIn('systemctl restart dnsmasq || die "home runtime verify failed: dnsmasq restart failed"', deploy_script)
+        self.assertIn('if (path != "version") print', deploy_script)
 
     def test_deploy_script_repairs_state_versions_from_release_sha(self):
         deploy_script = DEPLOY.read_text(encoding="utf-8")
@@ -230,6 +231,9 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('spawn_background_job("deploy", _deploy_task(req))', watchdog)
         self.assertIn('spawn_background_job("rollback", _rollback_task())', watchdog)
         self.assertIn("asyncio.create_task(_runner(), name=name)", watchdog)
+        self.assertIn('supplied = credentials.credentials.encode("utf-8")', watchdog)
+        self.assertIn('expected = API_TOKEN.encode("utf-8")', watchdog)
+        self.assertIn('logger.error("Deploy task failed rc=%s last_status=%s detail=%s", rc, last_status, detail[:300])', watchdog)
 
     def test_admin_bot_texts_match_deploy_status_contract(self):
         admin_handler = (ROOT / "home" / "telegram-bot" / "handlers" / "admin.py").read_text(encoding="utf-8")

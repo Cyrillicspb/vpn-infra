@@ -6153,7 +6153,14 @@ security = HTTPBearer(auto_error=False)
 def _auth(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> bool:
     if not API_TOKEN:
         return True
-    if credentials is None or not compare_digest(credentials.credentials, API_TOKEN):
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        supplied = credentials.credentials.encode("utf-8")
+        expected = API_TOKEN.encode("utf-8")
+    except UnicodeEncodeError:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
     return True
 
@@ -6924,7 +6931,11 @@ async def _deploy_task(req: DeployRequest) -> None:
                 kw in l for kw in ("❌", "FAIL", "Error", "error", "failed", "Cannot", "cannot")
             )]
             snippet = "\n".join(error_lines[-10:]) if error_lines else combined.strip()[-600:]
-            alert(f"❌ Deploy завершился с ошибкой:\n`{(last_message or snippet)[:600]}`")
+            detail = snippet
+            if last_status not in {"success", "noop", "rollback-completed"} and last_message:
+                detail = last_message
+            logger.error("Deploy task failed rc=%s last_status=%s detail=%s", rc, last_status, detail[:300])
+            alert(f"❌ Deploy завершился с ошибкой:\n`{detail[:600]}`")
     else:
         if last_status == "noop":
             alert(f"ℹ️ Deploy: release `{current_ver}` (`{current_id}`) уже актуален")
