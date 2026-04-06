@@ -1003,25 +1003,45 @@ EOF
         # Базовый watchdog.service
         cat > /etc/systemd/system/watchdog.service << 'EOF'
 [Unit]
-Description=VPN Watchdog Agent
-After=network-online.target docker.service dnsmasq.service
+Description=VPN Watchdog — центральный агент управления
+Documentation=https://github.com/Cyrillicspb/vpn-infra/blob/main/docs/ARCHITECTURE.md
+
+# Порядок загрузки (шаг 7 из 9):
+# nftables → vpn-sets-restore → awg-quick@wg0 + wg-quick@wg1 → vpn-routes → dnsmasq → hysteria2 → watchdog → docker → vpn-postboot
+After=network-online.target
+After=nftables.service
+After=vpn-sets-restore.service
+After=awg-quick@wg0.service
+After=wg-quick@wg1.service
+After=vpn-routes.service
+After=dnsmasq.service
+After=hysteria2.service
 Wants=network-online.target
+Before=docker.service vpn-postboot.service
 StartLimitBurst=5
 StartLimitIntervalSec=300
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+User=root
 WorkingDirectory=/opt/vpn/watchdog
 EnvironmentFile=/opt/vpn/.env
-ExecStart=/opt/vpn/watchdog/venv/bin/python3 /opt/vpn/watchdog/watchdog.py
+ExecStart=/opt/vpn/watchdog/venv/bin/python watchdog.py
+# Перезагрузка плагинов без полного рестарта.
+# Используем reload вместо systemctl kill, чтобы не посылать HUP дочерним tun2socks/nfqws.
+ExecReload=/bin/kill -HUP $MAINPID
 ExecStopPost=/opt/vpn/scripts/watchdog-stop-cleanup.sh
-# KillMode=process: не убивает tun2socks и nfqws при рестарте watchdog
+# Управлять всем cgroup watchdog, иначе tun2socks/nfqws остаются left-over
+# после stop/restart и следующий запуск стартует поверх грязного runtime.
 KillMode=control-group
 Restart=always
 RestartSec=5
+# sd_notify watchdog — systemd перезапустит если нет heartbeat 30 сек
 WatchdogSec=30
 StandardOutput=null
 StandardError=append:/var/log/vpn-watchdog.log
+SyslogIdentifier=watchdog
 
 [Install]
 WantedBy=multi-user.target
@@ -1249,17 +1269,48 @@ else
 
     # logrotate для VPN-логов
     cat > /etc/logrotate.d/vpn << 'EOF'
-/var/log/vpn-*.log {
+/var/log/vpn-[!wb]*.log {
+    su root adm
     daily
     rotate 14
     compress
     delaycompress
     missingok
     notifempty
-    create 640 root root
+    dateext
+    dateformat -%Y%m%d
+    create 640 root adm
     postrotate
         systemctl reload watchdog 2>/dev/null || true
     endscript
+}
+
+/var/log/vpn-watchdog.log {
+    su root adm
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    dateext
+    dateformat -%Y%m%d
+    maxsize 50M
+    create 640 root adm
+    postrotate
+        systemctl reload watchdog 2>/dev/null || true
+    endscript
+}
+
+/var/log/vpn-backup.log {
+    su root adm
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 640 root adm
 }
 EOF
 

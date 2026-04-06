@@ -9,7 +9,8 @@ LOGROTATE_CONF="/etc/logrotate.d/vpn"
 echo "[migration 003] Обновление logrotate конфига..."
 
 cat > "$LOGROTATE_CONF" << 'EOF'
-/var/log/vpn-*.log {
+/var/log/vpn-[!wb]*.log {
+    su root adm
     daily
     rotate 14
     compress
@@ -20,11 +21,12 @@ cat > "$LOGROTATE_CONF" << 'EOF'
     dateformat -%Y%m%d
     create 640 root adm
     postrotate
-        systemctl kill -s HUP watchdog.service 2>/dev/null || true
+        systemctl reload watchdog 2>/dev/null || true
     endscript
 }
 
 /var/log/vpn-watchdog.log {
+    su root adm
     daily
     rotate 14
     compress
@@ -33,14 +35,15 @@ cat > "$LOGROTATE_CONF" << 'EOF'
     notifempty
     dateext
     dateformat -%Y%m%d
-    size 50M
+    maxsize 50M
     create 640 root adm
     postrotate
-        systemctl kill -s HUP watchdog.service 2>/dev/null || true
+        systemctl reload watchdog 2>/dev/null || true
     endscript
 }
 
 /var/log/vpn-backup.log {
+    su root adm
     weekly
     rotate 8
     compress

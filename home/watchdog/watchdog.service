@@ -1,7 +1,19 @@
 [Unit]
 Description=VPN Watchdog — центральный агент управления
-After=network-online.target docker.service dnsmasq.service
+Documentation=https://github.com/Cyrillicspb/vpn-infra/blob/main/docs/ARCHITECTURE.md
+
+# Порядок загрузки (шаг 7 из 9):
+# nftables → vpn-sets-restore → awg-quick@wg0 + wg-quick@wg1 → vpn-routes → dnsmasq → hysteria2 → watchdog → docker → vpn-postboot
+After=network-online.target
+After=nftables.service
+After=vpn-sets-restore.service
+After=awg-quick@wg0.service
+After=wg-quick@wg1.service
+After=vpn-routes.service
+After=dnsmasq.service
+After=hysteria2.service
 Wants=network-online.target
+Before=docker.service vpn-postboot.service
 StartLimitBurst=5
 StartLimitIntervalSec=300
 
@@ -11,14 +23,26 @@ NotifyAccess=main
 User=root
 WorkingDirectory=/opt/vpn/watchdog
 ExecStart=/opt/vpn/watchdog/venv/bin/python watchdog.py
+
+# Перезагрузка плагинов без полного рестарта.
+# Используем reload вместо systemctl kill, чтобы не посылать HUP дочерним tun2socks/nfqws.
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStopPost=/opt/vpn/scripts/watchdog-stop-cleanup.sh
+
+# Управлять всем cgroup watchdog, иначе tun2socks/nfqws остаются left-over
+# после stop/restart и следующий запуск стартует поверх грязного runtime.
+KillMode=control-group
+
 Restart=always
 RestartSec=5
+
+# sd_notify watchdog — systemd перезапустит если нет heartbeat 30 сек
 WatchdogSec=30
-KillMode=process
 
 # Логирование (watchdog пишет сам в LOG_FILE, stderr — для критических ошибок до старта)
 StandardOutput=null
 StandardError=append:/var/log/vpn-watchdog.log
+SyslogIdentifier=watchdog
 
 # Окружение
 EnvironmentFile=/opt/vpn/.env

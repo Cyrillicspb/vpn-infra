@@ -89,6 +89,29 @@ class InstallerBundleContractTests(unittest.TestCase):
         self.assertNotIn("api.github.com/repos/xjasonlyu/tun2socks/releases/latest", content)
         self.assertIn("Clean install должен использовать полный release bundle", content)
 
+    def test_watchdog_reload_and_logrotate_do_not_signal_child_processes(self):
+        install_home = (ROOT / "install-home.sh").read_text(encoding="utf-8")
+        source_unit = (ROOT / "home" / "systemd" / "watchdog.service").read_text(encoding="utf-8")
+        migration = (ROOT / "migrations" / "20240201_003_logrotate_update.sh").read_text(encoding="utf-8")
+
+        self.assertIn("ExecReload=/bin/kill -HUP $MAINPID", install_home)
+        self.assertIn("ExecReload=/bin/kill -HUP $MAINPID", source_unit)
+        self.assertIn("KillMode=control-group", install_home)
+        self.assertIn("KillMode=control-group", source_unit)
+
+        self.assertIn("/var/log/vpn-[!wb]*.log {", install_home)
+        self.assertIn("/var/log/vpn-watchdog.log {", install_home)
+        self.assertIn("/var/log/vpn-backup.log {", install_home)
+        self.assertIn("su root adm", install_home)
+        self.assertNotIn("/var/log/vpn-*.log {", install_home)
+        self.assertIn("systemctl reload watchdog", install_home)
+        self.assertNotIn("systemctl kill -s HUP watchdog.service", install_home)
+
+        self.assertIn("/var/log/vpn-[!wb]*.log {", migration)
+        self.assertIn("su root adm", migration)
+        self.assertIn("systemctl reload watchdog", migration)
+        self.assertNotIn("systemctl kill -s HUP watchdog.service", migration)
+
     def test_zapret_install_is_bundled_only(self):
         content = (ROOT / "home" / "watchdog" / "plugins" / "zapret" / "install.sh").read_text(encoding="utf-8")
         self.assertIn("Clean install должен использовать bundled binary", content)
