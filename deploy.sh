@@ -466,6 +466,45 @@ configure_vps_mirror_remote() {
     fi
 }
 
+origin_default_branch_ref() {
+    local branch_ref=""
+    branch_ref="$(git -C "$REPO_DIR" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null || true)"
+    if [[ -z "$branch_ref" ]] && git -C "$REPO_DIR" rev-parse --verify refs/remotes/origin/master >/dev/null 2>&1; then
+        branch_ref="refs/remotes/origin/master"
+    fi
+    [[ -n "$branch_ref" ]] || return 1
+    printf '%s\n' "$branch_ref"
+}
+
+sync_vps_mirror_release_refs() {
+    local mirror_remote="${1:-vps-mirror}"
+    local proxy_cmd=""
+    local branch_ref=""
+    local branch_name=""
+    local -a refspecs=()
+
+    [[ -n "${ORIGIN_SOURCE_REF:-}" ]] || return 1
+
+    if branch_ref="$(origin_default_branch_ref)"; then
+        branch_name="${branch_ref#refs/remotes/origin/}"
+        refspecs+=("+${branch_ref}:refs/heads/${branch_name}")
+    fi
+
+    if [[ "$ORIGIN_SOURCE_REF" == refs/tags/* ]]; then
+        refspecs+=("+${ORIGIN_SOURCE_REF}:${ORIGIN_SOURCE_REF}")
+    fi
+
+    [[ ${#refspecs[@]} -gt 0 ]] || return 1
+
+    [[ -x "$SSH_PROXY_CMD" ]] && proxy_cmd="-o ProxyCommand='$SSH_PROXY_CMD %h %p'"
+    if GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes ${proxy_cmd}" \
+       git -C "$REPO_DIR" push "$mirror_remote" "${refspecs[@]}" >/dev/null 2>&1; then
+        log_info "vps-mirror synchronized to ${ORIGIN_SOURCE_REF}"
+        return 0
+    fi
+    return 1
+}
+
 active_socks_port() {
     local state_file="/var/run/vpn-active-socks-port"
     [[ -r "$state_file" ]] || return 1
@@ -1034,6 +1073,32 @@ fetch_target_release() {
         else
             MIRROR_FETCH_STATUS="unreachable"
             MIRROR_PARITY_STATUS="unreachable"
+        fi
+
+        # Новые release-tags публикуются в origin отдельно от mirror.
+        # Перед strict parity gate пробуем догнать vps-mirror до exact target release,
+        # чтобы обычный tag-first release-path не зависел от ручного mirror push.
+        if [[ "$MIRROR_PARITY_STATUS" == "stale" || "$MIRROR_PARITY_STATUS" == "missing-ref" ]]; then
+            if sync_vps_mirror_release_refs vps-mirror; then
+                if GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes ${proxy_cmd}" \
+                   git -C "$REPO_DIR" fetch --tags vps-mirror '+refs/heads/*:refs/remotes/vps-mirror/*' >/dev/null 2>&1; then
+                    MIRROR_FETCH_STATUS="ok"
+                    MIRROR_SOURCE_REF="$(resolve_release_ref_for_remote vps-mirror || true)"
+                    if [[ -n "$MIRROR_SOURCE_REF" ]]; then
+                        MIRROR_RELEASE_SHA="$(git -C "$REPO_DIR" rev-parse "${MIRROR_SOURCE_REF}^{}")"
+                        if [[ "$MIRROR_RELEASE_SHA" == "$ORIGIN_RELEASE_SHA" ]]; then
+                            MIRROR_PARITY_STATUS="ok"
+                        else
+                            MIRROR_PARITY_STATUS="stale"
+                        fi
+                    else
+                        MIRROR_PARITY_STATUS="missing-ref"
+                    fi
+                else
+                    MIRROR_FETCH_STATUS="unreachable"
+                    MIRROR_PARITY_STATUS="unreachable"
+                fi
+            fi
         fi
     else
         MIRROR_FETCH_STATUS="not-configured"
