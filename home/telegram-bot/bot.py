@@ -130,8 +130,8 @@ class FSMControlMiddleware:
             await message.answer("⏱ Время ввода истекло. Начните заново.")
             return None
 
-        # 2. Пришла команда — очищаем FSM и продолжаем
-        if message.text.startswith("/"):
+        # 2. Пришла команда или кнопка меню — очищаем FSM и продолжаем
+        if message.text.startswith("/") or message.text in {"📋 Меню", "Меню"}:
             db: Database | None = data.get("db")
             if db:
                 await db.release_invite_reservation(str(message.from_user.id))
