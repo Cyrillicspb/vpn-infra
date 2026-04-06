@@ -795,8 +795,18 @@ def _child_env() -> dict[str, str]:
 
 def installed_version_label() -> str:
     try:
+        pending_state_path = Path("/opt/vpn/.deploy-state/pending.json")
+        if pending_state_path.exists():
+            pending_state = json.loads(pending_state_path.read_text(encoding="utf-8"))
+            if str(pending_state.get("status") or "").strip() == "running":
+                version = str(((pending_state.get("pending_release") or {}).get("version") or "")).strip()
+                version = version[1:] if version.startswith("v") else version
+                if version and all(ch.isdigit() or ch == "." for ch in version):
+                    return f"v{version}"
+
         deploy_state = json.loads(Path("/opt/vpn/.deploy-state/current.json").read_text(encoding="utf-8"))
         version = str(((deploy_state.get("current_release") or {}).get("version") or "")).strip()
+        version = version[1:] if version.startswith("v") else version
         if version and all(ch.isdigit() or ch == "." for ch in version):
             return f"v{version}"
     except Exception:
