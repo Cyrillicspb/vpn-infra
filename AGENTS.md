@@ -27,6 +27,7 @@ Never commit real secrets. Assume production is active. Preserve `.env` ownershi
 ## Operating Principles
 - Do not patch live configs by hand. Fix the generator, template, or installer step that owns the file, then rerun the relevant phase.
 - `/opt/vpn/.env` is the single source of truth for install-time secrets and parameters. New scripts should read from it instead of inventing parallel config files.
+- Work only through `master` by default. Do not create feature branches or push to non-`master` branches unless the user explicitly asks for that workflow.
 - Clean install is `TUI-first`. `setup.sh` should launch the Textual installer by default when bundled TUI assets are present. Console mode is fallback only.
 - Clean install is `bundle-first`. If an install-critical dependency can be included in release assets, it should be bundled. Hidden runtime/install fallbacks to raw `master`, PyPI, Docker Hub, or GitHub `latest` are not part of the supported contract.
 - Tagged GitHub Releases are the supported distribution channel. Do not add install/update flows that depend on moving branch heads.
