@@ -438,7 +438,8 @@ async def _choose_and_apply_backend(
 
 def _installed_version_label() -> str:
     try:
-        version = Path("/opt/vpn/version").read_text(encoding="utf-8").strip()
+        deploy_state = json.loads(Path("/opt/vpn/.deploy-state/current.json").read_text(encoding="utf-8"))
+        version = str(((deploy_state.get("current_release") or {}).get("version") or "")).strip()
         version = version[1:] if version.startswith("v") else version
         if version and all(ch.isdigit() or ch == "." for ch in version):
             return f"v{version}"

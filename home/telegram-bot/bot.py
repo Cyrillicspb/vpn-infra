@@ -42,6 +42,14 @@ _log_level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.IN
 
 
 def _installed_version_label() -> str:
+    try:
+        deploy_state = json.loads(Path("/opt/vpn/.deploy-state/current.json").read_text(encoding="utf-8"))
+        version = str(((deploy_state.get("current_release") or {}).get("version") or "")).strip()
+        version = version[1:] if version.startswith("v") else version
+        if version and all(ch.isdigit() or ch == "." for ch in version):
+            return f"v{version}"
+    except Exception:
+        pass
     env_version = os.getenv("APP_VERSION", "").strip()
     if env_version:
         version = env_version[1:] if env_version.startswith("v") else env_version

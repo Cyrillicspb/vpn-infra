@@ -795,7 +795,8 @@ def _child_env() -> dict[str, str]:
 
 def installed_version_label() -> str:
     try:
-        version = Path("/opt/vpn/version").read_text(encoding="utf-8").strip()
+        deploy_state = json.loads(Path("/opt/vpn/.deploy-state/current.json").read_text(encoding="utf-8"))
+        version = str(((deploy_state.get("current_release") or {}).get("version") or "")).strip()
         if version and all(ch.isdigit() or ch == "." for ch in version):
             return f"v{version}"
     except Exception:

@@ -148,6 +148,7 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('dnsmasq runtime verify failed, retry via restart', deploy_script)
         self.assertIn('systemctl restart dnsmasq || die "home runtime verify failed: dnsmasq restart failed"', deploy_script)
         self.assertIn('if (path != "version") print', deploy_script)
+        self.assertNotIn('printf \'%s\\n\' "${TARGET_RELEASE_VERSION#v}" > "$REPO_DIR/version"', deploy_script)
 
     def test_deploy_script_repairs_state_versions_from_release_sha(self):
         deploy_script = DEPLOY.read_text(encoding="utf-8")
@@ -234,6 +235,14 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('supplied = credentials.credentials.encode("utf-8")', watchdog)
         self.assertIn('expected = API_TOKEN.encode("utf-8")', watchdog)
         self.assertIn('logger.error("Deploy task failed rc=%s last_status=%s detail=%s", rc, last_status, detail[:300])', watchdog)
+        self.assertIn('Path("/opt/vpn/.deploy-state/current.json")', watchdog)
+
+        admin_handler = (ROOT / "home" / "telegram-bot" / "handlers" / "admin.py").read_text(encoding="utf-8")
+        bot_source = (ROOT / "home" / "telegram-bot" / "bot.py").read_text(encoding="utf-8")
+        backup_source = (ROOT / "home" / "scripts" / "backup.sh").read_text(encoding="utf-8")
+        self.assertIn('Path("/opt/vpn/.deploy-state/current.json")', admin_handler)
+        self.assertIn('Path("/opt/vpn/.deploy-state/current.json")', bot_source)
+        self.assertIn('Path("/opt/vpn/.deploy-state/current.json").read_text', backup_source)
 
     def test_admin_bot_texts_match_deploy_status_contract(self):
         admin_handler = (ROOT / "home" / "telegram-bot" / "handlers" / "admin.py").read_text(encoding="utf-8")

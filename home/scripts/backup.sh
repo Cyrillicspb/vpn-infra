@@ -251,7 +251,18 @@ fi
 
 # ── 10. Метаданные бэкапа ─────────────────────────────────────────────────────
 log "Метаданные..."
-VPN_VERSION="$(cat /opt/vpn/version 2>/dev/null || echo 'unknown')"
+VPN_VERSION="$(
+    python3 - <<'PY' 2>/dev/null || echo 'unknown'
+import json
+from pathlib import Path
+try:
+    data = json.loads(Path("/opt/vpn/.deploy-state/current.json").read_text(encoding="utf-8"))
+    version = str(((data.get("current_release") or {}).get("version") or "")).strip()
+    print(version or "unknown")
+except Exception:
+    print("unknown")
+PY
+)"
 ACTIVE_TUN="$(cat /run/vpn-active-tun 2>/dev/null || echo 'none')"
 WG0_PEERS="$(wg show wg0 peers 2>/dev/null | wc -l || echo 0)"
 WG1_PEERS="$(wg show wg1 peers 2>/dev/null | wc -l || echo 0)"

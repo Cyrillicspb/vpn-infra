@@ -1361,10 +1361,6 @@ sync_home_runtime() {
         return 0
     fi
 
-    if [[ -n "${TARGET_RELEASE_VERSION:-}" && "${TARGET_RELEASE_VERSION}" != "unknown" ]]; then
-        printf '%s\n' "${TARGET_RELEASE_VERSION#v}" > "$REPO_DIR/version"
-    fi
-
     rsync -a "$REPO_DIR/home/docker-compose.yml" "$REPO_DIR/docker-compose.yml"
     rsync -a --delete --exclude="data/" "$REPO_DIR/home/telegram-bot/" "$REPO_DIR/telegram-bot/"
     rsync -a --delete "$REPO_DIR/home/prometheus/" "$REPO_DIR/prometheus/"
