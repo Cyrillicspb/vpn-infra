@@ -92,6 +92,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./telegram-bot/data:/app/data
+      - /opt/vpn/.deploy-state:/opt/vpn/.deploy-state:ro
       - /opt/vpn/version:/opt/vpn/version:ro
       - /etc/vpn-routes:/etc/vpn-routes:ro
     networks:

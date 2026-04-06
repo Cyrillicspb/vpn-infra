@@ -240,9 +240,11 @@ class DeployRestoreContractTests(unittest.TestCase):
         admin_handler = (ROOT / "home" / "telegram-bot" / "handlers" / "admin.py").read_text(encoding="utf-8")
         bot_source = (ROOT / "home" / "telegram-bot" / "bot.py").read_text(encoding="utf-8")
         backup_source = (ROOT / "home" / "scripts" / "backup.sh").read_text(encoding="utf-8")
+        compose_source = (ROOT / "home" / "docker-compose.yml").read_text(encoding="utf-8")
         self.assertIn('Path("/opt/vpn/.deploy-state/current.json")', admin_handler)
         self.assertIn('Path("/opt/vpn/.deploy-state/current.json")', bot_source)
         self.assertIn('Path("/opt/vpn/.deploy-state/current.json").read_text', backup_source)
+        self.assertIn('/opt/vpn/.deploy-state:/opt/vpn/.deploy-state:ro', compose_source)
 
     def test_admin_bot_texts_match_deploy_status_contract(self):
         admin_handler = (ROOT / "home" / "telegram-bot" / "handlers" / "admin.py").read_text(encoding="utf-8")
