@@ -1444,7 +1444,7 @@ def _bootstrap_invite_admin_text() -> str:
     )
 
 
-def _bootstrap_invite_forward_text(bot_link: str) -> str:
+def _bootstrap_invite_forward_text() -> str:
     return (
         "Здравствуйте.\n\n"
         "Ниже будут код регистрации и временный bootstrap-конфиг для VPN.\n\n"
@@ -1458,8 +1458,7 @@ def _bootstrap_invite_forward_text(bot_link: str) -> str:
         "3. Включить VPN.\n"
         "4. Открыть бота и ввести код.\n\n"
         "Если вход выполнен через bootstrap-конфиг, он останется рабочим.\n\n"
-        "Bootstrap-конфиг действует 24 часа.\n\n"
-        f"{bot_link}"
+        "Bootstrap-конфиг действует 24 часа."
     )
 
 
@@ -1531,7 +1530,14 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
         bot_link = f"https://t.me/{me.username}" if me.username else "(открыть Telegram-бот)"
 
         await message.answer(_bootstrap_invite_admin_text(), parse_mode="HTML")
-        await message.answer(_bootstrap_invite_forward_text(bot_link), parse_mode="HTML")
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="👉 Открыть бота", url=bot_link)
+        ]]) if me.username else None
+        await message.answer(
+            _bootstrap_invite_forward_text(),
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
         await message.answer(f"<code>{bootstrap_code}</code>", parse_mode="HTML")
         # AWG конфиг + QR
         await message.answer_document(
@@ -3494,7 +3500,14 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
         me = await bot.get_me()
         bot_link = f"https://t.me/{me.username}" if me.username else "(открыть Telegram-бот)"
         await cb.message.answer(_bootstrap_invite_admin_text(), parse_mode="HTML")
-        await cb.message.answer(_bootstrap_invite_forward_text(bot_link), parse_mode="HTML")
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="👉 Открыть бота", url=bot_link)
+        ]]) if me.username else None
+        await cb.message.answer(
+            _bootstrap_invite_forward_text(),
+            parse_mode="HTML",
+            reply_markup=kb,
+        )
         await cb.message.answer(f"<code>{bootstrap_code}</code>", parse_mode="HTML")
         await cb.message.answer_document(
             BufferedInputFile(awg_conf.encode(), filename="vpn-bootstrap-awg.conf"),
