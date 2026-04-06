@@ -20,15 +20,6 @@ def _detect_install_version() -> str:
     env_version = os.environ.get("VPN_INSTALL_VERSION", "").strip()
     if env_version:
         return env_version.lstrip("v")
-
-    version_file = Path(__file__).resolve().parents[2] / "version"
-    try:
-        version_value = version_file.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
-
-    if version_value and all(ch.isdigit() or ch == "." for ch in version_value):
-        return version_value
     return ""
 
 

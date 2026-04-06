@@ -423,10 +423,7 @@ ensure_git_repo() {
 
 tracked_tree_clean() {
     local dirty
-    dirty="$(
-        git -C "$REPO_DIR" status --porcelain --untracked-files=no \
-            | awk '{ path=substr($0,4); if (path != "version") print }'
-    )"
+    dirty="$(git -C "$REPO_DIR" status --porcelain --untracked-files=no)"
     [[ -z "$dirty" ]]
 }
 

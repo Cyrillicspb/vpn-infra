@@ -35,6 +35,7 @@ class InstallerBundleContractTests(unittest.TestCase):
         self.assertIn('RELEASE_API="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/tags/${RELEASE_TAG}"', content)
         self.assertIn('python_wheel_bundle_groups', content)
         self.assertIn('VPN_STRICT_BUNDLE=1 bash "${OPT_VPN}/setup.sh"', content)
+        self.assertNotIn('read_install_version "${OPT_VPN}/version"', content)
         self.assertNotIn("for pkg in curl git; do", content)
         self.assertNotIn('git clone --depth=1 "$REPO_URL"', content)
 

@@ -408,10 +408,6 @@ print_banner() {
     local version_label=""
     if [[ -n "${VPN_INSTALL_VERSION:-}" ]]; then
         version_label=" v${VPN_INSTALL_VERSION#v}"
-    elif [[ -f /opt/vpn/version ]]; then
-        local _ver=""
-        _ver="$(tr -d '[:space:]' < /opt/vpn/version 2>/dev/null || true)"
-        [[ "$_ver" =~ ^[0-9]+(\.[0-9]+)*$ ]] && version_label=" v${_ver}"
     fi
     echo ""
     echo "╔══════════════════════════════════════════════════════════════════╗"
@@ -2109,7 +2105,17 @@ d = json.load(open('$IMPORT_DIR/metadata.json'))
 print(d.get('vpn_version', ''))
 " 2>/dev/null || echo "")
         fi
-        CURRENT_VERSION=$(cat /opt/vpn/version 2>/dev/null || echo "")
+        CURRENT_VERSION="$(python3 - <<'PY' 2>/dev/null || true
+import json
+from pathlib import Path
+path = Path('/opt/vpn/.deploy-state/current.json')
+if path.exists():
+    data = json.loads(path.read_text(encoding='utf-8'))
+    version = str(((data.get('current_release') or {}).get('version') or '')).strip()
+    if version:
+        print(version)
+PY
+)"
         if [[ -n "$EXPORT_VERSION" && -n "$CURRENT_VERSION" && "$EXPORT_VERSION" != "$CURRENT_VERSION" ]]; then
             log_info "Версии отличаются ($EXPORT_VERSION → $CURRENT_VERSION), запуск миграций..."
             MIGRATIONS_SCRIPT="${REPO_DIR}/migrations/apply.sh"

@@ -147,7 +147,6 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('^[[:space:]]+\\[FAIL\\][[:space:]]+[a-z0-9_]+[[:space:]]*$', deploy_script)
         self.assertIn('dnsmasq runtime verify failed, retry via restart', deploy_script)
         self.assertIn('systemctl restart dnsmasq || die "home runtime verify failed: dnsmasq restart failed"', deploy_script)
-        self.assertIn('if (path != "version") print', deploy_script)
         self.assertNotIn('printf \'%s\\n\' "${TARGET_RELEASE_VERSION#v}" > "$REPO_DIR/version"', deploy_script)
 
     def test_deploy_script_repairs_state_versions_from_release_sha(self):

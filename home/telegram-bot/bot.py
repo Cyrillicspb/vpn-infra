@@ -55,14 +55,6 @@ def _installed_version_label() -> str:
         version = env_version[1:] if env_version.startswith("v") else env_version
         if version and all(ch.isdigit() or ch == "." for ch in version):
             return f"v{version}"
-    for path_str in ("/opt/vpn/version", "/app/version"):
-        try:
-            version = Path(path_str).read_text(encoding="utf-8").strip()
-            version = version[1:] if version.startswith("v") else version
-            if version and all(ch.isdigit() or ch == "." for ch in version):
-                return f"v{version}"
-        except Exception:
-            pass
     return "неизвестно"
 logging.basicConfig(
     level=_log_level,

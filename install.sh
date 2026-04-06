@@ -62,22 +62,6 @@ format_duration() {
     fi
 }
 
-read_install_version() {
-    local version_file="$1"
-    local version_value=""
-    if [[ -f "$version_file" ]]; then
-        version_value="$(tr -d '[:space:]' < "$version_file" 2>/dev/null || true)"
-    fi
-    case "$version_value" in
-        ''|*[!0-9.]*)
-            return 1
-            ;;
-        *)
-            printf '%s' "$version_value"
-            ;;
-    esac
-}
-
 count_tar_archives() {
     local dir="$1"
     local files=()
@@ -225,12 +209,9 @@ chmod +x "${OPT_VPN}/setup.sh" "${OPT_VPN}/install-home.sh" \
     "${OPT_VPN}/scripts/build-system-package-bundles.sh" "${OPT_VPN}/dev/save-system-packages.sh" \
     "${OPT_VPN}/scripts/build-python-wheel-bundles.sh" "${OPT_VPN}/scripts/build-release-assets-manifest.sh" 2>/dev/null || true
 
-_install_version="$(read_install_version "${OPT_VPN}/version" || true)"
-if [[ -z "${_install_version}" && "${_bootstrap_tag}" == v* ]]; then
+_install_version=""
+if [[ "${_bootstrap_tag}" == v* ]]; then
     _install_version="${_bootstrap_tag#v}"
-fi
-if [[ -n "${_install_version}" ]]; then
-    printf '%s\n' "${_install_version}" > "${OPT_VPN}/version"
 fi
 if [[ -n "${_install_version}" ]]; then
     info "Устанавливаемая версия: v${_install_version}"

@@ -39,7 +39,7 @@ rsync -a --exclude='.git' --exclude='*.pyc' --exclude='__pycache__' \
     . "$PAYLOAD_DIR/" 2>/dev/null || {
     # rsync может отсутствовать — используем cp + find
     cp -r setup.sh common.sh install-home.sh install-vps.sh \
-        deploy.sh restore.sh version \
+        deploy.sh restore.sh \
         home vps installers/gui installers/bootstrap.sh \
         "$PAYLOAD_DIR/" 2>/dev/null || true
     mkdir -p "$PAYLOAD_DIR/installers"

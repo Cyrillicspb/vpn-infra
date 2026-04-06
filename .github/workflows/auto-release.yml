@@ -42,7 +42,7 @@ jobs:
           if [[ -n "$PREV_TAG" ]]; then
             BASE_VERSION="$(release_version_from_tag "$PREV_TAG")"
           else
-            BASE_VERSION="$(release_version_from_file version)"
+            BASE_VERSION="0.0.0"
           fi
           NEXT_VERSION="$(next_release_version "$BASE_VERSION")"
           TAG="v${NEXT_VERSION}"
@@ -76,11 +76,6 @@ jobs:
             echo "$NOTES"
             echo "${EOF_MARKER}"
           } >> "$GITHUB_OUTPUT"
-
-      - name: Prepare release workspace
-        run: |
-          set -euo pipefail
-          printf '%s\n' "${{ steps.meta.outputs.version }}" > version
 
       - name: Set up Python for wheel download
         uses: actions/setup-python@v6

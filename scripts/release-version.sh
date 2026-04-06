@@ -67,5 +67,10 @@ release_version_for_ref() {
         release_version_from_tag "$tag"
         return 0
     fi
-    release_version_from_file "version"
+    tag="$(git tag --list 'v*' --sort=-v:refname | head -1 || true)"
+    if [[ -n "$tag" ]]; then
+        release_version_from_tag "$tag"
+        return 0
+    fi
+    return 1
 }
