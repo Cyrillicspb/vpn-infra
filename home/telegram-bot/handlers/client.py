@@ -145,6 +145,11 @@ async def _get_client(message: Message, **kw) -> dict | None:
     return await db.get_client(str(message.from_user.id))
 
 
+async def _ensure_menu_button(message: Message) -> None:
+    """Восстановить persistent reply-кнопку клиентского меню."""
+    await message.answer("📋 Меню", reply_markup=menu_reply_kb())
+
+
 def _parse_protocol(text: str) -> str:
     t = text.lower()
     return "awg" if ("awg" in t or "amnezia" in t) else "wg"
@@ -549,6 +554,7 @@ async def cmd_mydevices(message: Message, state: FSMContext, **kw):
     if not client:
         await message.answer("Сначала зарегистрируйтесь: /start")
         return
+    await _ensure_menu_button(message)
     devices = await db.get_devices(str(message.from_user.id))
     if not devices:
         await message.answer("Устройств нет. /adddevice — добавить.")
@@ -573,6 +579,7 @@ async def cmd_myconfig(message: Message, state: FSMContext, **kw):
     if not client:
         await message.answer("Сначала зарегистрируйтесь: /start")
         return
+    await _ensure_menu_button(message)
 
     args = message.text.split(maxsplit=1)
     devices = await db.get_devices(str(message.from_user.id))
@@ -613,6 +620,7 @@ async def cmd_update(message: Message, state: FSMContext, **kw):
     if not client:
         await message.answer("Сначала зарегистрируйтесь: /start")
         return
+    await _ensure_menu_button(message)
 
     devices = await db.get_devices(str(message.from_user.id))
     active  = [d for d in devices if not d.get("pending_approval")]
@@ -651,6 +659,7 @@ async def cmd_adddevice(message: Message, state: FSMContext, **kw):
     if not client:
         await message.answer("Сначала зарегистрируйтесь: /start")
         return
+    await _ensure_menu_button(message)
     if client.get("is_disabled"):
         await message.answer("❌ Ваш аккаунт отключён. Обратитесь к администратору.")
         return
@@ -773,6 +782,7 @@ async def cmd_removedevice(message: Message, state: FSMContext, **kw):
     if not client:
         await message.answer("Сначала зарегистрируйтесь: /start")
         return
+    await _ensure_menu_button(message)
 
     args    = message.text.split(maxsplit=1)
     devices = await db.get_devices(str(message.from_user.id))
@@ -806,6 +816,7 @@ async def cmd_request(message: Message, state: FSMContext, **kw):
     if not client:
         await message.answer("Сначала зарегистрируйтесь: /start")
         return
+    await _ensure_menu_button(message)
 
     args = message.text.split()
     if len(args) < 3 or args[1] not in ("vpn", "direct"):
@@ -847,6 +858,7 @@ async def cmd_myrequests(message: Message, state: FSMContext, **kw):
     if not client:
         await message.answer("Сначала зарегистрируйтесь: /start")
         return
+    await _ensure_menu_button(message)
 
     reqs = await db.get_requests_by_client(str(message.from_user.id))
     if not reqs:
@@ -874,6 +886,7 @@ async def cmd_exclude(message: Message, state: FSMContext, **kw):
     if not client:
         await message.answer("Сначала зарегистрируйтесь: /start")
         return
+    await _ensure_menu_button(message)
 
     args = message.text.split()
     if len(args) < 2 or args[1] not in ("add", "remove", "list"):
@@ -944,6 +957,7 @@ async def cmd_route(message: Message, state: FSMContext, **kw):
     if not client:
         await message.answer("Сначала зарегистрируйтесь: /start")
         return
+    await _ensure_menu_button(message)
 
     args = message.text.split()
     if len(args) < 2 or args[1] not in ("add", "remove", "list"):
@@ -1011,6 +1025,7 @@ async def cmd_report(message: Message, state: FSMContext, **kw):
     client = await _get_client(message, **kw)
     if not client:
         return
+    await _ensure_menu_button(message)
 
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
@@ -1043,6 +1058,7 @@ async def cmd_status_client(message: Message, state: FSMContext, **kw):
     client = await _get_client(message, **kw)
     if not client:
         return
+    await _ensure_menu_button(message)
     try:
         s = await _wc().get_status()
         ok    = s.get("status") == "ok"
@@ -1070,6 +1086,7 @@ async def cmd_help(message: Message, state: FSMContext, **kw):
             "Запросите код приглашения у администратора → /start"
         )
         return
+    await _ensure_menu_button(message)
     await message.answer(
         "*Доступные команды:*\n\n"
         "/start — главная\n"
@@ -1118,7 +1135,7 @@ async def cmd_menu_client(message: Message, state: FSMContext, **kw):
     client = await _get_client(message, **kw)
     if not client:
         return
-    await message.answer("📋 Меню", reply_markup=menu_reply_kb())
+    await _ensure_menu_button(message)
     await message.answer("*Меню*", reply_markup=client_main_menu())
 
 
@@ -1862,6 +1879,7 @@ async def default_handler(message: Message, **kw):
         return
     client = await db.get_client(str(message.from_user.id))
     if client:
+        await _ensure_menu_button(message)
         await message.answer("Неизвестная команда. /help")
     # Незарегистрированные — игнор
 

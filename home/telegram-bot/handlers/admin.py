@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -1469,6 +1470,7 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
     wdc = WatchdogClient(config.watchdog_url, config.watchdog_token)
     awg_pubkey = ""
     wg_pubkey = ""
+    bootstrap_code = ""
     try:
         from services.config_builder import ConfigBuilder, wg_genkey
         builder = ConfigBuilder()
@@ -1497,7 +1499,7 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
                 if p.get("public_key") == wg_pubkey:
                     wg_ip = p.get("allowed_ips", "").split("/")[0]
 
-        code = await db.create_bootstrap_invite(
+        bootstrap_code = await db.create_bootstrap_invite(
             str(message.from_user.id),
             awg_peer_id=awg_pubkey,
             wg_peer_id=wg_pubkey,
@@ -1524,7 +1526,7 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
 
         await message.answer(_bootstrap_invite_admin_text(), parse_mode="HTML")
         await message.answer(_bootstrap_invite_forward_text(bot_link), parse_mode="HTML")
-        await message.answer(f"<code>{code}</code>", parse_mode="HTML")
+        await message.answer(f"<code>{bootstrap_code}</code>", parse_mode="HTML")
         # AWG конфиг + QR
         await message.answer_document(
             BufferedInputFile(awg_conf.encode(), filename="vpn-bootstrap-awg.conf"),
@@ -1545,6 +1547,15 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
 
     except Exception as e:
         await _cleanup_bootstrap_peers(wdc, awg_pubkey, wg_pubkey)
+        if bootstrap_code:
+            try:
+                await db.delete_invite_code(bootstrap_code)
+            except Exception as cleanup_exc:
+                logger.warning(
+                    "cmd_invite: bootstrap invite cleanup failed for %s: %s",
+                    bootstrap_code[:8],
+                    cleanup_exc,
+                )
         logger.warning(f"/invite: bootstrap не удался ({e}), создаём обычный инвайт")
 
     # Fallback: обычный инвайт без предсозданных пиров (watchdog недоступен)
@@ -3435,12 +3446,16 @@ async def cb_adm_latency_learning(cb: CallbackQuery, **kw):
 @router.callback_query(F.data == "adm:invite")
 async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
     """Кнопка «Пригласить» в меню — используем bootstrap-логику из cmd_invite."""
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest as exc:
+        logger.info("cb_adm_invite: callback answer skipped: %s", exc)
     # Имитируем поведение cmd_invite: сообщения отправляем через cb.message.answer
     db: Database = kw.get("db")
     wdc = WatchdogClient(config.watchdog_url, config.watchdog_token)
     awg_pubkey = ""
     wg_pubkey = ""
+    bootstrap_code = ""
     try:
         from services.config_builder import ConfigBuilder, wg_genkey
         builder = ConfigBuilder()
@@ -3458,7 +3473,7 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
                     awg_ip = p.get("allowed_ips", "").split("/")[0]
                 if p.get("public_key") == wg_pubkey:
                     wg_ip = p.get("allowed_ips", "").split("/")[0]
-        code = await db.create_bootstrap_invite(
+        bootstrap_code = await db.create_bootstrap_invite(
             str(cb.from_user.id),
             awg_peer_id=awg_pubkey, wg_peer_id=wg_pubkey,
             awg_ip=awg_ip, wg_ip=wg_ip,
@@ -3474,7 +3489,7 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
         bot_link = f"https://t.me/{me.username}" if me.username else "(открыть Telegram-бот)"
         await cb.message.answer(_bootstrap_invite_admin_text(), parse_mode="HTML")
         await cb.message.answer(_bootstrap_invite_forward_text(bot_link), parse_mode="HTML")
-        await cb.message.answer(f"<code>{code}</code>", parse_mode="HTML")
+        await cb.message.answer(f"<code>{bootstrap_code}</code>", parse_mode="HTML")
         await cb.message.answer_document(
             BufferedInputFile(awg_conf.encode(), filename="vpn-bootstrap-awg.conf"),
             caption="📄 AmneziaWG (рекомендуется)")
@@ -3488,6 +3503,15 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
         return
     except Exception as e:
         await _cleanup_bootstrap_peers(wdc, awg_pubkey, wg_pubkey)
+        if bootstrap_code:
+            try:
+                await db.delete_invite_code(bootstrap_code)
+            except Exception as cleanup_exc:
+                logger.warning(
+                    "cb_adm_invite: bootstrap invite cleanup failed for %s: %s",
+                    bootstrap_code[:8],
+                    cleanup_exc,
+                )
         logger.warning(f"cb_adm_invite: bootstrap не удался ({e}), создаём обычный инвайт")
     code = await db.create_invite_code(str(cb.from_user.id))
     me = await bot.get_me()
