@@ -2300,9 +2300,12 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
                 BufferedInputFile(qr_bytes, filename="qr.png"),
                 caption=f"QR-код `{device['device_name']}`",
             )
-        _dated = f"{device['device_name']}_{date.today()}"
+        from services.config_builder import make_wireguard_conf_filename
         await cb.message.answer_document(
-            BufferedInputFile(conf_text.encode(), filename=f"{_dated}.conf"),
+            BufferedInputFile(
+                conf_text.encode(),
+                filename=make_wireguard_conf_filename(device["device_name"], device.get("protocol", "awg")),
+            ),
             caption=f"Конфигурация `{device['device_name']}` · {date.today()}\n"
                     f"Если тоннель с таким именем уже есть в приложении — удалите старый и добавьте этот.",
         )
@@ -2316,17 +2319,24 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
                 BufferedInputFile(qr_bytes, filename="qr.png"),
                 caption=f"QR-код `{device['device_name']}`",
             )
-        _dated = f"{device['device_name']}_{date.today()}"
+        from services.config_builder import make_wireguard_conf_filename
         await cb.message.answer_document(
-            BufferedInputFile(conf_text.encode(), filename=f"{_dated}.conf"),
+            BufferedInputFile(
+                conf_text.encode(),
+                filename=make_wireguard_conf_filename(device["device_name"], device.get("protocol", "awg")),
+            ),
             caption=f"Конфигурация `{device['device_name']}` · {date.today()}\n"
                     f"Если тоннель с таким именем уже есть в приложении — удалите старый и добавьте этот.",
         )
     else:
         # windows / macos / linux — сохранить платформу, отправить .conf + installer script
-        from services.config_builder import build_installer, PLATFORM_SCRIPTS
-        import re as _re
-        _safe_name = _re.sub(r'[^\w\-]', '_', device["device_name"])
+        from services.config_builder import (
+            PLATFORM_SCRIPTS,
+            build_installer,
+            make_wireguard_conf_filename,
+            make_wireguard_tunnel_name,
+        )
+        _safe_name = make_wireguard_tunnel_name(device["device_name"], device.get("protocol", "awg"))
         _protocol = device.get("protocol", "awg")
         installer_bytes = build_installer(device["device_name"], conf_text, platform, protocol=_protocol)
 
@@ -2354,9 +2364,11 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
                 "<code>chmod +x install-vpn-*.sh &amp;&amp; sudo ./install-vpn-*.sh</code>"
             )
         await cb.message.answer(_install_hint, parse_mode="HTML")
-        _dated = f"{device['device_name']}_{date.today()}"
         await cb.message.answer_document(
-            BufferedInputFile(conf_text.encode(), filename=f"{_dated}.conf"),
+            BufferedInputFile(
+                conf_text.encode(),
+                filename=make_wireguard_conf_filename(device["device_name"], _protocol),
+            ),
             caption=f"Конфигурация `{device['device_name']}` · {date.today()}",
         )
         if installer_bytes:
@@ -2453,10 +2465,12 @@ async def _send_config(message: Message, db: Database, device: dict, kw: dict) -
 
     # .conf файл
     if device.get("is_router"):
-        _filename = f"vpn-{device['device_name']}.conf"
+        from services.config_builder import make_wireguard_conf_filename
+        _filename = make_wireguard_conf_filename(device["device_name"], device.get("protocol", "awg"))
         _caption = f"Конфигурация `{device['device_name']}`"
     else:
-        _filename = f"{device['device_name']}_{date.today()}.conf"
+        from services.config_builder import make_wireguard_conf_filename
+        _filename = make_wireguard_conf_filename(device["device_name"], device.get("protocol", "awg"))
         _caption = (
             f"Конфигурация `{device['device_name']}` · {date.today()}\n"
             f"Если тоннель с таким именем уже есть в приложении — удалите старый и добавьте этот."
@@ -2469,9 +2483,8 @@ async def _send_config(message: Message, db: Database, device: dict, kw: dict) -
     # Установщик — если у устройства сохранена desktop-платформа
     _platform = device.get("platform")
     if _platform in ("windows", "macos", "linux"):
-        from services.config_builder import build_installer, PLATFORM_SCRIPTS
-        import re as _re
-        _safe_name = _re.sub(r'[^\w\-]', '_', device["device_name"])
+        from services.config_builder import PLATFORM_SCRIPTS, build_installer, make_wireguard_tunnel_name
+        _safe_name = make_wireguard_tunnel_name(device["device_name"], device.get("protocol", "awg"))
         _protocol = device.get("protocol", "awg")
         _installer = build_installer(device["device_name"], conf_text, _platform, protocol=_protocol)
         if _installer:

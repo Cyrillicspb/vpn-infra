@@ -18,6 +18,7 @@ import random
 import subprocess
 import base64
 import ipaddress
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -201,6 +202,35 @@ def _conf_to_bat_echo(conf_text: str) -> str:
         else:
             lines.append("echo.")
     return "\n".join(lines)
+
+
+def make_wireguard_tunnel_name(device_name: str, protocol: str = "awg", max_len: int = 15) -> str:
+    """Return an ASCII-safe tunnel name acceptable for WireGuard import/install flows."""
+    prefix = "awg" if protocol == "awg" else "wg"
+    digest = hashlib.sha256(device_name.encode("utf-8")).hexdigest()[:4]
+
+    ascii_name = unicodedata.normalize("NFKD", device_name).encode("ascii", "ignore").decode("ascii")
+    ascii_name = ascii_name.lower()
+    ascii_name = re.sub(r"[^a-z0-9_.+-]+", "-", ascii_name)
+    ascii_name = re.sub(r"[-_.+]{2,}", "-", ascii_name).strip("-_.+")
+
+    if not ascii_name:
+        return f"{prefix}-{digest}"[:max_len]
+
+    inline_budget = max_len - len(prefix) - 1
+    if len(ascii_name) <= inline_budget:
+        return f"{prefix}-{ascii_name}"
+
+    hash_budget = max_len - len(prefix) - len(digest) - 2
+    base = ascii_name[:max(hash_budget, 0)].rstrip("-_.+")
+    if base:
+        return f"{prefix}-{base}-{digest}"
+    return f"{prefix}-{digest}"[:max_len]
+
+
+def make_wireguard_conf_filename(device_name: str, protocol: str = "awg") -> str:
+    """Filename stem used by clients when importing a .conf as a tunnel."""
+    return f"{make_wireguard_tunnel_name(device_name, protocol)}.conf"
 
 
 PLATFORM_SCRIPTS: dict[str, dict] = {
@@ -427,7 +457,7 @@ echo "Статус: wg show $TUNNEL_NAME"
 
 def build_installer(device_name: str, conf_text: str, platform: str, protocol: str = "awg") -> Optional[bytes]:
     """Сгенерировать скрипт-установщик с вшитым конфигом для указанной платформы."""
-    safe_name = re.sub(r'[^\w\-]', '_', device_name)
+    safe_name = make_wireguard_tunnel_name(device_name, protocol)
     info = PLATFORM_SCRIPTS.get(platform)
     if not info:
         return None

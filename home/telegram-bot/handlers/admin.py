@@ -826,11 +826,8 @@ async def _send_admin_device_config(
             caption=f"QR-код `{device['device_name']}`",
         )
 
-    filename = (
-        f"vpn-{device['device_name']}.conf"
-        if device.get("is_router")
-        else f"{device['device_name']}_{date.today()}.conf"
-    )
+    from services.config_builder import make_wireguard_conf_filename
+    filename = make_wireguard_conf_filename(device["device_name"], device.get("protocol", "awg"))
     await bot.send_document(
         target_chat_id,
         BufferedInputFile(conf_text.encode(), filename=filename),

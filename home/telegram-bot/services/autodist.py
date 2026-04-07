@@ -175,10 +175,8 @@ class AutoDist:
             )
 
         # .conf файл
-        if device.get("is_router"):
-            _filename = f"vpn-{device['device_name']}.conf"
-        else:
-            _filename = f"{device['device_name']}_{date.today()}.conf"
+        from services.config_builder import make_wireguard_conf_filename
+        _filename = make_wireguard_conf_filename(device["device_name"], device.get("protocol", "awg"))
         await self.bot.send_document(
             chat_id,
             document=BufferedInputFile(conf_text.encode(), filename=_filename),
@@ -188,9 +186,8 @@ class AutoDist:
         # Установщик — если у устройства сохранена desktop-платформа
         platform = device.get("platform")
         if platform in ("windows", "macos", "linux"):
-            import re as _re
-            from services.config_builder import build_installer, PLATFORM_SCRIPTS
-            safe_name = _re.sub(r'[^\w\-]', '_', device["device_name"])
+            from services.config_builder import PLATFORM_SCRIPTS, build_installer, make_wireguard_tunnel_name
+            safe_name = make_wireguard_tunnel_name(device["device_name"], device.get("protocol", "awg"))
             installer = build_installer(
                 device_name=device["device_name"],
                 conf_text=conf_text,
