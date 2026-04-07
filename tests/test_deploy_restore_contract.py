@@ -80,6 +80,7 @@ class DeployRestoreContractTests(unittest.TestCase):
         result = self.run_cmd(["bash", str(DEPLOY), "--help"], env={"ALLOW_NON_ROOT": "1"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("bash deploy.sh --rollback", result.stdout)
+        self.assertIn("bash deploy.sh --ref <tag|sha>", result.stdout)
         self.assertNotIn("--to", result.stdout)
         self.assertIn("--status", result.stdout)
 
@@ -135,8 +136,12 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('record_preflight_blocker "origin-fetch-failed"', deploy_script)
         self.assertIn('record_preflight_blocker "backend-inventory-empty"', deploy_script)
         self.assertIn('git_ls_remote_release_tags "$remote"', deploy_script)
+        self.assertIn('github_latest_release_tag "$remote"', deploy_script)
         self.assertIn('ALL_PROXY="socks5h://127.0.0.1:${port}" git -C "$REPO_DIR" fetch "$remote"', deploy_script)
         self.assertIn('ALL_PROXY="socks5h://127.0.0.1:${port}" git ls-remote --tags --refs "$remote" \'v*\'', deploy_script)
+        self.assertIn('DEPLOY_TARGET_REF="${DEPLOY_TARGET_REF:-}"', deploy_script)
+        self.assertIn('resolve_target_ref_locally "$DEPLOY_TARGET_REF"', deploy_script)
+        self.assertIn('curl -fsSL "$api_url"', deploy_script)
         self.assertIn('rev-parse "${ORIGIN_SOURCE_REF}^{}"', deploy_script)
         self.assertIn('rev-parse "${source_ref}^{}"', deploy_script)
         self.assertNotIn('refs/remotes/${remote}/master', deploy_script)
@@ -516,6 +521,11 @@ class DeployRestoreContractTests(unittest.TestCase):
 
     def test_manual_rollback_rejects_selector_arguments(self):
         result = self.run_cmd(["bash", str(DEPLOY), "--rollback", "--to", "abc"], env={"ALLOW_NON_ROOT": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Использование", result.stdout)
+
+    def test_manual_rollback_rejects_explicit_ref(self):
+        result = self.run_cmd(["bash", str(DEPLOY), "--rollback", "--ref", "v0.3.3.222"], env={"ALLOW_NON_ROOT": "1"})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Использование", result.stdout)
 

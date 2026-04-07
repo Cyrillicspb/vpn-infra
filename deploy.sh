@@ -5,6 +5,7 @@
 # Использование:
 #   sudo bash deploy.sh
 #   sudo bash deploy.sh --force
+#   sudo bash deploy.sh --ref <tag|sha>
 #   sudo bash deploy.sh --check
 #   sudo bash deploy.sh --status
 #   sudo bash deploy.sh --rollback
@@ -20,6 +21,7 @@ LOG_FILE="${LOG_FILE:-/var/log/vpn-deploy.log}"
 LOCK_FILE="${LOCK_FILE:-/var/run/vpn-deploy.lock}"
 SSH_KEY="${SSH_KEY:-/root/.ssh/vpn_id_ed25519}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-deploy-live}"
+DEPLOY_TARGET_REF="${DEPLOY_TARGET_REF:-}"
 SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-120}"
 SNAPSHOT_KEEP="${SNAPSHOT_KEEP:-5}"
 ALLOW_NON_ROOT="${ALLOW_NON_ROOT:-0}"
@@ -70,6 +72,7 @@ usage() {
 Использование:
   bash deploy.sh
   bash deploy.sh --force
+  bash deploy.sh --ref <tag|sha>
   bash deploy.sh --check
   bash deploy.sh --status
   bash deploy.sh --rollback
@@ -78,6 +81,7 @@ usage() {
 Опции:
   --check      Проверить доступность нового release и rollback readiness без применения
   --force      Применить релиз даже если commit не изменился
+  --ref        Явно указать tag или commit SHA для deploy/check вместо auto-discovery
   --status     Показать current/pending/previous release и rollback status
   --rollback   Откатить к последнему подтвержденному snapshot
 EOF
@@ -449,6 +453,11 @@ resolve_release_ref_for_remote() {
         printf 'refs/tags/%s\n' "$latest_tag"
         return 0
     fi
+    latest_tag="$(github_latest_release_tag "$remote" || true)"
+    if [[ -n "$latest_tag" ]]; then
+        printf 'refs/tags/%s\n' "$latest_tag"
+        return 0
+    fi
     return 1
 }
 
@@ -551,6 +560,81 @@ git_ls_remote_release_tags() {
     fi
     [[ -n "$port" ]] || return 1
     ALL_PROXY="socks5h://127.0.0.1:${port}" git ls-remote --tags --refs "$remote" 'v*' 2>/dev/null
+}
+
+github_repo_slug_for_remote() {
+    local remote="$1"
+    local url=""
+    url="$(remote_url_for_git_remote "$remote")"
+    [[ -n "$url" ]] || url="$GITHUB_REPO_URL_DEFAULT"
+    python3 - "$url" <<'PY'
+import re
+import sys
+
+url = (sys.argv[1] or "").strip()
+match = re.search(r"github\.com[:/](?P<slug>[^/\s]+/[^/\s]+?)(?:\.git)?$", url)
+if match:
+    print(match.group("slug"))
+PY
+}
+
+github_latest_release_tag() {
+    local remote="$1"
+    local slug=""
+    slug="$(github_repo_slug_for_remote "$remote")"
+    [[ -n "$slug" ]] || return 1
+
+    local api_url="https://api.github.com/repos/${slug}/releases/latest"
+    local port=""
+    if remote_supports_socks_fallback "$remote"; then
+        port="$(active_socks_port || true)"
+    fi
+    if [[ -n "$port" ]]; then
+        ALL_PROXY="socks5h://127.0.0.1:${port}" curl -fsSL "$api_url" 2>/dev/null | python3 - <<'PY'
+import json
+import sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+tag = str(data.get("tag_name") or "").strip()
+if tag:
+    print(tag)
+else:
+    raise SystemExit(1)
+PY
+        return $?
+    fi
+    curl -fsSL "$api_url" 2>/dev/null | python3 - <<'PY'
+import json
+import sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+tag = str(data.get("tag_name") or "").strip()
+if tag:
+    print(tag)
+else:
+    raise SystemExit(1)
+PY
+}
+
+resolve_target_ref_locally() {
+    local ref="$1"
+    local candidate=""
+    for candidate in \
+        "$ref" \
+        "refs/tags/$ref" \
+        "refs/remotes/origin/$ref" \
+        "refs/heads/$ref"
+    do
+        if git -C "$REPO_DIR" rev-parse --verify "${candidate}^{}" >/dev/null 2>&1; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
 }
 
 home_pull_remote_services() {
@@ -1046,7 +1130,15 @@ fetch_target_release() {
         return 1
     }
     ORIGIN_FETCH_STATUS="ok"
-    ORIGIN_SOURCE_REF="$(resolve_release_ref_for_remote origin || true)"
+    if [[ -n "$DEPLOY_TARGET_REF" ]]; then
+        ORIGIN_SOURCE_REF="$(resolve_target_ref_locally "$DEPLOY_TARGET_REF" || true)"
+        [[ -n "$ORIGIN_SOURCE_REF" ]] || {
+            ORIGIN_FETCH_STATUS="missing-explicit-ref"
+            return 1
+        }
+    else
+        ORIGIN_SOURCE_REF="$(resolve_release_ref_for_remote origin || true)"
+    fi
     [[ -n "$ORIGIN_SOURCE_REF" ]] || {
         ORIGIN_FETCH_STATUS="missing-ref"
         return 1
@@ -1809,12 +1901,32 @@ do_deploy() {
 }
 
 main() {
-    if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-        usage
-        exit 0
-    fi
+    local mode=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --help|-h)
+                usage
+                exit 0
+                ;;
+            --force|--check|--status|--rollback)
+                [[ -z "$mode" ]] || { usage; exit 1; }
+                mode="$1"
+                shift
+                ;;
+            --ref)
+                shift
+                [[ -n "${1:-}" ]] || die "--ref требует tag или SHA"
+                DEPLOY_TARGET_REF="$1"
+                shift
+                ;;
+            *)
+                usage
+                exit 1
+                ;;
+        esac
+    done
 
-    if [[ "${1:-}" == "--rollback" && -n "${2:-}" ]]; then
+    if [[ "$mode" == "--rollback" && -n "$DEPLOY_TARGET_REF" ]]; then
         usage
         exit 1
     fi
@@ -1834,7 +1946,7 @@ main() {
     exec 9>"$LOCK_FILE"
     flock -n 9 || die "Деплой уже запущен ($LOCK_FILE)"
 
-    case "${1:-}" in
+    case "$mode" in
         --check)
             check_updates
             ;;
