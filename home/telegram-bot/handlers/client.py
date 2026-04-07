@@ -2253,6 +2253,10 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
         await cb.message.answer("⏳ Устройство ещё ожидает одобрения администратора.")
         return
 
+    if platform != "conf":
+        await db.update_device_platform(device_id, platform)
+        device = {**device, "platform": platform}
+
     builder = ConfigBuilder()
     excludes, server_routes = await _device_policy_lists(db, device["id"])
 
@@ -2304,7 +2308,6 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
         )
     else:
         # windows / macos / linux — сохранить платформу, отправить .conf + installer script
-        await db.update_device_platform(device_id, platform)
         from services.config_builder import build_installer, PLATFORM_SCRIPTS
         import re as _re
         _safe_name = _re.sub(r'[^\w\-]', '_', device["device_name"])

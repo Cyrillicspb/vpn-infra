@@ -105,6 +105,36 @@ def _normalize_allowed_ip_entry(value: str) -> str:
         return str(net)
 
 
+def _is_ip_literal(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value.strip())
+        return True
+    except ValueError:
+        return False
+
+
+def _select_endpoint_host(device: dict) -> str:
+    host = os.getenv("WG_HOST", "").strip()
+    platform = str(device.get("platform") or "").strip().lower()
+
+    # Mobile clients can fail to bring the tunnel up if Endpoint is a hostname
+    # while tunnel DNS is installed before the first successful handshake.
+    if platform in {"ios", "android"} and host and not _is_ip_literal(host):
+        fallback_ip = (
+            os.getenv("ROUTER_EXTERNAL_IP", "").strip()
+            or os.getenv("EXTERNAL_IP", "").strip()
+        )
+        if fallback_ip and _is_ip_literal(fallback_ip):
+            logger.info(
+                "Using literal ingress IP for mobile endpoint: %s -> %s",
+                host,
+                fallback_ip,
+            )
+            return fallback_ip
+
+    return host
+
+
 def _render(device: dict, allowed_ips: list[str]) -> str:
     protocol = device.get("protocol", "awg")
     template_name = "awg.conf.j2" if protocol == "awg" else "wg.conf.j2"
@@ -117,7 +147,7 @@ def _render(device: dict, allowed_ips: list[str]) -> str:
     )
     tmpl = env.get_template(template_name)
     pubkey_env = "AWG_SERVER_PUBLIC_KEY" if protocol == "awg" else "WG_SERVER_PUBLIC_KEY"
-    host = os.getenv("WG_HOST", "")
+    host = _select_endpoint_host(device)
     port = os.getenv("WG_AWG_PORT", "51820") if protocol == "awg" else os.getenv("WG_WG_PORT", "51821")
 
     return tmpl.render(

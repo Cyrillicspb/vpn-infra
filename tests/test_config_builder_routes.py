@@ -3,6 +3,7 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = (
@@ -61,6 +62,41 @@ class ConfigBuilderRoutesTests(unittest.TestCase):
         self.assertEqual(allowed, ["10.177.1.1/32", "203.0.113.0/24"])
         self.assertNotIn("1.1.1.1/32", allowed)
         self.assertNotIn("8.8.8.8/32", allowed)
+
+    def test_mobile_endpoint_uses_literal_ingress_ip_when_wg_host_is_hostname(self) -> None:
+        env = {
+            "WG_HOST": "myhome.duckdns.org",
+            "ROUTER_EXTERNAL_IP": "198.51.100.44",
+            "EXTERNAL_IP": "198.51.100.55",
+            "AWG_SERVER_PUBLIC_KEY": "server-pub",
+        }
+        device = {
+            "platform": "ios",
+            "protocol": "awg",
+            "private_key": "client-priv",
+            "ip_address": "10.177.1.9",
+        }
+        with mock.patch.dict(config_builder.os.environ, env, clear=False):
+            rendered = config_builder._render(device, ["10.177.1.1/32", "203.0.113.0/24"])
+
+        self.assertIn("Endpoint = 198.51.100.44:51820", rendered)
+
+    def test_desktop_endpoint_keeps_ddns_hostname(self) -> None:
+        env = {
+            "WG_HOST": "myhome.duckdns.org",
+            "ROUTER_EXTERNAL_IP": "198.51.100.44",
+            "WG_SERVER_PUBLIC_KEY": "server-pub",
+        }
+        device = {
+            "platform": "windows",
+            "protocol": "wg",
+            "private_key": "client-priv",
+            "ip_address": "10.177.3.9",
+        }
+        with mock.patch.dict(config_builder.os.environ, env, clear=False):
+            rendered = config_builder._render(device, ["10.177.3.1/32", "203.0.113.0/24"])
+
+        self.assertIn("Endpoint = myhome.duckdns.org:51821", rendered)
 
 
 if __name__ == "__main__":
