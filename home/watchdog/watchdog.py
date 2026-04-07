@@ -3770,20 +3770,33 @@ async def probe_vps_reachability() -> None:
 # ---------------------------------------------------------------------------
 # Мониторинг: заблокированные сайты через tun
 # ---------------------------------------------------------------------------
-BLOCKED_CHECK_URLS = ["https://youtube.com", "https://t.me"]
+# telegram.org / t.me могут флапать на отдельных backend paths даже когда
+# Telegram control plane через api.telegram.org уже доступен. Для health gate
+# и alerting используем более стабильный API endpoint и даём краткий retry.
+BLOCKED_CHECK_URLS = ["https://youtube.com", "https://api.telegram.org"]
+BLOCKED_CHECK_ATTEMPTS = 3
+BLOCKED_CHECK_OK_CODES = ("200", "301", "302", "303", "401", "403")
 
 
 async def check_blocked_sites() -> None:
     plugin = plugins.get(state.active_stack)
     tun = plugin.meta.get("tun_name", f"tun-{state.active_stack}") if plugin else f"tun-{state.active_stack}"
     for url in BLOCKED_CHECK_URLS:
-        rc, out, _ = await run_cmd(
-            ["curl", "-s", "--max-time", "15", "--interface", tun, "-o", "/dev/null", "-w", "%{http_code}", url],
-            timeout=20,
-        )
-        if rc != 0 or out.strip() not in ("200", "301", "302", "303"):
+        ok = False
+        last_code = ""
+        for _ in range(BLOCKED_CHECK_ATTEMPTS):
+            rc, out, _ = await run_cmd(
+                ["curl", "-s", "--max-time", "15", "--interface", tun, "-o", "/dev/null", "-w", "%{http_code}", url],
+                timeout=20,
+            )
+            last_code = out.strip()
+            if rc == 0 and last_code in BLOCKED_CHECK_OK_CODES:
+                ok = True
+                break
+            await asyncio.sleep(1)
+        if not ok:
             state.blocked_sites_reachable = 0
-            alert(f"⚠️ Заблокированный сайт *{url}* недоступен через туннель (код: {out.strip() or 'нет ответа'})")
+            alert(f"⚠️ Заблокированный сайт *{url}* недоступен через туннель (код: {last_code or 'нет ответа'})")
             return
     state.blocked_sites_reachable = 1
 
