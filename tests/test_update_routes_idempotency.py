@@ -263,6 +263,36 @@ class DnsmasqDpiExclusionTests(unittest.TestCase):
         self.assertIn("manual-safe.example", domains)
         self.assertIn("extra-safe.example", domains)
 
+    def test_load_latency_catalog_sanitizes_broad_google_domains_from_runtime_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fallback = tmp / "latency-catalog-default.json"
+            fallback.write_text('{"services":{}}', encoding="utf-8")
+            runtime = tmp / "latency-catalog.json"
+            runtime.write_text(
+                json.dumps(
+                    {
+                        "services": {
+                            "okko": {
+                                "display": "Okko",
+                                "category": "media",
+                                "requires_direct_bootstrap": True,
+                                "domains": {
+                                    "cdn": ["www.googleapis.com", "googleapis.com", "gstatic.com", "clients-static.okko.tv"],
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(update_routes, "REPO_LATENCY_CATALOG", fallback):
+                with mock.patch.object(update_routes, "LATENCY_CATALOG", runtime):
+                    catalog = update_routes.load_latency_catalog()
+
+        self.assertEqual(catalog["okko"]["domains"]["cdn"], ["clients-static.okko.tv"])
+
     def test_render_dnsmasq_latency_sensitive_uses_separate_set(self) -> None:
         content, written = update_routes.render_dnsmasq_latency_sensitive(
             ["okko.tv", "static.okko.tv", "yastatic.net", "invalid domain"]

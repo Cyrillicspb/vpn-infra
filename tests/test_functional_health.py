@@ -817,6 +817,34 @@ scenarios:
 
         self.assertFalse(promoted)
 
+    def test_load_latency_catalog_sanitizes_broad_google_domains(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            runtime = tmp / "latency-catalog.json"
+            runtime.write_text(
+                json.dumps(
+                    {
+                        "services": {
+                            "okko": {
+                                "display": "Okko",
+                                "category": "media",
+                                "domains": {
+                                    "cdn": ["www.googleapis.com", "googleapis.com", "gstatic.com", "clients-static.okko.tv"],
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            fallback = tmp / "latency-catalog-default.json"
+            fallback.write_text('{"services":{}}', encoding="utf-8")
+            with mock.patch.object(watchdog, "LATENCY_CATALOG_FILE", runtime):
+                with mock.patch.object(watchdog, "LATENCY_CATALOG_FALLBACKS", [fallback]):
+                    catalog = watchdog._load_latency_catalog()
+
+        self.assertEqual(catalog["okko"]["domains"]["cdn"], ["clients-static.okko.tv"])
+
     def test_functional_failover_trigger_reason_targets_blocked_and_control_plane_failures(self) -> None:
         watchdog.state.functional_mode = watchdog.FUNCTIONAL_MODE_ACTIVE
         watchdog.state.functional_execution_status = watchdog.FUNCTIONAL_EXEC_HEALTHY

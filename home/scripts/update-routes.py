@@ -890,6 +890,32 @@ def _canonicalize_latency_catalog(raw: dict) -> dict[str, dict]:
     return services
 
 
+def _sanitize_latency_catalog(services: dict[str, dict]) -> dict[str, dict]:
+    sanitized: dict[str, dict] = {}
+    for service_id, spec in services.items():
+        sanitized_roles: dict[str, list[str]] = {}
+        for role, values in (spec.get("domains") or {}).items():
+            filtered = [
+                domain
+                for domain in (values or [])
+                if domain not in LATENCY_SENSITIVE_DIRECT_EXCLUDED_DOMAINS
+            ]
+            filtered = _dedupe_domain_suffixes(filtered)
+            if filtered:
+                sanitized_roles[str(role)] = filtered
+        if not sanitized_roles:
+            continue
+        sanitized[service_id] = {
+            "display": str(spec.get("display") or service_id),
+            "category": str(spec.get("category") or "misc"),
+            "auto_promote_allowed": bool(spec.get("auto_promote_allowed", True)),
+            "geo_sensitive": bool(spec.get("geo_sensitive", True)),
+            "requires_direct_bootstrap": bool(spec.get("requires_direct_bootstrap", True)),
+            "domains": sanitized_roles,
+        }
+    return sanitized
+
+
 def _merge_latency_catalogs(*catalogs: dict[str, dict]) -> dict[str, dict]:
     merged: dict[str, dict] = {}
     for catalog in catalogs:
@@ -915,7 +941,7 @@ def _merge_latency_catalogs(*catalogs: dict[str, dict]) -> dict[str, dict]:
             for role, values in (spec.get("domains") or {}).items():
                 combined = list(existing["domains"].get(role, [])) + list(values or [])
                 existing["domains"][role] = _dedupe_domain_suffixes(combined)
-    return merged
+    return _sanitize_latency_catalog(merged)
 
 
 def _fetch_json_catalog(url: str) -> dict[str, dict]:
