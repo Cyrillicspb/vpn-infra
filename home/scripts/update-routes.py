@@ -91,7 +91,7 @@ WATCHDOG_URL    = os.getenv("WATCHDOG_URL", "http://localhost:8080")
 VPS_TUNNEL_IP   = os.getenv("VPS_TUNNEL_IP", "10.177.2.2")
 
 # ── Константы ─────────────────────────────────────────────────────────────────
-MAX_CIDR_ALLOWED_IPS = 12_000  # Временный безопасный лимит: correctness важнее компактности
+MAX_CIDR_ALLOWED_IPS = 15_000  # Временный безопасный лимит: correctness важнее компактности
 ALERT_CACHE_AGE_DAYS = 3      # Алерт если кэш старше N дней
 MAX_DELTA_PCT        = 50     # Максимальная дельта изменений (%)
 FETCH_TIMEOUT        = 45     # Таймаут загрузки источника (сек)
