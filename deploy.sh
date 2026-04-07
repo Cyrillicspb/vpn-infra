@@ -26,6 +26,8 @@ SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-120}"
 SNAPSHOT_KEEP="${SNAPSHOT_KEEP:-5}"
 ALLOW_NON_ROOT="${ALLOW_NON_ROOT:-0}"
 BASELINE_SMOKE_FAILURES="${BASELINE_SMOKE_FAILURES:-}"
+BLOCKED_SITES_RETRY_ATTEMPTS="${BLOCKED_SITES_RETRY_ATTEMPTS:-2}"
+BLOCKED_SITES_RETRY_DELAY="${BLOCKED_SITES_RETRY_DELAY:-15}"
 
 CURRENT_STATE_FILE="$STATE_DIR/current.json"
 PENDING_STATE_FILE="$STATE_DIR/pending.json"
@@ -637,6 +639,42 @@ resolve_target_ref_locally() {
     return 1
 }
 
+resolve_target_ref_for_remote() {
+    local remote="$1"
+    local ref="$2"
+    local candidate=""
+    local branch_ref=""
+    local branch_sha=""
+
+    case "$ref" in
+        refs/tags/*)
+            candidate="$ref"
+            ;;
+        refs/remotes/origin/*)
+            candidate="refs/remotes/${remote}/${ref#refs/remotes/origin/}"
+            ;;
+        refs/remotes/*)
+            candidate="refs/remotes/${remote}/${ref#refs/remotes/*/}"
+            ;;
+        refs/heads/*)
+            candidate="refs/remotes/${remote}/${ref#refs/heads/}"
+            ;;
+        *)
+            branch_ref="$(origin_default_branch_ref || true)"
+            if [[ -n "$branch_ref" ]]; then
+                branch_sha="$(git -C "$REPO_DIR" rev-parse "${branch_ref}^{}" 2>/dev/null || true)"
+                if [[ -n "$ORIGIN_RELEASE_SHA" && "$branch_sha" == "$ORIGIN_RELEASE_SHA" ]]; then
+                    candidate="refs/remotes/${remote}/${branch_ref#refs/remotes/origin/}"
+                fi
+            fi
+            ;;
+    esac
+
+    [[ -n "$candidate" ]] || return 1
+    git -C "$REPO_DIR" rev-parse --verify "${candidate}^{}" >/dev/null 2>&1 || return 1
+    printf '%s\n' "$candidate"
+}
+
 home_pull_remote_services() {
     local services=(
         nginx
@@ -1151,7 +1189,11 @@ fetch_target_release() {
         if GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes ${proxy_cmd}" \
            git -C "$REPO_DIR" fetch --tags vps-mirror '+refs/heads/*:refs/remotes/vps-mirror/*' >/dev/null 2>&1; then
             MIRROR_FETCH_STATUS="ok"
-            MIRROR_SOURCE_REF="$(resolve_release_ref_for_remote vps-mirror || true)"
+            if [[ -n "$DEPLOY_TARGET_REF" ]]; then
+                MIRROR_SOURCE_REF="$(resolve_target_ref_for_remote vps-mirror "$ORIGIN_SOURCE_REF" || true)"
+            else
+                MIRROR_SOURCE_REF="$(resolve_release_ref_for_remote vps-mirror || true)"
+            fi
             if [[ -n "$MIRROR_SOURCE_REF" ]]; then
                 MIRROR_RELEASE_SHA="$(git -C "$REPO_DIR" rev-parse "${MIRROR_SOURCE_REF}^{}")"
                 if [[ "$MIRROR_RELEASE_SHA" == "$ORIGIN_RELEASE_SHA" ]]; then
@@ -1175,7 +1217,11 @@ fetch_target_release() {
                 if GIT_SSH_COMMAND="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes ${proxy_cmd}" \
                    git -C "$REPO_DIR" fetch --tags vps-mirror '+refs/heads/*:refs/remotes/vps-mirror/*' >/dev/null 2>&1; then
                     MIRROR_FETCH_STATUS="ok"
-                    MIRROR_SOURCE_REF="$(resolve_release_ref_for_remote vps-mirror || true)"
+                    if [[ -n "$DEPLOY_TARGET_REF" ]]; then
+                        MIRROR_SOURCE_REF="$(resolve_target_ref_for_remote vps-mirror "$ORIGIN_SOURCE_REF" || true)"
+                    else
+                        MIRROR_SOURCE_REF="$(resolve_release_ref_for_remote vps-mirror || true)"
+                    fi
                     if [[ -n "$MIRROR_SOURCE_REF" ]]; then
                         MIRROR_RELEASE_SHA="$(git -C "$REPO_DIR" rev-parse "${MIRROR_SOURCE_REF}^{}")"
                         if [[ "$MIRROR_RELEASE_SHA" == "$ORIGIN_RELEASE_SHA" ]]; then
@@ -1645,6 +1691,32 @@ run_smoke_tests() {
         new_failures="$(comm -23 <(printf '%s\n' "$current_failures" | sed '/^$/d' | sort -u) <(printf '%s\n' "$BASELINE_SMOKE_FAILURES" | sed '/^$/d' | sort -u) || true)"
     else
         new_failures="$current_failures"
+    fi
+
+    if [[ -n "$new_failures" && "$(printf '%s\n' "$new_failures" | sed '/^$/d' | sort -u)" == "blocked_sites" ]]; then
+        local retry_attempt=1
+        local retry_max="${BLOCKED_SITES_RETRY_ATTEMPTS:-2}"
+        local retry_delay="${BLOCKED_SITES_RETRY_DELAY:-15}"
+        local retry_log retry_rc
+
+        while (( retry_attempt <= retry_max )); do
+            log_warn "Smoke blocked_sites провалился сразу после apply; повторная проверка через ${retry_delay}s (${retry_attempt}/${retry_max})"
+            sleep "$retry_delay"
+            retry_log="$(mktemp /tmp/vpn-smoke-blocked-sites-retry.XXXXXX.log)"
+            retry_rc=0
+            timeout "$SMOKE_TIMEOUT" bash "$REPO_DIR/tests/run-smoke-tests.sh" --test blocked_sites >"$retry_log" 2>&1 || retry_rc=$?
+            cat "$retry_log"
+            rm -f "$retry_log"
+
+            if [[ $retry_rc -eq 0 ]]; then
+                current_failures="$(printf '%s\n' "$current_failures" | sed '/^blocked_sites$/d')"
+                new_failures="$(printf '%s\n' "$new_failures" | sed '/^blocked_sites$/d')"
+                [[ -n "$(printf '%s\n' "$current_failures" | sed '/^$/d')" ]] || smoke_rc=0
+                log_info "blocked_sites стабилизировался после retry"
+                break
+            fi
+            (( retry_attempt++ ))
+        done
     fi
     rm -f "$smoke_log"
 
