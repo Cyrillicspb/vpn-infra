@@ -411,6 +411,7 @@ def admin_client_actions_kb(chat_id: str, is_disabled: bool) -> InlineKeyboardMa
     """Действия с конкретным клиентом."""
     toggle = ("✅ Включить", f"adm:cl_en:{chat_id}") if is_disabled else ("🚫 Отключить", f"adm:cl_dis:{chat_id}")
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📱 Устройства клиента", callback_data=f"adm:cl_devices:{chat_id}")],
         [InlineKeyboardButton(text=toggle[0], callback_data=toggle[1])],
         [
             InlineKeyboardButton(text="🔢 Лимит устройств", callback_data=f"adm:cl_lim:{chat_id}"),
@@ -418,6 +419,30 @@ def admin_client_actions_kb(chat_id: str, is_disabled: bool) -> InlineKeyboardMa
         ],
         [InlineKeyboardButton(text="🔄 Сбросить подключения", callback_data=f"adm:cl_reconnect:{chat_id}")],
         _nav_row("adm:clients_list"),
+    ])
+
+
+def admin_client_devices_kb(chat_id: str, devices: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for device in devices:
+        icon = "⏳" if device.get("pending_approval") else "✅"
+        rows.append([
+            InlineKeyboardButton(
+                text=f"{icon} {device['device_name']} ({device['protocol'].upper()})",
+                callback_data=f"adm:cl_dev:{device['id']}",
+            )
+        ])
+    rows.append([InlineKeyboardButton(text="➕ Добавить устройство", callback_data=f"adm:cl_dev_add:{chat_id}")])
+    rows.append(_nav_row(f"adm:cl:{chat_id}", home_cb="adm:menu"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_client_device_actions_kb(chat_id: str, device_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📥 Получить конфиг", callback_data=f"adm:cl_dev_getconf:{device_id}")],
+        [InlineKeyboardButton(text="🔄 Обновить конфиг", callback_data=f"adm:cl_dev_refresh:{device_id}")],
+        [InlineKeyboardButton(text="🗑 Удалить устройство", callback_data=f"adm:cl_dev_del:{device_id}")],
+        _nav_row(f"adm:cl_devices:{chat_id}", home_cb="adm:menu"),
     ])
 
 

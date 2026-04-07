@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import subprocess
+from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -47,7 +48,9 @@ from handlers.keyboards import (
     admin_gateway_menu,
     admin_admin_actions_kb,
     admin_admins_menu,
+    admin_client_device_actions_kb,
     admin_client_actions_kb,
+    admin_client_devices_kb,
     admin_clients_list_kb,
     admin_clients_menu,
     admin_diagnose_kb,
@@ -71,6 +74,7 @@ from handlers.keyboards import (
     confirm_kb,
     domains_inline_kb,
     menu_reply_kb,
+    proto_inline_kb,
 )
 from handlers.screen import edit_or_answer, result_text, return_kb, screen_text, section_text, start_prompt
 from services.watchdog_client import WatchdogClient, WatchdogError
@@ -81,6 +85,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 router = Router()
 _edit_or_answer = edit_or_answer
+
+_WIREGUARD_AUTOCONNECT_HINT = (
+    "Для WireGuard включите автоподключение:\n"
+    "iPhone / iPad / macOS: `On-Demand`\n"
+    "Android: `Always-on VPN` в системных настройках VPN."
+)
+_MOBILE_DNS_WARNING = (
+    "Важно: оставьте только tunnel DNS из конфига.\n"
+    "Отключите Private DNS / Secure DNS / DoH на устройстве, иначе YouTube и другие "
+    "split-tunnel сервисы могут обходить dnsmasq.\n"
+    "Если тоннель с таким именем уже есть в приложении, удалите старый и импортируйте этот конфиг заново."
+)
 
 
 def _render_backend_lines(backends: list[dict]) -> str:
@@ -633,6 +649,21 @@ def _display_name(client: dict, fallback: str = "") -> str:
     return fallback or client.get("chat_id", "?")
 
 
+def _wireguard_extra_hints(device: dict) -> list[str]:
+    hints: list[str] = []
+    if device.get("protocol") == "wg":
+        hints.append(_WIREGUARD_AUTOCONNECT_HINT)
+    return hints
+
+
+async def _device_policy_lists(db: Database, device_id: int) -> tuple[list[str], list[str]]:
+    excludes_raw = await db.get_excludes(device_id)
+    routes_raw = await db.get_server_routes(device_id)
+    excludes = [item["subnet"] for item in excludes_raw]
+    server_routes = [item["subnet"] for item in routes_raw]
+    return excludes, server_routes
+
+
 async def _docker_logs(service: str, n: int = 50) -> str:
     """Получить логи Docker-контейнера через socket-proxy API."""
     import aiohttp as _aiohttp
@@ -733,6 +764,85 @@ def _wc() -> WatchdogClient:
     return WatchdogClient(config.watchdog_url, config.watchdog_token)
 
 
+async def _ensure_admin_callback(cb: CallbackQuery, db: Database | None = None) -> bool:
+    if await _is_admin_uid(cb.from_user.id, db=db):
+        return True
+    await cb.answer("Недостаточно прав", show_alert=True)
+    return False
+
+
+def _admin_device_summary(device: dict, handshake_text: str = "неизвестно") -> str:
+    icon = "⏳" if device.get("pending_approval") else "✅"
+    return (
+        f"{icon} <b>{device['device_name']}</b>\n"
+        f"Состояние: <b>{'⏳ ожидает одобрения' if device.get('pending_approval') else '✅ активно'}</b>\n"
+        f"Протокол: <code>{device['protocol'].upper()}</code>\n"
+        f"IP: <code>{device.get('ip_address', 'N/A')}</code>\n"
+        f"Последний handshake: <b>{handshake_text}</b>"
+    )
+
+
+async def _send_admin_device_config(
+    bot: Bot,
+    target_chat_id: str,
+    db: Database,
+    device: dict,
+) -> str:
+    from services.config_builder import ConfigBuilder
+
+    builder = ConfigBuilder()
+    excludes, server_routes = await _device_policy_lists(db, device["id"])
+
+    had_keys = bool(device.get("private_key"))
+    device = await builder.ensure_keys(device)
+    if not had_keys and device.get("private_key"):
+        await db.update_device_keys(device["id"], device["private_key"], device["public_key"])
+    conf_text, qr_bytes, version = await builder.build(device, excludes, server_routes)
+
+    owner_chat_id = str(device.get("chat_id") or "")
+    caption_lines = [
+        f"📦 <b>Recovery-пакет</b> для <code>{device['device_name']}</code>",
+    ]
+    if owner_chat_id:
+        caption_lines.append(f"Клиент: <code>{owner_chat_id}</code>")
+    caption_lines.append(f"Протокол: <code>{device['protocol'].upper()}</code>")
+    await bot.send_message(target_chat_id, "\n".join(caption_lines), parse_mode="HTML")
+
+    await bot.send_message(
+        target_chat_id,
+        "⚠️ <b>Конфигурация содержит приватный ключ!</b>\n"
+        "Пересылайте её только владельцу устройства по доверенному каналу.",
+        parse_mode="HTML",
+    )
+    if not device.get("is_router"):
+        await bot.send_message(target_chat_id, _MOBILE_DNS_WARNING)
+    for hint in _wireguard_extra_hints(device):
+        await bot.send_message(target_chat_id, hint)
+
+    if qr_bytes:
+        await bot.send_photo(
+            target_chat_id,
+            BufferedInputFile(qr_bytes, filename="qr.png"),
+            caption=f"QR-код `{device['device_name']}`",
+        )
+
+    filename = (
+        f"vpn-{device['device_name']}.conf"
+        if device.get("is_router")
+        else f"{device['device_name']}_{date.today()}.conf"
+    )
+    await bot.send_document(
+        target_chat_id,
+        BufferedInputFile(conf_text.encode(), filename=filename),
+        caption=(
+            f"Конфигурация `{device['device_name']}` · {date.today()}\n"
+            f"Если старый тоннель уже существует, удалите его и импортируйте этот файл заново."
+        ),
+    )
+    await db.update_config_version(device["id"], version)
+    return version
+
+
 async def _is_gateway_mode() -> bool:
     try:
         status = await _wc().get_status()
@@ -776,6 +886,8 @@ class AdminFSM(StatesGroup):
     vps_install_pass   = State()
     client_limit_input = State()
     backend_pref_add   = State()
+    client_device_name = State()
+    client_device_protocol = State()
 
 
 # ---------------------------------------------------------------------------
@@ -1552,6 +1664,7 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
             BufferedInputFile(wg_conf.encode(), filename="vpn-bootstrap-wg.conf"),
             caption="📄 WireGuard конфиг (запасной)",
         )
+        await message.answer(_WIREGUARD_AUTOCONNECT_HINT)
         if wg_qr:
             await message.answer_photo(BufferedInputFile(wg_qr, filename="wg-qr.png"),
                                         caption="QR для WireGuard")
@@ -3517,6 +3630,7 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
         await cb.message.answer_document(
             BufferedInputFile(wg_conf.encode(), filename="vpn-bootstrap-wg.conf"),
             caption="📄 WireGuard (запасной)")
+        await cb.message.answer(_WIREGUARD_AUTOCONNECT_HINT)
         if wg_qr:
             await cb.message.answer_photo(BufferedInputFile(wg_qr, filename="wg-qr.png"))
         return
@@ -4273,6 +4387,289 @@ async def fsm_broadcast_input(message: Message, state: FSMContext, **kw):
 # ---------------------------------------------------------------------------
 # Действия с конкретным клиентом
 # ---------------------------------------------------------------------------
+
+async def _render_admin_client_device_card(device: dict) -> tuple[str, str]:
+    hs_str = "никогда"
+    try:
+        peers_data = await _wc().get_peers()
+        import time as _time
+
+        now_ts = int(_time.time())
+        pk = device.get("public_key", "")
+        for peer in peers_data.get("peers", []):
+            if peer.get("public_key") != pk:
+                continue
+            hs = peer.get("last_handshake", 0)
+            if hs > 0:
+                mins = (now_ts - hs) // 60
+                hs_str = f"{mins} мин назад" if mins < 120 else f"{mins // 60} ч назад"
+            break
+    except Exception:
+        hs_str = "неизвестно"
+
+    text = (
+        f"<blockquote>Меню → Клиенты → Устройства → {device['device_name']}</blockquote>\n\n"
+        f"{_admin_device_summary(device, hs_str)}"
+    )
+    return text, hs_str
+
+
+@router.callback_query(F.data.startswith("adm:cl_devices:"))
+async def cb_adm_client_devices(cb: CallbackQuery, **kw):
+    db: Database = kw.get("db")
+    if not await _ensure_admin_callback(cb, db=db):
+        return
+    await cb.answer()
+    chat_id = cb.data[len("adm:cl_devices:"):]
+    client = await db.get_client(chat_id)
+    if not client:
+        await _edit_or_answer(cb, "Клиент не найден.", admin_clients_menu())
+        return
+    devices = await db.get_devices(chat_id)
+    if not devices:
+        await _edit_or_answer(
+            cb,
+            f"<blockquote>Меню → Клиенты → { _display_name(client, chat_id) }</blockquote>\n\n"
+            f"📱 <b>Устройства клиента</b>\n\n"
+            f"У клиента <code>{chat_id}</code> пока нет устройств.",
+            admin_client_devices_kb(chat_id, []),
+        )
+        return
+    await _edit_or_answer(
+        cb,
+        f"<blockquote>Меню → Клиенты → {_display_name(client, chat_id)}</blockquote>\n\n"
+        f"📱 <b>Устройства клиента</b> — выберите устройство:",
+        admin_client_devices_kb(chat_id, devices),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:cl_dev:"))
+async def cb_adm_client_device_card(cb: CallbackQuery, **kw):
+    db: Database = kw.get("db")
+    if not await _ensure_admin_callback(cb, db=db):
+        return
+    await cb.answer()
+    device_id = int(cb.data[len("adm:cl_dev:"):])
+    device = await db.get_device_with_client(device_id)
+    if not device:
+        await _edit_or_answer(cb, "Устройство не найдено.", admin_clients_menu())
+        return
+    text, _ = await _render_admin_client_device_card(device)
+    await _edit_or_answer(cb, text, admin_client_device_actions_kb(str(device["chat_id"]), device_id))
+
+
+@router.callback_query(F.data.startswith("adm:cl_dev_add:"))
+async def cb_adm_client_device_add(cb: CallbackQuery, state: FSMContext, **kw):
+    db: Database = kw.get("db")
+    if not await _ensure_admin_callback(cb, db=db):
+        return
+    await cb.answer()
+    chat_id = cb.data[len("adm:cl_dev_add:"):]
+    client = await db.get_client(chat_id)
+    if not client:
+        await _edit_or_answer(cb, "Клиент не найден.", admin_clients_menu())
+        return
+    if client.get("is_disabled"):
+        await _edit_or_answer(
+            cb,
+            "❌ Клиент отключён. Сначала включите клиента, затем добавьте устройство.",
+            admin_client_actions_kb(chat_id, True),
+        )
+        return
+    count = await db.count_devices(chat_id)
+    limit = client.get("device_limit", config.device_limit_per_client)
+    if count >= limit:
+        await _edit_or_answer(
+            cb,
+            f"Достигнут лимит устройств: {count}/{limit}.\n"
+            f"Сначала увеличьте лимит в карточке клиента.",
+            admin_client_actions_kb(chat_id, bool(client.get("is_disabled"))),
+        )
+        return
+    await start_prompt(
+        cb,
+        state,
+        AdminFSM.client_device_name,
+        f"Введите <b>имя нового устройства</b> для клиента <code>{chat_id}</code>:",
+        f"adm:cl_devices:{chat_id}",
+        home_cb="adm:menu",
+        extra_data={"_client_device_chat_id": chat_id},
+    )
+
+
+@router.message(AdminFSM.client_device_name)
+async def fsm_admin_client_device_name(message: Message, state: FSMContext, **kw):
+    db: Database = kw.get("db")
+    if not await _is_admin(message, db=db):
+        return
+    name = message.text.strip()
+    data = await state.get_data()
+    return_to = data.get("_return_to", "adm:clients")
+    return_home = data.get("_return_home", "adm:menu")
+    if not (2 <= len(name) <= 30):
+        await message.answer("Имя должно быть от 2 до 30 символов.", reply_markup=return_kb(return_to, return_home))
+        return
+    await state.update_data(device_name=name)
+    await message.answer("Выберите протокол для нового подключения:", reply_markup=proto_inline_kb())
+    await state.set_state(AdminFSM.client_device_protocol)
+
+
+@router.callback_query(F.data.startswith("proto:"), AdminFSM.client_device_protocol)
+async def cb_admin_client_device_protocol(cb: CallbackQuery, state: FSMContext, **kw):
+    db: Database = kw.get("db")
+    if not await _ensure_admin_callback(cb, db=db):
+        return
+    await cb.answer()
+    data = await state.get_data()
+    chat_id = str(data.get("_client_device_chat_id") or "")
+    client = await db.get_client(chat_id) if chat_id else None
+    if not client:
+        await state.clear()
+        await _edit_or_answer(cb, "Клиент не найден.", admin_clients_menu())
+        return
+
+    raw = cb.data.split(":")[1]
+    is_router = raw == "wg_router"
+    protocol = "wg" if is_router else raw
+    device_name = str(data.get("device_name") or "").strip()
+    return_to = data.get("_return_to", f"adm:cl_devices:{chat_id}")
+    return_home = data.get("_return_home", "adm:menu")
+    await state.clear()
+
+    try:
+        from services.config_builder import ConfigBuilder
+
+        builder = ConfigBuilder()
+        device = await db.add_device(chat_id, device_name, protocol, pending=False, is_router=is_router)
+        device = await builder.ensure_keys(device)
+        await db.update_device_keys(device["id"], device["private_key"], device["public_key"])
+        await _wc().add_peer(
+            device_name,
+            protocol,
+            device.get("public_key", ""),
+            device.get("ip_address", ""),
+        )
+        device = await db.get_device_by_id(device["id"]) or device
+        device["chat_id"] = chat_id
+        bot: Bot = kw.get("bot")
+        await _send_admin_device_config(bot, str(cb.from_user.id), db, device)
+        await cb.message.answer(
+            f"✅ Устройство `{device_name}` добавлено для клиента <code>{chat_id}</code>.\n"
+            "Recovery-пакет отправлен в этот чат.",
+            parse_mode="HTML",
+            reply_markup=return_kb(return_to, return_home),
+        )
+    except Exception as exc:
+        await cb.message.answer(
+            f"❌ Не удалось добавить устройство: {exc}",
+            reply_markup=return_kb(return_to, return_home),
+        )
+
+
+@router.callback_query(F.data.startswith("adm:cl_dev_getconf:"))
+async def cb_adm_client_device_getconf(cb: CallbackQuery, **kw):
+    db: Database = kw.get("db")
+    if not await _ensure_admin_callback(cb, db=db):
+        return
+    await cb.answer("Готовлю recovery-пакет...")
+    device_id = int(cb.data[len("adm:cl_dev_getconf:"):])
+    device = await db.get_device_with_client(device_id)
+    if not device:
+        await _edit_or_answer(cb, "Устройство не найдено.", admin_clients_menu())
+        return
+    if device.get("pending_approval"):
+        owner_chat_id = str(device.get("chat_id") or "")
+        await _edit_or_answer(
+            cb,
+            "⏳ Устройство ещё ожидает одобрения. Сначала одобрите его в разделе запросов.",
+            admin_client_devices_kb(owner_chat_id, await db.get_devices(owner_chat_id)),
+        )
+        return
+    try:
+        bot: Bot = kw.get("bot")
+        await _send_admin_device_config(bot, str(cb.from_user.id), db, device)
+        text, _ = await _render_admin_client_device_card(device)
+        await _edit_or_answer(
+            cb,
+            text + "\n\n📦 Recovery-пакет отправлен в этот чат.",
+            admin_client_device_actions_kb(str(device["chat_id"]), device_id),
+        )
+    except Exception as exc:
+        await _edit_or_answer(
+            cb,
+            f"❌ Не удалось получить конфиг: {exc}",
+            admin_clients_menu(),
+        )
+
+
+@router.callback_query(F.data.startswith("adm:cl_dev_refresh:"))
+async def cb_adm_client_device_refresh(cb: CallbackQuery, **kw):
+    db: Database = kw.get("db")
+    if not await _ensure_admin_callback(cb, db=db):
+        return
+    await cb.answer("Пересобираю конфиг...")
+    device_id = int(cb.data[len("adm:cl_dev_refresh:"):])
+    device = await db.get_device_with_client(device_id)
+    if not device:
+        await _edit_or_answer(cb, "Устройство не найдено.", admin_clients_menu())
+        return
+    if device.get("pending_approval"):
+        owner_chat_id = str(device.get("chat_id") or "")
+        await _edit_or_answer(
+            cb,
+            "⏳ Устройство ещё ожидает одобрения. Обновление конфига недоступно.",
+            admin_client_devices_kb(owner_chat_id, await db.get_devices(owner_chat_id)),
+        )
+        return
+    try:
+        bot: Bot = kw.get("bot")
+        await _send_admin_device_config(bot, str(cb.from_user.id), db, device)
+        text, _ = await _render_admin_client_device_card(device)
+        await _edit_or_answer(
+            cb,
+            text + "\n\n🔄 Актуальный recovery-пакет отправлен в этот чат.",
+            admin_client_device_actions_kb(str(device["chat_id"]), device_id),
+        )
+    except Exception as exc:
+        await _edit_or_answer(
+            cb,
+            f"❌ Не удалось обновить конфиг: {exc}",
+            admin_clients_menu(),
+        )
+
+
+@router.callback_query(F.data.startswith("adm:cl_dev_del:"))
+async def cb_adm_client_device_delete(cb: CallbackQuery, **kw):
+    db: Database = kw.get("db")
+    if not await _ensure_admin_callback(cb, db=db):
+        return
+    await cb.answer()
+    device_id = int(cb.data[len("adm:cl_dev_del:"):])
+    device = await db.get_device_with_client(device_id)
+    if not device:
+        await _edit_or_answer(cb, "Устройство не найдено.", admin_clients_menu())
+        return
+    chat_id = str(device.get("chat_id") or "")
+    try:
+        if device.get("public_key"):
+            await _wc().remove_peer(device["public_key"])
+        await db.delete_device(device_id)
+        devices = await db.get_devices(chat_id)
+        await _edit_or_answer(
+            cb,
+            result_text(
+                "Устройство удалено",
+                f"Устройство <code>{device['device_name']}</code> удалено у клиента <code>{chat_id}</code>.",
+                trail=["Меню", "Клиенты", "Устройства"],
+            ),
+            admin_client_devices_kb(chat_id, devices),
+        )
+    except Exception as exc:
+        await _edit_or_answer(
+            cb,
+            f"❌ Не удалось удалить устройство: {exc}",
+            admin_client_device_actions_kb(chat_id, device_id),
+        )
 
 @router.callback_query(F.data.startswith("adm:cl:"))
 async def cb_adm_client(cb: CallbackQuery, **kw):

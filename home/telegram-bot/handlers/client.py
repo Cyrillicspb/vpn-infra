@@ -84,6 +84,18 @@ _MOBILE_DNS_WARNING = (
     "split-tunnel сервисы могут обходить dnsmasq.\n"
     "Если тоннель с таким именем уже есть в приложении, удалите старый и импортируйте этот конфиг заново."
 )
+_WIREGUARD_AUTOCONNECT_HINT = (
+    "Для WireGuard включите автоподключение.\n"
+    "iPhone / iPad / macOS: откройте туннель и включите `On-Demand`.\n"
+    "Android: включите `Always-on VPN` в настройках VPN для WireGuard."
+)
+
+
+def _wireguard_extra_hints(device: dict) -> list[str]:
+    hints: list[str] = []
+    if device.get("protocol") == "wg":
+        hints.append(_WIREGUARD_AUTOCONNECT_HINT)
+    return hints
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +478,8 @@ async def reg_protocol_cb(cb: CallbackQuery, state: FSMContext, **kw):
             "<a href='https://apps.apple.com/app/wireguard/id1441195209'>iOS</a> | "
             "<a href='https://play.google.com/store/apps/details?id=com.wireguard.android'>Android</a>\n"
             "2. Откройте приложение → \"+\" → \"Создать из QR-кода\" (или импортируйте файл)\n"
-            "3. Включите переключатель — готово!",
+            "3. Включите туннель.\n"
+            "4. Включите автоподключение: `On-Demand` на iPhone/iPad или `Always-on VPN` на Android.",
             parse_mode="HTML",
         )
 
@@ -538,7 +551,8 @@ async def reg_protocol(message: Message, state: FSMContext, **kw):
             "<a href='https://apps.apple.com/app/wireguard/id1441195209'>iOS</a> | "
             "<a href='https://play.google.com/store/apps/details?id=com.wireguard.android'>Android</a>\n"
             "2. Откройте приложение → \"+\" → \"Создать из QR-кода\" (или импортируйте файл)\n"
-            "3. Включите переключатель — готово!",
+            "3. Включите туннель.\n"
+            "4. Включите автоподключение: `On-Demand` на iPhone/iPad или `Always-on VPN` на Android.",
             parse_mode="HTML",
         )
 
@@ -2279,6 +2293,8 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
             parse_mode="HTML",
         )
         await cb.message.answer(_MOBILE_DNS_WARNING)
+        for hint in _wireguard_extra_hints(device):
+            await cb.message.answer(hint)
         if qr_bytes:
             await cb.message.answer_photo(
                 BufferedInputFile(qr_bytes, filename="qr.png"),
@@ -2318,6 +2334,8 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
             "⚠️ <b>Конфигурация содержит приватный ключ!</b> Не передавайте никому.",
             parse_mode="HTML",
         )
+        for hint in _wireguard_extra_hints(device):
+            await cb.message.answer(hint)
 
         # Инструкция перед скриптом (отдельным сообщением)
         if platform == "windows":
@@ -2423,6 +2441,8 @@ async def _send_config(message: Message, db: Database, device: dict, kw: dict) -
     )
     if not device.get("is_router"):
         await message.answer(_MOBILE_DNS_WARNING)
+    for hint in _wireguard_extra_hints(device):
+        await message.answer(hint)
 
     # QR
     if qr_bytes:

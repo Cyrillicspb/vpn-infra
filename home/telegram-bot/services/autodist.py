@@ -38,6 +38,18 @@ MOBILE_DNS_WARNING = (
     "split-tunnel сервисы могут обходить dnsmasq.\n"
     "Если тоннель с таким именем уже есть в приложении, удалите старый и импортируйте этот конфиг заново."
 )
+WIREGUARD_AUTOCONNECT_HINT = (
+    "Для WireGuard включите автоподключение.\n"
+    "iPhone / iPad / macOS: откройте туннель и включите `On-Demand`.\n"
+    "Android: включите `Always-on VPN` в настройках VPN для WireGuard."
+)
+
+
+def wireguard_extra_hints(device: dict) -> list[str]:
+    hints: list[str] = []
+    if device.get("protocol") == "wg":
+        hints.append(WIREGUARD_AUTOCONNECT_HINT)
+    return hints
 
 
 class AutoDist:
@@ -151,6 +163,8 @@ class AutoDist:
         )
         if not device.get("is_router"):
             await self.bot.send_message(chat_id, MOBILE_DNS_WARNING)
+        for hint in wireguard_extra_hints(device):
+            await self.bot.send_message(chat_id, hint)
 
         # QR-код
         if qr_bytes:

@@ -715,6 +715,20 @@ class Database:
         finally:
             conn.close()
 
+    async def get_device_with_client(self, device_id: int) -> Optional[dict]:
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                """SELECT d.*, c.chat_id, c.username, c.first_name, c.is_disabled
+                   FROM devices d
+                   JOIN clients c ON c.id = d.client_id
+                   WHERE d.id = ?""",
+                (device_id,),
+            ).fetchone()
+            return self._decrypt_device(dict(row)) if row else None
+        finally:
+            conn.close()
+
     async def add_device(
         self,
         chat_id: str,
