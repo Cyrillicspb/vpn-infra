@@ -6,6 +6,7 @@ import sys
 import tempfile
 import types
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -790,6 +791,63 @@ scenarios:
         self.assertAlmostEqual(summary["first_https_latency_ms_avg"], 200.0)
         self.assertIn("lan_blocked_via_vps", summary["slow_scenarios"])
         self.assertIn("lan_blocked_via_vps:api.telegram.org", summary["path_failures"])
+
+    def test_record_latency_learning_observation_rejects_broad_google_domains(self) -> None:
+        with mock.patch.object(watchdog, "_latency_manual_vpn_domains", return_value=set()):
+            with mock.patch.object(watchdog, "_latency_manual_direct_domains", return_value=set()):
+                with mock.patch.object(
+                    watchdog,
+                    "_match_latency_catalog_domain",
+                    return_value={
+                        "service_id": "okko",
+                        "display": "Okko",
+                        "category": "media",
+                        "role": "cdn",
+                        "parent_domain": "googleapis.com",
+                        "auto_promote_allowed": True,
+                        "requires_direct_bootstrap": True,
+                    },
+                ):
+                    promoted = watchdog._record_latency_learning_observation(
+                        "www.googleapis.com",
+                        source="functional",
+                        reason="test",
+                        route_verdict="blocked_vps",
+                    )
+
+        self.assertFalse(promoted)
+
+    def test_functional_failover_trigger_reason_targets_blocked_and_control_plane_failures(self) -> None:
+        watchdog.state.functional_mode = watchdog.FUNCTIONAL_MODE_ACTIVE
+        watchdog.state.functional_execution_status = watchdog.FUNCTIONAL_EXEC_HEALTHY
+        watchdog.state.functional_summary = {"timestamp": "2026-04-07T07:30:00"}
+        watchdog.state.responsiveness_summary = {
+            "status": "degraded",
+            "by_class": {
+                "blocked_baseline": {"ok": 0, "fail": 1},
+                "complex_media_service": {"ok": 0, "fail": 1},
+            },
+        }
+        reason = watchdog._functional_failover_trigger_reason(
+            now_ts=datetime.fromisoformat("2026-04-07T07:31:00").timestamp()
+        )
+        self.assertEqual(reason, "functional_blocked_baseline")
+
+    def test_functional_failover_trigger_reason_ignores_stale_or_noncritical_results(self) -> None:
+        watchdog.state.functional_mode = watchdog.FUNCTIONAL_MODE_ACTIVE
+        watchdog.state.functional_execution_status = watchdog.FUNCTIONAL_EXEC_HEALTHY
+        watchdog.state.functional_summary = {"timestamp": "2026-04-07T07:20:00"}
+        watchdog.state.responsiveness_summary = {
+            "status": "degraded",
+            "by_class": {
+                "complex_media_service": {"ok": 0, "fail": 1},
+            },
+        }
+        self.assertIsNone(
+            watchdog._functional_failover_trigger_reason(
+                now_ts=datetime.fromisoformat("2026-04-07T07:31:00").timestamp()
+            )
+        )
 
     def test_path_verdict_prefers_latency_sensitive_direct(self) -> None:
         with mock.patch.object(watchdog, "_scenario_src_ip", return_value="192.168.1.201"):

@@ -137,6 +137,15 @@ FUNCTIONAL_RUNTIME_DIR = Path("/run/vpn-functional")
 FUNCTIONAL_BRIDGE = "br-fh"
 FUNCTIONAL_BRIDGE_CIDR = os.getenv("FUNCTIONAL_NS_SUBNET", "172.21.0.0/24")
 FUNCTIONAL_BRIDGE_IP = os.getenv("FUNCTIONAL_NS_GATEWAY_IP", "172.21.0.1/24")
+FUNCTIONAL_QUICK_REFRESH_INTERVAL_TICKS = 6
+FUNCTIONAL_FAILOVER_MAX_SUMMARY_AGE_SECONDS = 180
+FUNCTIONAL_FAILOVER_CONSECUTIVE_DEGRADES = 2
+FUNCTIONAL_FAILOVER_SCENARIO_CLASSES = frozenset({"blocked_baseline", "control_plane"})
+LATENCY_SENSITIVE_DIRECT_EXCLUDED_DOMAINS = frozenset({
+    "www.googleapis.com",
+    "googleapis.com",
+    "gstatic.com",
+})
 FUNCTIONAL_NAMESPACES: dict[str, dict[str, str]] = {
     "lan": {"name": "vpn-fh-lan", "transport_ip": "172.21.0.11/24"},
     "wg": {"name": "vpn-fh-wg", "transport_ip": "172.21.0.12/24", "client_ip": "10.177.3.250/32", "iface": "wgfh", "server_iface": "wg1"},
@@ -5130,6 +5139,8 @@ def _record_latency_learning_observation(
         return False
     if domain in _latency_manual_direct_domains():
         return False
+    if domain in LATENCY_SENSITIVE_DIRECT_EXCLUDED_DOMAINS:
+        return False
 
     match = _match_latency_catalog_domain(domain)
     if not match:
@@ -5212,6 +5223,41 @@ async def _observe_latency_from_functional_evidence(evidence_store: dict[str, di
             ) or promoted
     if promoted:
         asyncio.create_task(_maybe_apply_latency_learning_updates("functional self-learning promotion"))
+
+
+def _functional_summary_timestamp_ts() -> float:
+    timestamp = str((state.functional_summary or {}).get("timestamp") or "").strip()
+    if not timestamp:
+        return 0.0
+    try:
+        return datetime.fromisoformat(timestamp).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _functional_failover_trigger_reason(now_ts: Optional[float] = None) -> Optional[str]:
+    if _functional_mode() != FUNCTIONAL_MODE_ACTIVE:
+        return None
+    if state.functional_execution_status != FUNCTIONAL_EXEC_HEALTHY:
+        return None
+    summary = state.responsiveness_summary or {}
+    if str(summary.get("status") or "") != "degraded":
+        return None
+
+    summary_ts = _functional_summary_timestamp_ts()
+    if summary_ts <= 0:
+        return None
+    now_ts = time.time() if now_ts is None else now_ts
+    if now_ts - summary_ts > FUNCTIONAL_FAILOVER_MAX_SUMMARY_AGE_SECONDS:
+        return None
+    if state.last_failover and summary_ts <= state.last_failover.timestamp():
+        return None
+
+    for scenario_class in FUNCTIONAL_FAILOVER_SCENARIO_CLASSES:
+        class_bucket = (summary.get("by_class") or {}).get(scenario_class) or {}
+        if int(class_bucket.get("fail") or 0) > 0:
+            return f"functional_{scenario_class}"
+    return None
 
 
 async def _refresh_vpn_domains_for_dpi(reason: str) -> None:
@@ -5924,6 +5970,7 @@ async def decision_loop() -> None:
     """
     ping_fails = 0
     rtt_degrade_count = 0
+    functional_degrade_count = 0
     logger.info("decision_loop запущен")
 
     if state.is_first_run:
@@ -5966,6 +6013,22 @@ async def decision_loop() -> None:
                         await _do_failover("rtt_degradation")
                 else:
                     rtt_degrade_count = 0
+
+                functional_reason = _functional_failover_trigger_reason()
+                if functional_reason:
+                    functional_degrade_count += 1
+                    logger.warning(
+                        "Functional degradation #%s on %s: %s",
+                        functional_degrade_count,
+                        state.active_stack,
+                        functional_reason,
+                    )
+                    if functional_degrade_count >= FUNCTIONAL_FAILOVER_CONSECUTIVE_DEGRADES:
+                        functional_degrade_count = 0
+                        await _do_failover(functional_reason)
+                        continue
+                else:
+                    functional_degrade_count = 0
 
                 # Обновляем RTT baseline (только для VPN-стеков из STACK_ORDER)
                 if state.active_stack in state.rtt_baseline:
@@ -6107,7 +6170,7 @@ async def monitoring_loop() -> None:
                 asyncio.create_task(_check_dpi_effectiveness())
 
             # Каждые 15 мин: lightweight functional health refresh
-            if tick % 90 == 0 and _functional_mode() != FUNCTIONAL_MODE_OFF:
+            if tick % FUNCTIONAL_QUICK_REFRESH_INTERVAL_TICKS == 0 and _functional_mode() != FUNCTIONAL_MODE_OFF:
                 asyncio.create_task(_run_functional_checks_for_tier("quick"), name="functional-quick")
 
             # Каждые 6 ч: large speedtest, кэш маршрутов, сертификаты, DKMS

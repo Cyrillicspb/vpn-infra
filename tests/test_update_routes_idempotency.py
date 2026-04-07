@@ -214,6 +214,55 @@ class DnsmasqDpiExclusionTests(unittest.TestCase):
         self.assertIn("manual.example", domains)
         self.assertIn("extra.example", domains)
 
+    def test_build_latency_sensitive_domains_filters_broad_google_domains_from_runtime_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fallback = tmp / "latency-catalog-default.json"
+            fallback.write_text('{"services":{}}', encoding="utf-8")
+            runtime = tmp / "latency-catalog.json"
+            runtime.write_text(
+                json.dumps(
+                    {
+                        "services": {
+                            "contaminated-service": {
+                                "display": "Contaminated",
+                                "category": "media",
+                                "requires_direct_bootstrap": True,
+                                "domains": {
+                                    "cdn": [
+                                        "www.googleapis.com",
+                                        "googleapis.com",
+                                        "gstatic.com",
+                                        "safe.example",
+                                    ]
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            learned = tmp / "latency-learned.txt"
+            learned.write_text("www.googleapis.com\nlearned-safe.example\n", encoding="utf-8")
+            manual = tmp / "latency-sensitive-direct.txt"
+            manual.write_text("gstatic.com\nmanual-safe.example\n", encoding="utf-8")
+
+            with mock.patch.object(update_routes, "REPO_LATENCY_CATALOG", fallback):
+                with mock.patch.object(update_routes, "LATENCY_CATALOG", runtime):
+                    with mock.patch.object(update_routes, "LATENCY_LEARNED", learned):
+                        with mock.patch.object(update_routes, "LATENCY_DIRECT", manual):
+                            domains = update_routes.build_latency_sensitive_domains(
+                                manual_direct_domains={"googleapis.com", "extra-safe.example"}
+                            )
+
+        self.assertNotIn("www.googleapis.com", domains)
+        self.assertNotIn("googleapis.com", domains)
+        self.assertNotIn("gstatic.com", domains)
+        self.assertIn("safe.example", domains)
+        self.assertIn("learned-safe.example", domains)
+        self.assertIn("manual-safe.example", domains)
+        self.assertIn("extra-safe.example", domains)
+
     def test_render_dnsmasq_latency_sensitive_uses_separate_set(self) -> None:
         content, written = update_routes.render_dnsmasq_latency_sensitive(
             ["okko.tv", "static.okko.tv", "yastatic.net", "invalid domain"]

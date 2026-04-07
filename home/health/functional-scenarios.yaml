@@ -154,7 +154,7 @@ scenarios:
         url: https://drm.playfamily.ru
         routing_expectation: latency_sensitive_direct
         expected_codes: [200, 301, 302, 401, 403]
-      - host: www.googleapis.com
-        url: https://www.googleapis.com
+      - host: clients-static.okko.tv
+        url: https://clients-static.okko.tv
         routing_expectation: latency_sensitive_direct
         expected_codes: [200, 301, 302, 401, 403, 404]

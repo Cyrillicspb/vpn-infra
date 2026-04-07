@@ -136,6 +136,15 @@ LATENCY_SENSITIVE_DIRECT_DOMAINS: list[str] = [
     "strm.yandex.ru",
 ]
 
+# Broad shared Google platform domains must never enter the
+# latency-sensitive direct lane, even if they leak in from runtime
+# catalogs or learned/manual overlays.
+LATENCY_SENSITIVE_DIRECT_EXCLUDED_DOMAINS: frozenset[str] = frozenset({
+    "www.googleapis.com",
+    "googleapis.com",
+    "gstatic.com",
+})
+
 # ── Источники ─────────────────────────────────────────────────────────────────
 # type: "ip_list" | "cidr_list" | "zapret_csv" | "plain"
 #       "root_domains" | "domain_list" | "rockblack_zip"
@@ -977,7 +986,11 @@ def build_latency_sensitive_domains(
     domains.extend(load_manual_domains(LATENCY_DIRECT))
     domains.extend(load_manual_domains(LATENCY_LEARNED))
     domains.extend(list(manual_direct_domains or set()))
-    return set(_dedupe_domain_suffixes(domains))
+    return {
+        domain
+        for domain in _dedupe_domain_suffixes(domains)
+        if domain not in LATENCY_SENSITIVE_DIRECT_EXCLUDED_DOMAINS
+    }
 
 
 def load_active_dpi_domains() -> set[str]:
