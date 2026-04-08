@@ -1247,8 +1247,7 @@ fetch_target_release() {
     TARGET_SOURCE_REF="$source_ref"
     TARGET_SOURCE_REMOTE="origin"
     TARGET_RELEASE_SHA="$(git -C "$REPO_DIR" rev-parse "${source_ref}^{}")"
-    TARGET_RELEASE_VERSION="$(version_for_git_ref "$TARGET_RELEASE_SHA" 2>/dev/null || true)"
-    [[ -n "$TARGET_RELEASE_VERSION" ]] || TARGET_RELEASE_VERSION="unknown"
+    TARGET_RELEASE_VERSION="$(normalized_version_for_sha "$TARGET_RELEASE_SHA" "$(version_for_git_ref "$source_ref" 2>/dev/null || echo "unknown")")"
     TARGET_RELEASE_ID="$(release_id_for_sha "$TARGET_RELEASE_SHA")"
 }
 
