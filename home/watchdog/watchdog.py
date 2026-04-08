@@ -137,6 +137,7 @@ FUNCTIONAL_RUNTIME_DIR = Path("/run/vpn-functional")
 FUNCTIONAL_BRIDGE = "br-fh"
 FUNCTIONAL_BRIDGE_CIDR = os.getenv("FUNCTIONAL_NS_SUBNET", "172.21.0.0/24")
 FUNCTIONAL_BRIDGE_IP = os.getenv("FUNCTIONAL_NS_GATEWAY_IP", "172.21.0.1/24")
+FUNCTIONAL_ROUTE_TABLE = os.getenv("FUNCTIONAL_ROUTE_TABLE", "100")
 FUNCTIONAL_QUICK_REFRESH_INTERVAL_TICKS = 6
 FUNCTIONAL_FAILOVER_MAX_SUMMARY_AGE_SECONDS = 180
 FUNCTIONAL_FAILOVER_CONSECUTIVE_DEGRADES = 2
@@ -693,6 +694,13 @@ async def _ensure_functional_bridge() -> None:
         await run_cmd(["ip", "link", "add", FUNCTIONAL_BRIDGE, "type", "bridge"], timeout=5)
     await run_cmd(["ip", "addr", "replace", FUNCTIONAL_BRIDGE_IP, "dev", FUNCTIONAL_BRIDGE], timeout=5)
     await run_cmd(["ip", "link", "set", FUNCTIONAL_BRIDGE, "up"], timeout=5)
+    # Functional namespaces use a source-based rule into table 100/vpn. Keep the
+    # bridge subnet route in that table so host<->namespace traffic does not
+    # hairpin via the LAN gateway when br-fh appears after vpn-policy-routing.
+    await run_cmd(
+        ["ip", "route", "replace", FUNCTIONAL_BRIDGE_CIDR, "dev", FUNCTIONAL_BRIDGE, "table", FUNCTIONAL_ROUTE_TABLE],
+        timeout=5,
+    )
 
 
 def _functional_link_names(kind: str) -> tuple[str, str]:
@@ -4938,7 +4946,7 @@ class HealthChecker:
         now = time.time()
         if report["score"] < HEALTH_SCORE_THRESHOLD:
             if now - self._alert_dedup_ts > 1800:
-                failed = [c["name"] for c in report["checks"] if c["status"] == "fail"]
+                failed = [f"`{c['name']}`" for c in report["checks"] if c["status"] == "fail"]
                 alert(
                     f"⚠️ *Health Score: {report['score']:.0f}/100* ({report['status']})\n"
                     f"Проблемы: {', '.join(failed[:5]) if failed else 'см. /health'}"

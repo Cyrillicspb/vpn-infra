@@ -316,6 +316,43 @@ class FunctionalHealthTests(unittest.TestCase):
         self.assertEqual(by_name["systemd:ssh"]["status"], "ok")
         self.assertIn("service=inactive; socket=active", by_name["systemd:ssh"]["detail"])
 
+    def test_ensure_functional_bridge_refreshes_table_100_route(self) -> None:
+        calls: list[list[str]] = []
+
+        async def _fake_run_cmd(cmd, timeout=0):
+            calls.append(cmd)
+            if cmd[:4] == ["ip", "link", "show", watchdog.FUNCTIONAL_BRIDGE]:
+                return 0, "", ""
+            return 0, "", ""
+
+        with mock.patch.object(watchdog, "run_cmd", side_effect=_fake_run_cmd):
+            asyncio.run(watchdog._ensure_functional_bridge())
+
+        self.assertIn(
+            ["ip", "route", "replace", watchdog.FUNCTIONAL_BRIDGE_CIDR, "dev", watchdog.FUNCTIONAL_BRIDGE, "table", watchdog.FUNCTIONAL_ROUTE_TABLE],
+            calls,
+        )
+
+    def test_health_alert_wraps_failed_check_names_in_code(self) -> None:
+        report = {
+            "score": 67.9,
+            "status": "degraded",
+            "checks": [
+                {"name": "functional_lan_direct_internet", "status": "fail"},
+                {"name": "dns_responding", "status": "ok"},
+            ],
+        }
+        checker = watchdog.HealthChecker()
+        checker._alert_dedup_ts = 0.0
+        with mock.patch.object(watchdog, "alert") as mock_alert:
+            with mock.patch("time.time", return_value=2000.0):
+                checker._maybe_alert(report)
+
+        mock_alert.assert_called_once()
+        payload = mock_alert.call_args.args[0]
+        self.assertIn("`functional_lan_direct_internet`", payload)
+        self.assertIn("Health Score: 68/100", payload)
+
     def test_reconcile_backend_path_runtime_state_sets_hysteria2_active_backend(self) -> None:
         watchdog.state.backends = [{"id": "backend-a", "ip": "198.51.100.10", "drain": False, "status": "healthy"}]
         watchdog.state.active_backend_id = "backend-a"

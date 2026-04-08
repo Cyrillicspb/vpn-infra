@@ -98,6 +98,23 @@ _MOBILE_DNS_WARNING = (
     "Если тоннель с таким именем уже есть в приложении, удалите старый и импортируйте этот конфиг заново."
 )
 
+_FUNCTIONAL_SYSTEM_PEERS = {
+    "10.177.1.250/32": "synthetic bootstrap awg",
+    "10.177.3.250/32": "synthetic bootstrap wg",
+}
+
+
+def _peer_client_traffic_bytes(peer: dict) -> tuple[int, int]:
+    # WireGuard counters are from the server perspective. In the admin UI we
+    # show client-centric traffic: download = server tx, upload = server rx.
+    rx = int(peer.get("rx_bytes", 0) or 0)
+    tx = int(peer.get("tx_bytes", 0) or 0)
+    return tx, rx
+
+
+def _system_peer_label(peer: dict) -> str:
+    return _FUNCTIONAL_SYSTEM_PEERS.get(str(peer.get("allowed_ips") or "").strip(), "")
+
 
 def _render_backend_lines(backends: list[dict]) -> str:
     if not backends:
@@ -3227,8 +3244,7 @@ async def cb_adm_stats(cb: CallbackQuery, **kw):
         system_peers = []
         for p in peers:
             pk = p.get("public_key", "")
-            rx = p.get("rx_bytes", 0)
-            tx = p.get("tx_bytes", 0)
+            download, upload = _peer_client_traffic_bytes(p)
             hs = p.get("last_handshake", 0)
             dev_info = pk_to_dev.get(pk)
             if dev_info:
@@ -3236,32 +3252,37 @@ async def cb_adm_stats(cb: CallbackQuery, **kw):
                 if cid not in client_traffic:
                     client_traffic[cid] = {
                         "name": dev_info["first_name"],
-                        "rx": 0, "tx": 0,
+                        "download": 0, "upload": 0,
                         "devices": [],
                         "active": 0,
                     }
-                client_traffic[cid]["rx"] += rx
-                client_traffic[cid]["tx"] += tx
+                client_traffic[cid]["download"] += download
+                client_traffic[cid]["upload"] += upload
                 active = hs > 0 and now_ts - hs < 180
                 if active:
                     client_traffic[cid]["active"] += 1
                 hs_str = f"{(now_ts - hs) // 60} мин" if hs > 0 else "никогда"
                 client_traffic[cid]["devices"].append(
                     f"  {'🟢' if active else '⚪'} {dev_info['device_name']}: "
-                    f"↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)} | {hs_str}"
+                    f"↓{_fmt_bytes(download)} ↑{_fmt_bytes(upload)} | {hs_str}"
                 )
             else:
                 iface = p.get("interface", "")
-                orphans.append(f"  <code>{pk[:20]}…</code> [{iface}] ↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)}")
+                system_label = _system_peer_label(p)
+                peer_line = f"  <code>{pk[:20]}…</code> [{iface}] ↓{_fmt_bytes(download)} ↑{_fmt_bytes(upload)}"
+                if system_label:
+                    system_peers.append(f"{peer_line} | {system_label}")
+                else:
+                    orphans.append(peer_line)
 
         if not client_traffic:
             text = "📊 <b>Статистика трафика</b>\n\nНет данных."
         else:
             lines = ["📊 <b>Статистика трафика по клиентам</b>\n"]
-            for cid, info in sorted(client_traffic.items(), key=lambda x: -(x[1]["rx"] + x[1]["tx"])):
+            for cid, info in sorted(client_traffic.items(), key=lambda x: -(x[1]["download"] + x[1]["upload"])):
                 lines.append(
                     f"👤 <b>{info['name']}</b> ({cid})\n"
-                    f"  Итого: ↓{_fmt_bytes(info['rx'])} ↑{_fmt_bytes(info['tx'])}\n"
+                    f"  Итого: ↓{_fmt_bytes(info['download'])} ↑{_fmt_bytes(info['upload'])}\n"
                     + "\n".join(info["devices"])
                 )
             if system_peers:
@@ -4702,8 +4723,7 @@ async def cb_adm_client(cb: CallbackQuery, **kw):
         dname = d.get("device_name", "?")
         p = pk_to_peer.get(pk, {})
         hs = p.get("last_handshake", 0)
-        rx = p.get("rx_bytes", 0)
-        tx = p.get("tx_bytes", 0)
+        download, upload = _peer_client_traffic_bytes(p)
         if hs > 0:
             mins = (now_ts - hs) // 60
             hs_str = f"{mins} мин" if mins < 120 else f"{mins//60} ч"
@@ -4712,7 +4732,7 @@ async def cb_adm_client(cb: CallbackQuery, **kw):
             hs_str = "никогда"
             icon = "⚪"
         dev_lines.append(
-            f"{icon} <b>{dname}</b> [{proto}] — {hs_str} | ↓{_fmt_bytes(rx)} ↑{_fmt_bytes(tx)}"
+            f"{icon} <b>{dname}</b> [{proto}] — {hs_str} | ↓{_fmt_bytes(download)} ↑{_fmt_bytes(upload)}"
         )
 
     devs_text = "\n".join(dev_lines) if dev_lines else "нет"
