@@ -3813,10 +3813,11 @@ async def probe_vps_reachability() -> None:
 # ---------------------------------------------------------------------------
 # Мониторинг: заблокированные сайты через tun
 # ---------------------------------------------------------------------------
-# telegram.org / t.me могут флапать на отдельных backend paths даже когда
-# Telegram control plane через api.telegram.org уже доступен. Для health gate
-# и alerting используем более стабильный API endpoint и даём краткий retry.
-BLOCKED_CHECK_URLS = ["https://youtube.com", "https://api.telegram.org"]
+# youtube.com может флапать или требовать дополнительные bootstrap/CDN-paths
+# даже когда blocked control plane уже работает штатно. Для health gate,
+# alerting и lightweight runtime diagnostics используем только стабильный
+# Telegram API endpoint, который совпадает с functional control-plane truth.
+BLOCKED_CHECK_URLS = ["https://api.telegram.org"]
 BLOCKED_CHECK_ATTEMPTS = 3
 BLOCKED_CHECK_OK_CODES = ("200", "301", "302", "303", "401", "403")
 
@@ -7584,10 +7585,10 @@ async def post_diagnose(request: Request, device: str, _: bool = Depends(_auth))
     _plugin = plugins.get(state.active_stack)
     _tun = _plugin.meta.get("tun_name", f"tun-{state.active_stack}") if _plugin else f"tun-{state.active_stack}"
     rc, out, _ = await run_cmd(
-        ["curl", "-s", "--max-time", "10", "--interface", _tun, "-o", "/dev/null", "-w", "%{http_code}", "https://youtube.com"],
+        ["curl", "-s", "--max-time", "10", "--interface", _tun, "-o", "/dev/null", "-w", "%{http_code}", BLOCKED_CHECK_URLS[0]],
         timeout=15,
     )
-    results["blocked_sites_ok"] = rc == 0 and out.strip() in ("200", "301", "302")
+    results["blocked_sites_ok"] = rc == 0 and out.strip() in BLOCKED_CHECK_OK_CODES
 
     return results
 

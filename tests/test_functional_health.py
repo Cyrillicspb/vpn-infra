@@ -914,6 +914,29 @@ scenarios:
             )
         )
 
+    def test_blocked_site_probe_uses_stable_control_plane_endpoint(self) -> None:
+        self.assertEqual(watchdog.BLOCKED_CHECK_URLS, ["https://api.telegram.org"])
+
+    def test_collect_runtime_diagnostics_uses_blocked_probe_contract(self) -> None:
+        watchdog.state.active_stack = "hysteria2"
+        watchdog.plugins._registry = {
+            "hysteria2": SimpleNamespace(meta={"tun_name": "tun-hysteria2"}),
+        }
+
+        async def _fake_run_cmd(cmd, timeout=0):
+            if cmd[:3] == ["dig", "@127.0.0.1", "youtube.com"]:
+                return 0, "142.250.0.1\n", ""
+            if cmd[:6] == ["curl", "-s", "--max-time", "10", "--interface", "tun-hysteria2"]:
+                self.assertEqual(cmd[-1], "https://api.telegram.org")
+                return 0, "200", ""
+            return 0, "", ""
+
+        with mock.patch.object(watchdog, "run_cmd", side_effect=_fake_run_cmd):
+            with mock.patch.object(watchdog, "ping_vps", return_value=(True, 42.0)):
+                results = asyncio.run(watchdog.post_diagnose(None, "test-device", True))
+
+        self.assertTrue(results["blocked_sites_ok"])
+
     def test_path_verdict_prefers_latency_sensitive_direct(self) -> None:
         with mock.patch.object(watchdog, "_scenario_src_ip", return_value="192.168.1.201"):
             with mock.patch.object(watchdog, "_route_get_sync", return_value={"ok": "true", "line": "", "table": "", "dev": "", "via": ""}):

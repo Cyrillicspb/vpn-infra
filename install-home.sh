@@ -889,6 +889,27 @@ EOF
         log_ok "dnsmasq: Gateway mode — слушает на ${LAN_IFACE}"
     fi
 
+    mkdir -p /etc/systemd/system/dnsmasq.service.d
+    DNSMASQ_DROPIN_SRC=""
+    for d in /opt/vpn/home/systemd/dnsmasq.service.d /opt/vpn/systemd/dnsmasq.service.d; do
+        [[ -d "$d" ]] && DNSMASQ_DROPIN_SRC="$d" && break
+    done
+    if [[ -n "$DNSMASQ_DROPIN_SRC" ]]; then
+        cp "$DNSMASQ_DROPIN_SRC"/*.conf /etc/systemd/system/dnsmasq.service.d/ 2>/dev/null || true
+        log_ok "dnsmasq.service.d drop-in скопирован из репозитория"
+    elif [[ ! -f /etc/systemd/system/dnsmasq.service.d/restart-on-failure.conf ]]; then
+        cat > /etc/systemd/system/dnsmasq.service.d/restart-on-failure.conf << 'EOF'
+[Service]
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+EOF
+        log_ok "dnsmasq.service.d restart-on-failure создан"
+    fi
+
+    systemctl daemon-reload
+
     systemctl enable dnsmasq
     if ! systemctl restart dnsmasq 2>/dev/null; then
         log_warn "dnsmasq не запустился — используем Яндекс DNS как временный"
