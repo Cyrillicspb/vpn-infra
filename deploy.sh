@@ -1507,13 +1507,23 @@ apply_system_configs() {
     local units_changed=false
     local unit_src unit_name unit_dst
     for unit_src in "$REPO_DIR/home/systemd/"*; do
-        [[ -f "$unit_src" ]] || continue
         unit_name="$(basename "$unit_src")"
         unit_dst="/etc/systemd/system/$unit_name"
-        if [[ ! -f "$unit_dst" ]] || ! cmp -s "$unit_src" "$unit_dst"; then
-            cp "$unit_src" "$unit_dst"
-            units_changed=true
-            changed=true
+        if [[ -f "$unit_src" ]]; then
+            if [[ ! -f "$unit_dst" ]] || ! cmp -s "$unit_src" "$unit_dst"; then
+                cp "$unit_src" "$unit_dst"
+                units_changed=true
+                changed=true
+            fi
+            continue
+        fi
+        if [[ -d "$unit_src" && "$unit_name" == *.service.d ]]; then
+            if [[ ! -d "$unit_dst" ]] || ! diff -qr "$unit_src" "$unit_dst" >/dev/null 2>&1; then
+                mkdir -p "$unit_dst"
+                rsync -a --delete "$unit_src"/ "$unit_dst"/
+                units_changed=true
+                changed=true
+            fi
         fi
     done
     $units_changed && systemctl daemon-reload
