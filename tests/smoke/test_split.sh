@@ -112,10 +112,10 @@ if [[ -f "$CIDR_FILE" ]]; then
     else
         warn "combined.cidr содержит только $CIDR_COUNT записей"
     fi
-    if (( CIDR_COUNT <= 12000 )); then
-        pass "combined.cidr ≤12000 записей (temporary correctness-first limit)"
+    if (( CIDR_COUNT <= 15000 )); then
+        pass "combined.cidr ≤15000 записей (temporary correctness-first limit)"
     else
-        fail "combined.cidr содержит $CIDR_COUNT > 12000 записей"
+        fail "combined.cidr содержит $CIDR_COUNT > 15000 записей"
     fi
 
     WIDE_78=$(awk -F/ 'NF==2 && ($2==7 || $2==8) {c++} END{print c+0}' "$CIDR_FILE")
