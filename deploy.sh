@@ -171,6 +171,20 @@ die() {
     exit 1
 }
 
+remove_conflicting_named_container() {
+    local service="$1"
+    local container_name="$2"
+    local compose_id existing_id
+
+    compose_id="$(cd "$REPO_DIR" && docker compose ps -q "$service" 2>/dev/null | tr -d '\r\n' || true)"
+    existing_id="$(docker ps -aq --filter "name=^/${container_name}$" | head -n1 | tr -d '\r\n' || true)"
+    [[ -n "$existing_id" ]] || return 0
+    [[ -n "$compose_id" && "$compose_id" == "$existing_id" ]] && return 0
+
+    log_warn "Удаляю конфликтующий container_name=${container_name} перед compose up"
+    docker rm -f "$container_name" >/dev/null 2>&1 || die "Не удалось удалить конфликтующий контейнер ${container_name}"
+}
+
 is_mock_mode() {
     [[ "${DEPLOY_TEST_MODE:-0}" == "1" ]]
 }
@@ -1599,6 +1613,7 @@ sync_home_runtime() {
         local bot_git_hash
         bot_git_hash="$(git -C "$REPO_DIR" log -1 --format="%H" -- home/telegram-bot/ 2>/dev/null || echo "unknown")"
         (cd "$REPO_DIR" && docker compose build $bot_no_cache --build-arg GIT_HASH="$bot_git_hash" telegram-bot)
+        remove_conflicting_named_container "telegram-bot" "telegram-bot"
     fi
     if $rebuild_xray; then
         (cd "$REPO_DIR" && docker compose up -d --force-recreate xray-client-xhttp xray-client-cdn xray-client-vision)
