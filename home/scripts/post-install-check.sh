@@ -95,6 +95,16 @@ check_sync_pair() {
     fi
 }
 
+check_not_recent_journal_match() {
+    local name="$1" unit_filter="$2" pattern="$3" since="${4:--b}" hint="${5:-}"
+    local cmd="journalctl ${unit_filter} ${since} --no-pager 2>/dev/null | grep -Fq -- '$pattern'"
+    if eval "$cmd"; then
+        fail "$name" "${hint:-найдено в journal: $pattern}"
+    else
+        ok "$name"
+    fi
+}
+
 # ── Отправка в Telegram ───────────────────────────────────────────────────────
 
 send_telegram() {
@@ -241,6 +251,10 @@ check_sync_pair "runtime sync: autossh-vpn.service" \
     "/opt/vpn/home/systemd/autossh-vpn.service" \
     "/etc/systemd/system/autossh-vpn.service" \
     "installed autossh-vpn.service не совпадает с source tree"
+check_sync_pair "runtime sync: dnsmasq restart drop-in" \
+    "/opt/vpn/home/systemd/dnsmasq.service.d/restart-on-failure.conf" \
+    "/etc/systemd/system/dnsmasq.service.d/restart-on-failure.conf" \
+    "installed dnsmasq restart drop-in не совпадает с source tree"
 check_sync_pair "runtime sync: autossh-vpn.sh" \
     "/opt/vpn/home/scripts/autossh-vpn.sh" \
     "/opt/vpn/scripts/autossh-vpn.sh" \
@@ -258,6 +272,33 @@ check "nftables"          "systemctl is-active nftables"             "systemctl 
 check "dnsmasq"           "systemctl is-active dnsmasq"              "journalctl -u dnsmasq -n 20"
 check "watchdog"          "systemctl is-active watchdog"             "journalctl -u watchdog -n 20"
 check "hysteria2"         "systemctl is-active hysteria2"            "journalctl -u hysteria2 -n 10"
+check "dnsmasq systemd drop-in valid" \
+    "systemd-analyze verify dnsmasq.service >/dev/null 2>&1" \
+    "dnsmasq restart drop-in содержит неверные systemd keys"
+check "systemd-resolved disabled" \
+    "! systemctl is-enabled systemd-resolved 2>/dev/null | grep -q '^enabled$'" \
+    "dnsmasq должен быть единственным локальным resolver"
+check_warn "systemd-resolved masked" \
+    "test \"$(systemctl is-enabled systemd-resolved 2>/dev/null || true)\" = 'masked'" \
+    "resolved может вернуться после package update и снова занять resolver path"
+check "dnsmasq ignores resolvconf upstream" \
+    "grep -q '^IGNORE_RESOLVCONF=yes$' /etc/default/dnsmasq" \
+    "иначе systemd-resolved/resolvconf будут вмешиваться в upstream DNS"
+check "dnsmasq except lo" \
+    "grep -q '^DNSMASQ_EXCEPT=\"lo\"$' /etc/default/dnsmasq" \
+    "иначе dnsmasq попытается зарегистрировать себя через resolvconf/resolve1"
+check_not_recent_journal_match "dnsmasq resolve1 journal noise" "-u dnsmasq -u systemd-resolved" \
+    "Failed to set DNS configuration: Unit dbus-org.freedesktop.resolve1.service not found" "-b" \
+    "dnsmasq/resolvconf всё ещё пытается писать в отключённый systemd-resolved"
+check_warn "PAM lastlog module present or disabled" \
+    "! grep -Eq '^[[:space:]]*session[[:space:]].*pam_lastlog\\.so([[:space:]]|\$)' /etc/pam.d/login || test -f /usr/lib/security/pam_lastlog.so || test -f /lib/x86_64-linux-gnu/security/pam_lastlog.so || test -f /lib/security/pam_lastlog.so" \
+    "иначе login будет шуметь PAM unable to dlopen(pam_lastlog.so)"
+check_not_recent_journal_match "PAM lastlog journal noise" "" \
+    "PAM unable to dlopen(pam_lastlog.so)" "-b" \
+    "login stack всё ещё ссылается на отсутствующий pam_lastlog.so"
+check_not_recent_journal_match "docker signature validation journal noise" "-u docker" \
+    "failed to validate image signature" "-b" \
+    "docker daemon видит несовместимый registry mirror или битый OCI manifest path"
 check "vpn-sets-restore"  "systemctl is-active vpn-sets-restore || systemctl is-failed vpn-sets-restore | grep -v failed" \
                           "systemctl status vpn-sets-restore"
 check_warn "vpn-routes"   "systemctl is-active vpn-routes"           "нужен tier-2 туннель"
@@ -327,6 +368,9 @@ check "DNS 127.0.0.1 → google.com"  "dig @127.0.0.1 google.com +short +time=5 
                                      "dnsmasq не отвечает"
 check_warn "DNS заблокированный"    "dig @127.0.0.1 youtube.com +short +time=5 | grep -q '\\.'" \
                                      "нужен tier-2 для резолва через VPS"
+check "resolv.conf → 127.0.0.1" \
+    "grep -q '^nameserver 127.0.0.1$' /etc/resolv.conf" \
+    "локальный resolver должен идти через dnsmasq"
 
 DNS_RESP=$(dig @127.0.0.1 google.com +short +time=3 2>/dev/null | head -1 || echo "—")
 log_info "google.com → ${DNS_RESP}"

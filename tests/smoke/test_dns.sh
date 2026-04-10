@@ -77,13 +77,32 @@ else
     warn "vpn-domains.conf не найден (создаётся при первом обновлении маршрутов)"
 fi
 
-# 7. DNS сервера указывает на 127.0.0.1
+# 7. DNS сервера указывает на 127.0.0.1, systemd-resolved отключён,
+# dnsmasq не пытается регистрироваться через resolvconf/resolve1
 if grep -q "^nameserver 127.0.0.1" /etc/resolv.conf 2>/dev/null; then
     pass "DNS сервера указывает на 127.0.0.1 (/etc/resolv.conf)"
-elif resolvectl status 2>/dev/null | grep -q "127.0.0.1"; then
-    pass "DNS сервера указывает на 127.0.0.1 (systemd-resolved)"
 else
     warn "DNS может не идти через dnsmasq (проверьте /etc/resolv.conf)"
+fi
+
+if systemctl is-enabled systemd-resolved 2>/dev/null | grep -q '^masked$'; then
+    pass "systemd-resolved masked"
+elif ! systemctl is-enabled systemd-resolved 2>/dev/null | grep -q '^enabled$'; then
+    pass "systemd-resolved disabled"
+else
+    fail "systemd-resolved всё ещё enabled (конфликтует с dnsmasq)"
+fi
+
+if grep -q '^IGNORE_RESOLVCONF=yes$' /etc/default/dnsmasq 2>/dev/null; then
+    pass "dnsmasq ignores resolvconf upstream integration"
+else
+    fail "dnsmasq не настроен с IGNORE_RESOLVCONF=yes"
+fi
+
+if grep -q '^DNSMASQ_EXCEPT=\"lo\"$' /etc/default/dnsmasq 2>/dev/null; then
+    pass "dnsmasq исключён из resolvconf system-resolver registration"
+else
+    fail "dnsmasq не настроен с DNSMASQ_EXCEPT=\"lo\""
 fi
 
 # 8. Скрипт прогрева DNS кэша существует

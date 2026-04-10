@@ -535,7 +535,11 @@ class FunctionalHealthTests(unittest.TestCase):
                 if cmd[:2] == ["nc", "-z"]:
                     return 0, "", ""
                 if cmd and cmd[0] == "curl":
-                    return 0, "204", ""
+                    if cmd[-1] == "http://www.gstatic.com/generate_204":
+                        return 0, "204", ""
+                    if cmd[-1] == "https://api.telegram.org":
+                        return 0, "404", ""
+                    return 1, "", "unexpected-url"
                 return 0, "", ""
 
             with mock.patch.object(watchdog, "_hysteria_backend_config_path", side_effect=lambda backend_id: backends_dir / f"{backend_id}.yaml"):
@@ -544,6 +548,7 @@ class FunctionalHealthTests(unittest.TestCase):
                         result = asyncio.run(watchdog._verify_hysteria2_backend_path("backend-198-51-100-10"))
         self.assertTrue(result["ok"])
         self.assertEqual(result["backend_id"], "backend-198-51-100-10")
+        self.assertEqual(len(result["probes"]), 2)
 
     def test_apply_backend_decision_rolls_back_after_failed_verify(self) -> None:
         watchdog.state.active_backend_id = "backend-old"
@@ -913,6 +918,58 @@ scenarios:
                 now_ts=datetime.fromisoformat("2026-04-07T07:31:00").timestamp()
             )
         )
+
+    def test_active_stack_runtime_failover_reason_targets_recent_probe_failures(self) -> None:
+        watchdog.state.active_stack_runtime_fail_streak = watchdog.ACTIVE_STACK_RUNTIME_FAILOVER_CONSECUTIVE_FAILURES
+        watchdog.state.last_failover = None
+        watchdog.state.active_stack_probe_summary = {
+            "status": "degraded",
+            "timestamp": "2026-04-07T07:30:00",
+            "recent_socks_errors": 0,
+        }
+        reason = watchdog._active_stack_runtime_failover_reason(
+            now_ts=datetime.fromisoformat("2026-04-07T07:31:00").timestamp()
+        )
+        self.assertEqual(reason, "active_stack_runtime_probe")
+
+    def test_active_stack_runtime_failover_reason_targets_hysteria2_socks_errors(self) -> None:
+        watchdog.state.active_stack_runtime_fail_streak = 0
+        watchdog.state.last_failover = None
+        watchdog.state.active_stack_probe_summary = {
+            "status": "degraded",
+            "timestamp": "2026-04-07T07:30:00",
+            "recent_socks_errors": watchdog.HYSTERIA2_SOCKS_ERROR_THRESHOLD,
+        }
+        reason = watchdog._active_stack_runtime_failover_reason(
+            now_ts=datetime.fromisoformat("2026-04-07T07:31:00").timestamp()
+        )
+        self.assertEqual(reason, "hysteria2_socks_timeouts")
+
+    def test_run_active_stack_runtime_probes_marks_degraded_on_recent_hysteria_errors(self) -> None:
+        watchdog.state.active_stack = "hysteria2"
+        watchdog.state.active_stack_runtime_fail_streak = 0
+        watchdog.state.active_stack_probe_summary = {}
+
+        async def _fake_run_cmd(cmd, timeout=0):
+            if cmd[:2] == ["nc", "-z"]:
+                return 0, "", ""
+            if cmd[:2] == ["journalctl", "-u"]:
+                return 0, "\n".join(["SOCKS5 TCP error"] * watchdog.HYSTERIA2_SOCKS_ERROR_THRESHOLD), ""
+            if cmd and cmd[0] == "curl":
+                if cmd[-1] == "http://www.gstatic.com/generate_204":
+                    return 0, "204", ""
+                if cmd[-1] == "https://api.telegram.org":
+                    return 0, "404", ""
+            return 0, "", ""
+
+        with mock.patch.object(watchdog.plugins, "get", return_value=SimpleNamespace(meta={})):
+            with mock.patch.object(watchdog, "_get_stack_socks_port", return_value=1083):
+                with mock.patch.object(watchdog, "run_cmd", side_effect=_fake_run_cmd):
+                    summary = asyncio.run(watchdog._run_active_stack_runtime_probes())
+
+        self.assertEqual(summary["status"], "degraded")
+        self.assertEqual(summary["recent_socks_errors"], watchdog.HYSTERIA2_SOCKS_ERROR_THRESHOLD)
+        self.assertEqual(watchdog.state.active_stack_runtime_fail_streak, 1)
 
     def test_blocked_site_probe_uses_stable_control_plane_endpoint(self) -> None:
         self.assertEqual(watchdog.BLOCKED_CHECK_URLS, ["https://api.telegram.org"])

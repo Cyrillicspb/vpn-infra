@@ -193,6 +193,25 @@ LATENCY_AUTO_PROMOTE_SCORE = int(os.getenv("LATENCY_AUTO_PROMOTE_SCORE", "3"))
 LATENCY_AUTO_PROMOTE_COOLDOWN = int(os.getenv("LATENCY_AUTO_PROMOTE_COOLDOWN", "600"))
 LATENCY_CANDIDATE_TTL_SECONDS = int(os.getenv("LATENCY_CANDIDATE_TTL_SECONDS", str(14 * 24 * 3600)))
 BALANCER_IDLE_TTL_SECONDS = int(os.getenv("BALANCER_IDLE_TTL_SECONDS", "300"))
+ACTIVE_STACK_RUNTIME_PROBE_TIMEOUT_SECONDS = int(os.getenv("ACTIVE_STACK_RUNTIME_PROBE_TIMEOUT_SECONDS", "10"))
+ACTIVE_STACK_RUNTIME_PROBE_MAX_AGE_SECONDS = int(os.getenv("ACTIVE_STACK_RUNTIME_PROBE_MAX_AGE_SECONDS", "150"))
+ACTIVE_STACK_RUNTIME_FAILOVER_CONSECUTIVE_FAILURES = int(
+    os.getenv("ACTIVE_STACK_RUNTIME_FAILOVER_CONSECUTIVE_FAILURES", "2")
+)
+HYSTERIA2_SOCKS_ERROR_WINDOW_SECONDS = int(os.getenv("HYSTERIA2_SOCKS_ERROR_WINDOW_SECONDS", "300"))
+HYSTERIA2_SOCKS_ERROR_THRESHOLD = int(os.getenv("HYSTERIA2_SOCKS_ERROR_THRESHOLD", "6"))
+ACTIVE_STACK_RUNTIME_PROBE_TARGETS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "control_plane_generate_204",
+        "url": "http://www.gstatic.com/generate_204",
+        "ok_codes": ("200", "204", "301", "302"),
+    },
+    {
+        "id": "telegram_api",
+        "url": "https://api.telegram.org",
+        "ok_codes": ("200", "204", "301", "302", "401", "403", "404"),
+    },
+)
 
 # ---------------------------------------------------------------------------
 # DPI bypass (zapret lane)
@@ -1462,6 +1481,9 @@ class WatchdogState:
         self.watchdog_runtime_drift_since: float = 0.0
         self.watchdog_selfheal_last_ts: float = 0.0
         self.active_stack_dataplane_alert_last_ts: float = 0.0
+        self.active_stack_probe_summary: dict[str, Any] = {}
+        self.active_stack_runtime_fail_streak: int = 0
+        self.active_stack_runtime_last_failure_ts: float = 0.0
         self.server_repo_drift: bool = False
         self.server_repo_drift_detail: str = ""
         self.server_repo_drift_since: float = 0.0
@@ -1548,6 +1570,9 @@ class WatchdogState:
             "watchdog_runtime_drift_since": self.watchdog_runtime_drift_since,
             "watchdog_selfheal_last_ts": self.watchdog_selfheal_last_ts,
             "active_stack_dataplane_alert_last_ts": self.active_stack_dataplane_alert_last_ts,
+            "active_stack_probe_summary": self.active_stack_probe_summary,
+            "active_stack_runtime_fail_streak": self.active_stack_runtime_fail_streak,
+            "active_stack_runtime_last_failure_ts": self.active_stack_runtime_last_failure_ts,
             "server_repo_drift": self.server_repo_drift,
             "server_repo_drift_detail": self.server_repo_drift_detail,
             "server_repo_drift_since": self.server_repo_drift_since,
@@ -1646,6 +1671,11 @@ class WatchdogState:
                 self.watchdog_selfheal_last_ts = float(data.get("watchdog_selfheal_last_ts", 0.0) or 0.0)
                 self.active_stack_dataplane_alert_last_ts = float(
                     data.get("active_stack_dataplane_alert_last_ts", 0.0) or 0.0
+                )
+                self.active_stack_probe_summary = data.get("active_stack_probe_summary", {}) or {}
+                self.active_stack_runtime_fail_streak = int(data.get("active_stack_runtime_fail_streak", 0) or 0)
+                self.active_stack_runtime_last_failure_ts = float(
+                    data.get("active_stack_runtime_last_failure_ts", 0.0) or 0.0
                 )
                 self.server_repo_drift = data.get("server_repo_drift", False)
                 self.server_repo_drift_detail = data.get("server_repo_drift_detail", "")
@@ -2229,25 +2259,26 @@ async def _verify_hysteria2_backend_path(backend_id: str) -> dict[str, Any]:
     if rc != 0:
         return {"ok": False, "reason": "hysteria2_socks_not_ready", "backend_id": backend_id, "path": path_row}
 
-    rc, out, err = await run_cmd(
-        [
-            "curl", "-s", "--max-time", "10",
-            "--proxy", "socks5://127.0.0.1:1083",
-            "-o", "/dev/null", "-w", "%{http_code}",
-            "http://www.gstatic.com/generate_204",
-        ],
-        timeout=15,
-    )
-    if rc != 0 or out.strip() not in ("200", "204", "301", "302"):
+    probe_results = [
+        await _probe_url_via_socks(1083, target, ACTIVE_STACK_RUNTIME_PROBE_TIMEOUT_SECONDS)
+        for target in ACTIVE_STACK_RUNTIME_PROBE_TARGETS
+    ]
+    if not probe_results or not all(item.get("ok") for item in probe_results):
         return {
             "ok": False,
             "reason": "hysteria2_probe_failed",
             "backend_id": backend_id,
-            "http_code": out.strip(),
-            "detail": err[:200],
+            "http_code": ",".join(str(item.get("http_code") or "") for item in probe_results if item.get("http_code")),
+            "probes": probe_results,
             "path": path_row,
         }
-    return {"ok": True, "backend_id": backend_id, "http_code": out.strip(), "path": path_row}
+    return {
+        "ok": True,
+        "backend_id": backend_id,
+        "http_code": ",".join(str(item.get("http_code") or "") for item in probe_results if item.get("http_code")),
+        "probes": probe_results,
+        "path": path_row,
+    }
 
 
 async def _apply_active_backend(backend_id: str, reason: str) -> dict[str, Any]:
@@ -5648,6 +5679,145 @@ def _get_stack_socks_port(stack_name: str) -> int:
         return 1080
 
 
+async def _count_recent_hysteria2_socks_errors(window_seconds: int = HYSTERIA2_SOCKS_ERROR_WINDOW_SECONDS) -> int:
+    since = (datetime.now() - timedelta(seconds=max(1, window_seconds))).isoformat(timespec="seconds")
+    rc, out, err = await run_cmd(
+        ["journalctl", "-u", "hysteria2", "--since", since, "--no-pager", "-o", "cat"],
+        timeout=15,
+    )
+    if rc != 0:
+        logger.debug("Не удалось прочитать journal hysteria2: %s", (err or out).strip()[:200])
+        return 0
+    return sum(1 for line in out.splitlines() if "SOCKS5 TCP error" in line)
+
+
+async def _probe_url_via_socks(socks_port: int, target: dict[str, Any], timeout: int) -> dict[str, Any]:
+    rc, out, err = await run_cmd(
+        [
+            "curl",
+            "-sS",
+            "--max-time",
+            str(timeout),
+            "--proxy",
+            f"socks5://127.0.0.1:{socks_port}",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            str(target.get("url") or ""),
+        ],
+        timeout=timeout + 5,
+    )
+    http_code = out.strip()
+    ok_codes = {str(code) for code in (target.get("ok_codes") or ())}
+    return {
+        "id": str(target.get("id") or ""),
+        "url": str(target.get("url") or ""),
+        "ok": rc == 0 and http_code in ok_codes,
+        "http_code": http_code,
+        "detail": (err or "").strip()[:200],
+    }
+
+
+async def _run_active_stack_runtime_probes(
+    timeout: int = ACTIVE_STACK_RUNTIME_PROBE_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    plugin = plugins.get(state.active_stack)
+    now_ts = time.time()
+    if not plugin or plugin.meta.get("direct_mode"):
+        summary = {
+            "status": "disabled",
+            "stack": state.active_stack,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "reason": "no_socks_runtime_probe",
+            "targets": [],
+            "recent_socks_errors": 0,
+        }
+        state.active_stack_probe_summary = summary
+        state.active_stack_runtime_fail_streak = 0
+        state.active_stack_runtime_last_failure_ts = 0.0
+        state.save()
+        return summary
+
+    socks_port = _get_stack_socks_port(state.active_stack)
+    rc_socks, _, err_socks = await run_cmd(["nc", "-z", "127.0.0.1", str(socks_port)], timeout=3)
+    target_results: list[dict[str, Any]] = []
+    recent_socks_errors = 0
+
+    if rc_socks == 0:
+        for target in ACTIVE_STACK_RUNTIME_PROBE_TARGETS:
+            target_results.append(await _probe_url_via_socks(socks_port, target, timeout))
+    else:
+        target_results.append(
+            {
+                "id": "socks_port",
+                "url": f"socks5://127.0.0.1:{socks_port}",
+                "ok": False,
+                "http_code": "",
+                "detail": (err_socks or "SOCKS port not ready").strip()[:200],
+            }
+        )
+
+    if state.active_stack == "hysteria2":
+        recent_socks_errors = await _count_recent_hysteria2_socks_errors()
+
+    success_count = sum(1 for item in target_results if item.get("ok"))
+    if rc_socks != 0 or success_count == 0:
+        status = "fail"
+    elif success_count < len(target_results) or recent_socks_errors >= HYSTERIA2_SOCKS_ERROR_THRESHOLD:
+        status = "degraded"
+    else:
+        status = "ok"
+
+    if status == "ok":
+        state.active_stack_runtime_fail_streak = 0
+        state.active_stack_runtime_last_failure_ts = 0.0
+    else:
+        state.active_stack_runtime_fail_streak += 1
+        state.active_stack_runtime_last_failure_ts = now_ts
+
+    summary = {
+        "status": status,
+        "stack": state.active_stack,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "socks_port": socks_port,
+        "targets": target_results,
+        "success_count": success_count,
+        "target_count": len(target_results),
+        "fail_streak": state.active_stack_runtime_fail_streak,
+        "recent_socks_errors": recent_socks_errors,
+        "socks_error_window_seconds": HYSTERIA2_SOCKS_ERROR_WINDOW_SECONDS,
+        "socks_error_threshold": HYSTERIA2_SOCKS_ERROR_THRESHOLD,
+    }
+    state.active_stack_probe_summary = summary
+    state.save()
+    return summary
+
+
+def _active_stack_runtime_failover_reason(now_ts: Optional[float] = None) -> Optional[str]:
+    summary = state.active_stack_probe_summary or {}
+    status = str(summary.get("status") or "")
+    if status not in {"degraded", "fail"}:
+        return None
+    timestamp = str(summary.get("timestamp") or "").strip()
+    if not timestamp:
+        return None
+    try:
+        summary_ts = datetime.fromisoformat(timestamp).timestamp()
+    except ValueError:
+        return None
+    now_ts = time.time() if now_ts is None else now_ts
+    if now_ts - summary_ts > ACTIVE_STACK_RUNTIME_PROBE_MAX_AGE_SECONDS:
+        return None
+    if state.last_failover and summary_ts <= state.last_failover.timestamp():
+        return None
+    if int(summary.get("recent_socks_errors") or 0) >= HYSTERIA2_SOCKS_ERROR_THRESHOLD:
+        return "hysteria2_socks_timeouts"
+    if state.active_stack_runtime_fail_streak >= ACTIVE_STACK_RUNTIME_FAILOVER_CONSECUTIVE_FAILURES:
+        return "active_stack_runtime_probe"
+    return None
+
+
 def _write_vpn_state_files(stack_name: str) -> None:
     """Атомарно записывает /var/run/vpn-active-{socks-port,stack,tun}.
     Используется ssh-proxy.sh для адаптивного туннелирования SSH.
@@ -5939,6 +6109,9 @@ async def _do_switch(new_stack: str, reason: str) -> bool:
     state.active_stack = new_stack
     state.last_failover = datetime.now()
     state.all_stacks_down_since = None
+    state.active_stack_runtime_fail_streak = 0
+    state.active_stack_runtime_last_failure_ts = 0.0
+    state.active_stack_probe_summary = {}
     state.failover_count += 1
     state.rotation_log.append({
         "ts":     datetime.now().isoformat(timespec="seconds"),
@@ -6193,6 +6366,18 @@ async def decision_loop() -> None:
                 else:
                     rtt_degrade_count = 0
 
+                active_stack_reason = _active_stack_runtime_failover_reason()
+                if active_stack_reason:
+                    logger.warning(
+                        "Active stack runtime degradation on %s: %s (streak=%s, summary=%s)",
+                        state.active_stack,
+                        active_stack_reason,
+                        state.active_stack_runtime_fail_streak,
+                        state.active_stack_probe_summary,
+                    )
+                    await _do_failover(active_stack_reason)
+                    continue
+
                 functional_reason = _functional_failover_trigger_reason()
                 if functional_reason:
                     functional_degrade_count += 1
@@ -6280,6 +6465,7 @@ async def monitoring_loop() -> None:
     await check_compose_runtime_sync()
     await check_watchdog_runtime_sync()
     await check_server_repo_sync()
+    await _run_active_stack_runtime_probes()
     state.last_monitoring_tick = time.time()
     if _functional_mode() != FUNCTIONAL_MODE_OFF:
         async def _delayed_functional_warmup() -> None:
@@ -6307,6 +6493,7 @@ async def monitoring_loop() -> None:
                 await _ensure_active_stack_dataplane()
                 await probe_vps_reachability()
                 await _refresh_backend_health()
+                await _run_active_stack_runtime_probes()
                 last_heartbeat = now
 
             # Каждые 5 мин: внешний IP, диск, small speedtest, блок. сайты, upload
@@ -6606,6 +6793,7 @@ async def get_status(_: bool = Depends(_auth)):
         "functional_infra_checks": state.functional_infra_checks,
         "functional_summary": state.functional_summary,
         "responsiveness_summary": state.responsiveness_summary,
+        "active_stack_probe_summary": state.active_stack_probe_summary,
         "deploy": _read_deploy_state(),
         "latency_catalog": _latency_catalog_status(),
     }
@@ -6683,6 +6871,8 @@ async def get_metrics(_: bool = Depends(_auth)):
         # Стек
         f'vpn_active_stack{{stack="{state.active_stack}"}} {stack_idx}',
         f'vpn_degraded_mode {int(state.degraded_mode)}',
+        f'vpn_active_stack_runtime_fail_streak {state.active_stack_runtime_fail_streak}',
+        f'vpn_active_stack_recent_socks_errors {int((state.active_stack_probe_summary or {}).get("recent_socks_errors") or 0)}',
         # dnsmasq
         f'vpn_dnsmasq_up {state.dnsmasq_up}',
         # Система
