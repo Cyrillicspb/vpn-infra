@@ -387,6 +387,21 @@ class FunctionalHealthTests(unittest.TestCase):
         self.assertEqual(watchdog.state.desired_backend_path["execution_mode"], "multi_backend")
         self.assertEqual(watchdog.state.applied_backend_path["execution_mode"], "multi_backend")
 
+    def test_reconcile_backend_path_runtime_state_preserves_pending_desired_backend(self) -> None:
+        watchdog.state.backends = [{"id": "backend-a", "ip": "198.51.100.10", "drain": False, "status": "healthy"}]
+        watchdog.state.active_backend_id = "backend-a"
+        watchdog.state.execution_mode = "multi_backend"
+        watchdog.state.execution_family = "hysteria2"
+        watchdog.state.active_stack = "hysteria2"
+        watchdog.state.desired_backend_path = {"backend_id": "backend-pending", "family": "hysteria2", "execution_mode": "multi_backend"}
+        watchdog.state.applied_backend_path = {}
+        with mock.patch.object(watchdog, "_refresh_backend_pool", return_value=None):
+            with mock.patch.object(watchdog.state, "save", return_value=None):
+                changed = watchdog._reconcile_backend_path_runtime_state()
+        self.assertTrue(changed)
+        self.assertEqual(watchdog.state.desired_backend_path["backend_id"], "backend-pending")
+        self.assertEqual(watchdog.state.applied_backend_path["backend_id"], "backend-a")
+
     def test_reconcile_backend_path_runtime_state_skips_non_hysteria_execution_family(self) -> None:
         watchdog.state.backends = [{"id": "backend-a", "ip": "198.51.100.10", "drain": False, "status": "healthy"}]
         watchdog.state.active_backend_id = "backend-a"
@@ -554,9 +569,11 @@ class FunctionalHealthTests(unittest.TestCase):
         watchdog.state.active_backend_id = "backend-old"
         watchdog.state.backend_assignments = {}
         watchdog.state.balancer_idle_ttl_seconds = 300
+        watchdog.state.desired_backend_path = {}
+        watchdog.state.applied_backend_path = {"family": "hysteria2", "backend_id": "backend-old", "reason": "existing"}
 
         async def _fake_apply_active_backend(backend_id, reason):
-            watchdog.state.active_backend_id = backend_id
+            watchdog.state.desired_backend_path = {"family": "hysteria2", "backend_id": backend_id, "reason": reason}
             return {"backend_id": backend_id, "reason": reason}
 
         verify_results = [
@@ -577,6 +594,8 @@ class FunctionalHealthTests(unittest.TestCase):
         self.assertEqual(result["status"], "verification_failed")
         self.assertEqual(result["rollback"]["status"], "rollback_completed")
         self.assertEqual(watchdog.state.active_backend_id, "backend-old")
+        self.assertEqual(watchdog.state.desired_backend_path["backend_id"], "backend-new")
+        self.assertEqual(watchdog.state.applied_backend_path["backend_id"], "backend-old")
 
     def test_apply_backend_decision_records_desired_applied_and_verify_state(self) -> None:
         watchdog.state.active_backend_id = "backend-old"
@@ -586,9 +605,7 @@ class FunctionalHealthTests(unittest.TestCase):
         watchdog.state.backend_path_health = {}
 
         async def _fake_apply_active_backend(backend_id, reason):
-            watchdog.state.active_backend_id = backend_id
             watchdog.state.desired_backend_path = {"family": "hysteria2", "backend_id": backend_id, "reason": reason}
-            watchdog.state.applied_backend_path = {"family": "hysteria2", "backend_id": backend_id, "reason": reason}
             return {"backend_id": backend_id, "reason": reason}
 
         async def _fake_verify(backend_id):
@@ -626,11 +643,14 @@ class FunctionalHealthTests(unittest.TestCase):
 
     def test_speedtest_iperf_vps_reports_missing_tier2_tunnel(self) -> None:
         async def _fake_run_cmd(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
-            if cmd[:4] == ["ip", "link", "show", "tun0"]:
+            if cmd[:2] == ["systemctl", "is-active"]:
+                return 0, "active", ""
+            if cmd[:5] == ["ip", "-4", "addr", "show", "dev"]:
                 return 1, "", "Device not found"
             return 0, "", ""
 
         with mock.patch.object(watchdog, "run_cmd", side_effect=_fake_run_cmd):
+            watchdog.state.tier2_health = {}
             speed, reason = asyncio.run(watchdog.speedtest_iperf_vps())
 
         self.assertEqual(speed, 0.0)
@@ -638,8 +658,10 @@ class FunctionalHealthTests(unittest.TestCase):
 
     def test_speedtest_iperf_vps_reports_closed_iperf_port(self) -> None:
         async def _fake_run_cmd(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
-            if cmd[:4] == ["ip", "link", "show", "tun0"]:
-                return 0, "tun0: <POINTOPOINT,UP>", ""
+            if cmd[:2] == ["systemctl", "is-active"]:
+                return 0, "active", ""
+            if cmd[:5] == ["ip", "-4", "addr", "show", "dev"]:
+                return 0, "tun0: <POINTOPOINT,UP>\n    inet 10.177.2.1/30", ""
             if cmd[:2] == ["ping", "-c"]:
                 return 0, "1 packets transmitted, 1 received", ""
             if cmd[:3] == ["nc", "-z", "-w"]:
@@ -647,10 +669,34 @@ class FunctionalHealthTests(unittest.TestCase):
             return 0, "", ""
 
         with mock.patch.object(watchdog, "run_cmd", side_effect=_fake_run_cmd):
+            watchdog.state.tier2_health = {}
             speed, reason = asyncio.run(watchdog.speedtest_iperf_vps())
 
         self.assertEqual(speed, 0.0)
         self.assertIn("5201", reason or "")
+
+    def test_balancer_snapshot_exposes_decision_and_runtime_sections(self) -> None:
+        watchdog.state.backends = [{"id": "backend-a", "ip": "198.51.100.10", "status": "healthy", "drain": False}]
+        watchdog.state.active_backend_id = "backend-a"
+        watchdog.state.backend_assignments = {}
+        watchdog.state.desired_backend_path = {"family": "hysteria2", "backend_id": "backend-b"}
+        watchdog.state.applied_backend_path = {"family": "hysteria2", "backend_id": "backend-a"}
+        with mock.patch.object(watchdog, "_backend_path_snapshot", return_value=[]):
+            snapshot = watchdog._balancer_snapshot()
+        self.assertEqual(snapshot["decision"]["desired_backend_path"]["backend_id"], "backend-b")
+        self.assertEqual(snapshot["runtime"]["applied_backend_path"]["backend_id"], "backend-a")
+
+    def test_refresh_tier2_health_classifies_service_down(self) -> None:
+        async def _fake_run_cmd(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
+            if cmd[:2] == ["systemctl", "is-active"]:
+                return 3, "inactive", ""
+            return 0, "", ""
+
+        watchdog.state.tier2_health = {}
+        with mock.patch.object(watchdog, "run_cmd", side_effect=_fake_run_cmd):
+            result = asyncio.run(watchdog._refresh_tier2_health(force=True))
+        self.assertEqual(result["last_failure_reason"], "tier2_service_down")
+        self.assertFalse(result["service_active"])
 
     def test_route_class_for_domain_check_prefers_service_assignment(self) -> None:
         result = {

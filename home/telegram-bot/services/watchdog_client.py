@@ -70,6 +70,10 @@ class WatchdogClient:
         data["applied_backend_path"] = dict(data.get("applied_backend_path") or {})
         data["backend_path_status"] = dict(data.get("backend_path_status") or {})
         data["backend_paths"] = list(data.get("backend_paths") or [])
+        data["decision"] = dict(data.get("decision") or {})
+        data["runtime"] = dict(data.get("runtime") or {})
+        if "tier2_health" in data:
+            data["tier2_health"] = dict(data.get("tier2_health") or {})
         return data
 
     # -----------------------------------------------------------------------

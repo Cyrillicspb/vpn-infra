@@ -335,6 +335,9 @@ if systemctl list-unit-files tier2-connect.service >/dev/null 2>&1; then
     check_warn "route to 10.177.2.2 via tun0" \
         "ip route get ${VPS_TUNNEL_IP:-10.177.2.2} 2>/dev/null | grep -q 'dev tun0'" \
         "tier-2 endpoint должен маршрутизироваться через tun0, а не через основной gateway"
+    check_warn "tier-2 iperf3 endpoint" \
+        "nc -z -w 3 ${VPS_TUNNEL_IP:-10.177.2.2} 5201" \
+        "iperf3 endpoint на tier-2 недоступен; transport или VPS-side сервис сломан"
 else
     warn "tier2-connect" "юнит не найден"
 fi

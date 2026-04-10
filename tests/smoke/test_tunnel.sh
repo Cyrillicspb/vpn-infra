@@ -56,6 +56,13 @@ else
     warn "VPS $VPS_TUN_IP недоступен (стек ещё не поднят или VPS выключен)"
 fi
 
+# 4b. iperf3 endpoint на tier-2
+if nc -z -w 3 "$VPS_TUN_IP" 5201 &>/dev/null; then
+    pass "iperf3 на $VPS_TUN_IP:5201 доступен через tier-2"
+else
+    warn "iperf3 на $VPS_TUN_IP:5201 недоступен"
+fi
+
 # 5. Активный tun интерфейс для выхода
 TUN_IFACE=$(ip link show 2>/dev/null | grep -oP '^[0-9]+: \K(tun\S+|wg\S+)' | head -1 || true)
 if ip link show 2>/dev/null | grep -qE '(tun[0-9]|awgtun)'; then

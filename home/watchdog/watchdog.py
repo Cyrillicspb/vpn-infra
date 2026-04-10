@@ -1427,6 +1427,7 @@ class WatchdogState:
         self.desired_backend_path: dict[str, Any] = {}
         self.applied_backend_path: dict[str, Any] = {}
         self.backend_path_health: dict[str, dict[str, Any]] = {}
+        self.tier2_health: dict[str, Any] = {}
         self.external_ip: str = ""
         self.started_at: datetime = datetime.now()
         self.degraded_mode: bool = False
@@ -1549,9 +1550,9 @@ class WatchdogState:
             "balancer_idle_ttl_seconds": self.balancer_idle_ttl_seconds,
             "execution_mode": self.execution_mode,
             "execution_family": self.execution_family,
-            "desired_backend_path": self.desired_backend_path,
             "applied_backend_path": self.applied_backend_path,
             "backend_path_health": self.backend_path_health,
+            "tier2_health": self.tier2_health,
             "dpi_enabled": self.dpi_enabled,
             "dpi_experimental_opt_in": self.dpi_experimental_opt_in,
             "dpi_services": self.dpi_services,
@@ -1602,8 +1603,11 @@ class WatchdogState:
             "updated_at": datetime.now().isoformat(),
             "idle_ttl_seconds": self.balancer_idle_ttl_seconds,
             "execution_mode": self.execution_mode,
+            "execution_family": self.execution_family,
             "backends": self.backends,
             "assignments": self.backend_assignments,
+            "active_backend_id": self.active_backend_id,
+            "desired_backend_path": self.desired_backend_path,
         }
 
     def save(self) -> None:
@@ -1647,9 +1651,9 @@ class WatchdogState:
                 if self.execution_mode not in {"single_active_backend", "multi_backend"}:
                     self.execution_mode = "multi_backend"
                 self.execution_family = str(data.get("execution_family") or "hysteria2")
-                self.desired_backend_path = data.get("desired_backend_path", {}) or {}
                 self.applied_backend_path = data.get("applied_backend_path", {}) or {}
                 self.backend_path_health = data.get("backend_path_health", {}) or {}
+                self.tier2_health = data.get("tier2_health", {}) or {}
                 self.degraded_mode  = data.get("degraded_mode", False)
                 self.is_first_run   = data.get("is_first_run", True)
                 self.dpi_enabled    = data.get("dpi_enabled", False)
@@ -1738,6 +1742,11 @@ class WatchdogState:
                         balancer_execution_mode = str(balancer.get("execution_mode") or "").strip()
                         if balancer_execution_mode in {"single_active_backend", "multi_backend"}:
                             self.execution_mode = balancer_execution_mode
+                        balancer_execution_family = str(balancer.get("execution_family") or "").strip()
+                        if balancer_execution_family:
+                            self.execution_family = balancer_execution_family
+                        self.active_backend_id = str(balancer.get("active_backend_id") or self.active_backend_id or "")
+                        self.desired_backend_path = dict(balancer.get("desired_backend_path") or {})
                     except Exception as exc:
                         logger.warning("Не удалось загрузить backend balancer state: %s", exc)
                 _normalize_functional_state()
@@ -1892,6 +1901,7 @@ def _decision_state() -> dict[str, Any]:
         state.active_backend_id,
         execution_mode=state.execution_mode,
         desired_backend_path_family=state.execution_family,
+        desired_backend_path=dict(state.desired_backend_path or {}),
     )
 
 
@@ -1943,7 +1953,7 @@ def _reconcile_backend_path_runtime_state() -> bool:
     desired_family = str((state.desired_backend_path or {}).get("family") or "")
     desired_execution_mode = str((state.desired_backend_path or {}).get("execution_mode") or "")
     if (
-        desired_backend_id != backend_id
+        not desired_backend_id
         or desired_family != state.execution_family
         or desired_execution_mode != state.execution_mode
     ):
@@ -2293,7 +2303,6 @@ async def _apply_active_backend(backend_id: str, reason: str) -> dict[str, Any]:
     _write_active_backend_runtime_env(backend)
     await _render_backend_runtime_configs(backend)
     await _restart_backend_runtime_services()
-    state.active_backend_id = backend_id
     for idx, vps in enumerate(state.vps_list):
         if _backend_id_from_ip(str(vps.get("ip") or "")) == backend_id:
             state.active_vps_idx = idx
@@ -2303,8 +2312,6 @@ async def _apply_active_backend(backend_id: str, reason: str) -> dict[str, Any]:
         Path("/var/run/vpn-active-backend").write_text(backend_id, encoding="utf-8")
     except Exception as exc:
         logger.debug("Не удалось записать vpn-active-backend: %s", exc)
-    _set_applied_backend_path(backend_id, reason)
-    state.save()
     return {
         "backend_id": backend_id,
         "ip": backend.get("ip"),
@@ -2318,6 +2325,7 @@ async def _apply_backend_decision(decision: dict[str, Any]) -> dict[str, Any]:
     backend_id = str(decision.get("backend_id") or "")
     apply_reason = str(decision.get("reason") or "decision_apply")
     previous_backend_id = str(state.active_backend_id or "")
+    previous_applied_backend_id = str((state.applied_backend_path or {}).get("backend_id") or previous_backend_id)
     applied = await _apply_active_backend(backend_id, apply_reason)
     verify = await _verify_hysteria2_backend_path(backend_id)
     _record_backend_path_verify(backend_id, verify)
@@ -2332,6 +2340,9 @@ async def _apply_backend_decision(decision: dict[str, Any]) -> dict[str, Any]:
                 rolled_back = await _apply_active_backend(previous_backend_id, "backend_apply_verify_failed")
                 rollback_verify = await _verify_hysteria2_backend_path(previous_backend_id)
                 _record_backend_path_verify(previous_backend_id, rollback_verify)
+                _set_desired_backend_path(backend_id, apply_reason)
+                if rollback_verify.get("ok"):
+                    _set_applied_backend_path(previous_backend_id, "rollback_after_verify_failed")
                 rollback = {
                     "status": "rollback_completed" if rollback_verify.get("ok") else "rollback_degraded",
                     "applied": rolled_back,
@@ -2343,6 +2354,9 @@ async def _apply_backend_decision(decision: dict[str, Any]) -> dict[str, Any]:
                     "backend_id": previous_backend_id,
                     "reason": str(exc),
                 }
+        elif previous_applied_backend_id:
+            _set_applied_backend_path(previous_applied_backend_id, "verify_failed_previous_runtime")
+        state.save()
         return {
             "decision": decision,
             "applied": applied,
@@ -2350,6 +2364,8 @@ async def _apply_backend_decision(decision: dict[str, Any]) -> dict[str, Any]:
             "rollback": rollback,
             "status": "verification_failed",
         }
+    state.active_backend_id = backend_id
+    _set_applied_backend_path(backend_id, apply_reason)
     reconcile = dm_reconcile_assignments_to_active_backend(
         state.backend_assignments,
         backend_id,
@@ -2785,19 +2801,90 @@ async def direct_uplink_available() -> bool:
     return False
 
 
-async def _tier2_iperf_unavailability_reason(tunnel_ip: str) -> Optional[str]:
-    rc, _, _ = await run_cmd(["ip", "link", "show", "tun0"], timeout=5)
+TIER2_HEALTH_CACHE_TTL_SECONDS = 15
+
+
+async def _refresh_tier2_health(force: bool = False) -> dict[str, Any]:
+    cached = dict(state.tier2_health or {})
+    now = _now_ts()
+    checked_at_ts = float(cached.get("checked_at_ts", 0.0) or 0.0)
+    if not force and checked_at_ts and now - checked_at_ts < TIER2_HEALTH_CACHE_TTL_SECONDS:
+        return cached
+
+    tunnel_ip = _active_backend_tunnel_ip()
+    health: dict[str, Any] = {
+        "checked_at_ts": now,
+        "tunnel_ip": tunnel_ip,
+        "service_active": False,
+        "local_tun_present": False,
+        "local_tun_ip": "",
+        "remote_ip_reachable": False,
+        "remote_port_5201_reachable": False,
+        "dns_over_tier2_ok": False,
+        "last_failure_reason": "",
+    }
+
+    rc, out, _ = await run_cmd(["systemctl", "is-active", "tier2-connect"], timeout=5)
+    health["service_active"] = rc == 0 and out.strip() == "active"
+    if not health["service_active"]:
+        health["last_failure_reason"] = "tier2_service_down"
+        state.tier2_health = health
+        state.save()
+        return health
+
+    rc, out, _ = await run_cmd(["ip", "-4", "addr", "show", "dev", "tun0"], timeout=5)
     if rc != 0:
-        return "tier-2 tunnel не поднят (tun0 отсутствует)"
+        health["last_failure_reason"] = "local_tun_missing"
+        state.tier2_health = health
+        state.save()
+        return health
+
+    health["local_tun_present"] = True
+    ip_match = re.search(r"inet\s+([0-9.]+/\d+)", out)
+    if ip_match:
+        health["local_tun_ip"] = ip_match.group(1)
 
     rc, _, _ = await run_cmd(["ping", "-c", "1", "-W", "2", tunnel_ip], timeout=5)
-    if rc != 0:
-        return f"tier-2 endpoint {tunnel_ip} недоступен"
+    health["remote_ip_reachable"] = rc == 0
+    if not health["remote_ip_reachable"]:
+        health["last_failure_reason"] = "remote_tun_unreachable"
+        state.tier2_health = health
+        state.save()
+        return health
 
     rc, _, _ = await run_cmd(["nc", "-z", "-w", "3", tunnel_ip, "5201"], timeout=5)
-    if rc != 0:
-        return f"iperf3 server недоступен на {tunnel_ip}:5201"
+    health["remote_port_5201_reachable"] = rc == 0
+    if not health["remote_port_5201_reachable"]:
+        health["last_failure_reason"] = "remote_service_closed"
+        state.tier2_health = health
+        state.save()
+        return health
 
+    rc, _, _ = await run_cmd(
+        ["dig", "+time=2", "+tries=1", f"@{tunnel_ip}", "google.com", "A", "+short"],
+        timeout=6,
+    )
+    health["dns_over_tier2_ok"] = rc == 0
+    if not health["dns_over_tier2_ok"]:
+        health["last_failure_reason"] = "dns_over_tier2_failed"
+
+    state.tier2_health = health
+    state.save()
+    return health
+
+
+async def _tier2_iperf_unavailability_reason(tunnel_ip: str) -> Optional[str]:
+    health = await _refresh_tier2_health()
+    reason = str(health.get("last_failure_reason") or "")
+    mapping = {
+        "tier2_service_down": "tier-2 сервис неактивен",
+        "local_tun_missing": "tier-2 tunnel не поднят (tun0 отсутствует)",
+        "remote_tun_unreachable": f"tier-2 endpoint {tunnel_ip} недоступен",
+        "remote_service_closed": f"iperf3 server недоступен на {tunnel_ip}:5201",
+        "dns_over_tier2_failed": f"DNS через tier-2 не отвечает ({tunnel_ip})",
+    }
+    if reason:
+        return mapping.get(reason, reason)
     return None
 
 
@@ -6786,6 +6873,8 @@ class FunctionalModeRequest(BaseModel):
 async def get_status(_: bool = Depends(_auth)):
     _normalize_functional_state()
     _refresh_backend_pool()
+    tier2_health = await _refresh_tier2_health()
+    balancer_snapshot = _balancer_snapshot()
     disk = psutil.disk_usage("/")
     ram  = psutil.virtual_memory()
     result: dict[str, Any] = {
@@ -6803,7 +6892,19 @@ async def get_status(_: bool = Depends(_auth)):
         "vps_list": state.vps_list,
         "backends": state.backends,
         "active_backend": state.active_backend,
-        "balancer": _balancer_snapshot(),
+        "balancer": balancer_snapshot,
+        "decision": {
+            "active_backend_id": state.active_backend_id,
+            "desired_backend_path": dict(state.desired_backend_path or {}),
+            "execution_mode": state.execution_mode,
+            "execution_family": state.execution_family,
+            "assignments": dict(state.backend_assignments or {}),
+        },
+        "runtime": {
+            "applied_backend_path": dict(state.applied_backend_path or {}),
+            "backend_path_health": dict(state.backend_path_health or {}),
+            "tier2_health": tier2_health,
+        },
         "system": {
             "disk_percent": disk.percent,
             "ram_percent": ram.percent,
@@ -6815,6 +6916,7 @@ async def get_status(_: bool = Depends(_auth)):
         "functional_summary": state.functional_summary,
         "responsiveness_summary": state.responsiveness_summary,
         "active_stack_probe_summary": state.active_stack_probe_summary,
+        "tier2_health": tier2_health,
         "deploy": _read_deploy_state(),
         "latency_catalog": _latency_catalog_status(),
     }
@@ -6864,6 +6966,7 @@ def _read_deploy_state() -> dict[str, Any]:
 @app.get("/metrics")
 async def get_metrics(_: bool = Depends(_auth)):
     """Метрики для Prometheus (text/plain)."""
+    tier2_health = await _refresh_tier2_health()
     net  = psutil.net_io_counters()
     disk = psutil.disk_usage("/")
     ram  = psutil.virtual_memory()
@@ -6894,6 +6997,11 @@ async def get_metrics(_: bool = Depends(_auth)):
         f'vpn_degraded_mode {int(state.degraded_mode)}',
         f'vpn_active_stack_runtime_fail_streak {state.active_stack_runtime_fail_streak}',
         f'vpn_active_stack_recent_socks_errors {int((state.active_stack_probe_summary or {}).get("recent_socks_errors") or 0)}',
+        f'vpn_tier2_service_active {int(bool(tier2_health.get("service_active")))}',
+        f'vpn_tier2_local_tun_present {int(bool(tier2_health.get("local_tun_present")))}',
+        f'vpn_tier2_remote_ip_reachable {int(bool(tier2_health.get("remote_ip_reachable")))}',
+        f'vpn_tier2_remote_port_5201_reachable {int(bool(tier2_health.get("remote_port_5201_reachable")))}',
+        f'vpn_tier2_dns_ok {int(bool(tier2_health.get("dns_over_tier2_ok")))}',
         # dnsmasq
         f'vpn_dnsmasq_up {state.dnsmasq_up}',
         # Система

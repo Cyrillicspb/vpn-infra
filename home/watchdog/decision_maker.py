@@ -19,8 +19,9 @@ def build_decision_state(
     lan_client_preferences: Optional[list[dict[str, Any]]] = None,
     execution_mode: str = "multi_backend",
     desired_backend_path_family: str = "hysteria2",
+    desired_backend_path: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    return {
+    state = {
         "backends": backends,
         "assignments": assignments,
         "idle_ttl_seconds": idle_ttl_seconds,
@@ -31,6 +32,9 @@ def build_decision_state(
         "execution_mode": str(execution_mode or "multi_backend"),
         "desired_backend_path_family": str(desired_backend_path_family or "hysteria2"),
     }
+    if desired_backend_path is not None:
+        state["desired_backend_path"] = dict(desired_backend_path or {})
+    return state
 
 
 def build_backend_path_target(
@@ -497,6 +501,18 @@ def balancer_snapshot(
             execution_mode=execution_mode,
             execution_family=execution_family,
         )
+    snapshot["decision"] = {
+        "active_backend_id": str(active_backend_id or ""),
+        "desired_backend_path": dict(desired_backend_path or {}),
+        "assignments": assignment_rows,
+        "execution_mode": str(execution_mode or "multi_backend"),
+        "execution_family": str(execution_family or "hysteria2"),
+    }
+    snapshot["runtime"] = {
+        "applied_backend_path": dict(applied_backend_path or {}),
+        "backend_path_status": dict(snapshot.get("backend_path_status") or {}),
+        "backend_paths": list(backend_paths or []),
+    }
     return snapshot
 
 
@@ -521,6 +537,8 @@ def build_decision_status_view(snapshot: dict[str, Any]) -> dict[str, Any]:
         "applied_backend_path": dict(snapshot.get("applied_backend_path") or {}),
         "backend_path_status": dict(snapshot.get("backend_path_status") or {}),
         "backend_paths": list(snapshot.get("backend_paths") or []),
+        "decision": dict(snapshot.get("decision") or {}),
+        "runtime": dict(snapshot.get("runtime") or {}),
     }
 
 
@@ -540,6 +558,8 @@ def build_backend_paths_view(snapshot: dict[str, Any]) -> dict[str, Any]:
         "applied_backend_path": dict(snapshot.get("applied_backend_path") or {}),
         "backend_path_status": dict(snapshot.get("backend_path_status") or {}),
         "backend_paths": list(snapshot.get("backend_paths") or []),
+        "decision": dict(snapshot.get("decision") or {}),
+        "runtime": dict(snapshot.get("runtime") or {}),
     }
 
 
