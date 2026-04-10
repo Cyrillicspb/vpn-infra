@@ -241,6 +241,10 @@ check_sync_pair "runtime sync: autossh-vpn.service" \
     "/opt/vpn/home/systemd/autossh-vpn.service" \
     "/etc/systemd/system/autossh-vpn.service" \
     "installed autossh-vpn.service не совпадает с source tree"
+check_sync_pair "runtime sync: autossh-vpn.sh" \
+    "/opt/vpn/home/scripts/autossh-vpn.sh" \
+    "/opt/vpn/scripts/autossh-vpn.sh" \
+    "active autossh-vpn.sh не совпадает с source tree"
 check_sync_pair "runtime sync: vpn-postboot.service" \
     "/opt/vpn/home/systemd/vpn-postboot.service" \
     "/etc/systemd/system/vpn-postboot.service" \
@@ -257,8 +261,17 @@ check "hysteria2"         "systemctl is-active hysteria2"            "journalctl
 check "vpn-sets-restore"  "systemctl is-active vpn-sets-restore || systemctl is-failed vpn-sets-restore | grep -v failed" \
                           "systemctl status vpn-sets-restore"
 check_warn "vpn-routes"   "systemctl is-active vpn-routes"           "нужен tier-2 туннель"
+check_warn "policy routing fwmark 0x1 → table 200" \
+    "ip rule show | grep -qE 'fwmark 0x1 lookup (200|marked)'" \
+    "blocked traffic не уйдёт в VPS без ip rule"
+check_warn "policy routing fwmark 0x2 → table 201" \
+    "ip rule show | grep -qE 'fwmark 0x2 lookup 201'" \
+    "DPI bypass не заработает без ip rule"
 if systemctl list-unit-files autossh-vpn.service >/dev/null 2>&1; then
     check_warn "autossh-vpn" "systemctl is-active autossh-vpn" "fallback management SOCKS не поднят"
+    check_warn "autossh-vpn ExecStart wrapper" \
+        "systemctl show autossh-vpn.service -P ExecStart --value | grep -Fq '/opt/vpn/scripts/autossh-vpn.sh'" \
+        "unit должен запускать wrapper вместо raw ExecStart с \${...:-...}"
 else
     warn "autossh" "юнит не найден"
 fi

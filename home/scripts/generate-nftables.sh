@@ -204,7 +204,7 @@ def insert_before_chain_close(text: str, chain_name: str, insert_text: str) -> s
 
 
 def insert_after_chain_open(text: str, chain_name: str, insert_text: str) -> str:
-    """Вставляет текст после первой реальной строки внутри chain."""
+    """Вставляет текст после деклараций chain и перед первым правилом."""
     lines = text.split("\n")
     result = []
     in_chain = False
@@ -221,8 +221,13 @@ def insert_after_chain_open(text: str, chain_name: str, insert_text: str) -> str
             if brace_count == 0:
                 in_chain = False
                 continue
-            # Первая строка с содержимым (не пустая, не только комментарий) — вставляем перед ней
             stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            # type/hook/policy declaration must remain the first real line in the chain.
+            if stripped.startswith("type "):
+                continue
+            # Первая реальная rule-строка — вставляем перед ней
             if stripped and not stripped.startswith("#"):
                 # Убираем только что добавленную строку, вставляем блок, потом строку
                 result.pop()

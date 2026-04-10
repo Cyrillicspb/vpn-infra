@@ -26,6 +26,29 @@ unset _SCRIPT_DIR
 [[ -f "$ENV_FILE" ]] || die "Файл ${ENV_FILE} не найден. Сначала запустите setup.sh"
 set -o allexport; source "$ENV_FILE"; set +o allexport
 
+install_or_reuse_bundled_binary() {
+    local binary_name="$1"
+    local bundled_path="$2"
+    local install_path="$3"
+    local verify_cmd="$4"
+    local clean_install_hint="$5"
+
+    if [[ -f "$bundled_path" ]]; then
+        cp "$bundled_path" "$install_path"
+        chmod +x "$install_path"
+        eval "$verify_cmd" >/dev/null 2>&1 \
+            || die "${binary_name} не запускается. Проверьте bundled бинарник."
+        return 0
+    fi
+
+    if [[ -x "$install_path" ]] && eval "$verify_cmd" >/dev/null 2>&1; then
+        log_warn "Bundled ${binary_name} не найден в ${bundled_path}; переиспользую уже установленный ${install_path}. Для clean install нужен полный release bundle."
+        return 0
+    fi
+
+    die "Отсутствует обязательный bundled ${binary_name} в ${bundled_path}. ${clean_install_hint}"
+}
+
 # ── Шаг 9: apt update + upgrade ──────────────────────────────────────────────
 
 if is_done "step09_apt_update"; then
@@ -433,19 +456,16 @@ else
     _ARCH="$(uname -m)"; [[ "$_ARCH" == "aarch64" ]] && _ARCH="arm64" || _ARCH="amd64"
     _BUNDLED="$REPO_DIR/tools/hysteria2-linux-${_ARCH}"
 
+    HYSTERIA_VERSION="bundled"
     if [[ -f "$_BUNDLED" ]]; then
-        # Версия из бандла — читаем из бинарника
-        HYSTERIA_VERSION="bundled"
         log_info "Использую бандл hysteria2 (${_ARCH})..."
-        cp "$_BUNDLED" /usr/local/bin/hysteria
-    else
-        die "Отсутствует обязательный bundled hysteria2 (${_ARCH}) в ${_BUNDLED}. Clean install должен использовать полный release bundle."
     fi
-    chmod +x /usr/local/bin/hysteria
-
-    # Проверка запуска
-    /usr/local/bin/hysteria version 2>/dev/null \
-        || die "Hysteria2 не запускается. Проверьте бинарник."
+    install_or_reuse_bundled_binary \
+        "hysteria2 (${_ARCH})" \
+        "$_BUNDLED" \
+        "/usr/local/bin/hysteria" \
+        "/usr/local/bin/hysteria version" \
+        "Clean install должен использовать полный release bundle."
 
     mkdir -p /etc/hysteria
     log_ok "Hysteria2 ${HYSTERIA_VERSION} установлен"
@@ -462,15 +482,16 @@ else
     _ARCH="$(uname -m)"; [[ "$_ARCH" == "aarch64" ]] && _ARCH="arm64" || _ARCH="amd64"
     _BUNDLED="$REPO_DIR/tools/tun2socks-linux-${_ARCH}"
 
+    TUN2SOCKS_VER="bundled"
     if [[ -f "$_BUNDLED" ]]; then
-        TUN2SOCKS_VER="bundled"
         log_info "Использую бандл tun2socks (${_ARCH})..."
-        cp "$_BUNDLED" /usr/local/bin/tun2socks
-    else
-        die "Отсутствует обязательный bundled tun2socks (${_ARCH}) в ${_BUNDLED}. Clean install должен использовать полный release bundle."
     fi
-
-    chmod +x /usr/local/bin/tun2socks
+    install_or_reuse_bundled_binary \
+        "tun2socks (${_ARCH})" \
+        "$_BUNDLED" \
+        "/usr/local/bin/tun2socks" \
+        "/usr/local/bin/tun2socks -version || /usr/local/bin/tun2socks --help" \
+        "Clean install должен использовать полный release bundle."
 
     log_ok "tun2socks ${TUN2SOCKS_VER} установлен"
     step_done "step18_install_tun2socks"
@@ -923,6 +944,12 @@ EOF
 fi
 
 # ── Шаг 24: Настройка policy routing и systemd-юнитов ────────────────────────
+
+mkdir -p /opt/vpn/scripts /etc/systemd/system
+if [[ -f "${REPO_DIR}/home/systemd/autossh-vpn.service" ]]; then
+    cp "${REPO_DIR}/home/systemd/autossh-vpn.service" /etc/systemd/system/autossh-vpn.service
+    systemctl daemon-reload
+fi
 
 if is_done "step24_policy_routing_units"; then
     step_skip "step24_policy_routing_units"
@@ -1752,6 +1779,7 @@ if is_done "step32_install_zapret"; then
     step_skip "step32_install_zapret"
 else
     step "Установка zapret/nfqws (DPI bypass без туннеля)"
+    ZAPRET_INSTALL_OK=0
 
     ZAPRET_INSTALL_SCRIPT=""
     for _candidate in \
@@ -1766,7 +1794,7 @@ else
 
     if [[ -n "$ZAPRET_INSTALL_SCRIPT" ]]; then
         if bash "$ZAPRET_INSTALL_SCRIPT"; then
-            :
+            ZAPRET_INSTALL_OK=1
         else
             log_warn "zapret/nfqws установить не удалось — DPI bypass без туннеля будет недоступен"
             log_warn "Запустите вручную позже: bash $ZAPRET_INSTALL_SCRIPT"
@@ -1782,17 +1810,21 @@ else
             "/opt/vpn/watchdog/plugins/zapret/bin/nfqws-${_zapret_arch}" \
             "/opt/vpn/home/watchdog/plugins/zapret/bin/nfqws-${_zapret_arch}"; do
             if [[ -f "$_bin" ]]; then
-                install -D -m 755 "$_bin" /usr/local/bin/nfqws
+                install -D -m 755 "$_bin" /usr/local/bin/nfqws.new
+                mv -f /usr/local/bin/nfqws.new /usr/local/bin/nfqws
                 modprobe nfnetlink_queue 2>/dev/null || true
                 echo "nfnetlink_queue" >> /etc/modules-load.d/zapret.conf 2>/dev/null || true
                 log_ok "bundled nfqws установлен напрямую из ${_bin}"
+                ZAPRET_INSTALL_OK=1
                 break
             fi
         done
     fi
 
-    if [[ -x /usr/local/bin/nfqws ]]; then
+    if [[ $ZAPRET_INSTALL_OK -eq 1 ]]; then
         log_ok "zapret/nfqws установлен успешно"
+    elif [[ -x /usr/local/bin/nfqws ]]; then
+        log_warn "zapret/nfqws переустановить не удалось, но существующий /usr/local/bin/nfqws сохранён"
     else
         log_warn "zapret/nfqws не установлен — /usr/local/bin/nfqws отсутствует"
     fi
@@ -1801,6 +1833,16 @@ else
 fi
 
 # ── Шаг 33: Адаптивный SSH-прокси и SSH config ───────────────────────────────
+mkdir -p /opt/vpn/scripts
+if [[ -f "${REPO_DIR}/home/scripts/ssh-proxy.sh" ]]; then
+    cp "${REPO_DIR}/home/scripts/ssh-proxy.sh" /opt/vpn/scripts/ssh-proxy.sh
+    chmod +x /opt/vpn/scripts/ssh-proxy.sh
+fi
+if [[ -f "${REPO_DIR}/home/scripts/autossh-vpn.sh" ]]; then
+    cp "${REPO_DIR}/home/scripts/autossh-vpn.sh" /opt/vpn/scripts/autossh-vpn.sh
+    chmod +x /opt/vpn/scripts/autossh-vpn.sh
+fi
+
 if is_done "step33_ssh_proxy"; then
     step_skip "step33_ssh_proxy"
 else
@@ -1818,7 +1860,7 @@ else
     fi
     log_ok "netcat-openbsd установлен"
 
-    # Устанавливаем ssh-proxy.sh
+    # Устанавливаем ssh-proxy.sh и autossh wrapper
     mkdir -p /opt/vpn/scripts
     if [[ -f "${REPO_DIR}/home/scripts/ssh-proxy.sh" ]]; then
         cp "${REPO_DIR}/home/scripts/ssh-proxy.sh" /opt/vpn/scripts/ssh-proxy.sh
@@ -1826,6 +1868,13 @@ else
         log_ok "ssh-proxy.sh установлен: /opt/vpn/scripts/ssh-proxy.sh"
     else
         log_warn "home/scripts/ssh-proxy.sh не найден в ${REPO_DIR}"
+    fi
+    if [[ -f "${REPO_DIR}/home/scripts/autossh-vpn.sh" ]]; then
+        cp "${REPO_DIR}/home/scripts/autossh-vpn.sh" /opt/vpn/scripts/autossh-vpn.sh
+        chmod +x /opt/vpn/scripts/autossh-vpn.sh
+        log_ok "autossh-vpn.sh установлен: /opt/vpn/scripts/autossh-vpn.sh"
+    else
+        log_warn "home/scripts/autossh-vpn.sh не найден в ${REPO_DIR}"
     fi
 
     # Генерируем ~/.ssh/config из шаблона

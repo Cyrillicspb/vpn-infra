@@ -142,6 +142,9 @@ FUNCTIONAL_QUICK_REFRESH_INTERVAL_TICKS = 6
 FUNCTIONAL_FAILOVER_MAX_SUMMARY_AGE_SECONDS = 180
 FUNCTIONAL_FAILOVER_CONSECUTIVE_DEGRADES = 2
 FUNCTIONAL_FAILOVER_SCENARIO_CLASSES = frozenset({"blocked_baseline", "control_plane"})
+FUNCTIONAL_FAILOVER_STACK_RETRY_COOLDOWN_SECONDS = int(
+    os.getenv("FUNCTIONAL_FAILOVER_STACK_RETRY_COOLDOWN_SECONDS", "900")
+)
 LATENCY_SENSITIVE_DIRECT_EXCLUDED_DOMAINS = frozenset({
     "www.googleapis.com",
     "googleapis.com",
@@ -1476,6 +1479,7 @@ class WatchdogState:
         self.responsiveness_summary: dict[str, Any] = {}
         self.last_functional_run_by_tier: dict[str, float] = {}
         self.functional_fail_counters: dict[str, int] = {}
+        self.functional_failover_stack_cooldowns: dict[str, float] = {}
         self.functional_evidence_store: dict[str, dict[str, Any]] = {}
         self.latency_learning_last_apply_ts: float = 0.0
         self.latency_catalog_alert_last_ts: float = 0.0
@@ -1561,6 +1565,7 @@ class WatchdogState:
             "responsiveness_summary": self.responsiveness_summary,
             "last_functional_run_by_tier": self.last_functional_run_by_tier,
             "functional_fail_counters": self.functional_fail_counters,
+            "functional_failover_stack_cooldowns": self.functional_failover_stack_cooldowns,
             "functional_evidence_store": self.functional_evidence_store,
             "latency_learning_last_apply_ts": self.latency_learning_last_apply_ts,
             "latency_catalog_alert_last_ts": self.latency_catalog_alert_last_ts,
@@ -1672,6 +1677,10 @@ class WatchdogState:
                 self.responsiveness_summary = data.get("responsiveness_summary", {}) or {}
                 self.last_functional_run_by_tier = data.get("last_functional_run_by_tier", {}) or {}
                 self.functional_fail_counters = data.get("functional_fail_counters", {}) or {}
+                self.functional_failover_stack_cooldowns = {
+                    str(k): float(v)
+                    for k, v in (data.get("functional_failover_stack_cooldowns", {}) or {}).items()
+                }
                 self.functional_evidence_store = data.get("functional_evidence_store", {}) or {}
                 self.latency_learning_last_apply_ts = float(data.get("latency_learning_last_apply_ts", 0.0) or 0.0)
                 self.latency_catalog_alert_last_ts = float(data.get("latency_catalog_alert_last_ts", 0.0) or 0.0)
@@ -5724,6 +5733,105 @@ async def _set_marked_route_unreachable() -> None:
     logger.warning("table marked переведена в unreachable — активный tun отсутствует")
 
 
+def _current_active_tun_name() -> str:
+    plugin = plugins.get(state.active_stack)
+    if not plugin or plugin.meta.get("direct_mode"):
+        return ""
+    return str(plugin.meta.get("tun_name", f"tun-{state.active_stack}"))
+
+
+def _routing_contract_expected_rules() -> list[str]:
+    expected = [
+        "fwmark 0x2 lookup 201",
+        "fwmark 0x1 lookup 200",
+        "to 10.177.1.0/24 lookup main",
+        "to 10.177.3.0/24 lookup main",
+        "from 10.177.1.0/24 lookup 100",
+        "from 10.177.3.0/24 lookup 100",
+        f"from {FUNCTIONAL_BRIDGE_CIDR} lookup 100",
+    ]
+    if os.getenv("SERVER_MODE", "hosted") == "gateway" and os.getenv("LAN_SUBNET", "").strip():
+        try:
+            lan_net = str(ipaddress.ip_network(os.getenv("LAN_SUBNET", "").strip(), strict=False))
+        except ValueError:
+            lan_net = os.getenv("LAN_SUBNET", "").strip()
+        if lan_net:
+            expected.append(f"from {lan_net} lookup 100")
+    return expected
+
+
+async def _routing_contract_issues(active_tun: Optional[str] = None) -> list[str]:
+    issues: list[str] = []
+    active_tun = active_tun if active_tun is not None else _current_active_tun_name()
+
+    rc_rules, rules_out, rules_err = await run_cmd(["ip", "rule", "show"], timeout=5)
+    if rc_rules != 0:
+        issues.append(f"ip rule show failed: {(rules_err or rules_out).strip()[:120]}")
+        return issues
+
+    for expected in _routing_contract_expected_rules():
+        alias_expected = expected.replace("lookup 100", "lookup vpn").replace("lookup 200", "lookup marked")
+        if expected not in rules_out and alias_expected not in rules_out:
+            issues.append(f"missing rule {expected}")
+
+    rc_marked, marked_out, marked_err = await run_cmd(["ip", "route", "show", "table", "marked"], timeout=5)
+    if rc_marked != 0:
+        issues.append(f"table marked unavailable: {(marked_err or marked_out).strip()[:120]}")
+    elif active_tun:
+        if f"default dev {active_tun}" not in marked_out:
+            issues.append(f"table marked missing default dev {active_tun}")
+    elif "unreachable default" not in marked_out and "default " not in marked_out:
+        issues.append("table marked missing default route")
+
+    rc_dpi, dpi_out, dpi_err = await run_cmd(["ip", "route", "show", "table", "201"], timeout=5)
+    if rc_dpi != 0:
+        issues.append(f"table 201 unavailable: {(dpi_err or dpi_out).strip()[:120]}")
+    elif "default " not in dpi_out:
+        issues.append("table 201 missing default route")
+
+    rc_vpn, vpn_out, vpn_err = await run_cmd(["ip", "route", "show", "table", "100"], timeout=5)
+    if rc_vpn != 0:
+        issues.append(f"table 100 unavailable: {(vpn_err or vpn_out).strip()[:120]}")
+    elif "default " not in vpn_out:
+        issues.append("table 100 missing default route")
+
+    return issues
+
+
+async def ensure_policy_routing_contract(reason: str, active_tun: Optional[str] = None) -> bool:
+    """Self-heal policy routing after network/plugin churn.
+
+    vpn-routes.service is oneshot and can drift out of sync after network restarts.
+    This routine re-applies the routing contract idempotently and verifies rules/tables.
+    """
+    issues = await _routing_contract_issues(active_tun=active_tun)
+    if not issues:
+        return True
+
+    tun_arg = active_tun if active_tun is not None else _current_active_tun_name()
+    logger.warning("Policy routing drift detected (%s): %s", reason, "; ".join(issues))
+
+    cmd = ["/opt/vpn/scripts/vpn-policy-routing.sh", "up"]
+    if tun_arg:
+        cmd.append(tun_arg)
+    rc, out, err = await run_cmd(cmd, timeout=20)
+    if rc != 0:
+        logger.error(
+            "Policy routing self-heal failed (%s): %s",
+            reason,
+            (err or out or f"rc={rc}").strip()[:300],
+        )
+        return False
+
+    remaining = await _routing_contract_issues(active_tun=active_tun)
+    if remaining:
+        logger.error("Policy routing drift persists after self-heal (%s): %s", reason, "; ".join(remaining))
+        return False
+
+    logger.info("Policy routing self-heal completed (%s)", reason)
+    return True
+
+
 async def _ensure_active_stack_dataplane() -> bool:
     """Self-heal для активного стека: восстанавливает tun и table marked.
 
@@ -5744,7 +5852,7 @@ async def _ensure_active_stack_dataplane() -> bool:
     process_log = plugin.process_log_path(plugin.pid_file) if getattr(plugin, "pid_file", None) else None
 
     if rc_tun == 0 and route_ok:
-        return True
+        return await ensure_policy_routing_contract("active-stack-dataplane-ok", active_tun=tun_name)
 
     now = time.time()
     if rc_tun != 0 and socks_ready and (
@@ -5783,6 +5891,8 @@ async def _ensure_active_stack_dataplane() -> bool:
 
     if rc_tun == 0 and await _set_marked_route_for_stack(state.active_stack):
         _write_vpn_state_files(state.active_stack)
+        if not await ensure_policy_routing_contract("active-stack-dataplane-self-heal", active_tun=tun_name):
+            return False
         logger.info("Dataplane self-heal completed: стек %s, tun=%s", state.active_stack, tun_name)
         return True
 
@@ -5840,6 +5950,7 @@ async def _do_switch(new_stack: str, reason: str) -> bool:
         state.rotation_log = state.rotation_log[-20:]
     state.save()
     _write_vpn_state_files(new_stack)
+    await ensure_policy_routing_contract("stack-switch", active_tun=_current_active_tun_name())
 
     # Обновляем fallback management SOCKS после смены стека/backend.
     asyncio.create_task(run_cmd(
@@ -5857,21 +5968,52 @@ async def _failover_impl(reason: str) -> None:
     state.failover_in_progress = True
     try:
         current = state.active_stack
+        now_ts = time.time()
+        is_functional_failover = reason.startswith("functional_")
+        if state.functional_failover_stack_cooldowns:
+            state.functional_failover_stack_cooldowns = {
+                stack: expiry
+                for stack, expiry in state.functional_failover_stack_cooldowns.items()
+                if expiry > now_ts
+            }
         ordered = plugins.auto_names()
         try:
             cur_pos = ordered.index(current)
         except ValueError:
             cur_pos = len(ordered) - 1
         candidates = ordered[:cur_pos] + ordered[cur_pos + 1:]
+        skipped_on_cooldown: list[str] = []
         for candidate in candidates:
             plugin = plugins.get(candidate)
             if not plugin:
                 continue
+            if is_functional_failover:
+                cooldown_until = float(state.functional_failover_stack_cooldowns.get(candidate, 0.0) or 0.0)
+                if cooldown_until > now_ts:
+                    skipped_on_cooldown.append(candidate)
+                    logger.warning(
+                        "Пропускаю стек %s для failover %s: functional cooldown ещё %.0fs",
+                        candidate,
+                        reason,
+                        cooldown_until - now_ts,
+                    )
+                    continue
             logger.info(f"Тест кандидата: {candidate}")
             ok, mbps = await _test_stack_runtime(plugin, candidate, timeout=10)
             if ok:
                 await _do_switch(candidate, reason)
                 return
+        if is_functional_failover and skipped_on_cooldown:
+            state.degraded_mode = True
+            state.save()
+            logger.warning(
+                "Все кандидаты для failover %s пропущены по cooldown: %s. Оставляю текущий стек %s.",
+                reason,
+                ", ".join(skipped_on_cooldown),
+                current,
+            )
+            asyncio.create_task(run_cmd(["systemctl", "restart", "autossh-vpn"], timeout=15))
+            return
         now = datetime.now()
         if state.all_stacks_down_since is None:
             state.all_stacks_down_since = now
@@ -5919,6 +6061,7 @@ async def _do_rotation() -> None:
                     ["ip", "route", "replace", "default", "dev", tun_name, "table", "marked"],
                     timeout=5,
                 )
+                await ensure_policy_routing_contract("rotation", active_tun=tun_name)
                 state.last_rotation = datetime.now()
                 logger.info(f"Ротация {current} выполнена, маршрут table marked → {tun_name} восстановлен")
             else:
@@ -6028,6 +6171,7 @@ async def decision_loop() -> None:
 
     while True:
         try:
+            await ensure_policy_routing_contract("decision-loop")
             ok, rtt = await ping_vps()
 
             state.last_rtt = rtt if ok else 0.0
@@ -6059,6 +6203,10 @@ async def decision_loop() -> None:
                         functional_reason,
                     )
                     if functional_degrade_count >= FUNCTIONAL_FAILOVER_CONSECUTIVE_DEGRADES:
+                        state.functional_failover_stack_cooldowns[state.active_stack] = (
+                            time.time() + FUNCTIONAL_FAILOVER_STACK_RETRY_COOLDOWN_SECONDS
+                        )
+                        state.save()
                         functional_degrade_count = 0
                         await _do_failover(functional_reason)
                         continue
@@ -8307,6 +8455,9 @@ async def on_startup() -> None:
             await zp_restore.activate()   # добавить NFQUEUE-правила (nfqws уже запущен выше)
         await _dpi_sync_active_domains()
         logger.info("[DPI] Experimental DPI bypass восстановлен при старте (NFQUEUE активирован)")
+
+    if not await ensure_policy_routing_contract("startup"):
+        logger.warning("Policy routing contract is still degraded after startup reconcile")
 
     # Consistency recovery
     ok, _ = await ping_vps()

@@ -94,7 +94,27 @@ else
     fail "VPS_IP не задан в .env"
 fi
 
-# 7. SSH ключ для VPS существует
+# 7. autossh wrapper и unit без shell-style expansion
+AUTOSSH_WRAPPER="/opt/vpn/scripts/autossh-vpn.sh"
+if [[ -x "$AUTOSSH_WRAPPER" ]]; then
+    pass "autossh-vpn.sh существует и исполняем"
+else
+    fail "autossh-vpn.sh не найден или не исполняем: $AUTOSSH_WRAPPER"
+fi
+
+if systemctl cat autossh-vpn.service 2>/dev/null | grep -q '/opt/vpn/scripts/autossh-vpn.sh'; then
+    pass "autossh-vpn.service использует wrapper"
+else
+    fail "autossh-vpn.service не использует /opt/vpn/scripts/autossh-vpn.sh"
+fi
+
+if systemctl cat autossh-vpn.service 2>/dev/null | grep -q '\${AUTOSSH_VPN_SOCKS_PORT:-1183}'; then
+    fail "autossh-vpn.service содержит raw \${AUTOSSH_VPN_SOCKS_PORT:-1183}"
+else
+    pass "autossh-vpn.service не содержит shell-style default expansion"
+fi
+
+# 8. SSH ключ для VPS существует
 SSH_KEY="/root/.ssh/vpn_id_ed25519"
 if [[ -f "$SSH_KEY" ]]; then
     perms=$(stat -c "%a" "$SSH_KEY" 2>/dev/null || echo "?")

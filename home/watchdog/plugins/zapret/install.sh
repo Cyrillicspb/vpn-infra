@@ -4,6 +4,7 @@
 set -euo pipefail
 
 INSTALL_BIN="/usr/local/bin/nfqws"
+INSTALL_TMP="${INSTALL_BIN}.new"
 ARCH="$(uname -m)"
 # Бандленные бинарники (рядом со скриптом в репо)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -40,8 +41,8 @@ BUNDLED_BIN="$BUNDLED_BIN_DIR/nfqws-${BINARY_ARCH}"
 if [[ -f "$BUNDLED_BIN" ]]; then
     BUNDLED_VER="$(cat "$BUNDLED_BIN_DIR/VERSION" 2>/dev/null || echo "unknown")"
     log "Используем бандленный бинарник ${BUNDLED_VER} (${BINARY_ARCH})"
-    cp "$BUNDLED_BIN" "$INSTALL_BIN"
-    chmod +x "$INSTALL_BIN"
+    install -m 755 "$BUNDLED_BIN" "$INSTALL_TMP"
+    mv -f "$INSTALL_TMP" "$INSTALL_BIN"
     NFQWS_INSTALLED=1
 fi
 
