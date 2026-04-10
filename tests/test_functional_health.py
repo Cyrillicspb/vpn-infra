@@ -1006,20 +1006,20 @@ scenarios:
         )
         self.assertEqual(reason, "active_stack_runtime_probe")
 
-    def test_active_stack_runtime_failover_reason_targets_hysteria2_socks_errors(self) -> None:
+    def test_active_stack_runtime_failover_reason_ignores_hysteria2_journal_noise(self) -> None:
         watchdog.state.active_stack_runtime_fail_streak = 0
         watchdog.state.last_failover = None
         watchdog.state.active_stack_probe_summary = {
-            "status": "degraded",
+            "status": "ok",
             "timestamp": "2026-04-07T07:30:00",
             "recent_socks_errors": watchdog.HYSTERIA2_SOCKS_ERROR_THRESHOLD,
         }
         reason = watchdog._active_stack_runtime_failover_reason(
             now_ts=datetime.fromisoformat("2026-04-07T07:31:00").timestamp()
         )
-        self.assertEqual(reason, "hysteria2_socks_timeouts")
+        self.assertIsNone(reason)
 
-    def test_run_active_stack_runtime_probes_marks_degraded_on_recent_hysteria_errors(self) -> None:
+    def test_run_active_stack_runtime_probes_keeps_ok_on_recent_hysteria_errors(self) -> None:
         watchdog.state.active_stack = "hysteria2"
         watchdog.state.active_stack_runtime_fail_streak = 0
         watchdog.state.active_stack_probe_summary = {}
@@ -1041,9 +1041,9 @@ scenarios:
                 with mock.patch.object(watchdog, "run_cmd", side_effect=_fake_run_cmd):
                     summary = asyncio.run(watchdog._run_active_stack_runtime_probes())
 
-        self.assertEqual(summary["status"], "degraded")
+        self.assertEqual(summary["status"], "ok")
         self.assertEqual(summary["recent_socks_errors"], watchdog.HYSTERIA2_SOCKS_ERROR_THRESHOLD)
-        self.assertEqual(watchdog.state.active_stack_runtime_fail_streak, 1)
+        self.assertEqual(watchdog.state.active_stack_runtime_fail_streak, 0)
 
     def test_blocked_site_probe_uses_stable_control_plane_endpoint(self) -> None:
         self.assertEqual(watchdog.BLOCKED_CHECK_URLS, ["https://api.telegram.org"])
