@@ -1,0 +1,6 @@
+# Critical blocked domains that must be resolvable into blocked_dynamic
+# immediately after dnsmasq restart/postboot. Keep this list compact.
+api.telegram.org
+web.telegram.org
+telegram.org
+t.me

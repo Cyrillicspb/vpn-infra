@@ -93,6 +93,31 @@ else
     warn "dns-warmup.sh не найден"
 fi
 
+CRITICAL_BLOCKED_DOMAINS_FILE="/opt/vpn/home/config/critical-blocked-domains.txt"
+if [[ -f "$CRITICAL_BLOCKED_DOMAINS_FILE" ]]; then
+    pass "critical blocked domains list существует"
+    if grep -qx "api.telegram.org" "$CRITICAL_BLOCKED_DOMAINS_FILE"; then
+        pass "critical blocked domains: api.telegram.org присутствует"
+    else
+        fail "critical blocked domains: api.telegram.org отсутствует"
+    fi
+else
+    fail "critical blocked domains list не найден"
+fi
+
+TG_IP="$(dig @127.0.0.1 api.telegram.org +short +time=5 +tries=1 2>/dev/null | grep -E '^[0-9.]+$' | head -1 || true)"
+if [[ -n "$TG_IP" ]]; then
+    pass "api.telegram.org резолвится в $TG_IP"
+    if nft get element inet vpn blocked_dynamic "{ $TG_IP }" &>/dev/null 2>&1 || \
+       nft get element inet vpn blocked_static "{ $TG_IP }" &>/dev/null 2>&1; then
+        pass "api.telegram.org IP в blocked nft set"
+    else
+        fail "api.telegram.org IP не попал в blocked nft set"
+    fi
+else
+    fail "api.telegram.org не резолвится через dnsmasq"
+fi
+
 # 9. dnsmasq НЕ логирует DNS-запросы (privacy)
 if ! grep -qE '^[[:space:]]*log-queries' "$DNSMASQ_CONF" 2>/dev/null; then
     pass "dnsmasq: log-queries disabled (privacy)"

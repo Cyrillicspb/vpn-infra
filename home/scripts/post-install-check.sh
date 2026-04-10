@@ -267,6 +267,14 @@ check_warn "policy routing fwmark 0x1 → table 200" \
 check_warn "policy routing fwmark 0x2 → table 201" \
     "ip rule show | grep -qE 'fwmark 0x2 lookup 201'" \
     "DPI bypass не заработает без ip rule"
+critical_blocked_ip_in_set() {
+    local domain="$1"
+    local ip=""
+    ip="$(dig +short @127.0.0.1 "$domain" A 2>/dev/null | grep -E '^[0-9.]+$' | head -n1 || true)"
+    [[ -n "$ip" ]] || return 1
+    nft get element inet vpn blocked_dynamic "{ $ip }" >/dev/null 2>&1 || \
+        nft get element inet vpn blocked_static "{ $ip }" >/dev/null 2>&1
+}
 if systemctl list-unit-files autossh-vpn.service >/dev/null 2>&1; then
     check_warn "autossh-vpn" "systemctl is-active autossh-vpn" "fallback management SOCKS не поднят"
     check_warn "autossh-vpn ExecStart wrapper" \
@@ -331,11 +339,16 @@ if [[ -n "$BLOCKED_TEST_DOMAIN" ]]; then
     check_warn "DNS blocked @127.0.0.1 → ${BLOCKED_TEST_DOMAIN}" \
         "dig @127.0.0.1 ${BLOCKED_TEST_DOMAIN} +short +time=5 | grep -q '\\.'" \
         "dnsmasq не смог резолвить blocked domain через tier-2/VPS DNS"
+    if [[ "$BLOCKED_TEST_DOMAIN" == "api.telegram.org" ]]; then
+        check_warn "Telegram IP → blocked nft set" \
+            "critical_blocked_ip_in_set api.telegram.org" \
+            "LAN-клиенты потеряют Telegram, если api.telegram.org не попадёт в blocked_dynamic/blocked_static"
+    fi
     if [[ -n "${VPS_TUNNEL_IP:-}" ]]; then
         check_warn "DNS Tier-2 @${VPS_TUNNEL_IP} → ${BLOCKED_TEST_DOMAIN}" \
             "dig @${VPS_TUNNEL_IP} ${BLOCKED_TEST_DOMAIN} +short +time=5 | grep -q '\\.'" \
             "DNS на VPS tunnel endpoint не отвечает для blocked domain"
-    fi
+        fi
 else
     warn "DNS blocked test domain" "не найден server=/... в /etc/dnsmasq.d/vpn-force.conf или vpn-domains.conf"
 fi

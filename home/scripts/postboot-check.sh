@@ -58,6 +58,8 @@ if nft list set inet vpn dpi_direct > /dev/null 2>&1; then
 else
     warn "nft dpi_direct отсутствует"
 fi
+check "api.telegram.org DNS" "dig @127.0.0.1 api.telegram.org +short +time=5 | grep -qE '^[0-9.]+'"
+check "api.telegram.org in blocked nft set" "IP=\$(dig @127.0.0.1 api.telegram.org +short +time=5 | grep -E '^[0-9.]+' | head -1); [[ -n \"\$IP\" ]] && (nft get element inet vpn blocked_dynamic \"{ \$IP }\" || nft get element inet vpn blocked_static \"{ \$IP }\")"
 check "DKMS awg" "dkms status | grep -q 'amneziawg'"
 check "telegram-bot" "docker inspect --format '{{.State.Running}}' telegram-bot | grep -q true"
 

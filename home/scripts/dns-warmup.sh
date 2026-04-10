@@ -26,6 +26,23 @@ DOMAINS=(
     akamai.net
 )
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CRITICAL_BLOCKED_DOMAINS_FILE="/opt/vpn/home/config/critical-blocked-domains.txt"
+if [[ ! -f "$CRITICAL_BLOCKED_DOMAINS_FILE" ]]; then
+    CRITICAL_BLOCKED_DOMAINS_FILE="${SCRIPT_DIR%/scripts}/config/critical-blocked-domains.txt"
+fi
+
+if [[ -f "$CRITICAL_BLOCKED_DOMAINS_FILE" ]]; then
+    while IFS= read -r line; do
+        domain="${line%%#*}"
+        domain="${domain//[[:space:]]/}"
+        [[ -n "$domain" ]] || continue
+        DOMAINS+=("$domain")
+    done < "$CRITICAL_BLOCKED_DOMAINS_FILE"
+fi
+
+mapfile -t DOMAINS < <(printf '%s\n' "${DOMAINS[@]}" | awk 'NF && !seen[$0]++')
+
 log() { echo "[$(date '+%H:%M:%S')] DNS-WARMUP: $*"; }
 
 log "Прогрев DNS-кэша (${#DOMAINS[@]} доменов)..."

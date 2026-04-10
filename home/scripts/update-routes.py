@@ -277,17 +277,35 @@ STATIC_BLOCKED_DOMAINS: list[str] = [
     "stackoverflow.com",
 ]
 
+def _load_critical_blocked_domains() -> list[str]:
+    candidates = [
+        Path("/opt/vpn/home/config/critical-blocked-domains.txt"),
+        SCRIPT_DIR.parent / "config" / "critical-blocked-domains.txt",
+    ]
+    critical_domains_file = next((path for path in candidates if path.exists()), None)
+
+    if critical_domains_file is None:
+        return [
+            "api.telegram.org",
+            "web.telegram.org",
+            "telegram.org",
+            "t.me",
+        ]
+
+    domains: list[str] = []
+    for raw_line in critical_domains_file.read_text(encoding="utf-8").splitlines():
+        domain = raw_line.strip().lower()
+        if not domain or domain.startswith("#"):
+            continue
+        domains.append(domain.lstrip("*."))
+    return list(dict.fromkeys(domains))
+
+
 # ── Tier-1 домены — всегда в blocked_static, неудаляемые ──────────────────────
 # Сервер в России — эти домены заблокированы на уровне ISP.
 # Вносятся в dnsmasq и nft blocked_static независимо от баз РКН и ручных списков.
 # НЕ могут быть удалены через /direct add или правкой manual-direct.txt.
-TIER1_DOMAINS: list[str] = [
-    # Telegram API — сервер использует для отправки алертов
-    "api.telegram.org",
-    "web.telegram.org",
-    "telegram.org",
-    "t.me",
-]
+TIER1_DOMAINS: list[str] = _load_critical_blocked_domains()
 
 
 # =============================================================================
@@ -1385,6 +1403,24 @@ def reload_dnsmasq() -> None:
         log.warning(f"dnsmasq restart failed: {exc}")
 
 
+def warm_critical_blocked_domains() -> None:
+    warmed = 0
+    for domain in TIER1_DOMAINS:
+        try:
+            result = subprocess.run(
+                ["dig", "@127.0.0.1", domain, "+short", "+time=3", "+tries=1"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0 and any(
+                line.strip() and all(ch.isdigit() or ch == "." for ch in line.strip())
+                for line in result.stdout.splitlines()
+            ):
+                warmed += 1
+        except Exception as exc:
+            log.warning(f"dns warmup failed for {domain}: {exc}")
+    log.info(f"dns critical blocked warmup: {warmed}/{len(TIER1_DOMAINS)}")
+
+
 # =============================================================================
 # Diff и hash
 # =============================================================================
@@ -1698,6 +1734,7 @@ def main() -> None:
     if os.geteuid() == 0:
         apply_nftables()
         reload_dnsmasq()
+        warm_critical_blocked_domains()
     else:
         log.warning("Не root — применение nftables/dnsmasq пропущено")
 
