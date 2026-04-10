@@ -53,10 +53,17 @@ class _DummyHTTPBearer:
         pass
 
 
+class _DummyHTTPException(Exception):
+    def __init__(self, status_code=None, detail=None, *args, **kwargs) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
 def _install_watchdog_import_stubs() -> None:
     fastapi = types.ModuleType("fastapi")
     fastapi.FastAPI = _DummyFastAPI
-    fastapi.HTTPException = Exception
+    fastapi.HTTPException = _DummyHTTPException
     fastapi.Request = object
     fastapi.BackgroundTasks = object
     fastapi.Depends = lambda value=None: value
@@ -1047,6 +1054,30 @@ scenarios:
 
     def test_blocked_site_probe_uses_stable_control_plane_endpoint(self) -> None:
         self.assertEqual(watchdog.BLOCKED_CHECK_URLS, ["https://api.telegram.org"])
+
+    def test_resolve_graph_request_returns_known_system_mapping(self) -> None:
+        graph = watchdog._resolve_graph_request("system", "1h")
+        self.assertEqual(graph["dashboard_uid"], "vpn-system")
+        self.assertEqual(graph["panel_id"], 10)
+        self.assertEqual(graph["period"], "1h")
+
+    def test_resolve_graph_request_rejects_unknown_panel(self) -> None:
+        with self.assertRaises(watchdog.HTTPException) as ctx:
+            watchdog._resolve_graph_request("unknown", "1h")
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("invalid graph panel", str(ctx.exception.detail))
+
+    def test_resolve_graph_request_rejects_unknown_period(self) -> None:
+        with self.assertRaises(watchdog.HTTPException) as ctx:
+            watchdog._resolve_graph_request("tunnel", "30d")
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("invalid graph period", str(ctx.exception.detail))
+
+    def test_grafana_render_url_uses_d_solo_contract(self) -> None:
+        url = watchdog._grafana_render_url("vpn-system", 10, "24h")
+        self.assertIn("/render/d-solo/vpn-system/vpn-system", url)
+        self.assertIn("panelId=10", url)
+        self.assertIn("from=now-24h", url)
 
     def test_collect_runtime_diagnostics_uses_blocked_probe_contract(self) -> None:
         watchdog.state.active_stack = "hysteria2"

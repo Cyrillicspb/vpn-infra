@@ -732,6 +732,11 @@ async def _docker_logs(service: str, n: int = 50) -> str:
     except Exception as e:
         return f"(ошибка получения логов: {e})"
 
+
+async def _systemd_logs(service: str, n: int = 50) -> str:
+    payload = await _wc().get_systemd_logs(service, n)
+    return str(payload.get("text") or "(нет логов)")
+
 MANUAL_VPN    = Path("/etc/vpn-routes/manual-vpn.txt")
 MANUAL_DIRECT = Path("/etc/vpn-routes/manual-direct.txt")
 
@@ -1232,11 +1237,7 @@ async def cmd_logs(message: Message, state: FSMContext, **kw):
         if service in docker_services:
             text = await _docker_logs(service, n)
         else:
-            result = subprocess.run(
-                ["journalctl", "-u", service, "-n", str(n), "--no-pager", "--output=short"],
-                capture_output=True, text=True, timeout=15,
-            )
-            text = result.stdout or result.stderr or "(нет логов)"
+            text = await _systemd_logs(service, n)
         if len(text) > 4000:
             await message.answer_document(
                 BufferedInputFile(text.encode(), filename=f"{service}.log"),
@@ -4220,11 +4221,7 @@ async def cb_adm_log(cb: CallbackQuery, **kw):
         if service in allowed_docker:
             text = await _docker_logs(service, 50)
         else:
-            result = subprocess.run(
-                ["journalctl", "-u", service, "-n", "50", "--no-pager", "--output=short"],
-                capture_output=True, text=True, timeout=15,
-            )
-            text = result.stdout or result.stderr or "(нет логов)"
+            text = await _systemd_logs(service, 50)
         if len(text) > 4000:
             from aiogram.types import BufferedInputFile
             await cb.message.answer_document(

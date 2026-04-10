@@ -3,6 +3,7 @@ services/watchdog_client.py — HTTP клиент для watchdog API
 """
 import logging
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 import aiohttp
 
@@ -103,6 +104,13 @@ class WatchdogClient:
     # -----------------------------------------------------------------------
     async def get_peers(self) -> dict:
         return await self._get("/peer/list")
+
+    async def get_systemd_logs(self, service: str, lines: int = 50) -> dict:
+        query = urlencode({
+            "service": str(service or "").strip(),
+            "lines": max(1, min(int(lines or 50), 300)),
+        })
+        return await self._get(f"/logs/systemd?{query}")
 
     async def add_peer(self, name: str, protocol: str, public_key: str = "", ip: str = "") -> dict:
         data: dict = {"name": name, "protocol": protocol, "public_key": public_key}
@@ -232,7 +240,9 @@ class WatchdogClient:
     # -----------------------------------------------------------------------
     async def get_graph(self, panel: str = "tunnel", period: str = "1h") -> bytes:
         data = await self._post("/graph", {"panel": panel, "period": period}, timeout=45)
-        return data if isinstance(data, bytes) else b""
+        if not isinstance(data, bytes) or not data:
+            raise WatchdogError("Grafana не вернула PNG")
+        return data
 
     async def diagnose(self, device: str) -> dict:
         return await self._post(f"/diagnose/{device}")

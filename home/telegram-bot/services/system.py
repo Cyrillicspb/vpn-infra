@@ -3,7 +3,6 @@ services/system.py — Системные утилиты для бота (лог
 """
 import logging
 import subprocess
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +27,16 @@ async def get_docker_status() -> dict:
 
 
 async def get_service_logs(service: str, lines: int = 50) -> str:
-    """Получить логи systemd сервиса."""
+    """Получить логи host systemd сервиса через watchdog API."""
     try:
-        result = subprocess.run(
-            ["journalctl", "-u", service, "-n", str(lines), "--no-pager", "-o", "short"],
-            capture_output=True, text=True, timeout=15
-        )
-        return result.stdout or result.stderr or "(нет логов)"
+        from config import config
+        from services.watchdog_client import WatchdogClient
+
+        payload = await WatchdogClient(
+            config.watchdog_url,
+            config.watchdog_token,
+        ).get_systemd_logs(service, lines)
+        return str(payload.get("text") or "(нет логов)")
     except Exception as e:
         return f"Ошибка: {e}"
 

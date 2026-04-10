@@ -103,6 +103,16 @@ VPS_HOSTNAME         = os.getenv("VPS_HOSTNAME", "")
 NET_INTERFACE        = os.getenv("NET_INTERFACE", "eth0")
 GATEWAY_IP           = os.getenv("GATEWAY_IP", "")
 
+SYSTEMD_LOG_ALLOWED_UNITS = {
+    "watchdog",
+    "dnsmasq",
+    "hysteria2",
+    "docker",
+    "nftables",
+    "awg-quick@wg0",
+    "wg-quick@wg1",
+}
+
 STATE_FILE   = Path("/opt/vpn/watchdog/state.json")
 BACKEND_BALANCER_STATE_FILE = Path("/opt/vpn/watchdog/backend-balancer-state.json")
 GATEWAY_LAN_CLIENTS_FILE = Path("/opt/vpn/watchdog/gateway-lan-clients.json")
@@ -6765,6 +6775,63 @@ class GraphRequest(BaseModel):
     panel: str = "tunnel"   # tunnel | speed | clients | system
     period: str = "1h"      # 1h | 6h | 24h | 7d
 
+
+GRAPH_PANEL_MAP: dict[str, dict[str, Any]] = {
+    "tunnel": {
+        "dashboard_uid": "vpn-tunnel",
+        "panel_id": 1,
+        "default_period": "1h",
+    },
+    "speed": {
+        "dashboard_uid": "vpn-tunnel",
+        "panel_id": 2,
+        "default_period": "1h",
+    },
+    "clients": {
+        "dashboard_uid": "vpn-clients",
+        "panel_id": 10,
+        "default_period": "1h",
+    },
+    "system": {
+        "dashboard_uid": "vpn-system",
+        "panel_id": 10,
+        "default_period": "1h",
+    },
+}
+GRAPH_PERIOD_MAP = {"1h": "1h", "6h": "6h", "24h": "24h", "7d": "7d"}
+
+
+def _resolve_graph_request(panel: str, period: str) -> dict[str, Any]:
+    panel_key = str(panel or "").strip()
+    spec = GRAPH_PANEL_MAP.get(panel_key)
+    if spec is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid graph panel: {panel_key or 'empty'}",
+        )
+
+    period_key = str(period or "").strip() or str(spec.get("default_period") or "1h")
+    normalized_period = GRAPH_PERIOD_MAP.get(period_key)
+    if normalized_period is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid graph period: {period_key}",
+        )
+
+    return {
+        "panel": panel_key,
+        "period": normalized_period,
+        "dashboard_uid": str(spec["dashboard_uid"]),
+        "panel_id": int(spec["panel_id"]),
+    }
+
+
+def _grafana_render_url(dashboard_uid: str, panel_id: int, period: str) -> str:
+    return (
+        f"{GRAFANA_URL}/render/d-solo/{dashboard_uid}/{dashboard_uid}"
+        f"?panelId={panel_id}&width=800&height=400&from=now-{period}&to=now"
+    )
+
 class VpsRequest(BaseModel):
     ip: str
     ssh_port: int = 22
@@ -7170,6 +7237,34 @@ async def get_peer_list(_: bool = Depends(_auth)):
             "tx_bytes":       int(tx) if tx.isdigit() else 0,
         })
     return {"peers": peers, "count": len(peers)}
+
+
+@app.get("/logs/systemd")
+async def get_systemd_logs(
+    service: str,
+    lines: int = 50,
+    _: bool = Depends(_auth),
+):
+    unit = str(service or "").strip()
+    if unit not in SYSTEMD_LOG_ALLOWED_UNITS:
+        raise HTTPException(status_code=400, detail=f"Сервис '{unit}' не разрешён")
+
+    line_count = max(1, min(int(lines or 50), 300))
+    rc, out, err = await run_cmd(
+        ["journalctl", "-u", unit, "-n", str(line_count), "--no-pager", "--output=short"],
+        timeout=15,
+    )
+    if rc != 0:
+        detail = (err or out or "journalctl failed").strip()[:400]
+        raise HTTPException(status_code=500, detail=detail or "journalctl failed")
+
+    text = (out or err or "").strip()
+    return {
+        "service": unit,
+        "source": "systemd-journal",
+        "lines_requested": line_count,
+        "text": text or "(нет логов)",
+    }
 
 
 @app.get("/vps/list")
@@ -7827,21 +7922,11 @@ async def post_dpi_presets_reload(request: Request, _: bool = Depends(_auth)):
 @limiter.limit("10/second")
 async def post_graph(request: Request, req: GraphRequest, _: bool = Depends(_auth)):
     """Получить PNG-график из Grafana Render API."""
-    # (dashboard_uid, panel_id) для каждого типа графика
-    panel_map = {
-        "tunnel":  ("vpn-tunnel",  1),   # RTT туннеля vs Baseline
-        "speed":   ("vpn-tunnel",  2),   # Скорость туннеля (speedtest)
-        "clients": ("vpn-clients", 10),  # Количество пиров (история)
-        "system":  ("vpn-system",  10),  # CPU история
-    }
-    period_map = {"1h": "1h", "6h": "6h", "24h": "24h", "7d": "7d"}
-
-    dash_uid, panel_id = panel_map.get(req.panel, ("vpn-tunnel", 1))
-    period = period_map.get(req.period, "1h")
-
-    url = (
-        f"{GRAFANA_URL}/render/d-solo/{dash_uid}/{dash_uid}"
-        f"?panelId={panel_id}&width=800&height=400&from=now-{period}&to=now"
+    graph = _resolve_graph_request(req.panel, req.period)
+    url = _grafana_render_url(
+        graph["dashboard_uid"],
+        graph["panel_id"],
+        graph["period"],
     )
     headers = {}
     if GRAFANA_TOKEN:
@@ -7851,13 +7936,35 @@ async def post_graph(request: Request, req: GraphRequest, _: bool = Depends(_aut
         _creds = base64.b64encode(f"admin:{GRAFANA_PASSWORD}".encode()).decode()
         headers["Authorization"] = f"Basic {_creds}"
 
+    logger.info(
+        "graph render request panel=%s dashboard=%s panel_id=%s period=%s url=%s",
+        graph["panel"],
+        graph["dashboard_uid"],
+        graph["panel_id"],
+        graph["period"],
+        url,
+    )
+
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as r:
-                if r.status == 200:
-                    png = await r.read()
-                    return Response(content=png, media_type="image/png")
-                raise HTTPException(status_code=502, detail=f"Grafana вернул {r.status}")
+                body = await r.read()
+                content_type = str(r.headers.get("Content-Type", "")).lower()
+                if r.status != 200:
+                    snippet = body.decode("utf-8", errors="replace").strip()[:300]
+                    detail = f"grafana render failed: http {r.status}"
+                    if snippet:
+                        detail = f"{detail} | {snippet}"
+                    logger.warning("graph render http_error status=%s detail=%s", r.status, snippet)
+                    raise HTTPException(status_code=502, detail=detail)
+                if "image/png" not in content_type:
+                    snippet = body.decode("utf-8", errors="replace").strip()[:300]
+                    detail = f"grafana render returned non-png content-type: {content_type or 'unknown'}"
+                    if snippet:
+                        detail = f"{detail} | {snippet}"
+                    logger.warning("graph render non_png content_type=%s detail=%s", content_type, snippet)
+                    raise HTTPException(status_code=502, detail=detail)
+                return Response(content=body, media_type="image/png")
     except aiohttp.ClientError as exc:
         raise HTTPException(status_code=502, detail=f"Grafana недоступна: {exc}")
 

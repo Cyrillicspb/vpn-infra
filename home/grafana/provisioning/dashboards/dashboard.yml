@@ -13,7 +13,7 @@ providers:
       foldersFromFilesStructure: false
 
 # Dashboards (uid → используется в /graph команде бота):
-#   vpn-overview : /graph system  → общий обзор
+#   vpn-system   : /graph system  → CPU история
 #   vpn-tunnel   : /graph tunnel  → RTT, стеки, failover
 #   vpn-tunnel   : /graph speed   → скорость (panel 2)
 #   vpn-clients  : /graph clients → пиры, трафик
