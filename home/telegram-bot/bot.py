@@ -19,6 +19,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -75,6 +76,8 @@ logger = logging.getLogger(__name__)
 
 FSM_TIMEOUT = config.fsm_timeout_minutes * 60   # 600 сек
 POLLING_RETRY_DELAY = int(os.getenv("POLLING_RETRY_DELAY", "10"))
+TRAFFIC_STATS_POLL_INTERVAL_SECONDS = int(os.getenv("TRAFFIC_STATS_POLL_INTERVAL_SECONDS", "300"))
+TRAFFIC_STATS_RETENTION_DAYS = int(os.getenv("TRAFFIC_STATS_RETENTION_DAYS", "90"))
 
 
 async def _notify_selfheal(text: str) -> None:
@@ -291,6 +294,39 @@ async def _bootstrap_cleanup_loop(db: "Database") -> None:
         raise
 
 
+async def _traffic_stats_loop(db: "Database") -> None:
+    from services.watchdog_client import WatchdogClient
+    from config import config as _cfg
+
+    last_prune_monotonic = 0.0
+    try:
+        while True:
+            await asyncio.sleep(TRAFFIC_STATS_POLL_INTERVAL_SECONDS)
+            try:
+                wdc = WatchdogClient(_cfg.watchdog_url, _cfg.watchdog_token)
+                peers_info = await wdc.get_peers()
+                peers = list((peers_info or {}).get("peers") or [])
+                sampled_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                result = await db.record_traffic_snapshot(peers, sampled_at=sampled_at)
+                logger.info(
+                    "traffic_stats_loop: peers=%s matched=%s deltas=%s resets=%s",
+                    len(peers),
+                    result.get("matched_devices", 0),
+                    result.get("delta_rows", 0),
+                    result.get("counter_resets", 0),
+                )
+                now_mono = time.monotonic()
+                if now_mono - last_prune_monotonic >= 24 * 3600:
+                    removed = await db.prune_traffic_samples(TRAFFIC_STATS_RETENTION_DAYS)
+                    logger.info("traffic_stats_loop: pruned %s old traffic samples", removed)
+                    last_prune_monotonic = now_mono
+            except Exception as exc:
+                logger.warning("traffic_stats_loop: %s", exc)
+    except asyncio.CancelledError:
+        logger.info("_traffic_stats_loop stopped")
+        raise
+
+
 # ---------------------------------------------------------------------------
 # Startup / Shutdown
 # ---------------------------------------------------------------------------
@@ -322,6 +358,7 @@ async def on_startup(bot: Bot, dp: Dispatcher, db: Database, autodist: AutoDist)
         asyncio.create_task(start_notify_server(bot, db), name="notify-server"),
         asyncio.create_task(reminder_loop(autodist), name="reminder-loop"),
         asyncio.create_task(_bootstrap_cleanup_loop(db), name="bootstrap-cleanup"),
+        asyncio.create_task(_traffic_stats_loop(db), name="traffic-stats-loop"),
     ]
     bot._db = db
     bot._autodist = autodist
@@ -342,7 +379,7 @@ async def on_shutdown(bot: Bot) -> None:
     logger.info("Бот завершается...")
 
     # 1. Отменить named background tasks
-    task_names = {"notify-server", "reminder-loop", "bootstrap-cleanup"}
+    task_names = {"notify-server", "reminder-loop", "bootstrap-cleanup", "traffic-stats-loop"}
     to_cancel = [t for t in asyncio.all_tasks() if t.get_name() in task_names]
     for task in to_cancel:
         task.cancel()

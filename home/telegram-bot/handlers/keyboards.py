@@ -128,6 +128,18 @@ def admin_monitor_menu() -> InlineKeyboardMarkup:
     ])
 
 
+def admin_traffic_menu(active_view: str = "runtime") -> InlineKeyboardMarkup:
+    runtime_prefix = "✅ " if active_view == "runtime" else ""
+    totals_prefix = "✅ " if active_view == "totals" else ""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=f"{runtime_prefix}📡 Runtime peers", callback_data="adm:stats"),
+            InlineKeyboardButton(text=f"{totals_prefix}📚 Накоплено", callback_data="adm:stats_totals"),
+        ],
+        _nav_row("adm:monitor"),
+    ])
+
+
 def admin_functional_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [

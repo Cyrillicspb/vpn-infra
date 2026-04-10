@@ -16,7 +16,7 @@ import secrets
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from services.crypto import decrypt_key, encrypt_key
 
@@ -161,6 +161,36 @@ class Database:
                         ON client_backend_prefs(chat_id);
                     CREATE INDEX IF NOT EXISTS idx_client_backend_prefs_enabled
                         ON client_backend_prefs(enabled);
+
+                    CREATE TABLE IF NOT EXISTS device_traffic_state (
+                        device_id             INTEGER PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+                        last_public_key       TEXT,
+                        last_interface        TEXT,
+                        last_rx_bytes         INTEGER NOT NULL DEFAULT 0,
+                        last_tx_bytes         INTEGER NOT NULL DEFAULT 0,
+                        total_download_bytes  INTEGER NOT NULL DEFAULT 0,
+                        total_upload_bytes    INTEGER NOT NULL DEFAULT 0,
+                        last_sample_ts        TEXT,
+                        last_handshake_ts     INTEGER NOT NULL DEFAULT 0,
+                        last_seen_at          TEXT
+                    );
+
+                    CREATE TABLE IF NOT EXISTS device_traffic_samples (
+                        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                        device_id             INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+                        sampled_at            TEXT    NOT NULL,
+                        delta_download_bytes  INTEGER NOT NULL DEFAULT 0,
+                        delta_upload_bytes    INTEGER NOT NULL DEFAULT 0,
+                        total_download_bytes  INTEGER NOT NULL DEFAULT 0,
+                        total_upload_bytes    INTEGER NOT NULL DEFAULT 0,
+                        last_handshake_ts     INTEGER NOT NULL DEFAULT 0,
+                        last_seen_at          TEXT
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_device_traffic_samples_device_time
+                        ON device_traffic_samples(device_id, sampled_at);
+                    CREATE INDEX IF NOT EXISTS idx_device_traffic_samples_time
+                        ON device_traffic_samples(sampled_at);
                 """)
                 conn.commit()
                 # Миграция: пересоздать clients если старая схема (device_name NOT NULL)
@@ -620,6 +650,310 @@ class Database:
                 "SELECT public_key FROM devices WHERE public_key IS NOT NULL AND public_key != ''"
             ).fetchall()
             return {r["public_key"] for r in rows if r["public_key"]}
+        finally:
+            conn.close()
+
+    async def get_devices_with_clients(self) -> list[dict]:
+        conn = self._conn()
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                    d.*,
+                    c.chat_id,
+                    c.username,
+                    c.first_name,
+                    c.is_disabled,
+                    c.created_at AS client_created_at
+                FROM devices d
+                JOIN clients c ON c.id = d.client_id
+                ORDER BY c.created_at, d.created_at
+                """
+            ).fetchall()
+            return [self._decrypt_device(dict(r)) for r in rows]
+        finally:
+            conn.close()
+
+    async def record_traffic_snapshot(self, runtime_peers: list[dict[str, Any]], sampled_at: Optional[str] = None) -> dict[str, int]:
+        sampled_at = sampled_at or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        runtime_by_pubkey = {
+            str(peer.get("public_key") or "").strip(): peer
+            for peer in (runtime_peers or [])
+            if str(peer.get("public_key") or "").strip()
+        }
+        matched = 0
+        deltas = 0
+        resets = 0
+
+        async with self._lock:
+            conn = self._conn()
+            try:
+                device_rows = conn.execute(
+                    """
+                    SELECT d.id, d.public_key
+                    FROM devices d
+                    WHERE d.public_key IS NOT NULL AND d.public_key != ''
+                    """
+                ).fetchall()
+
+                for row in device_rows:
+                    device_id = int(row["id"])
+                    public_key = str(row["public_key"] or "").strip()
+                    peer = runtime_by_pubkey.get(public_key)
+                    if not peer:
+                        continue
+
+                    matched += 1
+                    current_rx = int(peer.get("rx_bytes", 0) or 0)
+                    current_tx = int(peer.get("tx_bytes", 0) or 0)
+                    current_download = current_tx
+                    current_upload = current_rx
+                    current_hs = int(peer.get("last_handshake", 0) or 0)
+                    current_iface = str(peer.get("interface") or "").strip()
+
+                    state_row = conn.execute(
+                        """
+                        SELECT
+                            last_rx_bytes,
+                            last_tx_bytes,
+                            total_download_bytes,
+                            total_upload_bytes,
+                            last_seen_at
+                        FROM device_traffic_state
+                        WHERE device_id = ?
+                        """,
+                        (device_id,),
+                    ).fetchone()
+
+                    if state_row is None:
+                        delta_download = current_download
+                        delta_upload = current_upload
+                        total_download = current_download
+                        total_upload = current_upload
+                    else:
+                        last_rx = int(state_row["last_rx_bytes"] or 0)
+                        last_tx = int(state_row["last_tx_bytes"] or 0)
+                        total_download = int(state_row["total_download_bytes"] or 0)
+                        total_upload = int(state_row["total_upload_bytes"] or 0)
+
+                        if current_rx < last_rx or current_tx < last_tx:
+                            resets += 1
+                            delta_download = 0
+                            delta_upload = 0
+                        else:
+                            delta_download = max(0, current_download - last_tx)
+                            delta_upload = max(0, current_upload - last_rx)
+                            total_download += delta_download
+                            total_upload += delta_upload
+
+                    if delta_download > 0 or delta_upload > 0:
+                        deltas += 1
+
+                    last_seen_at: Optional[str] = None
+                    if current_hs > 0:
+                        last_seen_at = datetime.utcfromtimestamp(current_hs).strftime("%Y-%m-%d %H:%M:%S")
+                    elif delta_download > 0 or delta_upload > 0:
+                        last_seen_at = sampled_at
+                    elif state_row is not None:
+                        last_seen_at = state_row["last_seen_at"]
+
+                    conn.execute(
+                        """
+                        INSERT INTO device_traffic_state (
+                            device_id,
+                            last_public_key,
+                            last_interface,
+                            last_rx_bytes,
+                            last_tx_bytes,
+                            total_download_bytes,
+                            total_upload_bytes,
+                            last_sample_ts,
+                            last_handshake_ts,
+                            last_seen_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(device_id) DO UPDATE SET
+                            last_public_key = excluded.last_public_key,
+                            last_interface = excluded.last_interface,
+                            last_rx_bytes = excluded.last_rx_bytes,
+                            last_tx_bytes = excluded.last_tx_bytes,
+                            total_download_bytes = excluded.total_download_bytes,
+                            total_upload_bytes = excluded.total_upload_bytes,
+                            last_sample_ts = excluded.last_sample_ts,
+                            last_handshake_ts = excluded.last_handshake_ts,
+                            last_seen_at = excluded.last_seen_at
+                        """,
+                        (
+                            device_id,
+                            public_key,
+                            current_iface,
+                            current_rx,
+                            current_tx,
+                            total_download,
+                            total_upload,
+                            sampled_at,
+                            current_hs,
+                            last_seen_at,
+                        ),
+                    )
+
+                    if delta_download > 0 or delta_upload > 0 or state_row is None:
+                        conn.execute(
+                            """
+                            INSERT INTO device_traffic_samples (
+                                device_id,
+                                sampled_at,
+                                delta_download_bytes,
+                                delta_upload_bytes,
+                                total_download_bytes,
+                                total_upload_bytes,
+                                last_handshake_ts,
+                                last_seen_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                device_id,
+                                sampled_at,
+                                delta_download,
+                                delta_upload,
+                                total_download,
+                                total_upload,
+                                current_hs,
+                                last_seen_at,
+                            ),
+                        )
+
+                conn.commit()
+                return {
+                    "matched_devices": matched,
+                    "delta_rows": deltas,
+                    "counter_resets": resets,
+                }
+            finally:
+                conn.close()
+
+    async def prune_traffic_samples(self, retention_days: int = 90) -> int:
+        async with self._lock:
+            conn = self._conn()
+            try:
+                cur = conn.execute(
+                    "DELETE FROM device_traffic_samples WHERE datetime(sampled_at) < datetime('now', ?)",
+                    (f"-{int(retention_days)} days",),
+                )
+                conn.commit()
+                return int(cur.rowcount or 0)
+            finally:
+                conn.close()
+
+    async def get_client_traffic_totals(self) -> list[dict[str, Any]]:
+        conn = self._conn()
+        try:
+            device_rows = conn.execute(
+                """
+                SELECT
+                    c.id AS client_id,
+                    c.chat_id,
+                    c.username,
+                    c.first_name,
+                    c.is_disabled,
+                    c.created_at AS client_created_at,
+                    d.id AS device_id,
+                    d.device_name,
+                    d.protocol,
+                    d.public_key,
+                    s.total_download_bytes,
+                    s.total_upload_bytes,
+                    s.last_seen_at
+                FROM clients c
+                LEFT JOIN devices d ON d.client_id = c.id
+                LEFT JOIN device_traffic_state s ON s.device_id = d.id
+                ORDER BY c.created_at, d.created_at
+                """
+            ).fetchall()
+
+            sample_rows = conn.execute(
+                """
+                SELECT
+                    device_id,
+                    SUM(CASE WHEN datetime(sampled_at) >= datetime('now', '-1 day') THEN delta_download_bytes ELSE 0 END) AS download_24h,
+                    SUM(CASE WHEN datetime(sampled_at) >= datetime('now', '-1 day') THEN delta_upload_bytes ELSE 0 END) AS upload_24h,
+                    SUM(CASE WHEN datetime(sampled_at) >= datetime('now', '-7 day') THEN delta_download_bytes ELSE 0 END) AS download_7d,
+                    SUM(CASE WHEN datetime(sampled_at) >= datetime('now', '-7 day') THEN delta_upload_bytes ELSE 0 END) AS upload_7d,
+                    SUM(CASE WHEN datetime(sampled_at) >= datetime('now', '-30 day') THEN delta_download_bytes ELSE 0 END) AS download_30d,
+                    SUM(CASE WHEN datetime(sampled_at) >= datetime('now', '-30 day') THEN delta_upload_bytes ELSE 0 END) AS upload_30d
+                FROM device_traffic_samples
+                GROUP BY device_id
+                """
+            ).fetchall()
+            windows = {int(r["device_id"]): dict(r) for r in sample_rows}
+
+            clients: dict[str, dict[str, Any]] = {}
+            for row in device_rows:
+                chat_id = str(row["chat_id"])
+                client = clients.setdefault(
+                    chat_id,
+                    {
+                        "chat_id": chat_id,
+                        "username": row["username"],
+                        "first_name": row["first_name"],
+                        "is_disabled": int(row["is_disabled"] or 0),
+                        "devices": [],
+                        "download_24h": 0,
+                        "upload_24h": 0,
+                        "download_7d": 0,
+                        "upload_7d": 0,
+                        "download_30d": 0,
+                        "upload_30d": 0,
+                        "total_download_bytes": 0,
+                        "total_upload_bytes": 0,
+                        "last_seen_at": None,
+                    },
+                )
+
+                if row["device_id"] is None:
+                    continue
+
+                device_id = int(row["device_id"])
+                win = windows.get(device_id, {})
+                device = {
+                    "device_id": device_id,
+                    "device_name": row["device_name"],
+                    "protocol": row["protocol"],
+                    "public_key": row["public_key"],
+                    "download_24h": int(win.get("download_24h") or 0),
+                    "upload_24h": int(win.get("upload_24h") or 0),
+                    "download_7d": int(win.get("download_7d") or 0),
+                    "upload_7d": int(win.get("upload_7d") or 0),
+                    "download_30d": int(win.get("download_30d") or 0),
+                    "upload_30d": int(win.get("upload_30d") or 0),
+                    "total_download_bytes": int(row["total_download_bytes"] or 0),
+                    "total_upload_bytes": int(row["total_upload_bytes"] or 0),
+                    "last_seen_at": row["last_seen_at"],
+                }
+                client["devices"].append(device)
+
+                client["download_24h"] += device["download_24h"]
+                client["upload_24h"] += device["upload_24h"]
+                client["download_7d"] += device["download_7d"]
+                client["upload_7d"] += device["upload_7d"]
+                client["download_30d"] += device["download_30d"]
+                client["upload_30d"] += device["upload_30d"]
+                client["total_download_bytes"] += device["total_download_bytes"]
+                client["total_upload_bytes"] += device["total_upload_bytes"]
+
+                device_last_seen = row["last_seen_at"]
+                if device_last_seen and (
+                    not client["last_seen_at"] or str(device_last_seen) > str(client["last_seen_at"])
+                ):
+                    client["last_seen_at"] = device_last_seen
+
+            return sorted(
+                clients.values(),
+                key=lambda item: (
+                    -int(item["download_30d"] + item["upload_30d"]),
+                    -int(item["total_download_bytes"] + item["total_upload_bytes"]),
+                    item["chat_id"],
+                ),
+            )
         finally:
             conn.close()
 

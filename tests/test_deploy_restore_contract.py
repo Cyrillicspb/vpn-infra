@@ -368,6 +368,21 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertIn('/run/vpn-active-backend.env', (ROOT / "home" / "scripts" / "tier2-connect.sh").read_text(encoding="utf-8"))
         self.assertIn('EnvironmentFile=-/run/vpn-active-backend.env', (ROOT / "home" / "watchdog" / "watchdog.py").read_text(encoding="utf-8"))
         self.assertNotIn("Отчёт придёт по завершении.", admin_handler)
+
+    def test_traffic_stats_contract_is_exposed_in_bot_and_db(self):
+        database_source = (ROOT / "home" / "telegram-bot" / "database.py").read_text(encoding="utf-8")
+        admin_handler = (ROOT / "home" / "telegram-bot" / "handlers" / "admin.py").read_text(encoding="utf-8")
+        keyboards = (ROOT / "home" / "telegram-bot" / "handlers" / "keyboards.py").read_text(encoding="utf-8")
+        bot_source = (ROOT / "home" / "telegram-bot" / "bot.py").read_text(encoding="utf-8")
+
+        self.assertIn("CREATE TABLE IF NOT EXISTS device_traffic_state", database_source)
+        self.assertIn("CREATE TABLE IF NOT EXISTS device_traffic_samples", database_source)
+        self.assertIn("async def record_traffic_snapshot", database_source)
+        self.assertIn("async def get_client_traffic_totals", database_source)
+        self.assertIn('callback_data="adm:stats_totals"', keyboards)
+        self.assertIn("def admin_traffic_menu", keyboards)
+        self.assertIn('@router.callback_query(F.data == "adm:stats_totals")', admin_handler)
+        self.assertIn("traffic-stats-loop", bot_source)
         self.assertIn('"trojan"', admin_handler)
         self.assertIn('"tuic"', admin_handler)
         self.assertIn("Path status:", admin_handler)

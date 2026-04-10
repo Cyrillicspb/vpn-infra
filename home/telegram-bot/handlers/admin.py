@@ -23,7 +23,7 @@ import json
 import logging
 import os
 import subprocess
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -66,6 +66,7 @@ from handlers.keyboards import (
     admin_switch_menu,
     admin_system_menu,
     admin_tunnel_menu,
+    admin_traffic_menu,
     admin_vps_actions_kb,
     admin_vps_list_kb,
     admin_vps_menu,
@@ -110,6 +111,32 @@ def _peer_client_traffic_bytes(peer: dict) -> tuple[int, int]:
     rx = int(peer.get("rx_bytes", 0) or 0)
     tx = int(peer.get("tx_bytes", 0) or 0)
     return tx, rx
+
+
+def _fmt_traffic_bytes(n: int) -> str:
+    if n >= 1_000_000_000:
+        return f"{n/1_000_000_000:.2f} GB"
+    if n >= 1_000_000:
+        return f"{n/1_000_000:.1f} MB"
+    return f"{n/1_000:.0f} KB"
+
+
+def _fmt_last_seen(last_seen_at: str | None) -> str:
+    if not last_seen_at:
+        return "никогда"
+    try:
+        seen_dt = datetime.fromisoformat(str(last_seen_at).replace("Z", ""))
+    except ValueError:
+        return str(last_seen_at)
+    delta = datetime.utcnow() - seen_dt
+    minutes = max(0, int(delta.total_seconds() // 60))
+    if minutes < 60:
+        return f"{minutes} мин"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours} ч"
+    days = hours // 24
+    return f"{days} д"
 
 
 def _system_peer_label(peer: dict) -> str:
@@ -3188,16 +3215,9 @@ async def cb_adm_speed(cb: CallbackQuery, **kw):
 
 @router.callback_query(F.data == "adm:stats")
 async def cb_adm_stats(cb: CallbackQuery, **kw):
-    """Статистика трафика по клиентам (из wg show dump)."""
+    """Текущий runtime-срез трафика по клиентам (из wg show dump)."""
     await cb.answer("Загружаю...")
     db: Database = kw.get("db")
-
-    def _fmt_bytes(n: int) -> str:
-        if n >= 1_000_000_000:
-            return f"{n/1_000_000_000:.2f} GB"
-        if n >= 1_000_000:
-            return f"{n/1_000_000:.1f} MB"
-        return f"{n/1_000:.0f} KB"
 
     bot: Bot = kw.get("bot")
 
@@ -3264,25 +3284,25 @@ async def cb_adm_stats(cb: CallbackQuery, **kw):
                 hs_str = f"{(now_ts - hs) // 60} мин" if hs > 0 else "никогда"
                 client_traffic[cid]["devices"].append(
                     f"  {'🟢' if active else '⚪'} {dev_info['device_name']}: "
-                    f"↓{_fmt_bytes(download)} ↑{_fmt_bytes(upload)} | {hs_str}"
+                    f"↓{_fmt_traffic_bytes(download)} ↑{_fmt_traffic_bytes(upload)} | {hs_str}"
                 )
             else:
                 iface = p.get("interface", "")
                 system_label = _system_peer_label(p)
-                peer_line = f"  <code>{pk[:20]}…</code> [{iface}] ↓{_fmt_bytes(download)} ↑{_fmt_bytes(upload)}"
+                peer_line = f"  <code>{pk[:20]}…</code> [{iface}] ↓{_fmt_traffic_bytes(download)} ↑{_fmt_traffic_bytes(upload)}"
                 if system_label:
                     system_peers.append(f"{peer_line} | {system_label}")
                 else:
                     orphans.append(peer_line)
 
         if not client_traffic:
-            text = "📊 <b>Статистика трафика</b>\n\nНет данных."
+            text = "📡 <b>Runtime peers</b>\n\nНет данных."
         else:
-            lines = ["📊 <b>Статистика трафика по клиентам</b>\n"]
+            lines = ["📡 <b>Runtime peers</b>\n"]
             for cid, info in sorted(client_traffic.items(), key=lambda x: -(x[1]["download"] + x[1]["upload"])):
                 lines.append(
                     f"👤 <b>{info['name']}</b> ({cid})\n"
-                    f"  Итого: ↓{_fmt_bytes(info['download'])} ↑{_fmt_bytes(info['upload'])}\n"
+                    f"  Итого: ↓{_fmt_traffic_bytes(info['download'])} ↑{_fmt_traffic_bytes(info['upload'])}\n"
                     + "\n".join(info["devices"])
                 )
             if system_peers:
@@ -3294,7 +3314,45 @@ async def cb_adm_stats(cb: CallbackQuery, **kw):
     except WatchdogError as e:
         text = f"❌ {e}"
 
-    await cb.message.answer(text, reply_markup=back_to_admin_menu(), parse_mode="HTML")
+    await cb.message.answer(text, reply_markup=admin_traffic_menu("runtime"), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "adm:stats_totals")
+async def cb_adm_stats_totals(cb: CallbackQuery, **kw):
+    await cb.answer("Загружаю...")
+    db: Database = kw.get("db")
+
+    try:
+        clients = await db.get_client_traffic_totals()
+        if not clients:
+            text = "📚 <b>Накопленный трафик</b>\n\nНет данных."
+        else:
+            lines = ["📚 <b>Накопленный трафик</b>\n"]
+            for client in clients:
+                name = _display_name(client, client["chat_id"])
+                lines.append(
+                    f"👤 <b>{name}</b> ({client['chat_id']})\n"
+                    f"  24ч: ↓{_fmt_traffic_bytes(client['download_24h'])} ↑{_fmt_traffic_bytes(client['upload_24h'])}\n"
+                    f"  7д: ↓{_fmt_traffic_bytes(client['download_7d'])} ↑{_fmt_traffic_bytes(client['upload_7d'])}\n"
+                    f"  30д: ↓{_fmt_traffic_bytes(client['download_30d'])} ↑{_fmt_traffic_bytes(client['upload_30d'])}\n"
+                    f"  Всё время: ↓{_fmt_traffic_bytes(client['total_download_bytes'])} ↑{_fmt_traffic_bytes(client['total_upload_bytes'])} | last seen {_fmt_last_seen(client.get('last_seen_at'))}"
+                )
+                if client["devices"]:
+                    for device in client["devices"]:
+                        lines.append(
+                            f"  {'🟢' if device.get('last_seen_at') else '⚪'} {device['device_name']}: "
+                            f"24ч ↓{_fmt_traffic_bytes(device['download_24h'])} ↑{_fmt_traffic_bytes(device['upload_24h'])} | "
+                            f"30д ↓{_fmt_traffic_bytes(device['download_30d'])} ↑{_fmt_traffic_bytes(device['upload_30d'])} | "
+                            f"всё время ↓{_fmt_traffic_bytes(device['total_download_bytes'])} ↑{_fmt_traffic_bytes(device['total_upload_bytes'])} | "
+                            f"last seen {_fmt_last_seen(device.get('last_seen_at'))}"
+                        )
+                else:
+                    lines.append("  ⚪ Нет устройств")
+            text = "\n\n".join(lines)
+    except Exception as e:
+        text = f"❌ {e}"
+
+    await cb.message.answer(text, reply_markup=admin_traffic_menu("totals"), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "adm:speedtest")
