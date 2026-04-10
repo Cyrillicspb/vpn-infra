@@ -251,6 +251,10 @@ check_sync_pair "runtime sync: autossh-vpn.service" \
     "/opt/vpn/home/systemd/autossh-vpn.service" \
     "/etc/systemd/system/autossh-vpn.service" \
     "installed autossh-vpn.service не совпадает с source tree"
+check_sync_pair "runtime sync: tier2-connect.service" \
+    "/opt/vpn/home/systemd/tier2-connect.service" \
+    "/etc/systemd/system/tier2-connect.service" \
+    "installed tier2-connect.service не совпадает с source tree"
 check_sync_pair "runtime sync: dnsmasq restart drop-in" \
     "/opt/vpn/home/systemd/dnsmasq.service.d/restart-on-failure.conf" \
     "/etc/systemd/system/dnsmasq.service.d/restart-on-failure.conf" \
@@ -323,6 +327,16 @@ if systemctl list-unit-files autossh-vpn.service >/dev/null 2>&1; then
         "unit должен запускать wrapper вместо raw ExecStart с \${...:-...}"
 else
     warn "autossh" "юнит не найден"
+fi
+if systemctl list-unit-files tier2-connect.service >/dev/null 2>&1; then
+    check_warn "tier2-connect" "systemctl is-active tier2-connect" "tier-2 SSH tunnel не поднят"
+    check_warn "tun0 (tier-2)" "ip addr show tun0 2>/dev/null | grep -q '10\\.177\\.2\\.1/30'" \
+        "локальный endpoint tier-2 должен жить на tun0 10.177.2.1/30"
+    check_warn "route to 10.177.2.2 via tun0" \
+        "ip route get ${VPS_TUNNEL_IP:-10.177.2.2} 2>/dev/null | grep -q 'dev tun0'" \
+        "tier-2 endpoint должен маршрутизироваться через tun0, а не через основной gateway"
+else
+    warn "tier2-connect" "юнит не найден"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════

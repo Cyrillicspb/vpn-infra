@@ -2785,9 +2785,29 @@ async def direct_uplink_available() -> bool:
     return False
 
 
-async def speedtest_iperf_vps() -> float:
-    """Замер download-скорости от VPS через iperf3 (tier-2 туннель). Возвращает Mbps."""
+async def _tier2_iperf_unavailability_reason(tunnel_ip: str) -> Optional[str]:
+    rc, _, _ = await run_cmd(["ip", "link", "show", "tun0"], timeout=5)
+    if rc != 0:
+        return "tier-2 tunnel не поднят (tun0 отсутствует)"
+
+    rc, _, _ = await run_cmd(["ping", "-c", "1", "-W", "2", tunnel_ip], timeout=5)
+    if rc != 0:
+        return f"tier-2 endpoint {tunnel_ip} недоступен"
+
+    rc, _, _ = await run_cmd(["nc", "-z", "-w", "3", tunnel_ip, "5201"], timeout=5)
+    if rc != 0:
+        return f"iperf3 server недоступен на {tunnel_ip}:5201"
+
+    return None
+
+
+async def speedtest_iperf_vps() -> tuple[float, Optional[str]]:
+    """Замер download-скорости от VPS через iperf3 (tier-2 туннель)."""
     tunnel_ip = _active_backend_tunnel_ip()
+    unavailable_reason = await _tier2_iperf_unavailability_reason(tunnel_ip)
+    if unavailable_reason:
+        return 0.0, unavailable_reason
+
     cmd = [
         "iperf3", "-c", tunnel_ip,
         "-p", "5201",
@@ -2801,10 +2821,11 @@ async def speedtest_iperf_vps() -> float:
             import json as _json
             data = _json.loads(out)
             bits = data["end"]["sum_received"]["bits_per_second"]
-            return round(bits / 1_000_000, 2)
+            return round(bits / 1_000_000, 2), None
         except Exception as e:
             logger.debug(f"iperf3: ошибка парсинга: {e}")
-    return 0.0
+            return 0.0, "iperf3 ответ не удалось распарсить"
+    return 0.0, f"iperf3 client failed (rc={rc})"
 
 
 def detect_volume_shaping() -> Optional[str]:
@@ -7489,7 +7510,7 @@ async def _manual_reassessment() -> None:
 
     # Базовые линии последовательно — параллельный запуск насыщает канал
     # и мешает точному измерению каждого теста
-    vps_mbps = await speedtest_iperf_vps()
+    vps_mbps, vps_reason = await speedtest_iperf_vps()
     direct_mbps = await speedtest_direct()
 
     results: list[tuple[str, str, float]] = []
@@ -7518,7 +7539,8 @@ async def _manual_reassessment() -> None:
         pct_vps = f"  ({round(vps_mbps / direct_mbps * 100)}% ISP)" if direct_mbps >= 1.0 else ""
         lines.append(f"🔒 VPS tier-2 (iperf3): {vps_mbps:.1f} Mbps{pct_vps}")
     else:
-        lines.append("🔒 VPS tier-2 (iperf3): недоступно")
+        reason_suffix = f" ({vps_reason})" if vps_reason else ""
+        lines.append(f"🔒 VPS tier-2 (iperf3): недоступно{reason_suffix}")
     lines.append("─" * 28)
 
     # Базовая линия для процентов стеков — канал до VPS (он реалистичнее ISP)

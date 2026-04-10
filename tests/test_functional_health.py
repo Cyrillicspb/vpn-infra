@@ -624,6 +624,34 @@ class FunctionalHealthTests(unittest.TestCase):
         self.assertEqual(watchdog._active_backend_tunnel_ip(), "10.177.2.6")
         self.assertEqual(watchdog._active_backend_ssh_port(), "2202")
 
+    def test_speedtest_iperf_vps_reports_missing_tier2_tunnel(self) -> None:
+        async def _fake_run_cmd(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
+            if cmd[:4] == ["ip", "link", "show", "tun0"]:
+                return 1, "", "Device not found"
+            return 0, "", ""
+
+        with mock.patch.object(watchdog, "run_cmd", side_effect=_fake_run_cmd):
+            speed, reason = asyncio.run(watchdog.speedtest_iperf_vps())
+
+        self.assertEqual(speed, 0.0)
+        self.assertIn("tun0", reason or "")
+
+    def test_speedtest_iperf_vps_reports_closed_iperf_port(self) -> None:
+        async def _fake_run_cmd(cmd: list[str], timeout: int = 30) -> tuple[int, str, str]:
+            if cmd[:4] == ["ip", "link", "show", "tun0"]:
+                return 0, "tun0: <POINTOPOINT,UP>", ""
+            if cmd[:2] == ["ping", "-c"]:
+                return 0, "1 packets transmitted, 1 received", ""
+            if cmd[:3] == ["nc", "-z", "-w"]:
+                return 1, "", "timed out"
+            return 0, "", ""
+
+        with mock.patch.object(watchdog, "run_cmd", side_effect=_fake_run_cmd):
+            speed, reason = asyncio.run(watchdog.speedtest_iperf_vps())
+
+        self.assertEqual(speed, 0.0)
+        self.assertIn("5201", reason or "")
+
     def test_route_class_for_domain_check_prefers_service_assignment(self) -> None:
         result = {
             "verdict": "vpn",

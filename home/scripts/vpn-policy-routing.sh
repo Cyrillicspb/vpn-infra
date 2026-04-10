@@ -94,6 +94,24 @@ ensure_vps_routes() {
     done
 }
 
+ensure_tier2_routes() {
+    local tier2_iface="tun0"
+
+    if ip link show "$tier2_iface" &>/dev/null; then
+        ip route replace "$TIER2_SUBNET" dev "$tier2_iface"
+        ip route replace "$TIER2_SUBNET" dev "$tier2_iface" table $TABLE_VPN
+        ip route replace "$TIER2_SUBNET" dev "$tier2_iface" table $TABLE_MARKED
+        ip route replace "$TIER2_SUBNET" dev "$tier2_iface" table $TABLE_DPI
+        log "Tier-2 route: $TIER2_SUBNET dev $tier2_iface (main + table $TABLE_VPN/$TABLE_MARKED/$TABLE_DPI)"
+    else
+        ip route del "$TIER2_SUBNET" dev "$tier2_iface" 2>/dev/null || true
+        ip route del "$TIER2_SUBNET" dev "$tier2_iface" table $TABLE_VPN 2>/dev/null || true
+        ip route del "$TIER2_SUBNET" dev "$tier2_iface" table $TABLE_MARKED 2>/dev/null || true
+        ip route del "$TIER2_SUBNET" dev "$tier2_iface" table $TABLE_DPI 2>/dev/null || true
+        log "Tier-2 route: $TIER2_SUBNET removed (tun0 не поднят)"
+    fi
+}
+
 # ── UP: настройка routing ────────────────────────────────────────────────────
 setup_routing() {
     log "Настройка policy routing (tun=$TUN_IFACE, eth=$ETH_IFACE, gw=$GATEWAY)"
@@ -201,6 +219,7 @@ setup_routing() {
 
     # Защита от routing loop: VPS IP всегда через eth0
     ensure_vps_routes
+    ensure_tier2_routes
 
     # Сохраняем активный tun в state file
     echo "${TUN_IFACE:-}" > "$STATE_FILE"
@@ -232,6 +251,7 @@ update_tun() {
     # После смены tun повторно закрепляем VPS IP через eth0 —
     # hysteria2 мог добавить host route в main table при старте
     ensure_vps_routes
+    ensure_tier2_routes
 
     log "Table $TABLE_MARKED: default → $new_tun"
 }
@@ -260,6 +280,7 @@ teardown_routing() {
     ip route flush table $TABLE_DPI    2>/dev/null || true
     ip route flush table $TABLE_MARKED 2>/dev/null || true
     ip route flush table $TABLE_VPN    2>/dev/null || true
+    ip route del "$TIER2_SUBNET" dev tun0 2>/dev/null || true
 
     rm -f "$STATE_FILE"
 

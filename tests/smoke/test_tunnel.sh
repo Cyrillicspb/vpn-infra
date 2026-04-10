@@ -38,12 +38,12 @@ else
     warn "wg1 (WireGuard) интерфейс не найден (нет WG-клиентов?)"
 fi
 
-# 3. Tier-2 туннель: IP адреса
-AWG_IP=$(ip addr show wg0 2>/dev/null | grep "inet " | awk '{print $2}' | head -1)
-if [[ "$AWG_IP" == "10.177.2.1/30"* || "$AWG_IP" == 10.177.* ]]; then
-    pass "wg0 IP: $AWG_IP"
+# 3. Tier-2 туннель: локальный endpoint на tun0
+TIER2_IP=$(ip addr show tun0 2>/dev/null | grep "inet " | awk '{print $2}' | head -1)
+if [[ "$TIER2_IP" == "10.177.2.1/30" ]]; then
+    pass "tun0 IP: $TIER2_IP"
 else
-    warn "wg0 IP не в ожидаемом диапазоне: ${AWG_IP:-не назначен}"
+    warn "tun0 IP не в ожидаемом диапазоне: ${TIER2_IP:-не назначен}"
 fi
 
 # 4. VPS доступен через Tier-2 туннель
@@ -85,6 +85,17 @@ if systemctl is-active --quiet hysteria2 2>/dev/null; then
     pass "hysteria2.service активен"
 else
     warn "hysteria2.service не активен (стек Hysteria2 отключён?)"
+fi
+
+# 8b. tier2-connect сервис
+if systemctl list-unit-files tier2-connect.service >/dev/null 2>&1; then
+    if systemctl is-active --quiet tier2-connect; then
+        pass "tier2-connect.service активен"
+    else
+        warn "tier2-connect.service не активен"
+    fi
+else
+    warn "tier2-connect.service не найден"
 fi
 
 # 9. wg peers существуют (хотя бы один клиент или Tier-2)

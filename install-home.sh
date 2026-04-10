@@ -1054,6 +1054,7 @@ else
 
     if [[ -n "$SYSTEMD_SRC" ]]; then
         for unit in vpn-routes.service vpn-sets-restore.service hysteria2.service \
+                    tier2-connect.service \
                     watchdog.service vpn-postboot.service \
                     vpn-dpi-presets-update.service vpn-dpi-presets-update.timer \
                     vpn-latency-catalog-update.service vpn-latency-catalog-update.timer \
@@ -1078,6 +1079,28 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/opt/vpn/scripts/vpn-policy-routing.sh up
 ExecStop=/opt/vpn/scripts/vpn-policy-routing.sh down
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        cat > /etc/systemd/system/tier2-connect.service << 'EOF'
+[Unit]
+Description=Tier-2 SSH tunnel to VPS (tun0 10.177.2.1/30)
+After=network.target
+Wants=network.target
+Before=vpn-routes.service watchdog.service
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=-/opt/vpn/.env
+EnvironmentFile=-/run/vpn-active-backend.env
+ExecStart=/opt/vpn/scripts/tier2-connect.sh
+Restart=on-failure
+RestartSec=10
 StandardOutput=journal
 StandardError=journal
 
@@ -1214,8 +1237,9 @@ EOF
     fi
 
     systemctl daemon-reload
-    systemctl enable vpn-routes vpn-sets-restore \
+    systemctl enable tier2-connect vpn-routes vpn-sets-restore \
         vpn-dpi-presets-update.timer vpn-latency-catalog-update.timer 2>/dev/null || true
+    systemctl start tier2-connect 2>/dev/null || true
     systemctl start vpn-routes 2>/dev/null || true
 
     log_ok "Policy routing и systemd-юниты настроены"
