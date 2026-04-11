@@ -5882,7 +5882,7 @@ async def _run_active_stack_runtime_probes(
     success_count = sum(1 for item in target_results if item.get("ok"))
     if rc_socks != 0 or success_count == 0:
         status = "fail"
-    elif success_count < len(target_results):
+    elif success_count < len(target_results) or recent_socks_errors >= HYSTERIA2_SOCKS_ERROR_THRESHOLD:
         status = "degraded"
     else:
         status = "ok"
@@ -5929,6 +5929,8 @@ def _active_stack_runtime_failover_reason(now_ts: Optional[float] = None) -> Opt
         return None
     if state.last_failover and summary_ts <= state.last_failover.timestamp():
         return None
+    if int(summary.get("recent_socks_errors") or 0) >= HYSTERIA2_SOCKS_ERROR_THRESHOLD:
+        return "hysteria2_socks_timeouts"
     if state.active_stack_runtime_fail_streak >= ACTIVE_STACK_RUNTIME_FAILOVER_CONSECUTIVE_FAILURES:
         return "active_stack_runtime_probe"
     return None
