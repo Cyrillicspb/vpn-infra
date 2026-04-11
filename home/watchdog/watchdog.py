@@ -3646,13 +3646,39 @@ async def reconcile_wg_runtime_from_db() -> None:
         expected_ip = device["ip_address"]
         expected_iface = "wg0" if device["protocol"] == "awg" else "wg1"
         peer = runtime_peers.get(pubkey)
+        device_label = device["device_name"] or pubkey[:12]
         if not peer or peer.get("interface") != expected_iface:
-            continue
+            logger.warning(
+                "Обнаружен missing peer для %s [%s]: восстанавливаю %s/32",
+                device_label,
+                expected_iface,
+                expected_ip,
+            )
+            alert(
+                f"⚠️ *missing peer* `{device_label}` [{expected_iface}] — "
+                f"восстанавливаю `{expected_ip}/32`"
+            )
+            wg = _wg_tool(expected_iface)
+            rc, out, err = await run_cmd(
+                [wg, "set", expected_iface, "peer", pubkey, "allowed-ips", f"{expected_ip}/32"],
+                timeout=15,
+            )
+            if rc != 0:
+                detail = (err or out or f"rc={rc}").strip()[:300]
+                logger.error("missing peer self-heal failed for %s: %s", device_label, detail)
+                alert(f"🚨 *missing peer self-heal failed* `{device_label}`: `{detail}`")
+                continue
+            await run_cmd([_wg_quick_tool(expected_iface), "save", expected_iface], timeout=15)
+            logger.info("missing peer self-heal completed for %s [%s]", device_label, expected_iface)
+            fixes += 1
+            runtime_peers = {p.get("public_key", ""): p for p in await _runtime_peer_dump() if p.get("public_key")}
+            peer = runtime_peers.get(pubkey)
+            if not peer or peer.get("interface") != expected_iface:
+                continue
         current_allowed = {part.strip() for part in str(peer.get("allowed_ips", "")).split(",") if part.strip()}
         expected_allowed = {f"{expected_ip}/32"}
         if current_allowed == expected_allowed:
             continue
-        device_label = device["device_name"] or pubkey[:12]
         logger.warning(
             "Обнаружен peer drift для %s [%s]: %s -> %s",
             device_label,
