@@ -752,6 +752,16 @@ scenarios:
         self.assertEqual(scenarios[0].id, "lan_direct")
         self.assertEqual(scenarios[0].tiers, ["quick"])
 
+    def test_parse_git_porcelain_paths_keeps_full_repo_paths(self) -> None:
+        output = " M home/watchdog/watchdog.py\nM  home/watchdog/plugins/base.py\n"
+        self.assertEqual(
+            watchdog._parse_git_porcelain_paths(output),
+            [
+                "home/watchdog/watchdog.py",
+                "home/watchdog/plugins/base.py",
+            ],
+        )
+
     def test_duplicate_manifest_ids_raise(self) -> None:
         manifest = """
 scenarios:
@@ -1059,6 +1069,57 @@ scenarios:
             now_ts=datetime.fromisoformat("2026-04-07T07:31:00").timestamp()
         )
         self.assertEqual(reason, "hysteria2_socks_timeouts")
+
+    def test_failover_impl_sets_retry_cooldown_for_failed_stack(self) -> None:
+        watchdog.state.active_stack = "cloudflare-cdn"
+        watchdog.state.stack_retry_cooldowns = {}
+
+        async def _fake_test_stack_runtime(plugin, name, timeout=10):
+            return (name == "vless-reality-vision"), 1.0
+
+        switches: list[tuple[str, str]] = []
+
+        async def _fake_do_switch(candidate, reason):
+            switches.append((candidate, reason))
+
+        with mock.patch.object(watchdog.time, "time", return_value=1000.0):
+            with mock.patch.object(watchdog.plugins, "auto_names", return_value=["cloudflare-cdn", "vless-reality-vision"]):
+                with mock.patch.object(watchdog.plugins, "get", side_effect=lambda name: SimpleNamespace(meta={}) if name else None):
+                    with mock.patch.object(watchdog, "_test_stack_runtime", side_effect=_fake_test_stack_runtime):
+                        with mock.patch.object(watchdog, "_do_switch", side_effect=_fake_do_switch):
+                            asyncio.run(watchdog._failover_impl("ping_timeout"))
+
+        self.assertEqual(switches, [("vless-reality-vision", "ping_timeout")])
+        self.assertEqual(
+            watchdog.state.stack_retry_cooldowns["cloudflare-cdn"],
+            1000.0 + watchdog.STACK_RETRY_COOLDOWN_SECONDS,
+        )
+
+    def test_failover_impl_skips_retry_cooldown_candidates(self) -> None:
+        watchdog.state.active_stack = "vless-reality-vision"
+        watchdog.state.stack_retry_cooldowns = {"cloudflare-cdn": 2000.0}
+        watchdog.state.functional_failover_stack_cooldowns = {}
+
+        async def _fake_test_stack_runtime(plugin, name, timeout=10):
+            return True, 1.0
+
+        switches: list[tuple[str, str]] = []
+
+        async def _fake_do_switch(candidate, reason):
+            switches.append((candidate, reason))
+
+        with mock.patch.object(watchdog.time, "time", return_value=1000.0):
+            with mock.patch.object(
+                watchdog.plugins,
+                "auto_names",
+                return_value=["cloudflare-cdn", "vless-reality-vision", "hysteria2"],
+            ):
+                with mock.patch.object(watchdog.plugins, "get", side_effect=lambda name: SimpleNamespace(meta={}) if name else None):
+                    with mock.patch.object(watchdog, "_test_stack_runtime", side_effect=_fake_test_stack_runtime):
+                        with mock.patch.object(watchdog, "_do_switch", side_effect=_fake_do_switch):
+                            asyncio.run(watchdog._failover_impl("functional_control_plane"))
+
+        self.assertEqual(switches, [("hysteria2", "functional_control_plane")])
 
     def test_run_active_stack_runtime_probes_marks_degraded_on_recent_hysteria_errors(self) -> None:
         watchdog.state.active_stack = "hysteria2"

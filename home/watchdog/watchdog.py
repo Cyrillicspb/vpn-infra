@@ -155,6 +155,9 @@ FUNCTIONAL_FAILOVER_SCENARIO_CLASSES = frozenset({"blocked_baseline", "control_p
 FUNCTIONAL_FAILOVER_STACK_RETRY_COOLDOWN_SECONDS = int(
     os.getenv("FUNCTIONAL_FAILOVER_STACK_RETRY_COOLDOWN_SECONDS", "900")
 )
+STACK_RETRY_COOLDOWN_SECONDS = int(
+    os.getenv("STACK_RETRY_COOLDOWN_SECONDS", "900")
+)
 LATENCY_SENSITIVE_DIRECT_EXCLUDED_DOMAINS = frozenset({
     "www.googleapis.com",
     "googleapis.com",
@@ -1553,6 +1556,7 @@ class WatchdogState:
         self.last_functional_run_by_tier: dict[str, float] = {}
         self.functional_fail_counters: dict[str, int] = {}
         self.functional_failover_stack_cooldowns: dict[str, float] = {}
+        self.stack_retry_cooldowns: dict[str, float] = {}
         self.functional_evidence_store: dict[str, dict[str, Any]] = {}
         self.latency_learning_last_apply_ts: float = 0.0
         self.latency_catalog_alert_last_ts: float = 0.0
@@ -1644,6 +1648,7 @@ class WatchdogState:
             "last_functional_run_by_tier": self.last_functional_run_by_tier,
             "functional_fail_counters": self.functional_fail_counters,
             "functional_failover_stack_cooldowns": self.functional_failover_stack_cooldowns,
+            "stack_retry_cooldowns": self.stack_retry_cooldowns,
             "functional_evidence_store": self.functional_evidence_store,
             "latency_learning_last_apply_ts": self.latency_learning_last_apply_ts,
             "latency_catalog_alert_last_ts": self.latency_catalog_alert_last_ts,
@@ -1770,6 +1775,10 @@ class WatchdogState:
                 self.functional_failover_stack_cooldowns = {
                     str(k): float(v)
                     for k, v in (data.get("functional_failover_stack_cooldowns", {}) or {}).items()
+                }
+                self.stack_retry_cooldowns = {
+                    str(k): float(v)
+                    for k, v in (data.get("stack_retry_cooldowns", {}) or {}).items()
                 }
                 self.functional_evidence_store = data.get("functional_evidence_store", {}) or {}
                 self.latency_learning_last_apply_ts = float(data.get("latency_learning_last_apply_ts", 0.0) or 0.0)
@@ -3529,6 +3538,19 @@ async def _git_show_hash(repo_dir: Path, ref: str, rel_path: str) -> tuple[str, 
     return _sha256_bytes(out.encode()), ""
 
 
+def _parse_git_porcelain_paths(output: str) -> list[str]:
+    paths: list[str] = []
+    for raw_line in output.splitlines():
+        if not raw_line.strip():
+            continue
+        line = raw_line.rstrip("\n")
+        if len(line) >= 4:
+            paths.append(line[3:])
+        else:
+            paths.append(line.strip())
+    return paths
+
+
 async def check_server_repo_sync() -> None:
     """Проверить, что server source tree не отстал от origin/master.
 
@@ -3574,11 +3596,7 @@ async def check_server_repo_sync() -> None:
     )
     dirty_entries: list[str] = []
     if rc_dirty == 0:
-        for line in out_dirty.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            dirty_entries.append(line[3:] if len(line) > 3 else line)
+        dirty_entries = _parse_git_porcelain_paths(out_dirty)
     else:
         detail = (err_dirty or out_dirty or f"git status rc={rc_dirty}").strip()[:300]
         if not state.server_repo_drift:
@@ -6365,10 +6383,18 @@ async def _failover_impl(reason: str) -> None:
         current = state.active_stack
         now_ts = time.time()
         is_functional_failover = reason.startswith("functional_")
+        if _reason_sets_stack_retry_cooldown(reason) and current:
+            state.stack_retry_cooldowns[current] = now_ts + STACK_RETRY_COOLDOWN_SECONDS
         if state.functional_failover_stack_cooldowns:
             state.functional_failover_stack_cooldowns = {
                 stack: expiry
                 for stack, expiry in state.functional_failover_stack_cooldowns.items()
+                if expiry > now_ts
+            }
+        if state.stack_retry_cooldowns:
+            state.stack_retry_cooldowns = {
+                stack: expiry
+                for stack, expiry in state.stack_retry_cooldowns.items()
                 if expiry > now_ts
             }
         ordered = plugins.auto_names()
@@ -6381,6 +6407,16 @@ async def _failover_impl(reason: str) -> None:
         for candidate in candidates:
             plugin = plugins.get(candidate)
             if not plugin:
+                continue
+            retry_cooldown_until = float(state.stack_retry_cooldowns.get(candidate, 0.0) or 0.0)
+            if retry_cooldown_until > now_ts:
+                skipped_on_cooldown.append(candidate)
+                logger.warning(
+                    "Пропускаю стек %s для failover %s: retry cooldown ещё %.0fs",
+                    candidate,
+                    reason,
+                    retry_cooldown_until - now_ts,
+                )
                 continue
             if is_functional_failover:
                 cooldown_until = float(state.functional_failover_stack_cooldowns.get(candidate, 0.0) or 0.0)
@@ -6423,6 +6459,16 @@ async def _do_failover(reason: str) -> None:
     """Failover с захватом _LOCK. Для вызова изнутри _LOCK используй _failover_impl()."""
     async with _LOCK:
         await _failover_impl(reason)
+
+
+def _reason_sets_stack_retry_cooldown(reason: str) -> bool:
+    return reason.startswith("functional_") or reason in {
+        "ping_timeout",
+        "rtt_degradation",
+        "active_stack_runtime_probe",
+        "hysteria2_socks_timeouts",
+        "rotation_check_failed",
+    }
 
 
 async def _do_rotation() -> None:
