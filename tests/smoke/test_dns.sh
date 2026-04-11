@@ -3,6 +3,8 @@
 # Проверяет что dnsmasq работает, разрешает домены через VPN-DNS и через upstream.
 set -uo pipefail
 
+source /opt/vpn/.env 2>/dev/null || true
+
 PASS=0; FAIL=0; WARN=0
 TEST_NAME="DNS"
 
@@ -110,6 +112,25 @@ if [[ -f "/opt/vpn/scripts/dns-warmup.sh" ]]; then
     pass "Скрипт прогрева DNS кэша существует"
 else
     warn "dns-warmup.sh не найден"
+fi
+
+# 8.1 В gateway mode LAN DNS должен принудительно редиректиться в локальный dnsmasq
+if [[ "${SERVER_MODE:-}" == "gateway" ]]; then
+    LAN_DNS_IFACE="${LAN_IFACE:-}"
+    if [[ -z "$LAN_DNS_IFACE" ]]; then
+        warn "Gateway Mode: LAN_IFACE не задан, пропуск проверки DNS redirect"
+    elif nft list ruleset 2>/dev/null | grep -F 'udp dport 53 redirect to :53' | grep -Fq "iifname \"${LAN_DNS_IFACE}\""; then
+        pass "Gateway Mode: LAN UDP DNS redirect → local dnsmasq"
+    else
+        fail "Gateway Mode: отсутствует UDP DNS redirect для LAN"
+    fi
+    if [[ -z "$LAN_DNS_IFACE" ]]; then
+        :
+    elif nft list ruleset 2>/dev/null | grep -F 'tcp dport 53 redirect to :53' | grep -Fq "iifname \"${LAN_DNS_IFACE}\""; then
+        pass "Gateway Mode: LAN TCP DNS redirect → local dnsmasq"
+    else
+        fail "Gateway Mode: отсутствует TCP DNS redirect для LAN"
+    fi
 fi
 
 CRITICAL_BLOCKED_DOMAINS_FILE="/opt/vpn/home/config/critical-blocked-domains.txt"

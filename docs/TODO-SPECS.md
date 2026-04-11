@@ -524,6 +524,10 @@ iifname $LAN_IFACE ip saddr $LAN_SUBNET ip daddr $ROUTER_EXTERNAL_IP
     udp dport 51820 redirect to :51820
 iifname $LAN_IFACE ip saddr $LAN_SUBNET ip daddr $ROUTER_EXTERNAL_IP
     udp dport 51821 redirect to :51821
+iifname $LAN_IFACE ip saddr $LAN_SUBNET ip daddr != { LAN/private/vpn/docker nets }
+    udp dport 53 redirect to :53
+iifname $LAN_IFACE ip saddr $LAN_SUBNET ip daddr != { LAN/private/vpn/docker nets }
+    tcp dport 53 redirect to :53
 ```
 Динамический IP роутера: nft set `router_external_ips`, watchdog обновляет.
 

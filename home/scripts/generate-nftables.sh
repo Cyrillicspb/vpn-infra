@@ -114,6 +114,11 @@ gateway_nat_block = f"""
         # HAIRPIN: клиенты из LAN используют IP роутера для подключения к AWG/WG
         iifname "{lan_iface}" ip saddr {lan_subnet} ip daddr @router_external_ips udp dport 51820 redirect to :51820
         iifname "{lan_iface}" ip saddr {lan_subnet} ip daddr @router_external_ips udp dport 51821 redirect to :51821
+        # Принудительный DNS redirect для LAN:
+        # любые попытки клиентов использовать внешний DNS должны попадать в
+        # локальный dnsmasq, который является источником истины для policy.
+        iifname "{lan_iface}" ip saddr {lan_subnet} ip daddr != {{ {lan_subnet}, 127.0.0.0/8, 10.177.1.0/24, 10.177.3.0/24, 10.177.2.0/30, 172.20.0.0/24, 172.21.0.0/24 }} udp dport 53 redirect to :53
+        iifname "{lan_iface}" ip saddr {lan_subnet} ip daddr != {{ {lan_subnet}, 127.0.0.0/8, 10.177.1.0/24, 10.177.3.0/24, 10.177.2.0/30, 172.20.0.0/24, 172.21.0.0/24 }} tcp dport 53 redirect to :53
     }}
 
 """
