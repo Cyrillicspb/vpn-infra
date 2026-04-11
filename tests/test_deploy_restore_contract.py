@@ -205,6 +205,11 @@ class DeployRestoreContractTests(unittest.TestCase):
         self.assertNotIn('entrypoint: ["/bin/sh"]', vps_compose)
         self.assertIn("./nginx/ssl:/etc/sing-box/certs:ro", vps_compose)
 
+    def test_telegram_bot_can_write_manual_route_lists(self):
+        home_compose = (ROOT / "home" / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("- /etc/vpn-routes:/etc/vpn-routes", home_compose)
+        self.assertNotIn("- /etc/vpn-routes:/etc/vpn-routes:ro", home_compose)
+
     def test_default_deploy_does_not_force_start_extra_stacks(self):
         deploy_script = DEPLOY.read_text(encoding="utf-8")
         self.assertNotIn("docker compose --profile extra-stacks pull sing-box-tuic-client sing-box-trojan-client", deploy_script)

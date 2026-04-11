@@ -93,7 +93,7 @@ services:
     volumes:
       - ./telegram-bot/data:/app/data
       - /opt/vpn/.deploy-state:/opt/vpn/.deploy-state:ro
-      - /etc/vpn-routes:/etc/vpn-routes:ro
+      - /etc/vpn-routes:/etc/vpn-routes
     networks:
       vpn-net:
         ipv4_address: 172.20.0.11
