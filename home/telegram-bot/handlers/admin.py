@@ -22,6 +22,7 @@ import io
 import json
 import logging
 import os
+import re
 import subprocess
 from datetime import date, datetime
 from pathlib import Path
@@ -103,6 +104,10 @@ _FUNCTIONAL_SYSTEM_PEERS = {
     "10.177.1.250/32": "synthetic bootstrap awg",
     "10.177.3.250/32": "synthetic bootstrap wg",
 }
+_DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9\-\.]*[a-z0-9])?$")
+_IPV4_RE = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
+_ROUTE_VERDICT_POLL_ATTEMPTS = 5
+_ROUTE_VERDICT_POLL_DELAY_SECONDS = 1.0
 
 
 def _peer_client_traffic_bytes(peer: dict) -> tuple[int, int]:
@@ -403,6 +408,189 @@ def _render_check_result_html(domain: str, payload: dict) -> str:
     if fallback_reason:
         lines.append(f"Fallback: <code>{fallback_reason}</code>")
     return "\n".join(lines)
+
+
+def _manual_route_target(kind: str) -> Path:
+    return MANUAL_VPN if kind == "vpn" else MANUAL_DIRECT
+
+
+def _manual_route_label(kind: str) -> str:
+    return "VPN" if kind == "vpn" else "Direct"
+
+
+def _manual_route_flag(kind: str) -> str:
+    return "in_manual_vpn" if kind == "vpn" else "in_manual_direct"
+
+
+def _normalize_domain(raw: str) -> str:
+    domain = str(raw or "").strip().lower()
+    if "://" in domain:
+        domain = domain.split("://", 1)[1]
+    domain = domain.rsplit("@", 1)[-1]
+    domain = domain.split("/", 1)[0]
+    if ":" in domain and not _IPV4_RE.match(domain):
+        domain = domain.split(":", 1)[0]
+    return domain.strip(".")
+
+
+def _is_valid_domain(domain: str) -> bool:
+    return bool(domain) and len(domain) <= 253 and bool(_DOMAIN_RE.match(domain))
+
+
+def _parse_check_args(args: list[str]) -> tuple[str, str, str]:
+    domain = _normalize_domain(args[0]) if args else ""
+    chat_id = ""
+    source_ip = ""
+    if len(args) > 1:
+        second = args[1].strip()
+        if _IPV4_RE.match(second):
+            source_ip = second
+        else:
+            chat_id = second
+    if len(args) > 2 and _IPV4_RE.match(args[2].strip()):
+        source_ip = args[2].strip()
+    return domain, chat_id, source_ip
+
+
+def _read_manual_route_lines(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    return [
+        ln.strip()
+        for ln in path.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
+
+
+def _render_manual_route_list_html(kind: str, lines: list[str]) -> str:
+    label = _manual_route_label(kind)
+    title = f"<b>Manual {label} list</b>"
+    hint = "Это ручные override-домены. Effective verdict смотрите через <code>/check &lt;домен&gt;</code>."
+    if not lines:
+        return f"{title}\n\nПока пусто.\n{hint}"
+    body = "\n".join(f"• <code>{ln}</code>" for ln in lines[:50])
+    extra = f"\n... и ещё {len(lines) - 50}" if len(lines) > 50 else ""
+    return f"{title}\n\n{hint}\n\n{body}{extra}"
+
+
+def _render_manual_route_usage_html(kind: str) -> str:
+    label = _manual_route_label(kind).lower()
+    return f"Использование: <code>/{label} add|remove &lt;домен&gt;</code>"
+
+
+def _route_change_confirmed(payload: dict, kind: str, action: str) -> bool:
+    present = bool((payload or {}).get(_manual_route_flag(kind)))
+    return present if action == "add" else not present
+
+
+async def _poll_route_verdict(
+    domain: str,
+    kind: str,
+    action: str,
+    chat_id: str = "",
+    source_ip: str = "",
+) -> tuple[dict | None, bool, str]:
+    last_payload: dict | None = None
+    last_error = ""
+    for attempt in range(_ROUTE_VERDICT_POLL_ATTEMPTS):
+        try:
+            payload = await _wc().resolve_domain_decision(domain, chat_id=chat_id, source_ip=source_ip)
+            last_payload = payload
+            last_error = ""
+            if _route_change_confirmed(payload, kind, action):
+                return payload, True, ""
+        except WatchdogError as exc:
+            last_error = str(exc)
+        if attempt + 1 < _ROUTE_VERDICT_POLL_ATTEMPTS:
+            await asyncio.sleep(_ROUTE_VERDICT_POLL_DELAY_SECONDS)
+    return last_payload, False, last_error
+
+
+def _render_route_change_result_html(
+    domain: str,
+    kind: str,
+    action: str,
+    update_error: str = "",
+    verdict_payload: dict | None = None,
+    verdict_confirmed: bool = False,
+    verdict_error: str = "",
+) -> str:
+    label = _manual_route_label(kind)
+    action_word = "добавлен" if action == "add" else "удалён"
+    lines = [f"✅ <code>{domain}</code> {action_word} в manual {label} list."]
+    if update_error:
+        lines.append(f"⚠️ Пересборка маршрутов не запущена: <code>{update_error}</code>")
+    else:
+        lines.append("🔄 Пересборка маршрутов запущена асинхронно.")
+    if verdict_payload:
+        lines.append("")
+        if verdict_confirmed:
+            lines.append("Effective verdict подтверждён:")
+        else:
+            lines.append("⚠️ Effective verdict пока не подтверждён. Последняя проверка:")
+        lines.append(_render_check_result_html(domain, verdict_payload))
+    elif verdict_error:
+        lines.append("")
+        lines.append(f"⚠️ Проверка effective verdict не удалась: <code>{verdict_error}</code>")
+    else:
+        lines.append("")
+        lines.append("⚠️ Effective verdict пока не подтверждён.")
+    return "\n".join(lines)
+
+
+async def _apply_manual_route_change(
+    kind: str,
+    action: str,
+    domain: str,
+    *,
+    chat_id: str = "",
+    source_ip: str = "",
+    autodist=None,
+    autodist_command: str = "",
+) -> str:
+    target = _manual_route_target(kind)
+    if action == "add":
+        _file_add_line(target, domain)
+    else:
+        _file_remove_line(target, domain)
+    update_error = ""
+    try:
+        await _wc().update_routes()
+    except WatchdogError as exc:
+        update_error = str(exc)
+    if autodist and autodist_command:
+        autodist.trigger(autodist_command)
+    verdict_payload = None
+    verdict_confirmed = False
+    verdict_error = ""
+    if update_error:
+        try:
+            verdict_payload = await _wc().resolve_domain_decision(domain, chat_id=chat_id, source_ip=source_ip)
+            verdict_confirmed = _route_change_confirmed(verdict_payload, kind, action)
+        except WatchdogError as exc:
+            verdict_error = str(exc)
+    else:
+        verdict_payload, verdict_confirmed, verdict_error = await _poll_route_verdict(
+            domain,
+            kind,
+            action,
+            chat_id=chat_id,
+            source_ip=source_ip,
+        )
+    return _render_route_change_result_html(
+        domain,
+        kind,
+        action,
+        update_error=update_error,
+        verdict_payload=verdict_payload,
+        verdict_confirmed=verdict_confirmed,
+        verdict_error=verdict_error,
+    )
+
+
+async def _resolve_domain_check_html(domain: str, chat_id: str = "", source_ip: str = "") -> str:
+    payload = await _wc().resolve_domain_decision(domain, chat_id=chat_id, source_ip=source_ip)
+    return _render_check_result_html(domain, payload)
 
 
 def _render_client_backend_prefs(prefs: list[dict], chat_id: str = "") -> str:
@@ -2015,21 +2203,18 @@ async def cmd_vpn(message: Message, state: FSMContext, **kw):
     if len(args) < 3 or args[1] not in ("add", "remove"):
         await message.answer("Использование: `/vpn add|remove <домен>`")
         return
-    action, domain = args[1], args[2].lower().strip(".")
-    if action == "add":
-        _file_add_line(MANUAL_VPN, domain)
-        msg = f"✅ `{domain}` добавлен в VPN-маршруты"
-    else:
-        _file_remove_line(MANUAL_VPN, domain)
-        msg = f"✅ `{domain}` удалён из VPN-маршрутов"
-    try:
-        await _wc().update_routes()
-    except WatchdogError:
-        pass
-    autodist = kw.get("autodist")
-    if autodist:
-        autodist.trigger(f"/vpn {action} {domain}")
-    await message.answer(msg + "\nМаршруты обновляются...")
+    action, domain = args[1], _normalize_domain(args[2])
+    if not _is_valid_domain(domain):
+        await message.answer("❌ Некорректный домен.\n" + _render_manual_route_usage_html("vpn"), parse_mode="HTML")
+        return
+    text = await _apply_manual_route_change(
+        "vpn",
+        action,
+        domain,
+        autodist=kw.get("autodist"),
+        autodist_command=f"/vpn {action} {domain}",
+    )
+    await message.answer(text, parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------
@@ -2044,18 +2229,12 @@ async def cmd_direct(message: Message, state: FSMContext, **kw):
     if len(args) < 3 or args[1] not in ("add", "remove"):
         await message.answer("Использование: `/direct add|remove <домен>`")
         return
-    action, domain = args[1], args[2].lower().strip(".")
-    if action == "add":
-        _file_add_line(MANUAL_DIRECT, domain)
-        msg = f"✅ `{domain}` добавлен в прямые маршруты"
-    else:
-        _file_remove_line(MANUAL_DIRECT, domain)
-        msg = f"✅ `{domain}` удалён из прямых маршрутов"
-    try:
-        await _wc().update_routes()
-    except WatchdogError:
-        pass
-    await message.answer(msg + "\nМаршруты обновляются...")
+    action, domain = args[1], _normalize_domain(args[2])
+    if not _is_valid_domain(domain):
+        await message.answer("❌ Некорректный домен.\n" + _render_manual_route_usage_html("direct"), parse_mode="HTML")
+        return
+    text = await _apply_manual_route_change("direct", action, domain)
+    await message.answer(text, parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------
@@ -2070,18 +2249,10 @@ async def cmd_list(message: Message, state: FSMContext, **kw):
     if len(args) < 2 or args[1] not in ("vpn", "direct"):
         await message.answer("Использование: `/list vpn|direct`")
         return
-    target = MANUAL_VPN if args[1] == "vpn" else MANUAL_DIRECT
-    if not target.exists():
-        await message.answer("Список пуст.")
-        return
-    lines = [ln.strip() for ln in target.read_text().splitlines() if ln.strip()]
-    if not lines:
-        await message.answer("Список пуст.")
-        return
-    text = f"*Список {args[1]}:*\n" + "\n".join(f"• `{ln}`" for ln in lines[:50])
-    if len(lines) > 50:
-        text += f"\n... и ещё {len(lines) - 50}"
-    await message.answer(text)
+    await message.answer(
+        _render_manual_route_list_html(args[1], _read_manual_route_lines(_manual_route_target(args[1]))),
+        parse_mode="HTML",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2096,20 +2267,12 @@ async def cmd_check(message: Message, state: FSMContext, **kw):
     if len(args) < 2:
         await message.answer("Использование: `/check <домен>`")
         return
-    domain = args[1].lower().strip(".")
-    chat_id = ""
-    source_ip = ""
-    if len(args) > 2:
-        second = args[2]
-        if re.match(r"^\d+\.\d+\.\d+\.\d+$", second):
-            source_ip = second
-        else:
-            chat_id = second
-    if len(args) > 3 and re.match(r"^\d+\.\d+\.\d+\.\d+$", args[3]):
-        source_ip = args[3]
+    domain, chat_id, source_ip = _parse_check_args(args[1:])
+    if not _is_valid_domain(domain):
+        await message.answer("❌ Некорректный домен.\nИспользование: <code>/check &lt;домен&gt;</code>", parse_mode="HTML")
+        return
     try:
-        payload = await _wc().resolve_domain_decision(domain, chat_id=chat_id, source_ip=source_ip)
-        await message.answer(_render_check_result_html(domain, payload), parse_mode="HTML")
+        await message.answer(await _resolve_domain_check_html(domain, chat_id=chat_id, source_ip=source_ip), parse_mode="HTML")
     except WatchdogError as e:
         await message.answer(f"❌ {e}")
 
@@ -2387,7 +2550,11 @@ async def cmd_routes(message: Message, state: FSMContext, **kw):
         autodist = kw.get("autodist")
         if autodist:
             autodist.trigger("/routes update")
-        await message.answer("✅ Обновление маршрутов запущено (~2-5 мин)")
+        await message.answer(
+            "✅ Пересборка маршрутов запущена асинхронно (~2-5 мин).\n"
+            "Для effective verdict используйте <code>/check &lt;домен&gt;</code>.",
+            parse_mode="HTML",
+        )
     except WatchdogError as e:
         await message.answer(f"❌ {e}")
 
@@ -3577,27 +3744,13 @@ async def cb_adm_reboot(cb: CallbackQuery, state: FSMContext, **kw):
 @router.callback_query(F.data == "adm:list_vpn")
 async def cb_adm_list_vpn(cb: CallbackQuery, **kw):
     await cb.answer()
-    if not MANUAL_VPN.exists():
-        await _edit_or_answer(cb, "Список VPN пуст.", admin_routes_menu())
-        return
-    lines = [ln.strip() for ln in MANUAL_VPN.read_text().splitlines() if ln.strip()]
-    text = ("<b>Список VPN</b>\n" + "\n".join(f"• <code>{ln}</code>" for ln in lines[:50])) if lines else "Список VPN пуст."
-    if len(lines) > 50:
-        text += f"\n... и ещё {len(lines) - 50}"
-    await _edit_or_answer(cb, text, admin_routes_menu())
+    await _edit_or_answer(cb, _render_manual_route_list_html("vpn", _read_manual_route_lines(MANUAL_VPN)), admin_routes_menu())
 
 
 @router.callback_query(F.data == "adm:list_direct")
 async def cb_adm_list_direct(cb: CallbackQuery, **kw):
     await cb.answer()
-    if not MANUAL_DIRECT.exists():
-        await _edit_or_answer(cb, "Список Direct пуст.", admin_routes_menu())
-        return
-    lines = [ln.strip() for ln in MANUAL_DIRECT.read_text().splitlines() if ln.strip()]
-    text = ("<b>Список Direct</b>\n" + "\n".join(f"• <code>{ln}</code>" for ln in lines[:50])) if lines else "Список Direct пуст."
-    if len(lines) > 50:
-        text += f"\n... и ещё {len(lines) - 50}"
-    await _edit_or_answer(cb, text, admin_routes_menu())
+    await _edit_or_answer(cb, _render_manual_route_list_html("direct", _read_manual_route_lines(MANUAL_DIRECT)), admin_routes_menu())
 
 
 @router.callback_query(F.data == "adm:routes_update")
@@ -3608,7 +3761,10 @@ async def cb_adm_routes_update(cb: CallbackQuery, **kw):
         autodist = kw.get("autodist")
         if autodist:
             autodist.trigger("/routes update")
-        text = "✅ Обновление маршрутов запущено (~2-5 мин)"
+        text = (
+            "✅ Пересборка маршрутов запущена асинхронно (~2-5 мин).\n"
+            "Для effective verdict используйте <code>/check &lt;домен&gt;</code>."
+        )
     except WatchdogError as e:
         text = f"❌ {e}"
     await _edit_or_answer(cb, text, admin_routes_menu())
@@ -3620,13 +3776,14 @@ async def cb_adm_routes_info(cb: CallbackQuery, **kw):
     await _edit_or_answer(
         cb,
         "<b>Управление маршрутами</b>\n\n"
-        "<code>/vpn add &lt;домен&gt;</code> — добавить в VPN\n"
-        "<code>/vpn remove &lt;домен&gt;</code> — убрать из VPN\n"
-        "<code>/direct add &lt;домен&gt;</code> — добавить в прямые\n"
-        "<code>/direct remove &lt;домен&gt;</code> — убрать из прямых\n"
-        "<code>/check &lt;домен&gt;</code> — проверить домен\n"
+        "<code>/vpn add &lt;домен&gt;</code> — записать в manual VPN list, запустить rebuild и показать effective verdict\n"
+        "<code>/vpn remove &lt;домен&gt;</code> — убрать из manual VPN list и перепроверить verdict\n"
+        "<code>/direct add &lt;домен&gt;</code> — записать в manual Direct list, запустить rebuild и показать effective verdict\n"
+        "<code>/direct remove &lt;домен&gt;</code> — убрать из manual Direct list и перепроверить verdict\n"
+        "<code>/check &lt;домен&gt;</code> — показать effective verdict и источники решения\n"
+        "Кнопки <b>Manual VPN</b> и <b>Manual Direct</b> показывают только ручные override-списки.\n"
         "<code>/latency all</code> — learned/candidates + catalog status\n"
-        "<code>/routes update</code> — обновить все маршруты",
+        "<code>/routes update</code> — запустить асинхронную пересборку всех маршрутов",
         admin_routes_menu(),
     )
 
@@ -4284,21 +4441,26 @@ async def cb_adm_vpn_add(cb: CallbackQuery, state: FSMContext, **kw):
 
 @router.message(AdminFSM.vpn_add_domain)
 async def fsm_vpn_add_domain(message: Message, state: FSMContext, **kw):
-    domain = message.text.strip().lower().strip(".")
+    domain = _normalize_domain(message.text)
     data = await state.get_data()
     return_to = data.get("_return_to", "adm:routes")
     return_home = data.get("_return_home", "adm:menu")
     await state.clear()
-    _file_add_line(MANUAL_VPN, domain)
-    try:
-        await _wc().update_routes()
-        autodist = kw.get("autodist")
-        if autodist:
-            autodist.trigger(f"/vpn add {domain}")
-    except WatchdogError:
-        pass
-    await message.answer(f"✅ `{domain}` добавлен в VPN. Маршруты обновляются...",
-                         reply_markup=return_kb(return_to, return_home))
+    if not _is_valid_domain(domain):
+        await message.answer(
+            "❌ Некорректный домен.\n" + _render_manual_route_usage_html("vpn"),
+            reply_markup=return_kb(return_to, return_home),
+            parse_mode="HTML",
+        )
+        return
+    text = await _apply_manual_route_change(
+        "vpn",
+        "add",
+        domain,
+        autodist=kw.get("autodist"),
+        autodist_command=f"/vpn add {domain}",
+    )
+    await message.answer(text, reply_markup=return_kb(return_to, return_home), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "adm:direct_add")
@@ -4315,29 +4477,32 @@ async def cb_adm_direct_add(cb: CallbackQuery, state: FSMContext, **kw):
 
 @router.message(AdminFSM.direct_add_domain)
 async def fsm_direct_add_domain(message: Message, state: FSMContext, **kw):
-    domain = message.text.strip().lower().strip(".")
+    domain = _normalize_domain(message.text)
     data = await state.get_data()
     return_to = data.get("_return_to", "adm:routes")
     return_home = data.get("_return_home", "adm:menu")
     await state.clear()
-    _file_add_line(MANUAL_DIRECT, domain)
-    try:
-        await _wc().update_routes()
-    except WatchdogError:
-        pass
-    await message.answer(f"✅ `{domain}` добавлен в Direct. Маршруты обновляются...",
-                         reply_markup=return_kb(return_to, return_home))
+    if not _is_valid_domain(domain):
+        await message.answer(
+            "❌ Некорректный домен.\n" + _render_manual_route_usage_html("direct"),
+            reply_markup=return_kb(return_to, return_home),
+            parse_mode="HTML",
+        )
+        return
+    text = await _apply_manual_route_change("direct", "add", domain)
+    await message.answer(text, reply_markup=return_kb(return_to, return_home), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "adm:vpn_remove")
 async def cb_adm_vpn_remove(cb: CallbackQuery, **kw):
     await cb.answer()
-    if not MANUAL_VPN.exists():
-        await cb.message.answer("Список VPN пуст.", reply_markup=back_to_admin_menu())
-        return
-    domains = [ln.strip() for ln in MANUAL_VPN.read_text().splitlines() if ln.strip()]
+    domains = _read_manual_route_lines(MANUAL_VPN)
     if not domains:
-        await cb.message.answer("Список VPN пуст.", reply_markup=back_to_admin_menu())
+        await cb.message.answer(
+            _render_manual_route_list_html("vpn", domains),
+            reply_markup=back_to_admin_menu(),
+            parse_mode="HTML",
+        )
         return
     await _edit_or_answer(cb, "➖ <b>Удалить из VPN</b> — выберите домен:",
                           domains_inline_kb(domains, "adm:vpn_rm:", "adm:routes"))
@@ -4346,12 +4511,13 @@ async def cb_adm_vpn_remove(cb: CallbackQuery, **kw):
 @router.callback_query(F.data == "adm:direct_remove")
 async def cb_adm_direct_remove(cb: CallbackQuery, **kw):
     await cb.answer()
-    if not MANUAL_DIRECT.exists():
-        await cb.message.answer("Список Direct пуст.", reply_markup=back_to_admin_menu())
-        return
-    domains = [ln.strip() for ln in MANUAL_DIRECT.read_text().splitlines() if ln.strip()]
+    domains = _read_manual_route_lines(MANUAL_DIRECT)
     if not domains:
-        await cb.message.answer("Список Direct пуст.", reply_markup=back_to_admin_menu())
+        await cb.message.answer(
+            _render_manual_route_list_html("direct", domains),
+            reply_markup=back_to_admin_menu(),
+            parse_mode="HTML",
+        )
         return
     await _edit_or_answer(cb, "➖ <b>Удалить из Direct</b> — выберите домен:",
                           domains_inline_kb(domains, "adm:direct_rm:", "adm:routes"))
@@ -4360,25 +4526,23 @@ async def cb_adm_direct_remove(cb: CallbackQuery, **kw):
 @router.callback_query(F.data.startswith("adm:vpn_rm:"))
 async def cb_adm_vpn_rm(cb: CallbackQuery, **kw):
     domain = cb.data[len("adm:vpn_rm:"):]
-    _file_remove_line(MANUAL_VPN, domain)
-    try:
-        await _wc().update_routes()
-    except WatchdogError:
-        pass
+    text = await _apply_manual_route_change(
+        "vpn",
+        "remove",
+        domain,
+        autodist=kw.get("autodist"),
+        autodist_command=f"/vpn remove {domain}",
+    )
     await cb.answer(f"Удалено: {domain}")
-    await cb.message.edit_text(f"✅ `{domain}` удалён из VPN. Маршруты обновляются...")
+    await cb.message.edit_text(text, parse_mode="HTML", reply_markup=admin_routes_menu())
 
 
 @router.callback_query(F.data.startswith("adm:direct_rm:"))
 async def cb_adm_direct_rm(cb: CallbackQuery, **kw):
     domain = cb.data[len("adm:direct_rm:"):]
-    _file_remove_line(MANUAL_DIRECT, domain)
-    try:
-        await _wc().update_routes()
-    except WatchdogError:
-        pass
+    text = await _apply_manual_route_change("direct", "remove", domain)
     await cb.answer(f"Удалено: {domain}")
-    await cb.message.edit_text(f"✅ `{domain}` удалён из Direct. Маршруты обновляются...")
+    await cb.message.edit_text(text, parse_mode="HTML", reply_markup=admin_routes_menu())
 
 
 @router.callback_query(F.data == "adm:check")
@@ -4396,24 +4560,20 @@ async def cb_adm_check(cb: CallbackQuery, state: FSMContext, **kw):
 @router.message(AdminFSM.check_domain)
 async def fsm_check_domain(message: Message, state: FSMContext, **kw):
     args = message.text.strip().split()
-    domain = args[0].lower().strip(".").split("/")[0]
-    chat_id = ""
-    source_ip = ""
-    if len(args) > 1:
-        second = args[1]
-        if re.match(r"^\d+\.\d+\.\d+\.\d+$", second):
-            source_ip = second
-        else:
-            chat_id = second
-    if len(args) > 2 and re.match(r"^\d+\.\d+\.\d+\.\d+$", args[2]):
-        source_ip = args[2]
+    domain, chat_id, source_ip = _parse_check_args(args)
     data = await state.get_data()
     return_to = data.get("_return_to", "adm:routes")
     return_home = data.get("_return_home", "adm:menu")
     await state.clear()
+    if not _is_valid_domain(domain):
+        await message.answer(
+            "❌ Некорректный домен.\nИспользование: <code>/check &lt;домен&gt;</code>",
+            reply_markup=return_kb(return_to, return_home),
+            parse_mode="HTML",
+        )
+        return
     try:
-        payload = await _wc().resolve_domain_decision(domain, chat_id=chat_id, source_ip=source_ip)
-        text = _render_check_result_html(domain, payload)
+        text = await _resolve_domain_check_html(domain, chat_id=chat_id, source_ip=source_ip)
     except WatchdogError as e:
         text = f"❌ {e}"
     await message.answer(text, reply_markup=return_kb(return_to, return_home), parse_mode="HTML")

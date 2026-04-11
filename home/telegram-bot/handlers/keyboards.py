@@ -290,8 +290,8 @@ def admin_routes_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="➖ Убрать из прямого доступа", callback_data="adm:direct_remove"),
         ],
         [
-            InlineKeyboardButton(text="📄 Список VPN", callback_data="adm:list_vpn"),
-            InlineKeyboardButton(text="📄 Список прямого доступа", callback_data="adm:list_direct"),
+            InlineKeyboardButton(text="📄 Manual VPN", callback_data="adm:list_vpn"),
+            InlineKeyboardButton(text="📄 Manual Direct", callback_data="adm:list_direct"),
         ],
         [
             InlineKeyboardButton(text="🔄 Пересобрать маршруты", callback_data="adm:routes_update"),
