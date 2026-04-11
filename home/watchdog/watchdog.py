@@ -1538,6 +1538,7 @@ class WatchdogState:
         self.active_stack_probe_summary: dict[str, Any] = {}
         self.active_stack_runtime_fail_streak: int = 0
         self.active_stack_runtime_last_failure_ts: float = 0.0
+        self.last_ping_failure_detail: dict[str, Any] = {}
         self.server_repo_drift: bool = False
         self.server_repo_drift_detail: str = ""
         self.server_repo_drift_since: float = 0.0
@@ -1630,6 +1631,7 @@ class WatchdogState:
             "active_stack_probe_summary": self.active_stack_probe_summary,
             "active_stack_runtime_fail_streak": self.active_stack_runtime_fail_streak,
             "active_stack_runtime_last_failure_ts": self.active_stack_runtime_last_failure_ts,
+            "last_ping_failure_detail": self.last_ping_failure_detail,
             "server_repo_drift": self.server_repo_drift,
             "server_repo_drift_detail": self.server_repo_drift_detail,
             "server_repo_drift_since": self.server_repo_drift_since,
@@ -1742,6 +1744,7 @@ class WatchdogState:
                 self.active_stack_runtime_last_failure_ts = float(
                     data.get("active_stack_runtime_last_failure_ts", 0.0) or 0.0
                 )
+                self.last_ping_failure_detail = data.get("last_ping_failure_detail", {}) or {}
                 self.server_repo_drift = data.get("server_repo_drift", False)
                 self.server_repo_drift_detail = data.get("server_repo_drift_detail", "")
                 self.server_repo_drift_since = float(data.get("server_repo_drift_since", 0.0) or 0.0)
@@ -2662,7 +2665,7 @@ async def ping_vps(target: str = "") -> tuple[bool, float]:
         import time as _time
         start = _time.time()
         eth = NET_INTERFACE or "eth0"
-        rc, out, _ = await run_cmd(
+        rc, out, err = await run_cmd(
             ["curl", "-s", "--max-time", "8", "--interface", eth,
              "-o", "/dev/null", "-w", "%{http_code}",
              "http://www.gstatic.com/generate_204"],
@@ -2670,7 +2673,21 @@ async def ping_vps(target: str = "") -> tuple[bool, float]:
         )
         elapsed_ms = (_time.time() - start) * 1000
         if rc == 0 and out.strip() in ("200", "204", "301", "302"):
+            state.last_ping_failure_detail = {}
             return True, elapsed_ms
+        state.last_ping_failure_detail = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "stack": state.active_stack,
+            "mode": "direct",
+            "interface": eth,
+            "target": "http://www.gstatic.com/generate_204",
+            "elapsed_ms": round(elapsed_ms, 1),
+            "curl_exit_code": rc,
+            "http_code": out.strip(),
+            "curl_stderr": (err or "").strip()[:300],
+        }
+        state.save()
+        logger.warning("Ping check failed on direct stack %s: %s", state.active_stack, state.last_ping_failure_detail)
         return False, 0.0
 
     socks_port = 1080
@@ -2691,7 +2708,7 @@ async def ping_vps(target: str = "") -> tuple[bool, float]:
                 logger.debug("Не удалось определить socks_port из конфига: %s", exc)
     import time as _time
     start = _time.time()
-    rc, out, _ = await run_cmd(
+    rc, out, err = await run_cmd(
         ["curl", "-s", "--max-time", "8",
          "--proxy", f"socks5://127.0.0.1:{socks_port}",
          "-o", "/dev/null", "-w", "%{http_code}",
@@ -2700,7 +2717,20 @@ async def ping_vps(target: str = "") -> tuple[bool, float]:
     )
     elapsed_ms = (_time.time() - start) * 1000
     if rc == 0 and out.strip() in ("200", "204", "301", "302"):
+        state.last_ping_failure_detail = {}
         return True, elapsed_ms
+    detail = await _collect_ping_failure_detail(
+        stack_name=state.active_stack,
+        socks_port=socks_port,
+        elapsed_ms=elapsed_ms,
+        curl_exit_code=rc,
+        http_code=out.strip(),
+        curl_stderr=(err or "").strip(),
+        target_url="http://www.gstatic.com/generate_204",
+    )
+    state.last_ping_failure_detail = detail
+    state.save()
+    logger.warning("Ping check failed on stack %s: %s", state.active_stack, detail)
     return False, 0.0
 
 
@@ -5938,9 +5968,81 @@ async def _probe_url_via_socks(socks_port: int, target: dict[str, Any], timeout:
         "id": str(target.get("id") or ""),
         "url": str(target.get("url") or ""),
         "ok": rc == 0 and http_code in ok_codes,
+        "curl_exit_code": rc,
         "http_code": http_code,
         "detail": (err or "").strip()[:200],
     }
+
+
+async def _get_stack_runtime_context(stack_name: str, socks_port: int) -> dict[str, Any]:
+    plugin = plugins.get(stack_name)
+    tun_name = str(plugin.meta.get("tun_name", f"tun-{stack_name}")) if plugin else ""
+    context: dict[str, Any] = {
+        "stack": stack_name,
+        "socks_port": socks_port,
+        "tun_name": tun_name,
+    }
+
+    if tun_name:
+        rc_tun, tun_out, tun_err = await run_cmd(["ip", "link", "show", tun_name], timeout=3)
+        context["tun_present"] = rc_tun == 0
+        if rc_tun != 0:
+            context["tun_detail"] = (tun_err or tun_out).strip()[:200]
+
+    container_name = ""
+    if plugin:
+        cy_path = plugin.dir / "client.yaml"
+        if cy_path.exists():
+            try:
+                import yaml as _yaml
+                cy = _yaml.safe_load(cy_path.read_text()) or {}
+                container_name = str(cy.get("container") or "").strip()
+            except Exception as exc:
+                context["container_detail"] = f"client.yaml parse failed: {exc}"
+    if container_name:
+        context["container"] = container_name
+        rc_ct, ct_out, ct_err = await run_cmd(
+            [
+                "docker", "inspect", container_name,
+                "--format",
+                "{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.RestartCount}}",
+            ],
+            timeout=5,
+        )
+        if rc_ct == 0:
+            running, health, restart_count = (ct_out.strip().split("|") + ["", "", ""])[:3]
+            context["container_running"] = running == "true"
+            context["container_health"] = health
+            context["container_restart_count"] = restart_count
+        else:
+            context["container_detail"] = (ct_err or ct_out).strip()[:200]
+
+    return context
+
+
+async def _collect_ping_failure_detail(
+    *,
+    stack_name: str,
+    socks_port: int,
+    elapsed_ms: float,
+    curl_exit_code: int,
+    http_code: str,
+    curl_stderr: str,
+    target_url: str,
+) -> dict[str, Any]:
+    detail = await _get_stack_runtime_context(stack_name, socks_port)
+    detail.update(
+        {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "target": target_url,
+            "elapsed_ms": round(elapsed_ms, 1),
+            "curl_exit_code": curl_exit_code,
+            "http_code": http_code,
+            "curl_stderr": curl_stderr[:300],
+            "active_stack_probe_summary": dict(state.active_stack_probe_summary or {}),
+        }
+    )
+    return detail
 
 
 async def _run_active_stack_runtime_probes(
@@ -6682,6 +6784,11 @@ async def decision_loop() -> None:
                             state.all_stacks_down_since = datetime.now()
                         await asyncio.sleep(20)
                         continue
+                    logger.warning(
+                        "Failover trigger ping_timeout on %s with detail=%s",
+                        state.active_stack,
+                        state.last_ping_failure_detail,
+                    )
                     await _do_failover("ping_timeout")
 
             # Ротация (взаимоисключает с failover)
@@ -7133,6 +7240,7 @@ async def get_status(_: bool = Depends(_auth)):
         "functional_summary": state.functional_summary,
         "responsiveness_summary": state.responsiveness_summary,
         "active_stack_probe_summary": state.active_stack_probe_summary,
+        "last_ping_failure_detail": state.last_ping_failure_detail,
         "tier2_health": tier2_health,
         "deploy": _read_deploy_state(),
         "latency_catalog": _latency_catalog_status(),
