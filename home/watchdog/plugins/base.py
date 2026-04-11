@@ -272,11 +272,10 @@ class BasePlugin(ABC):
 
     async def stop_tun2socks_service(self, tun_name: str, timeout: int = 15) -> bool:
         unit = self.tun2socks_unit_name(tun_name)
-        env_path = self.tun2socks_env_path(tun_name)
         meta_path = self.tun2socks_meta_path(tun_name)
         rc, out, err = await self.run_cmd(["systemctl", "stop", unit], timeout=timeout)
+        await self.run_cmd(["systemctl", "reset-failed", unit], timeout=10)
         await self.run_cmd(["ip", "link", "del", tun_name], timeout=5)
-        env_path.unlink(missing_ok=True)
         if rc != 0:
             logger.warning("%s failed to stop %s: %s", self.name, unit, (err or out).strip()[:200])
             return False
