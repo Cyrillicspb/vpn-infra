@@ -25,7 +25,6 @@ class RealityXhttpPlugin(BasePlugin):
 
     async def start(self, temp_port: str = "") -> int:
         tun_name = TUN_TMP if temp_port else TUN_IFACE
-        pf = self._pid_file_tmp if temp_port else self.pid_file
 
         # Запускаем xray-client-xhttp
         rc, stdout, _ = await self.run_cmd(
@@ -44,14 +43,9 @@ class RealityXhttpPlugin(BasePlugin):
             if rc == 0:
                 break
 
-        # Запускаем tun2socks с PID tracking
-        proc = await self.start_process([
-            "/usr/local/bin/tun2socks",
-            "-device", tun_name,
-            "-proxy", f"socks5://127.0.0.1:{SOCKS_PORT}",
-            "-loglevel", "warn",
-        ], pid_file=pf)
-        if proc is None:
+        # Запускаем tun2socks через systemd для auto-restart и journald
+        ok, pid = await self.start_tun2socks_service(tun_name, SOCKS_PORT, timeout=20)
+        if not ok:
             return 1
 
         for _ in range(15):
@@ -59,17 +53,17 @@ class RealityXhttpPlugin(BasePlugin):
             rc, _, _ = await self.run_cmd(["ip", "link", "show", tun_name])
             if rc == 0:
                 await self.run_cmd(["ip", "link", "set", tun_name, "up"])
-                print(json.dumps({"status": "started", "tun": tun_name}))
+                print(json.dumps({"status": "started", "tun": tun_name, "pid": pid}))
                 return 0
 
         print(json.dumps({"status": "error", "message": "tun not created"}))
-        await self.stop_process(pf)
+        await self.stop_tun2socks_service(tun_name)
         return 1
 
     async def stop(self) -> int:
-        await self.stop_process(self.pid_file)
-        await self.stop_process(self._pid_file_tmp)
-        # Fallback для процессов запущенных до PID tracking
+        await self.stop_tun2socks_service(TUN_IFACE)
+        await self.stop_tun2socks_service(TUN_TMP)
+        # Fallback для процессов, запущенных до перехода на systemd-managed tun2socks
         await self.run_cmd(["pkill", "-f", f"tun2socks.*{TUN_IFACE}"], timeout=5)
         await self.run_cmd(["pkill", "-f", f"tun2socks.*{TUN_TMP}"], timeout=5)
         return 0

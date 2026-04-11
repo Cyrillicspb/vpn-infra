@@ -1,0 +1,30 @@
+[Unit]
+Description=tun2socks dataplane for VPN stack (%i)
+Documentation=https://github.com/Cyrillicspb/vpn-infra/blob/main/docs/ARCHITECTURE.md
+After=network-online.target vpn-routes.service docker.service
+Wants=network-online.target
+BindsTo=docker.service
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=-/opt/vpn/.env
+EnvironmentFile=-/run/tun2socks-stack/%i.env
+ExecStartPre=/bin/sh -c 'ip link del "${TUN2SOCKS_IFACE}" 2>/dev/null || true'
+ExecStart=/bin/sh -c 'exec /usr/local/bin/tun2socks \
+    -device "$TUN2SOCKS_IFACE" \
+    -proxy "socks5://127.0.0.1:$TUN2SOCKS_SOCKS_PORT" \
+    -interface "${NET_INTERFACE:-eth0}" \
+    -tcp-sndbuf 4m \
+    -tcp-rcvbuf 4m \
+    -loglevel warn'
+ExecStartPost=/bin/sh -c 'sleep 1; ip link set "${TUN2SOCKS_IFACE}" up'
+ExecStopPost=/bin/sh -c 'ip link del "${TUN2SOCKS_IFACE}" 2>/dev/null || true'
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tun2socks-stack@%i
+
+[Install]
+WantedBy=multi-user.target

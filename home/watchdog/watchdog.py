@@ -1174,6 +1174,31 @@ def complete_planned_disruption(key: str, success: bool, detail: str = "") -> No
     alert("\n".join(lines))
 
 
+def _format_reason_label(reason: str) -> str:
+    return f"`{reason}`" if reason else ""
+
+
+def _remember_expected_dnsmasq_drift(reason: str, ttl_seconds: int = 180) -> None:
+    state.dnsmasq_expected_drift_reason = reason[:200]
+    state.dnsmasq_expected_drift_until_ts = time.time() + max(1, int(ttl_seconds))
+    state.save()
+
+
+def _peek_expected_dnsmasq_drift() -> str:
+    if state.dnsmasq_expected_drift_until_ts > time.time():
+        return state.dnsmasq_expected_drift_reason
+    return ""
+
+
+def _consume_expected_dnsmasq_drift() -> str:
+    reason = _peek_expected_dnsmasq_drift()
+    if state.dnsmasq_expected_drift_reason or state.dnsmasq_expected_drift_until_ts:
+        state.dnsmasq_expected_drift_reason = ""
+        state.dnsmasq_expected_drift_until_ts = 0.0
+        state.save()
+    return reason
+
+
 def recover_planned_disruptions_on_startup() -> None:
     if not state.planned_disruptions:
         return
@@ -1267,6 +1292,19 @@ class Plugin:
         if rc != 0:
             logger.error(f"[{self.name}] rotate: {err.strip()}")
         return rc == 0
+
+    def dataplane_tun_name(self, tun_name: Optional[str] = None) -> str:
+        return str(tun_name or self.meta.get("tun_name", f"tun-{self.name}"))
+
+    def dataplane_unit_name(self, tun_name: Optional[str] = None) -> str:
+        return f"tun2socks-stack@{self.dataplane_tun_name(tun_name)}.service"
+
+    def dataplane_meta_path(self, tun_name: Optional[str] = None) -> Path:
+        return Path("/run/tun2socks-stack") / f"{self.dataplane_tun_name(tun_name)}.meta.json"
+
+    def dataplane_log_hint(self, tun_name: Optional[str] = None) -> str:
+        unit = self.dataplane_unit_name(tun_name)
+        return f"journalctl -u {unit} -n 200 --no-pager"
 
 
 class PluginManager:
@@ -1483,6 +1521,8 @@ class WatchdogState:
         self.bot_runtime_drift_since: float = 0.0
         self.bot_selfheal_last_ts: float = 0.0
         self.dnsmasq_config_hash: str = ""
+        self.dnsmasq_expected_drift_reason: str = ""
+        self.dnsmasq_expected_drift_until_ts: float = 0.0
         self.compose_runtime_drift: bool = False
         self.compose_runtime_drift_detail: str = ""
         self.compose_runtime_drift_since: float = 0.0
@@ -1572,6 +1612,8 @@ class WatchdogState:
             "bot_runtime_drift_since": self.bot_runtime_drift_since,
             "bot_selfheal_last_ts": self.bot_selfheal_last_ts,
             "dnsmasq_config_hash": self.dnsmasq_config_hash,
+            "dnsmasq_expected_drift_reason": self.dnsmasq_expected_drift_reason,
+            "dnsmasq_expected_drift_until_ts": self.dnsmasq_expected_drift_until_ts,
             "compose_runtime_drift": self.compose_runtime_drift,
             "compose_runtime_drift_detail": self.compose_runtime_drift_detail,
             "compose_runtime_drift_since": self.compose_runtime_drift_since,
@@ -1675,6 +1717,10 @@ class WatchdogState:
                 self.bot_runtime_drift_since = float(data.get("bot_runtime_drift_since", 0.0) or 0.0)
                 self.bot_selfheal_last_ts = float(data.get("bot_selfheal_last_ts", 0.0) or 0.0)
                 self.dnsmasq_config_hash = data.get("dnsmasq_config_hash", "")
+                self.dnsmasq_expected_drift_reason = str(data.get("dnsmasq_expected_drift_reason") or "")
+                self.dnsmasq_expected_drift_until_ts = float(
+                    data.get("dnsmasq_expected_drift_until_ts", 0.0) or 0.0
+                )
                 self.compose_runtime_drift = data.get("compose_runtime_drift", False)
                 self.compose_runtime_drift_detail = data.get("compose_runtime_drift_detail", "")
                 self.compose_runtime_drift_since = float(data.get("compose_runtime_drift_since", 0.0) or 0.0)
@@ -3263,14 +3309,19 @@ async def check_dnsmasq_config_sync() -> None:
         logger.error("dnsmasq self-heal aborted, invalid config: %s", detail)
         alert(f"🚨 *dnsmasq self-heal failed*: `{detail}`")
         return
-    logger.warning("Обнаружен drift dnsmasq config → runtime, запускаю reload")
-    begin_planned_disruption(
-        "dnsmasq-config-selfheal",
-        "dnsmasq reload",
-        ["dnsmasq", "DNS"],
-        5,
-        "dnsmasq config drift",
-    )
+    expected_reason = _consume_expected_dnsmasq_drift()
+    expected_reload = bool(expected_reason)
+    if expected_reload:
+        logger.info("Обнаружен ожидаемый drift dnsmasq config → runtime (%s), запускаю reload", expected_reason)
+    else:
+        logger.warning("Обнаружен drift dnsmasq config → runtime, запускаю reload")
+        begin_planned_disruption(
+            "dnsmasq-config-selfheal",
+            "dnsmasq reload",
+            ["dnsmasq", "DNS"],
+            5,
+            "dnsmasq config drift",
+        )
 
     rc, out, err = await run_cmd(["systemctl", "reload", "dnsmasq"], timeout=20)
     if rc != 0:
@@ -3280,19 +3331,28 @@ async def check_dnsmasq_config_sync() -> None:
         if rc != 0:
             detail = (err or out or f"rc={rc}").strip()[:300]
             logger.error("dnsmasq self-heal failed after restart: %s", detail)
-            complete_planned_disruption("dnsmasq-config-selfheal", False, detail)
+            if expected_reload:
+                alert(f"🚨 *dnsmasq expected reload failed* `{expected_reason}`: `{detail}`")
+            else:
+                complete_planned_disruption("dnsmasq-config-selfheal", False, detail)
             return
 
     rc, out, _ = await run_cmd(["dig", "@127.0.0.1", "google.com", "+short", "+time=3"], timeout=10)
     if rc == 0 and out.strip():
         state.dnsmasq_config_hash = current_hash
         logger.info("dnsmasq config self-heal completed successfully")
-        complete_planned_disruption("dnsmasq-config-selfheal", True, "dnsmasq отвечает")
+        if expected_reload:
+            logger.info("dnsmasq expected config reload completed successfully (%s)", expected_reason)
+        else:
+            complete_planned_disruption("dnsmasq-config-selfheal", True, "dnsmasq отвечает")
         state.dnsmasq_up = 1
         return
 
     logger.error("dnsmasq self-heal verification failed after reload")
-    complete_planned_disruption("dnsmasq-config-selfheal", False, "после reload DNS не отвечает")
+    if expected_reload:
+        alert(f"🚨 *dnsmasq expected reload failed* `{expected_reason}`: `после reload DNS не отвечает`")
+    else:
+        complete_planned_disruption("dnsmasq-config-selfheal", False, "после reload DNS не отвечает")
 
 
 async def selfheal_compose_runtime() -> bool:
@@ -5240,6 +5300,7 @@ async def _regen_dpi_dnsmasq() -> None:
         DPI_DNSMASQ_CONF.parent.mkdir(parents=True, exist_ok=True)
         DPI_DNSMASQ_CONF.write_text("\n".join(lines))
 
+    _remember_expected_dnsmasq_drift("dpi dnsmasq generator", ttl_seconds=120)
     rc, _, _ = await run_cmd(["pkill", "-HUP", "dnsmasq"], timeout=5)
     logger.info(f"[DPI] dpi-domains.conf обновлён ({len(enabled)} сервисов), dnsmasq SIGHUP rc={rc}")
     complete_planned_disruption(
@@ -5457,6 +5518,7 @@ async def _refresh_vpn_domains_for_dpi(reason: str) -> None:
     """Пересобрать vpn-domains.conf, чтобы DPI-домены ушли из blocked_dynamic."""
     async with _DPI_ROUTES_REFRESH_LOCK:
         logger.info("[DPI] refresh vpn-domains via update-routes.py (%s)", reason)
+        _remember_expected_dnsmasq_drift(f"update-routes.py ({reason})", ttl_seconds=180)
         rc, out, err = await run_cmd(
             [sys.executable, "/opt/vpn/scripts/update-routes.py", "--force"],
             timeout=900,
@@ -6126,18 +6188,32 @@ async def _ensure_active_stack_dataplane() -> bool:
     Нужен для случая, когда transport жив (например SOCKS hysteria2),
     но tun2socks умер и policy-routing для клиентов/LAN остался без dataplane.
     """
-    plugin = plugins.get(state.active_stack)
+    if state.failover_in_progress:
+        logger.info("Пропускаю active stack dataplane check: failover уже выполняется")
+        return True
+
+    active_stack_name = state.active_stack
+    plugin = plugins.get(active_stack_name)
     if not plugin or plugin.meta.get("direct_mode"):
         return True
 
-    tun_name = plugin.meta.get("tun_name", f"tun-{state.active_stack}")
-    socks_port = _get_stack_socks_port(state.active_stack)
+    tun_name = plugin.dataplane_tun_name()
+    socks_port = _get_stack_socks_port(active_stack_name)
     rc_tun, _, _ = await run_cmd(["ip", "link", "show", tun_name], timeout=3)
     rc_route, route_out, _ = await run_cmd(["ip", "route", "show", "table", "marked"], timeout=3)
     route_ok = rc_route == 0 and f"default dev {tun_name}" in route_out
     rc_socks, _, _ = await run_cmd(["nc", "-z", "127.0.0.1", str(socks_port)], timeout=3)
     socks_ready = rc_socks == 0
-    process_log = plugin.process_log_path(plugin.pid_file) if getattr(plugin, "pid_file", None) else None
+    process_log = plugin.dataplane_log_hint(tun_name)
+    process_meta = plugin.dataplane_meta_path(tun_name)
+
+    if active_stack_name != state.active_stack:
+        logger.info(
+            "Пропускаю active stack dataplane check: стек уже сменился %s -> %s",
+            active_stack_name,
+            state.active_stack,
+        )
+        return True
 
     if rc_tun == 0 and route_ok:
         return await ensure_policy_routing_contract("active-stack-dataplane-ok", active_tun=tun_name)
@@ -6150,10 +6226,12 @@ async def _ensure_active_stack_dataplane() -> bool:
         state.save()
         alert(
             "⚠️ *active_stack has socks but no tun*\n"
-            f"Стек: `{state.active_stack}`\n"
+            f"Стек: `{active_stack_name}`\n"
             f"SOCKS: `127.0.0.1:{socks_port}` отвечает\n"
             f"TUN: `{tun_name}` отсутствует\n"
-            f"Лог процесса: `{process_log or 'n/a'}`\n"
+            f"Unit: `{plugin.dataplane_unit_name(tun_name)}`\n"
+            f"Лог процесса: `{process_log}`\n"
+            f"Meta: `{process_meta}`\n"
             "Запускаю dataplane self-heal."
         )
 
@@ -6161,11 +6239,11 @@ async def _ensure_active_stack_dataplane() -> bool:
         logger.warning(
             "Активный dataplane отсутствует: tun %s не найден для стека %s, запускаю self-heal",
             tun_name,
-            state.active_stack,
+            active_stack_name,
         )
         ok = await plugin.start()
         if not ok:
-            logger.error("Self-heal dataplane не смог поднять стек %s", state.active_stack)
+            logger.error("Self-heal dataplane не смог поднять стек %s", active_stack_name)
             await _set_marked_route_unreachable()
             return False
         rc_tun, _, _ = await run_cmd(["ip", "link", "show", tun_name], timeout=5)
@@ -6174,17 +6252,17 @@ async def _ensure_active_stack_dataplane() -> bool:
         logger.warning(
             "table marked drift: ожидался default dev %s для стека %s, восстанавливаю маршрут",
             tun_name,
-            state.active_stack,
+            active_stack_name,
         )
 
-    if rc_tun == 0 and await _set_marked_route_for_stack(state.active_stack):
-        _write_vpn_state_files(state.active_stack)
+    if rc_tun == 0 and await _set_marked_route_for_stack(active_stack_name):
+        _write_vpn_state_files(active_stack_name)
         if not await ensure_policy_routing_contract("active-stack-dataplane-self-heal", active_tun=tun_name):
             return False
-        logger.info("Dataplane self-heal completed: стек %s, tun=%s", state.active_stack, tun_name)
+        logger.info("Dataplane self-heal completed: стек %s, tun=%s", active_stack_name, tun_name)
         return True
 
-    logger.error("Dataplane self-heal failed for active stack %s", state.active_stack)
+    logger.error("Dataplane self-heal failed for active stack %s", active_stack_name)
     await _set_marked_route_unreachable()
     return False
 
@@ -6250,7 +6328,7 @@ async def _do_switch(new_stack: str, reason: str) -> bool:
     ))
 
     logger.info(f"Стек переключён: {old_stack} → {new_stack}")
-    alert(f"🔄 VPN стек переключён: *{old_stack}* → *{new_stack}*\nПричина: {reason}")
+    alert(f"🔄 VPN стек переключён: *{old_stack}* → *{new_stack}*\nПричина: {_format_reason_label(reason)}")
     return True
 
 
@@ -7489,6 +7567,7 @@ async def _routes_update_task() -> None:
         60,
         "manual routes update",
     )
+    _remember_expected_dnsmasq_drift("update-routes.py (manual routes update)", ttl_seconds=180)
     rc, _, err = await run_cmd(
         [sys.executable, "/opt/vpn/scripts/update-routes.py"], timeout=600
     )

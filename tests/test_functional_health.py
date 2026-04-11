@@ -999,6 +999,41 @@ scenarios:
             )
         )
 
+    def test_reason_label_wraps_reason_for_markdown_safe_alerts(self) -> None:
+        self.assertEqual(
+            watchdog._format_reason_label("functional_control_plane"),
+            "`functional_control_plane`",
+        )
+
+    def test_expected_dnsmasq_drift_is_consumed_once_within_ttl(self) -> None:
+        watchdog.state.dnsmasq_expected_drift_reason = ""
+        watchdog.state.dnsmasq_expected_drift_until_ts = 0.0
+        with mock.patch.object(watchdog.time, "time", return_value=1000.0):
+            watchdog._remember_expected_dnsmasq_drift("update-routes.py (manual routes update)", ttl_seconds=30)
+            self.assertEqual(
+                watchdog._peek_expected_dnsmasq_drift(),
+                "update-routes.py (manual routes update)",
+            )
+            self.assertEqual(
+                watchdog._consume_expected_dnsmasq_drift(),
+                "update-routes.py (manual routes update)",
+            )
+            self.assertEqual(watchdog._peek_expected_dnsmasq_drift(), "")
+
+    def test_plugin_dataplane_helpers_render_systemd_unit_and_meta_path(self) -> None:
+        plugin = watchdog.Plugin.__new__(watchdog.Plugin)
+        plugin.name = "cloudflare-cdn"
+        plugin.meta = {"tun_name": "tun-cf-cdn"}
+        self.assertEqual(plugin.dataplane_unit_name(), "tun2socks-stack@tun-cf-cdn.service")
+        self.assertEqual(
+            plugin.dataplane_log_hint(),
+            "journalctl -u tun2socks-stack@tun-cf-cdn.service -n 200 --no-pager",
+        )
+        self.assertEqual(
+            plugin.dataplane_meta_path(),
+            Path("/run/tun2socks-stack/tun-cf-cdn.meta.json"),
+        )
+
     def test_active_stack_runtime_failover_reason_targets_recent_probe_failures(self) -> None:
         watchdog.state.active_stack_runtime_fail_streak = watchdog.ACTIVE_STACK_RUNTIME_FAILOVER_CONSECUTIVE_FAILURES
         watchdog.state.last_failover = None

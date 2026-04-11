@@ -1066,7 +1066,7 @@ else
                     watchdog.service vpn-postboot.service \
                     vpn-dpi-presets-update.service vpn-dpi-presets-update.timer \
                     vpn-latency-catalog-update.service vpn-latency-catalog-update.timer \
-                    "tun2socks@.service" autossh-vpn.service; do
+                    "tun2socks@.service" "tun2socks-stack@.service" autossh-vpn.service; do
             [[ -f "${SYSTEMD_SRC}/${unit}" ]] && \
                 cp "${SYSTEMD_SRC}/${unit}" "/etc/systemd/system/${unit}"
         done

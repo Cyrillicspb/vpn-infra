@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 SYSTEMD_NOTIFY_ENV_KEYS = ("NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID")
 PROCESS_LOG_DIR = Path("/var/log/vpn")
+TUN2SOCKS_STACK_RUNTIME_DIR = Path("/run/tun2socks-stack")
 
 
 def child_env() -> dict[str, str]:
@@ -67,6 +68,18 @@ class BasePlugin(ABC):
     def process_meta_path(self, pid_file: Optional[Path] = None) -> Optional[Path]:
         pf = pid_file or self.pid_file
         return pf.with_suffix(".meta.json") if pf else None
+
+    def tun2socks_unit_name(self, tun_name: str) -> str:
+        return f"tun2socks-stack@{tun_name}.service"
+
+    def tun2socks_env_path(self, tun_name: str) -> Path:
+        return TUN2SOCKS_STACK_RUNTIME_DIR / f"{tun_name}.env"
+
+    def tun2socks_meta_path(self, tun_name: str) -> Path:
+        return TUN2SOCKS_STACK_RUNTIME_DIR / f"{tun_name}.meta.json"
+
+    def tun2socks_log_hint(self, tun_name: str) -> str:
+        return f"journalctl -u {self.tun2socks_unit_name(tun_name)} -n 200 --no-pager"
 
     async def run_cmd(
         self, cmd: list[str], timeout: int = 30, check: bool = False
@@ -193,6 +206,82 @@ class BasePlugin(ABC):
         except Exception as exc:
             logger.error("%s stop_process failed: %s", self.name, exc)
             return False
+
+    async def start_tun2socks_service(
+        self,
+        tun_name: str,
+        socks_port: int,
+        timeout: int = 20,
+    ) -> tuple[bool, Optional[int]]:
+        unit = self.tun2socks_unit_name(tun_name)
+        env_path = self.tun2socks_env_path(tun_name)
+        meta_path = self.tun2socks_meta_path(tun_name)
+        try:
+            TUN2SOCKS_STACK_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+            env_path.write_text(
+                "\n".join(
+                    [
+                        f"TUN2SOCKS_IFACE={tun_name}",
+                        f"TUN2SOCKS_SOCKS_PORT={int(socks_port)}",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.error("%s failed to write tun2socks env for %s: %s", self.name, tun_name, exc)
+            return False, None
+
+        await self.run_cmd(["ip", "link", "del", tun_name], timeout=5)
+        await self.run_cmd(["systemctl", "reset-failed", unit], timeout=10)
+        rc, out, err = await self.run_cmd(["systemctl", "start", unit], timeout=timeout)
+        if rc != 0:
+            logger.error("%s failed to start %s: %s", self.name, unit, (err or out).strip()[:200])
+            return False, None
+
+        pid: Optional[int] = None
+        rc_pid, out_pid, err_pid = await self.run_cmd(
+            ["systemctl", "show", unit, "--property", "MainPID", "--value"],
+            timeout=10,
+        )
+        if rc_pid == 0:
+            raw_pid = (out_pid or "").strip()
+            if raw_pid.isdigit():
+                pid = int(raw_pid)
+
+        try:
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "unit": unit,
+                        "tun_name": tun_name,
+                        "socks_port": int(socks_port),
+                        "pid": pid,
+                        "log_hint": self.tun2socks_log_hint(tun_name),
+                        "started_at_ts": time.time(),
+                        "pid_query_error": (err_pid or "").strip()[:200] if rc_pid != 0 else "",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("%s failed to write tun2socks meta for %s: %s", self.name, tun_name, exc)
+        return True, pid
+
+    async def stop_tun2socks_service(self, tun_name: str, timeout: int = 15) -> bool:
+        unit = self.tun2socks_unit_name(tun_name)
+        env_path = self.tun2socks_env_path(tun_name)
+        meta_path = self.tun2socks_meta_path(tun_name)
+        rc, out, err = await self.run_cmd(["systemctl", "stop", unit], timeout=timeout)
+        await self.run_cmd(["ip", "link", "del", tun_name], timeout=5)
+        env_path.unlink(missing_ok=True)
+        if rc != 0:
+            logger.warning("%s failed to stop %s: %s", self.name, unit, (err or out).strip()[:200])
+            return False
+        meta_path.unlink(missing_ok=True)
+        return True
 
     def read_pid(self, pid_file: Optional[Path] = None) -> Optional[int]:
         """Прочитать PID из файла, None если не существует или невалидный."""
