@@ -1333,6 +1333,8 @@ EOF
         fi
         [[ -f /etc/vpn-routes/manual-direct.txt ]] || touch /etc/vpn-routes/manual-direct.txt
         [[ -f /etc/vpn-routes/combined.cidr ]]     || touch /etc/vpn-routes/combined.cidr
+        chown 999:999 /etc/vpn-routes/manual-vpn.txt /etc/vpn-routes/manual-direct.txt 2>/dev/null || true
+        chmod 664 /etc/vpn-routes/manual-vpn.txt /etc/vpn-routes/manual-direct.txt 2>/dev/null || true
 
         chmod 600 "$ENV_FILE"
         chown -R root:root /opt/vpn 2>/dev/null || true

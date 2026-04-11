@@ -461,6 +461,13 @@ for cname in sing-box-tuic-client sing-box-trojan-client; do
     fi
 done
 
+check "manual-vpn ownership for telegram-bot" \
+    "[[ \"$(stat -c '%u:%g:%a' /etc/vpn-routes/manual-vpn.txt 2>/dev/null)\" == \"999:999:664\" ]]" \
+    "telegram-bot не сможет записать /vpn add/remove"
+check "manual-direct ownership for telegram-bot" \
+    "[[ \"$(stat -c '%u:%g:%a' /etc/vpn-routes/manual-direct.txt 2>/dev/null)\" == \"999:999:664\" ]]" \
+    "telegram-bot не сможет записать /direct add/remove"
+
 # ═══════════════════════════════════════════════════════════════════════════════
 section "6. Xray клиенты (SOCKS5)"
 # ═══════════════════════════════════════════════════════════════════════════════

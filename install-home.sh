@@ -101,6 +101,14 @@ fix_missing_pam_lastlog() {
     fi
 }
 
+ensure_bot_manual_route_permissions() {
+    mkdir -p /etc/vpn-routes
+    [[ -f /etc/vpn-routes/manual-vpn.txt ]] || touch /etc/vpn-routes/manual-vpn.txt
+    [[ -f /etc/vpn-routes/manual-direct.txt ]] || touch /etc/vpn-routes/manual-direct.txt
+    chown 999:999 /etc/vpn-routes/manual-vpn.txt /etc/vpn-routes/manual-direct.txt 2>/dev/null || true
+    chmod 664 /etc/vpn-routes/manual-vpn.txt /etc/vpn-routes/manual-direct.txt 2>/dev/null || true
+}
+
 # ── Шаг 9: apt update + upgrade ──────────────────────────────────────────────
 
 if is_done "step09_apt_update"; then
@@ -1573,6 +1581,8 @@ EOF
     else
         log_warn "Загрузка баз маршрутов завершилась с ошибкой — проверьте /var/log/vpn-routes.log"
     fi
+    ensure_bot_manual_route_permissions
+    log_ok "manual route lists доступны telegram-bot"
 
     if [[ -f /opt/vpn/scripts/update-dpi-presets.py ]]; then
         log_info "Первичная загрузка DPI preset-ов..."
@@ -1701,6 +1711,7 @@ else
         mkdir -p /opt/vpn/telegram-bot/data
         chown -R 999:999 /opt/vpn/telegram-bot/data
         chmod 750 /opt/vpn/telegram-bot/data
+        ensure_bot_manual_route_permissions
 
         # Отключаем errexit+pipefail на время docker-операций
         set +e; set +o pipefail

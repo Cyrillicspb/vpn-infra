@@ -207,8 +207,17 @@ class DeployRestoreContractTests(unittest.TestCase):
 
     def test_telegram_bot_can_write_manual_route_lists(self):
         home_compose = (ROOT / "home" / "docker-compose.yml").read_text(encoding="utf-8")
+        install_home = (ROOT / "install-home.sh").read_text(encoding="utf-8")
+        setup_script = (ROOT / "setup.sh").read_text(encoding="utf-8")
+        post_install = (ROOT / "home" / "scripts" / "post-install-check.sh").read_text(encoding="utf-8")
         self.assertIn("- /etc/vpn-routes:/etc/vpn-routes", home_compose)
         self.assertNotIn("- /etc/vpn-routes:/etc/vpn-routes:ro", home_compose)
+        self.assertIn("ensure_bot_manual_route_permissions()", install_home)
+        self.assertIn("chown 999:999 /etc/vpn-routes/manual-vpn.txt /etc/vpn-routes/manual-direct.txt", install_home)
+        self.assertIn("chmod 664 /etc/vpn-routes/manual-vpn.txt /etc/vpn-routes/manual-direct.txt", install_home)
+        self.assertIn("chown 999:999 /etc/vpn-routes/manual-vpn.txt /etc/vpn-routes/manual-direct.txt", setup_script)
+        self.assertIn('manual-vpn ownership for telegram-bot', post_install)
+        self.assertIn('manual-direct ownership for telegram-bot', post_install)
 
     def test_default_deploy_does_not_force_start_extra_stacks(self):
         deploy_script = DEPLOY.read_text(encoding="utf-8")
