@@ -7418,8 +7418,11 @@ async def monitoring_loop() -> None:
                 await _ensure_active_stack_dataplane()
                 await probe_vps_reachability()
                 await _refresh_backend_health()
+                state.last_monitoring_tick = time.time()
                 await _run_active_stack_runtime_probes()
+                state.last_monitoring_tick = time.time()
                 await _refresh_openai_probe_summary()
+                state.last_monitoring_tick = time.time()
                 last_heartbeat = now
 
             # Каждые 5 мин: внешний IP, диск, small speedtest, блок. сайты, upload
