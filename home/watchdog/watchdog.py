@@ -1597,6 +1597,7 @@ class WatchdogState:
         self.watchdog_runtime_drift_since: float = 0.0
         self.watchdog_selfheal_last_ts: float = 0.0
         self.active_stack_dataplane_alert_last_ts: float = 0.0
+        self.active_stack_dataplane_fail_since: float = 0.0
         self.active_stack_probe_summary: dict[str, Any] = {}
         self.active_stack_runtime_fail_streak: int = 0
         self.active_stack_runtime_last_failure_ts: float = 0.0
@@ -1693,6 +1694,7 @@ class WatchdogState:
             "watchdog_runtime_drift_since": self.watchdog_runtime_drift_since,
             "watchdog_selfheal_last_ts": self.watchdog_selfheal_last_ts,
             "active_stack_dataplane_alert_last_ts": self.active_stack_dataplane_alert_last_ts,
+            "active_stack_dataplane_fail_since": self.active_stack_dataplane_fail_since,
             "active_stack_probe_summary": self.active_stack_probe_summary,
             "active_stack_runtime_fail_streak": self.active_stack_runtime_fail_streak,
             "active_stack_runtime_last_failure_ts": self.active_stack_runtime_last_failure_ts,
@@ -1806,6 +1808,9 @@ class WatchdogState:
                 self.watchdog_selfheal_last_ts = float(data.get("watchdog_selfheal_last_ts", 0.0) or 0.0)
                 self.active_stack_dataplane_alert_last_ts = float(
                     data.get("active_stack_dataplane_alert_last_ts", 0.0) or 0.0
+                )
+                self.active_stack_dataplane_fail_since = float(
+                    data.get("active_stack_dataplane_fail_since", 0.0) or 0.0
                 )
                 self.active_stack_probe_summary = data.get("active_stack_probe_summary", {}) or {}
                 self.active_stack_runtime_fail_streak = int(data.get("active_stack_runtime_fail_streak", 0) or 0)
@@ -1947,6 +1952,8 @@ def _pin_reason_allows_escape(reason: str) -> bool:
         return ping_failed and runtime_degraded and functional_triggered
     if reason == "rotation_check_failed":
         return runtime_failed
+    if reason == "active_stack_dataplane_fail":
+        return True
     return False
 
 
@@ -3368,6 +3375,7 @@ REPO_SYNC_CONFIRM_SECONDS = int(os.getenv("REPO_SYNC_CONFIRM_SECONDS", "600"))
 REPO_SYNC_FETCH_COOLDOWN_SECONDS = int(os.getenv("REPO_SYNC_FETCH_COOLDOWN_SECONDS", "1800"))
 REPO_SYNC_ALERT_COOLDOWN_SECONDS = int(os.getenv("REPO_SYNC_ALERT_COOLDOWN_SECONDS", "3600"))
 ACTIVE_STACK_DATAPLANE_ALERT_COOLDOWN_SECONDS = int(os.getenv("ACTIVE_STACK_DATAPLANE_ALERT_COOLDOWN_SECONDS", "900"))
+ACTIVE_STACK_DATAPLANE_FAILOVER_SECONDS = int(os.getenv("ACTIVE_STACK_DATAPLANE_FAILOVER_SECONDS", "300"))
 
 
 def _sha256_file(path: Path) -> str:
@@ -6844,6 +6852,7 @@ async def _ensure_active_stack_dataplane() -> bool:
         return True
 
     if rc_tun == 0 and route_ok:
+        state.active_stack_dataplane_fail_since = 0.0
         return await ensure_policy_routing_contract("active-stack-dataplane-ok", active_tun=tun_name)
 
     now = time.time()
@@ -6869,6 +6878,21 @@ async def _ensure_active_stack_dataplane() -> bool:
             tun_name,
             active_stack_name,
         )
+        if state.active_stack_dataplane_fail_since == 0.0:
+            state.active_stack_dataplane_fail_since = now
+        fail_duration = now - state.active_stack_dataplane_fail_since
+        if fail_duration >= ACTIVE_STACK_DATAPLANE_FAILOVER_SECONDS:
+            logger.error(
+                "Dataplane tun %s отсутствует уже %.0fs (порог %ds) — инициирую failover стека %s",
+                tun_name,
+                fail_duration,
+                ACTIVE_STACK_DATAPLANE_FAILOVER_SECONDS,
+                active_stack_name,
+            )
+            state.active_stack_dataplane_fail_since = 0.0
+            state.save()
+            asyncio.create_task(_do_failover("active_stack_dataplane_fail"), name="dataplane-failover")
+            return False
         ok = await plugin.start()
         if not ok:
             logger.error("Self-heal dataplane не смог поднять стек %s", active_stack_name)
@@ -6884,6 +6908,7 @@ async def _ensure_active_stack_dataplane() -> bool:
         )
 
     if rc_tun == 0 and await _set_marked_route_for_stack(active_stack_name):
+        state.active_stack_dataplane_fail_since = 0.0
         _write_vpn_state_files(active_stack_name)
         if not await ensure_policy_routing_contract("active-stack-dataplane-self-heal", active_tun=tun_name):
             return False
@@ -7075,6 +7100,7 @@ def _reason_sets_stack_retry_cooldown(reason: str) -> bool:
         "active_stack_runtime_probe",
         "hysteria2_socks_timeouts",
         "rotation_check_failed",
+        "active_stack_dataplane_fail",
     }
 
 
