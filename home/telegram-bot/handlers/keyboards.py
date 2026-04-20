@@ -452,6 +452,7 @@ def admin_client_devices_kb(chat_id: str, devices: list[dict]) -> InlineKeyboard
 def admin_client_device_actions_kb(chat_id: str, device_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📥 Получить конфиг", callback_data=f"adm:cl_dev_getconf:{device_id}")],
+        [InlineKeyboardButton(text="🌐 Direct backend", callback_data=f"adm:cl_dev_direct:{device_id}")],
         [InlineKeyboardButton(text="🔄 Обновить конфиг", callback_data=f"adm:cl_dev_refresh:{device_id}")],
         [InlineKeyboardButton(text="🗑 Удалить устройство", callback_data=f"adm:cl_dev_del:{device_id}")],
         _nav_row(f"adm:cl_devices:{chat_id}", home_cb="adm:menu"),
@@ -720,6 +721,7 @@ def device_detail_kb(device_id: int) -> InlineKeyboardMarkup:
     """Действия с конкретным устройством клиента."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📥 Получить конфиг",    callback_data=f"cl:getconf:{device_id}")],
+        [InlineKeyboardButton(text="🌐 Direct backend",     callback_data=f"cl:getdirect:{device_id}")],
         [InlineKeyboardButton(text="🔄 Обновить конфиг",    callback_data=f"cl:upd1:{device_id}")],
         [InlineKeyboardButton(text="🚫 Исключения",         callback_data=f"cl:devex:{device_id}")],
         [InlineKeyboardButton(text="📍 Маршруты через сервер", callback_data=f"cl:devsr:{device_id}")],
@@ -742,6 +744,46 @@ def platform_inline_kb(device_id: int) -> InlineKeyboardMarkup:
         for label, platform in platforms
     ]
     rows.append(_nav_row(f"cl:dev:{device_id}", home_cb="cl:devices_menu"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def backend_export_backends_kb(
+    device_id: int,
+    backends: list[dict],
+    prefix: str,
+    back_cb: str,
+    home_cb: str,
+) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(
+            text=f"🟢 {backend.get('id', '?')} → {backend.get('ip', '?')}",
+            callback_data=f"{prefix}{device_id}:{backend.get('id', '')}",
+        )]
+        for backend in backends[:12]
+    ]
+    rows.append(_nav_row(back_cb, home_cb=home_cb))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def backend_export_stacks_kb(
+    device_id: int,
+    backend_id: str,
+    prefix: str,
+    back_cb: str,
+    home_cb: str,
+) -> InlineKeyboardMarkup:
+    stacks = [
+        ("⚡ Hysteria2", "hysteria2"),
+        ("🧪 REALITY XHTTP", "reality-xhttp"),
+        ("🛡 REALITY Vision", "vless-reality-vision"),
+        ("🚀 TUIC", "tuic"),
+        ("🔐 Trojan", "trojan"),
+    ]
+    rows = [
+        [InlineKeyboardButton(text=label, callback_data=f"{prefix}{device_id}:{backend_id}:{stack}")]
+        for label, stack in stacks
+    ]
+    rows.append(_nav_row(back_cb, home_cb=home_cb))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

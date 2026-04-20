@@ -19,6 +19,7 @@ import subprocess
 import base64
 import ipaddress
 import unicodedata
+from datetime import date
 from pathlib import Path
 from typing import Optional
 
@@ -204,33 +205,92 @@ def _conf_to_bat_echo(conf_text: str) -> str:
     return "\n".join(lines)
 
 
-def make_wireguard_tunnel_name(device_name: str, protocol: str = "awg", max_len: int = 15) -> str:
+def _normalize_export_date(export_date: date | str | None = None) -> tuple[str, str]:
+    if export_date is None:
+        d = date.today()
+    elif isinstance(export_date, date):
+        d = export_date
+    else:
+        d = date.fromisoformat(str(export_date))
+    return d.isoformat(), d.strftime("%y%m%d")
+
+
+def _ascii_slug(value: str, max_len: int = 32) -> str:
+    ascii_value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    ascii_value = ascii_value.lower()
+    ascii_value = re.sub(r"[^a-z0-9]+", "-", ascii_value)
+    ascii_value = re.sub(r"-{2,}", "-", ascii_value).strip("-")
+    if not ascii_value:
+        ascii_value = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+    return ascii_value[:max_len].rstrip("-") or hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+
+
+def make_wireguard_tunnel_name(
+    device_name: str,
+    protocol: str = "awg",
+    max_len: int = 15,
+    export_date: date | str | None = None,
+) -> str:
     """Return an ASCII-safe tunnel name acceptable for WireGuard import/install flows."""
     prefix = "awg" if protocol == "awg" else "wg"
     digest = hashlib.sha256(device_name.encode("utf-8")).hexdigest()[:4]
-
-    ascii_name = unicodedata.normalize("NFKD", device_name).encode("ascii", "ignore").decode("ascii")
-    ascii_name = ascii_name.lower()
-    ascii_name = re.sub(r"[^a-z0-9_.+-]+", "-", ascii_name)
-    ascii_name = re.sub(r"[-_.+]{2,}", "-", ascii_name).strip("-_.+")
-
-    if not ascii_name:
-        return f"{prefix}-{digest}"[:max_len]
-
-    inline_budget = max_len - len(prefix) - 1
-    if len(ascii_name) <= inline_budget:
-        return f"{prefix}-{ascii_name}"
-
-    hash_budget = max_len - len(prefix) - len(digest) - 2
-    base = ascii_name[:max(hash_budget, 0)].rstrip("-_.+")
-    if base:
-        return f"{prefix}-{base}-{digest}"
-    return f"{prefix}-{digest}"[:max_len]
+    _, short_date = _normalize_export_date(export_date)
+    slug = _ascii_slug(device_name, max_len=8)
+    static_len = len(prefix) + 1 + len(short_date) + len(digest)
+    base_budget = max(0, max_len - static_len)
+    base = slug[:base_budget]
+    return f"{prefix}-{base}{short_date}{digest}"[:max_len]
 
 
-def make_wireguard_conf_filename(device_name: str, protocol: str = "awg") -> str:
-    """Filename stem used by clients when importing a .conf as a tunnel."""
-    return f"{make_wireguard_tunnel_name(device_name, protocol)}.conf"
+def make_export_filename(*parts: str, ext: str, max_stem: int = 96) -> str:
+    stem_parts = [_ascii_slug(part, max_len=24) for part in parts if str(part or "").strip()]
+    stem = "-".join(stem_parts)[:max_stem].strip("-")
+    if not stem:
+        stem = "vpn-export"
+    ext = ext.lstrip(".")
+    return f"{stem}.{ext}"
+
+
+def make_wireguard_conf_filename(
+    device_name: str,
+    protocol: str = "awg",
+    export_date: date | str | None = None,
+) -> str:
+    """Canonical home-ingress filename for client .conf exports."""
+    long_date, _ = _normalize_export_date(export_date)
+    return make_export_filename("vpn", "home", protocol, device_name, long_date, ext="conf")
+
+
+def make_installer_filename(
+    device_name: str,
+    protocol: str,
+    platform: str,
+    ext: str,
+    export_date: date | str | None = None,
+) -> str:
+    long_date, _ = _normalize_export_date(export_date)
+    return make_export_filename("vpn", "installer", "home", protocol, platform, device_name, long_date, ext=ext)
+
+
+def make_qr_filename(
+    device_name: str,
+    role: str,
+    protocol_or_stack: str,
+    export_date: date | str | None = None,
+) -> str:
+    long_date, _ = _normalize_export_date(export_date)
+    return make_export_filename("vpn", "qr", role, protocol_or_stack, device_name, long_date, ext="png")
+
+
+def make_direct_export_filename(
+    device_name: str,
+    stack: str,
+    backend_id: str,
+    ext: str,
+    export_date: date | str | None = None,
+) -> str:
+    long_date, _ = _normalize_export_date(export_date)
+    return make_export_filename("vpn", "backend", stack, backend_id, device_name, long_date, ext=ext)
 
 
 PLATFORM_SCRIPTS: dict[str, dict] = {

@@ -69,10 +69,14 @@ class InstallerBundleContractTests(unittest.TestCase):
         self.assertIn('env_set "VPS_ROOT_PASSWORD" ""', content)
         self.assertIn("commit_vps_ssh_bootstrap", content)
 
-    def test_add_vps_closes_root_ssh_only_after_successful_run(self):
+    def test_add_vps_installs_generic_backend_and_closes_root_only_after_success(self):
         content = (ROOT / "add-vps.sh").read_text(encoding="utf-8")
-        self.assertIn("Финализация SSH-доступа на VPS2", content)
-        self.assertNotIn('log_info "Закрытие root SSH-доступа на VPS2..."', content)
+        self.assertIn("Добавление нового backend VPS в инфраструктуру", content)
+        self.assertIn("Финализация SSH-доступа на backend", content)
+        self.assertIn('bash ${REMOTE_XRAY_SETUP}', content)
+        self.assertIn('/backends/add', content)
+        self.assertIn('BACKEND_TUNNEL_IP="${4:-10.177.2.2}"', content)
+        self.assertNotIn("Осталось вручную настроить 3x-ui", content)
 
     def test_common_sh_disables_ansi_when_stdout_is_not_a_tty(self):
         content = (ROOT / "common.sh").read_text(encoding="utf-8")

@@ -16,17 +16,18 @@ Debounce 5 мин: множественные изменения → один ф
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 
 from aiogram.types import BufferedInputFile
-from datetime import date, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from aiogram import Bot
     from database import Database
     from services.config_builder import ConfigBuilder
+
+from services.config_builder import make_qr_filename, make_wireguard_conf_filename
 
 logger = logging.getLogger(__name__)
 
@@ -170,12 +171,14 @@ class AutoDist:
         if qr_bytes:
             await self.bot.send_photo(
                 chat_id,
-                photo=BufferedInputFile(qr_bytes, filename="qr.png"),
+                photo=BufferedInputFile(
+                    qr_bytes,
+                    filename=make_qr_filename(device["device_name"], "home", device.get("protocol", "awg")),
+                ),
                 caption=f"QR-код для `{device['device_name']}`{caption_reason}",
             )
 
         # .conf файл
-        from services.config_builder import make_wireguard_conf_filename
         _filename = make_wireguard_conf_filename(device["device_name"], device.get("protocol", "awg"))
         await self.bot.send_document(
             chat_id,
@@ -186,8 +189,7 @@ class AutoDist:
         # Установщик — если у устройства сохранена desktop-платформа
         platform = device.get("platform")
         if platform in ("windows", "macos", "linux"):
-            from services.config_builder import PLATFORM_SCRIPTS, build_installer, make_wireguard_tunnel_name
-            safe_name = make_wireguard_tunnel_name(device["device_name"], device.get("protocol", "awg"))
+            from services.config_builder import PLATFORM_SCRIPTS, build_installer, make_installer_filename
             installer = build_installer(
                 device_name=device["device_name"],
                 conf_text=conf_text,
@@ -196,7 +198,7 @@ class AutoDist:
             )
             if installer:
                 ext = PLATFORM_SCRIPTS[platform]["ext"]
-                fname = f"install-vpn-{safe_name}.{ext}"
+                fname = make_installer_filename(device["device_name"], device.get("protocol", "awg"), platform, ext)
                 await self.bot.send_document(
                     chat_id,
                     document=BufferedInputFile(installer, filename=fname),

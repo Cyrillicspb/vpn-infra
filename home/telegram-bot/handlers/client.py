@@ -17,6 +17,7 @@ FSM:
 from __future__ import annotations
 
 import asyncio
+import html
 import ipaddress
 import logging
 import re
@@ -43,6 +44,8 @@ from handlers.keyboards import (
     client_main_menu,
     client_request_type_kb,
     client_routes_hub_menu,
+    backend_export_backends_kb,
+    backend_export_stacks_kb,
     device_excludes_inline_kb,
     device_excludes_menu,
     device_server_routes_inline_kb,
@@ -63,7 +66,13 @@ from handlers.screen import edit_or_answer, result_text, return_kb, screen_text,
 
 from config import config
 from database import Database
-from services.config_builder import ConfigBuilder
+from services.config_builder import (
+    ConfigBuilder,
+    make_direct_export_filename,
+    make_installer_filename,
+    make_qr_filename,
+    make_wireguard_conf_filename,
+)
 from services.watchdog_client import WatchdogClient
 
 if TYPE_CHECKING:
@@ -185,6 +194,63 @@ async def _device_policy_lists(db: Database, device_id: int) -> tuple[list[str],
     excludes = [item["subnet"] for item in excludes_raw]
     server_routes = [item["subnet"] for item in routes_raw]
     return excludes, server_routes
+
+
+async def _get_owned_device(db: Database, chat_id: str, device_id: int) -> dict | None:
+    return await db.get_device_for_client(chat_id, device_id)
+
+
+def _healthy_export_backends(payload: dict) -> list[dict]:
+    rows = list(payload.get("backends") or [])
+    return [
+        item for item in rows
+        if str(item.get("status") or "").lower() == "healthy" and not bool(item.get("drain"))
+    ]
+
+
+def _direct_stack_label(stack: str) -> str:
+    labels = {
+        "hysteria2": "Hysteria2",
+        "reality-xhttp": "REALITY XHTTP",
+        "vless-reality-vision": "REALITY Vision",
+        "tuic": "TUIC",
+        "trojan": "Trojan",
+    }
+    return labels.get(stack, stack)
+
+
+async def _send_direct_backend_export(message: Message, device: dict, backend_id: str, stack: str) -> None:
+    bundle = await _wc().export_direct_config(device["id"], backend_id, stack, audience="client")
+    await message.answer(
+        "⚠️ Direct backend конфиг содержит секреты доступа.\n"
+        "Используйте его только как прямой fallback к выбранному backend."
+    )
+    if str(bundle.get("artifact_mode") or "") == "file_and_uri":
+        filename = str(bundle.get("filename") or "").strip() or make_direct_export_filename(
+            device_name=device["device_name"],
+            stack=str(bundle.get("stack") or stack),
+            backend_id=str(bundle.get("backend_id") or backend_id),
+            ext=str(bundle.get("ext") or "txt"),
+            export_date=str(bundle.get("rendered_at") or date.today().isoformat()),
+        )
+        await message.answer_document(
+            BufferedInputFile(str(bundle.get("content") or "").encode("utf-8"), filename=filename),
+            caption=(
+                f"Direct backend: `{device['device_name']}`\n"
+                f"Backend: `{bundle.get('backend_id', backend_id)}` → `{bundle.get('backend_ip', '?')}`\n"
+                f"Stack: `{_direct_stack_label(str(bundle.get('stack') or stack))}` · {bundle.get('rendered_at', date.today().isoformat())}"
+            ),
+        )
+    share_uri = str(bundle.get("share_uri") or "").strip()
+    if share_uri:
+        await message.answer(
+            "Share link для импорта:\n"
+            f"<code>{html.escape(share_uri)}</code>",
+            parse_mode="HTML",
+        )
+    import_hint = str(bundle.get("import_hint") or "").strip()
+    if import_hint:
+        await message.answer(import_hint)
 
 
 # ---------------------------------------------------------------------------
@@ -1427,8 +1493,8 @@ async def cb_cl_ex_del(cb: CallbackQuery, **kw):
     device_id = int(parts[0])
     subnet = parts[1]
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
-    if not device or str(device.get("chat_id", "")) != str(cb.from_user.id):
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
+    if not device:
         await cb.answer("❌ Нет доступа", show_alert=True)
         return
     await db.remove_exclude(device_id, subnet)
@@ -1441,7 +1507,7 @@ async def cb_cl_device_excludes(cb: CallbackQuery, **kw):
     await cb.answer()
     device_id = int(cb.data[len("cl:devex:"):])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
@@ -1457,7 +1523,7 @@ async def cb_cl_devex_list(cb: CallbackQuery, **kw):
     await cb.answer()
     device_id = int(cb.data[len("cl:devex_list:"):])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
@@ -1474,7 +1540,7 @@ async def cb_cl_devex_list(cb: CallbackQuery, **kw):
 async def cb_cl_devex_add(cb: CallbackQuery, state: FSMContext, **kw):
     device_id = int(cb.data[len("cl:devex_add:"):])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await cb.message.answer("Устройство не найдено.", reply_markup=client_devices_menu())
         return
@@ -1496,7 +1562,7 @@ async def cb_cl_devex_remove(cb: CallbackQuery, **kw):
     await cb.answer()
     device_id = int(cb.data[len("cl:devex_remove:"):])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
@@ -1513,7 +1579,7 @@ async def cb_cl_devex_del(cb: CallbackQuery, **kw):
     device_id = int(parts[0])
     subnet = parts[1]
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await cb.answer("❌ Устройство не найдено", show_alert=True)
         return
@@ -1540,7 +1606,7 @@ async def cb_cl_device_server_routes(cb: CallbackQuery, **kw):
     await cb.answer()
     device_id = int(cb.data[len("cl:devsr:"):])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
@@ -1597,7 +1663,7 @@ async def cb_cl_sr_add(cb: CallbackQuery, state: FSMContext, **kw):
 async def cb_cl_sr_add_dev(cb: CallbackQuery, state: FSMContext, **kw):
     device_id = int(cb.data[len("cl:sr_add_dev:"):])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await cb.message.answer("Устройство не найдено.", reply_markup=client_server_routes_menu())
         return
@@ -1665,7 +1731,7 @@ async def cb_cl_sr_del(cb: CallbackQuery, **kw):
     device_id = int(parts[0])
     subnet = parts[1]
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await cb.answer("❌ Устройство не найдено", show_alert=True)
         return
@@ -1679,7 +1745,7 @@ async def cb_cl_devsr_list(cb: CallbackQuery, **kw):
     await cb.answer()
     device_id = int(cb.data[len("cl:devsr_list:"):])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
@@ -1696,7 +1762,7 @@ async def cb_cl_devsr_list(cb: CallbackQuery, **kw):
 async def cb_cl_devsr_add(cb: CallbackQuery, state: FSMContext, **kw):
     device_id = int(cb.data[len("cl:devsr_add:"):])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await cb.message.answer("Устройство не найдено.", reply_markup=client_devices_menu())
         return
@@ -1718,7 +1784,7 @@ async def cb_cl_devsr_remove(cb: CallbackQuery, **kw):
     await cb.answer()
     device_id = int(cb.data[len("cl:devsr_remove:"):])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
@@ -1743,7 +1809,7 @@ async def cb_cl_devsr_del(cb: CallbackQuery, **kw):
     device_id = int(parts[0])
     subnet = parts[1]
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await cb.answer("❌ Устройство не найдено", show_alert=True)
         return
@@ -1930,7 +1996,7 @@ async def cb_cl_device_detail(cb: CallbackQuery, **kw):
     await cb.answer()
     device_id = int(cb.data[len("cl:dev:"):])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
@@ -1970,7 +2036,7 @@ async def cb_cl_getconf(cb: CallbackQuery, **kw):
     await cb.answer()
     device_id = int(cb.data[len("cl:getconf:"):])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await _edit_or_answer(
             cb,
@@ -1992,12 +2058,96 @@ async def cb_cl_getconf(cb: CallbackQuery, **kw):
     )
 
 
+@router.callback_query(F.data.startswith("cl:getdirect:"))
+async def cb_cl_getdirect(cb: CallbackQuery, **kw):
+    await cb.answer()
+    device_id = int(cb.data[len("cl:getdirect:"):])
+    db: Database = kw.get("db")
+    chat_id = str(cb.from_user.id)
+    device = await _get_owned_device(db, chat_id, device_id)
+    if not device:
+        await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
+        return
+    if device.get("pending_approval"):
+        await _edit_or_answer(cb, "⏳ Устройство ещё ожидает одобрения администратора.", client_devices_menu())
+        return
+    try:
+        backends_payload = await _wc().get_backends()
+    except Exception as exc:
+        await _edit_or_answer(cb, f"Не удалось получить список backend: {exc}", device_detail_kb(device_id))
+        return
+    backends = _healthy_export_backends(backends_payload)
+    if not backends:
+        await _edit_or_answer(cb, "Нет доступных healthy backend для direct export.", device_detail_kb(device_id))
+        return
+    await _edit_or_answer(
+        cb,
+        f"<blockquote>Меню → Устройства → {device['device_name']} → Direct backend</blockquote>\n\n"
+        f"Выберите backend для прямого подключения:",
+        backend_export_backends_kb(device_id, backends, "cl:directb:", f"cl:dev:{device_id}", "cl:devices_menu"),
+    )
+
+
+@router.callback_query(F.data.startswith("cl:directb:"))
+async def cb_cl_direct_backend_select(cb: CallbackQuery, **kw):
+    await cb.answer()
+    parts = cb.data.split(":")
+    if len(parts) < 4:
+        await _edit_or_answer(cb, "Некорректный backend.", client_devices_menu())
+        return
+    device_id = int(parts[2])
+    backend_id = parts[3]
+    db: Database = kw.get("db")
+    chat_id = str(cb.from_user.id)
+    device = await _get_owned_device(db, chat_id, device_id)
+    if not device:
+        await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
+        return
+    await _edit_or_answer(
+        cb,
+        f"<blockquote>Меню → Устройства → {device['device_name']} → Direct backend → {backend_id}</blockquote>\n\n"
+        f"Выберите стек для прямого подключения:",
+        backend_export_stacks_kb(device_id, backend_id, "cl:directs:", f"cl:getdirect:{device_id}", "cl:devices_menu"),
+    )
+
+
+@router.callback_query(F.data.startswith("cl:directs:"))
+async def cb_cl_direct_stack_export(cb: CallbackQuery, **kw):
+    await cb.answer()
+    parts = cb.data.split(":")
+    if len(parts) < 5:
+        await _edit_or_answer(cb, "Некорректный direct export запрос.", client_devices_menu())
+        return
+    device_id = int(parts[2])
+    backend_id = parts[3]
+    stack = parts[4]
+    db: Database = kw.get("db")
+    chat_id = str(cb.from_user.id)
+    device = await _get_owned_device(db, chat_id, device_id)
+    if not device:
+        await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
+        return
+    try:
+        await _send_direct_backend_export(cb.message, device, backend_id, stack)
+        await _edit_or_answer(
+            cb,
+            f"✅ Direct backend export отправлен.\nBackend: <code>{backend_id}</code>\nStack: <code>{stack}</code>",
+            device_detail_kb(device_id),
+        )
+    except Exception as exc:
+        await _edit_or_answer(
+            cb,
+            f"❌ Не удалось собрать direct backend export: <code>{html.escape(str(exc))}</code>",
+            backend_export_stacks_kb(device_id, backend_id, "cl:directs:", f"cl:getdirect:{device_id}", "cl:devices_menu"),
+        )
+
+
 @router.callback_query(F.data.startswith("cl:del:"))
 async def cb_cl_del_device(cb: CallbackQuery, **kw):
     await cb.answer()
     device_id = int(cb.data[len("cl:del:"):])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await _edit_or_answer(
             cb,
@@ -2023,7 +2173,7 @@ async def cb_cl_del_device_ok(cb: CallbackQuery, **kw):
     await cb.answer()
     device_id = int(cb.data[len("cl:del_ok:"):])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await _edit_or_answer(
             cb,
@@ -2134,7 +2284,7 @@ async def cb_cl_upd1_device(cb: CallbackQuery, **kw):
     await cb.answer("Проверяю конфиг...")
     device_id = int(cb.data[len("cl:upd1:"):])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await _edit_or_answer(cb, "Устройство не найдено.", client_devices_menu())
         return
@@ -2234,7 +2384,7 @@ async def cb_device_config(cb: CallbackQuery, **kw):
     await cb.answer()
     device_id = int(cb.data[4:])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await cb.message.answer("Устройство не найдено.")
         return
@@ -2259,7 +2409,7 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
     device_id = int(parts[1])
     platform = parts[2]
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await cb.message.answer("Устройство не найдено.")
         return
@@ -2297,10 +2447,12 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
             await cb.message.answer(hint)
         if qr_bytes:
             await cb.message.answer_photo(
-                BufferedInputFile(qr_bytes, filename="qr.png"),
+                BufferedInputFile(
+                    qr_bytes,
+                    filename=make_qr_filename(device["device_name"], "home", device.get("protocol", "awg")),
+                ),
                 caption=f"QR-код `{device['device_name']}`",
             )
-        from services.config_builder import make_wireguard_conf_filename
         await cb.message.answer_document(
             BufferedInputFile(
                 conf_text.encode(),
@@ -2316,10 +2468,12 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
         )
         if qr_bytes:
             await cb.message.answer_photo(
-                BufferedInputFile(qr_bytes, filename="qr.png"),
+                BufferedInputFile(
+                    qr_bytes,
+                    filename=make_qr_filename(device["device_name"], "home", device.get("protocol", "awg")),
+                ),
                 caption=f"QR-код `{device['device_name']}`",
             )
-        from services.config_builder import make_wireguard_conf_filename
         await cb.message.answer_document(
             BufferedInputFile(
                 conf_text.encode(),
@@ -2333,10 +2487,7 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
         from services.config_builder import (
             PLATFORM_SCRIPTS,
             build_installer,
-            make_wireguard_conf_filename,
-            make_wireguard_tunnel_name,
         )
-        _safe_name = make_wireguard_tunnel_name(device["device_name"], device.get("protocol", "awg"))
         _protocol = device.get("protocol", "awg")
         installer_bytes = build_installer(device["device_name"], conf_text, platform, protocol=_protocol)
 
@@ -2361,7 +2512,7 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
         else:
             _install_hint = (
                 "Сохраните файл и выполните:\n"
-                "<code>chmod +x install-vpn-*.sh &amp;&amp; sudo ./install-vpn-*.sh</code>"
+                "<code>chmod +x vpn-installer-*.sh &amp;&amp; sudo ./vpn-installer-*.sh</code>"
             )
         await cb.message.answer(_install_hint, parse_mode="HTML")
         await cb.message.answer_document(
@@ -2375,7 +2526,10 @@ async def cb_device_config_platform(cb: CallbackQuery, **kw):
             ext = PLATFORM_SCRIPTS[platform]["ext"]
             label = PLATFORM_SCRIPTS[platform]["label"]
             await cb.message.answer_document(
-                BufferedInputFile(installer_bytes, filename=f"install-vpn-{_safe_name}.{ext}"),
+                BufferedInputFile(
+                    installer_bytes,
+                    filename=make_installer_filename(device["device_name"], _protocol, platform, ext),
+                ),
                 caption=f"Установщик для {label}",
             )
 
@@ -2387,7 +2541,7 @@ async def cb_device_remove(cb: CallbackQuery, **kw):
     await cb.answer()
     device_id = int(cb.data[3:])
     db: Database = kw.get("db")
-    device = await db.get_device_by_id(device_id)
+    device = await _get_owned_device(db, str(cb.from_user.id), device_id)
     if not device:
         await cb.message.answer("Устройство не найдено.")
         return
@@ -2459,17 +2613,18 @@ async def _send_config(message: Message, db: Database, device: dict, kw: dict) -
     # QR
     if qr_bytes:
         await message.answer_photo(
-            BufferedInputFile(qr_bytes, filename="qr.png"),
+            BufferedInputFile(
+                qr_bytes,
+                filename=make_qr_filename(device["device_name"], "home", device.get("protocol", "awg")),
+            ),
             caption=f"QR-код `{device['device_name']}`",
         )
 
     # .conf файл
     if device.get("is_router"):
-        from services.config_builder import make_wireguard_conf_filename
         _filename = make_wireguard_conf_filename(device["device_name"], device.get("protocol", "awg"))
         _caption = f"Конфигурация `{device['device_name']}`"
     else:
-        from services.config_builder import make_wireguard_conf_filename
         _filename = make_wireguard_conf_filename(device["device_name"], device.get("protocol", "awg"))
         _caption = (
             f"Конфигурация `{device['device_name']}` · {date.today()}\n"
@@ -2483,8 +2638,7 @@ async def _send_config(message: Message, db: Database, device: dict, kw: dict) -
     # Установщик — если у устройства сохранена desktop-платформа
     _platform = device.get("platform")
     if _platform in ("windows", "macos", "linux"):
-        from services.config_builder import PLATFORM_SCRIPTS, build_installer, make_wireguard_tunnel_name
-        _safe_name = make_wireguard_tunnel_name(device["device_name"], device.get("protocol", "awg"))
+        from services.config_builder import PLATFORM_SCRIPTS, build_installer
         _protocol = device.get("protocol", "awg")
         _installer = build_installer(device["device_name"], conf_text, _platform, protocol=_protocol)
         if _installer:
@@ -2493,10 +2647,13 @@ async def _send_config(message: Message, db: Database, device: dict, kw: dict) -
             _captions = {
                 "windows": "Запустите .bat от имени администратора (ПКМ → Запуск от администратора)",
                 "macos": "Дважды кликните .command. При первом запуске: ПКМ → Открыть",
-                "linux": "chmod +x install-vpn-*.sh && sudo ./install-vpn-*.sh",
+                "linux": "chmod +x vpn-installer-*.sh && sudo ./vpn-installer-*.sh",
             }
             await message.answer_document(
-                BufferedInputFile(_installer, filename=f"install-vpn-{_safe_name}.{_ext}"),
+                BufferedInputFile(
+                    _installer,
+                    filename=make_installer_filename(device["device_name"], _protocol, _platform, _ext),
+                ),
                 caption=f"Установщик для {_label}\n{_captions[_platform]}",
             )
 

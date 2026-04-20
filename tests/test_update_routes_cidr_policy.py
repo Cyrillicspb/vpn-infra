@@ -67,6 +67,34 @@ class BlockedStaticNormalizationTests(unittest.TestCase):
         self.assertEqual(stats["too_broad_count"], 0)
         self.assertGreater(stats["split_count"], 0)
 
+    def test_telegram_transport_subnets_remain_in_allowed_and_blocked_outputs(self) -> None:
+        telegram_networks = {
+            ipaddress.ip_network(cidr) for cidr in update_routes.TELEGRAM_TRANSPORT_SUBNETS
+        }
+
+        allowed, allowed_stats = update_routes.normalize_allowed_networks(telegram_networks)
+        blocked, blocked_stats = update_routes.normalize_nft_blocked_networks(telegram_networks)
+
+        self.assertEqual(set(allowed), telegram_networks)
+        self.assertEqual(set(blocked), telegram_networks)
+        self.assertEqual(allowed_stats["expansion_ratio"], 1.0)
+        self.assertEqual(blocked_stats["too_broad_count"], 0)
+
+    def test_observed_telegram_ips_belong_to_curated_transport_families(self) -> None:
+        observed_ips = [
+            "149.154.167.50",
+            "149.154.167.92",
+            "149.154.175.57",
+            "91.108.56.175",
+        ]
+        telegram_networks = [
+            ipaddress.ip_network(cidr) for cidr in update_routes.TELEGRAM_TRANSPORT_SUBNETS
+        ]
+
+        for ip in observed_ips:
+            ip_addr = ipaddress.ip_address(ip)
+            self.assertTrue(any(ip_addr in network for network in telegram_networks), ip)
+
 
 if __name__ == "__main__":
     unittest.main()

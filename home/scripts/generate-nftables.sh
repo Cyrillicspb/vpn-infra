@@ -40,6 +40,7 @@ SERVER_MODE="${SERVER_MODE:-hosted}"
 LAN_IFACE="${LAN_IFACE:-}"
 LAN_SUBNET="${LAN_SUBNET:-}"
 ROUTER_EXTERNAL_IP="${ROUTER_EXTERNAL_IP:-}"
+ROUTER_LAN_IP="${ROUTER_LAN_IP:-${LAN_GATEWAY_IP:-${GATEWAY_IP:-}}}"
 CONTROL_DIRECT_IPS=""
 
 for candidate in "${VPS_IP:-}" "${XRAY_SERVER:-}" "${BACKUP_VPS_HOST:-}" "${VPS_IP2:-}" "${VPS_IP3:-}" "${VPS2_IP:-}"; do
@@ -60,18 +61,23 @@ fi
 TMP_CONF="$(mktemp /tmp/nftables-gw-XXXXXX.conf)"
 trap "rm -f '$TMP_CONF'" EXIT
 
-python3 - "$NFTABLES_BASE" "$TMP_CONF" "$SERVER_MODE" "$LAN_IFACE" "$LAN_SUBNET" "$ROUTER_EXTERNAL_IP" "$CONTROL_DIRECT_IPS" << 'PYEOF'
+python3 - "$NFTABLES_BASE" "$TMP_CONF" "$SERVER_MODE" "$LAN_IFACE" "$LAN_SUBNET" "$ROUTER_EXTERNAL_IP" "$ROUTER_LAN_IP" "$CONTROL_DIRECT_IPS" << 'PYEOF'
 import ipaddress
 import sys
 import re
 
-src_file, dst_file, server_mode, lan_iface, lan_subnet, router_ip, control_direct_ips_raw = sys.argv[1:]
+src_file, dst_file, server_mode, lan_iface, lan_subnet, router_ip, router_lan_ip, control_direct_ips_raw = sys.argv[1:]
 
 if server_mode == "gateway":
     try:
         lan_subnet = str(ipaddress.ip_network(lan_subnet, strict=False))
     except ValueError as exc:
         raise SystemExit(f"Invalid LAN_SUBNET {lan_subnet!r}: {exc}")
+    if router_lan_ip.strip():
+        try:
+            router_lan_ip = str(ipaddress.ip_address(router_lan_ip.strip()))
+        except ValueError as exc:
+            raise SystemExit(f"Invalid ROUTER_LAN_IP {router_lan_ip!r}: {exc}")
 
 control_direct_ips = []
 for raw in control_direct_ips_raw.split(","):
@@ -114,6 +120,7 @@ gateway_nat_block = f"""
         # HAIRPIN: клиенты из LAN используют IP роутера для подключения к AWG/WG
         iifname "{lan_iface}" ip saddr {lan_subnet} ip daddr @router_external_ips udp dport 51820 redirect to :51820
         iifname "{lan_iface}" ip saddr {lan_subnet} ip daddr @router_external_ips udp dport 51821 redirect to :51821
+{"        # Router management via KeenDNS/WAN IP must hairpin back into the LAN router.\n        iifname \"" + lan_iface + "\" ip saddr " + lan_subnet + " ip daddr @router_external_ips tcp dport { 80, 443 } dnat to " + router_lan_ip if router_lan_ip.strip() else ""}
         # Принудительный DNS redirect для LAN:
         # любые попытки клиентов использовать внешний DNS должны попадать в
         # локальный dnsmasq, который является источником истины для policy.

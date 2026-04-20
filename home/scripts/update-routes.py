@@ -253,6 +253,18 @@ CDN_SUBNETS: list[str] = [
     "184.84.0.0/14", "204.14.208.0/21",
 ]
 
+# ── Telegram transport CIDR (app traffic, не только Bot API/bootstrap) ──────
+# Domain-only coverage через dnsmasq недостаточна: реальные Telegram клиенты
+# после bootstrap быстро уходят на MTProto/DC transport IP в 149.154.0.0/16 и
+# 91.108.0.0/16 families. Эти подсети должны идти в static blocked policy,
+# чтобы LAN app traffic стабильно попадал в vpn lane даже без blocked_dynamic.
+TELEGRAM_TRANSPORT_SUBNETS: list[str] = [
+    # Семьи, зафиксированные в инциденте на реальном LAN трафике.
+    "149.154.167.0/24",
+    "149.154.175.0/24",
+    "91.108.56.0/22",
+]
+
 # ── Популярные блокируемые домены (статическая база для dnsmasq) ───────────────
 STATIC_BLOCKED_DOMAINS: list[str] = [
     # Видео
@@ -1515,6 +1527,16 @@ def main() -> None:
             all_networks.add(net)
             cidr_networks.add(net)
     log.info(f"CDN блоки: {len(CDN_SUBNETS)} добавлено")
+
+    # Telegram transport families: app traffic must route via VPN even when
+    # the client no longer talks to api.telegram.org and blocked_dynamic is not
+    # populated for the final transport destination.
+    for cidr in TELEGRAM_TRANSPORT_SUBNETS:
+        net = _parse_network(cidr)
+        if net:
+            all_networks.add(net)
+            cidr_networks.add(net)
+    log.info(f"Telegram transport CIDR: {len(TELEGRAM_TRANSPORT_SUBNETS)} добавлено")
 
     # Добавляем статические домены
     all_domains.update(STATIC_BLOCKED_DOMAINS)

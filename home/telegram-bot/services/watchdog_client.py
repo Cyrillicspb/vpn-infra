@@ -191,6 +191,13 @@ class WatchdogClient:
             timeout=90,
         )
 
+    async def export_direct_config(self, device_id: int, backend_id: str, stack: str, audience: str = "client") -> dict:
+        return await self._post(
+            "/config/direct-export",
+            {"device_id": int(device_id), "backend_id": backend_id, "stack": stack, "audience": audience},
+            timeout=30,
+        )
+
     async def switch_backend(self, backend_id: str) -> dict:
         return await self._post("/balancer/switch", {"backend_id": backend_id}, timeout=90)
 

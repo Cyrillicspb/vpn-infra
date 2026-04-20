@@ -1,8 +1,8 @@
 #!/bin/bash
-# update-router-ip.sh — обновление внешнего IP роутера в nft set для Gateway Mode
+# update-router-ip.sh — обновление WAN IP роутера в nft set для Gateway Mode
 #
 # Запускается из cron (каждые 5 минут), только если SERVER_MODE=gateway.
-# Сравнивает текущий внешний IP с тем, что в nft set router_external_ips.
+# Сравнивает текущий WAN IP с тем, что в nft set router_external_ips.
 # При изменении — обновляет set и .env.
 #
 # Использование:

@@ -158,6 +158,21 @@ else
     fail "api.telegram.org не резолвится через dnsmasq"
 fi
 
+TELEGRAM_TRANSPORT_IPS=(
+    "149.154.167.50"
+    "149.154.175.57"
+    "91.108.56.175"
+)
+TG_TRANSPORT_FAIL=0
+for TG_TRANSPORT_IP in "${TELEGRAM_TRANSPORT_IPS[@]}"; do
+    if nft get element inet vpn blocked_static "{ $TG_TRANSPORT_IP }" &>/dev/null 2>&1; then
+        pass "Telegram transport IP $TG_TRANSPORT_IP в blocked_static"
+    else
+        fail "Telegram transport IP $TG_TRANSPORT_IP отсутствует в blocked_static"
+        ((TG_TRANSPORT_FAIL++))
+    fi
+done
+
 # 9. dnsmasq НЕ логирует DNS-запросы (privacy)
 if ! grep -qE '^[[:space:]]*log-queries' "$DNSMASQ_CONF" 2>/dev/null; then
     pass "dnsmasq: log-queries disabled (privacy)"

@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import time
 import types
 import unittest
 from datetime import datetime
@@ -227,6 +228,41 @@ class FunctionalHealthTests(unittest.TestCase):
         self.assertEqual(checks["telegram_bot_runtime_sync"]["status"], "ok")
         self.assertEqual(checks["compose_runtime_sync"]["status"], "ok")
         self.assertEqual(checks["watchdog_runtime_sync"]["status"], "ok")
+
+    def test_status_normalizes_server_repo_drift_fields(self) -> None:
+        watchdog.state.server_repo_drift = None
+        watchdog.state.server_repo_drift_detail = None
+        watchdog.state.started_at = datetime.now()
+        watchdog.state.next_rotation = datetime.now()
+        watchdog.state.functional_summary = {}
+        watchdog.state.responsiveness_summary = {}
+        watchdog.state.active_stack_probe_summary = {}
+        watchdog.state.last_ping_failure_detail = {}
+        watchdog.state.vps_list = []
+        watchdog.state.backends = []
+        watchdog.state.applied_backend_path = {}
+        watchdog.state.backend_path_health = {}
+        watchdog.state.desired_backend_path = {}
+        watchdog.state.backend_assignments = {}
+
+        async def _fake_tier2_health() -> dict[str, object]:
+            return {}
+
+        with mock.patch.object(watchdog, "_normalize_functional_state", return_value=None):
+            with mock.patch.object(watchdog, "_refresh_backend_pool", return_value=None):
+                with mock.patch.object(watchdog, "_refresh_tier2_health", side_effect=_fake_tier2_health):
+                    with mock.patch.object(watchdog, "_balancer_snapshot", return_value={}):
+                        with mock.patch.object(watchdog, "_read_deploy_state", return_value={}):
+                            with mock.patch.object(watchdog, "_latency_catalog_status", return_value={}):
+                                with mock.patch.object(watchdog, "_server_mode", return_value="hosted"):
+                                    with mock.patch.object(watchdog, "_gateway_mode_enabled", return_value=False):
+                                        with mock.patch.object(watchdog.psutil, "disk_usage", return_value=SimpleNamespace(percent=1), create=True):
+                                            with mock.patch.object(watchdog.psutil, "virtual_memory", return_value=SimpleNamespace(percent=2), create=True):
+                                                with mock.patch.object(watchdog.psutil, "cpu_percent", return_value=3, create=True):
+                                                    result = asyncio.run(watchdog.get_status(True))
+
+        self.assertIs(result["server_repo_drift"], False)
+        self.assertEqual(result["server_repo_drift_detail"], "")
 
     def test_backend_path_snapshot_reports_hysteria2_desired_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1064,11 +1100,28 @@ scenarios:
             "status": "degraded",
             "timestamp": "2026-04-07T07:30:00",
             "recent_socks_errors": watchdog.HYSTERIA2_SOCKS_ERROR_THRESHOLD,
+            "success_count": 1,
+            "target_count": 2,
         }
         reason = watchdog._active_stack_runtime_failover_reason(
             now_ts=datetime.fromisoformat("2026-04-07T07:31:00").timestamp()
         )
         self.assertEqual(reason, "hysteria2_socks_timeouts")
+
+    def test_active_stack_runtime_failover_reason_ignores_hysteria2_socks_errors_when_probes_are_healthy(self) -> None:
+        watchdog.state.active_stack_runtime_fail_streak = 0
+        watchdog.state.last_failover = None
+        watchdog.state.active_stack_probe_summary = {
+            "status": "degraded",
+            "timestamp": "2026-04-07T07:30:00",
+            "recent_socks_errors": watchdog.HYSTERIA2_SOCKS_ERROR_THRESHOLD,
+            "success_count": 2,
+            "target_count": 2,
+        }
+        reason = watchdog._active_stack_runtime_failover_reason(
+            now_ts=datetime.fromisoformat("2026-04-07T07:31:00").timestamp()
+        )
+        self.assertIsNone(reason)
 
     def test_failover_impl_sets_retry_cooldown_for_failed_stack(self) -> None:
         watchdog.state.active_stack = "cloudflare-cdn"
@@ -1120,6 +1173,167 @@ scenarios:
                             asyncio.run(watchdog._failover_impl("functional_control_plane"))
 
         self.assertEqual(switches, [("hysteria2", "functional_control_plane")])
+
+    def test_full_reassessment_skips_cooldown_candidates(self) -> None:
+        watchdog.state.active_stack = "hysteria2"
+        watchdog.state.stack_retry_cooldowns = {"cloudflare-cdn": 2000.0}
+        watchdog.state.functional_failover_stack_cooldowns = {"vless-reality-vision": 1800.0}
+
+        tested: list[str] = []
+        switched: list[tuple[str, str]] = []
+
+        async def _fake_test_stack_runtime(plugin, name, timeout=10):
+            tested.append(name)
+            return True, 5.0 if name == "hysteria2" else 10.0
+
+        async def _fake_do_switch(candidate, reason):
+            switched.append((candidate, reason))
+
+        with mock.patch.object(watchdog.time, "time", return_value=1000.0):
+            with mock.patch.object(
+                watchdog.plugins,
+                "auto_names",
+                return_value=["cloudflare-cdn", "vless-reality-vision", "hysteria2"],
+            ):
+                with mock.patch.object(watchdog.plugins, "get", side_effect=lambda name: SimpleNamespace(meta={}) if name else None):
+                    with mock.patch.object(watchdog, "_test_stack_runtime", side_effect=_fake_test_stack_runtime):
+                        with mock.patch.object(watchdog, "_do_switch", side_effect=_fake_do_switch):
+                            asyncio.run(watchdog._full_reassessment())
+
+        self.assertEqual(tested, [])
+        self.assertEqual(switched, [])
+
+    def test_failover_impl_suppresses_pinned_stack_escape_without_converged_evidence(self) -> None:
+        watchdog.state.active_stack = "hysteria2"
+        watchdog.state.active_stack_pin = "hysteria2"
+        watchdog.state.active_stack_probe_summary = {"status": "ok"}
+        watchdog.state.last_ping_failure_detail = {}
+        watchdog.state.functional_evidence_store = {}
+        watchdog.state.functional_summary = {}
+        watchdog.state.degraded_mode = False
+
+        with mock.patch.object(watchdog.plugins, "auto_names", return_value=["cloudflare-cdn", "hysteria2"]):
+            with mock.patch.object(watchdog, "_functional_failover_trigger_reason", return_value=None):
+                with mock.patch.object(watchdog.asyncio, "create_task", side_effect=lambda coro: coro.close()):
+                    with mock.patch.object(watchdog, "_test_stack_runtime") as mocked_test:
+                        with mock.patch.object(watchdog, "_do_switch") as mocked_switch:
+                            asyncio.run(watchdog._failover_impl("ping_timeout"))
+
+        mocked_test.assert_not_called()
+        mocked_switch.assert_not_called()
+        self.assertTrue(watchdog.state.degraded_mode)
+
+    def test_manual_reassessment_switches_back_to_pinned_stack_instead_of_fastest_other_stack(self) -> None:
+        watchdog.state.active_stack = "cloudflare-cdn"
+        watchdog.state.active_stack_pin = "hysteria2"
+
+        async def _fake_speedtest_iperf_vps():
+            return 100.0, ""
+
+        async def _fake_speedtest_direct():
+            return 200.0
+
+        async def _fake_test_stack_runtime(plugin, name, timeout=10):
+            speeds = {
+                "cloudflare-cdn": 80.0,
+                "hysteria2": 70.0,
+                "vless-reality-vision": 120.0,
+            }
+            return True, speeds[name]
+
+        switches: list[tuple[str, str]] = []
+        alerts: list[str] = []
+
+        async def _fake_do_switch(candidate, reason):
+            switches.append((candidate, reason))
+
+        with mock.patch.object(watchdog, "alert", side_effect=alerts.append):
+            with mock.patch.object(watchdog, "speedtest_iperf_vps", side_effect=_fake_speedtest_iperf_vps):
+                with mock.patch.object(watchdog, "speedtest_direct", side_effect=_fake_speedtest_direct):
+                    with mock.patch.object(
+                        watchdog.plugins,
+                        "all_names",
+                        return_value=["cloudflare-cdn", "hysteria2", "vless-reality-vision"],
+                    ):
+                        with mock.patch.object(
+                            watchdog.plugins,
+                            "get",
+                            side_effect=lambda name: SimpleNamespace(meta={}, auto_enabled=True, auto_names=lambda: []) if name else None,
+                        ):
+                            with mock.patch.object(watchdog, "_test_stack_runtime", side_effect=_fake_test_stack_runtime):
+                                with mock.patch.object(watchdog, "_do_switch", side_effect=_fake_do_switch):
+                                    asyncio.run(watchdog._manual_reassessment())
+
+        self.assertEqual(switches, [("hysteria2", "manual_reassessment")])
+        self.assertTrue(any("Pin active" in message for message in alerts))
+
+    def test_refresh_openai_probe_summary_marks_backend_egress_limited(self) -> None:
+        watchdog.state.active_stack = "hysteria2"
+        watchdog.state.active_stack_pin = "hysteria2"
+        watchdog.state.openai_probe_summary = {}
+        watchdog.state.openai_probe_last_ts = 0.0
+
+        async def _fake_run_cmd(cmd, timeout=0):
+            if cmd[:2] == ["nc", "-z"]:
+                return 0, "", ""
+            if cmd and cmd[0] == "curl":
+                return 0, "HTTP/2 403\ncf-mitigated: challenge\n", ""
+            return 0, "", ""
+
+        with mock.patch.object(watchdog, "_get_stack_socks_port", return_value=1083):
+            with mock.patch.object(watchdog, "run_cmd", side_effect=_fake_run_cmd):
+                summary = asyncio.run(watchdog._refresh_openai_probe_summary(force=True))
+
+        self.assertEqual(summary["status"], "backend_egress_limited")
+        self.assertEqual(summary["http_code"], "403")
+
+    def test_refresh_openai_probe_summary_uses_final_http_status_after_early_hints(self) -> None:
+        watchdog.state.active_stack = "hysteria2"
+        watchdog.state.active_stack_pin = "hysteria2"
+        watchdog.state.openai_probe_summary = {}
+        watchdog.state.openai_probe_last_ts = 0.0
+
+        async def _fake_run_cmd(cmd, timeout=0):
+            if cmd[:2] == ["nc", "-z"]:
+                return 0, "", ""
+            if cmd and cmd[0] == "curl":
+                return 0, "HTTP/2 103\nlink: </cdn/assets/root.css>; as=style; rel=preload\n\nHTTP/2 403\ncf-mitigated: challenge\n", ""
+            return 0, "", ""
+
+        with mock.patch.object(watchdog, "_get_stack_socks_port", return_value=1083):
+            with mock.patch.object(watchdog, "run_cmd", side_effect=_fake_run_cmd):
+                summary = asyncio.run(watchdog._refresh_openai_probe_summary(force=True))
+
+        self.assertEqual(summary["status"], "backend_egress_limited")
+        self.assertEqual(summary["http_code"], "403")
+
+    def test_health_quick_checks_exposes_openai_backend_egress_warning_without_score_weight(self) -> None:
+        watchdog.state.openai_probe_summary = {
+            "status": "backend_egress_limited",
+            "detail": "chatgpt.com returns Cloudflare challenge on current backend egress",
+        }
+        watchdog.state.active_stack = "hysteria2"
+        watchdog.state.active_stack_pin = "hysteria2"
+        watchdog.state.last_monitoring_tick = time.time()
+        watchdog.state.degraded_mode = False
+        watchdog.state.last_rtt = 42.0
+        watchdog.state.dnsmasq_up = 1
+        watchdog.state.last_wg_check_ts = time.time()
+        watchdog.state.wg0_up = True
+        watchdog.state.wg1_up = True
+        watchdog.state.server_repo_drift = False
+        watchdog.state.bot_runtime_drift = False
+        watchdog.state.compose_runtime_drift = False
+        watchdog.state.watchdog_runtime_drift = False
+        watchdog.state.docker_health = {"telegram-bot": 1}
+
+        results = asyncio.run(watchdog._health_quick_checks())
+        checks = {item.name: item for item in results}
+
+        self.assertIn("openai_backend_egress", checks)
+        self.assertEqual(checks["openai_backend_egress"].status, "warn")
+        self.assertEqual(checks["openai_backend_egress"].weight, 0)
+        self.assertEqual(checks["active_stack_pin"].status, "ok")
 
     def test_run_active_stack_runtime_probes_marks_degraded_on_recent_hysteria_errors(self) -> None:
         watchdog.state.active_stack = "hysteria2"

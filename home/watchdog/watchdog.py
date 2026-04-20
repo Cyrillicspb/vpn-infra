@@ -17,6 +17,7 @@ watchdog.py — Центральный агент управления VPN Infra
 
 import asyncio
 import base64
+import hashlib
 import ipaddress
 import json
 import logging
@@ -29,6 +30,8 @@ import socket
 import subprocess
 import sys
 import time
+import unicodedata
+from urllib.parse import quote, urlencode
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -80,6 +83,38 @@ from decision_maker import (
     route_class_for_domain_check as dm_route_class_for_domain_check,
     select_backend as dm_select_backend,
 )
+
+def _ascii_slug(value: str, max_len: int = 32) -> str:
+    ascii_value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    ascii_value = ascii_value.lower()
+    ascii_value = re.sub(r"[^a-z0-9]+", "-", ascii_value)
+    ascii_value = re.sub(r"-{2,}", "-", ascii_value).strip("-")
+    if not ascii_value:
+        ascii_value = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+    return ascii_value[:max_len].rstrip("-") or hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+
+
+def make_direct_export_filename(
+    device_name: str,
+    stack: str,
+    backend_id: str,
+    ext: str,
+    export_date: datetime | str | None = None,
+) -> str:
+    if export_date is None:
+        export_day = datetime.now().date()
+    elif isinstance(export_date, datetime):
+        export_day = export_date.date()
+    else:
+        export_day = datetime.fromisoformat(str(export_date)).date()
+    long_date = export_day.isoformat()
+    stem_parts = [
+        _ascii_slug(part, max_len=24)
+        for part in ("vpn", "backend", stack, backend_id, device_name, long_date)
+        if str(part or "").strip()
+    ]
+    stem = "-".join(stem_parts)[:96].strip("-") or "vpn-export"
+    return f"{stem}.{ext.lstrip('.')}"
 
 # ---------------------------------------------------------------------------
 # Конфигурация
@@ -225,6 +260,11 @@ ACTIVE_STACK_RUNTIME_PROBE_TARGETS: tuple[dict[str, Any], ...] = (
         "ok_codes": ("200", "204", "301", "302", "401", "403", "404"),
     },
 )
+ACTIVE_STACK_PIN_RAW = str(os.getenv("ACTIVE_STACK_PIN", "") or "").strip().lower()
+ACTIVE_STACK_PIN_DISABLED = {"", "off", "none", "disable", "disabled", "0", "false", "no"}
+OPENAI_EGRESS_PROBE_URL = str(os.getenv("OPENAI_EGRESS_PROBE_URL", "https://chatgpt.com") or "").strip()
+OPENAI_EGRESS_PROBE_TIMEOUT_SECONDS = int(os.getenv("OPENAI_EGRESS_PROBE_TIMEOUT_SECONDS", "12"))
+OPENAI_EGRESS_PROBE_REFRESH_SECONDS = int(os.getenv("OPENAI_EGRESS_PROBE_REFRESH_SECONDS", "300"))
 
 # ---------------------------------------------------------------------------
 # DPI bypass (zapret lane)
@@ -1372,7 +1412,28 @@ async def _test_stack_runtime(plugin: Plugin, name: str, timeout: int = 10) -> t
     if transient_start and not await plugin.start():
         return False, 0.0
     try:
-        return await plugin.test(timeout=timeout)
+        summary = await _run_stack_runtime_probes_for_stack(
+            name,
+            timeout=timeout,
+            update_state=(name == state.active_stack),
+        )
+        control_plane_ok = (
+            int(summary.get("target_count") or 0) > 0
+            and int(summary.get("success_count") or 0) >= int(summary.get("target_count") or 0)
+        )
+        if not control_plane_ok:
+            return False, 0.0
+
+        ok, mbps = await plugin.test(timeout=timeout)
+        if ok:
+            return True, mbps
+
+        logger.warning(
+            "Stack %s passed shared runtime probes but failed throughput benchmark; "
+            "keeping it eligible with fallback score",
+            name,
+        )
+        return True, 0.1
     finally:
         if transient_start:
             await plugin.stop()
@@ -1452,6 +1513,7 @@ def _normalize_assignment(raw: dict[str, Any], ttl_seconds: int) -> Optional[dic
 
 class WatchdogState:
     def __init__(self) -> None:
+        self.active_stack_pin: str = ""
         self.active_stack: str = DEFAULT_STACK
         self.primary_stack: str = DEFAULT_STACK
         # RTT sliding window (10-секундные отсчёты, 7 дней)
@@ -1539,6 +1601,8 @@ class WatchdogState:
         self.active_stack_runtime_fail_streak: int = 0
         self.active_stack_runtime_last_failure_ts: float = 0.0
         self.last_ping_failure_detail: dict[str, Any] = {}
+        self.openai_probe_summary: dict[str, Any] = {}
+        self.openai_probe_last_ts: float = 0.0
         self.server_repo_drift: bool = False
         self.server_repo_drift_detail: str = ""
         self.server_repo_drift_since: float = 0.0
@@ -1588,6 +1652,7 @@ class WatchdogState:
 
     def to_dict(self) -> dict:
         return {
+            "active_stack_pin": self.active_stack_pin,
             "active_stack": self.active_stack,
             "primary_stack": self.primary_stack,
             "last_failover": self.last_failover.isoformat() if self.last_failover else None,
@@ -1632,6 +1697,8 @@ class WatchdogState:
             "active_stack_runtime_fail_streak": self.active_stack_runtime_fail_streak,
             "active_stack_runtime_last_failure_ts": self.active_stack_runtime_last_failure_ts,
             "last_ping_failure_detail": self.last_ping_failure_detail,
+            "openai_probe_summary": self.openai_probe_summary,
+            "openai_probe_last_ts": self.openai_probe_last_ts,
             "server_repo_drift": self.server_repo_drift,
             "server_repo_drift_detail": self.server_repo_drift_detail,
             "server_repo_drift_since": self.server_repo_drift_since,
@@ -1682,6 +1749,7 @@ class WatchdogState:
         try:
             if STATE_FILE.exists():
                 data = json.loads(STATE_FILE.read_text())
+                self.active_stack_pin = str(data.get("active_stack_pin") or "")
                 self.active_stack   = data.get("active_stack", DEFAULT_STACK)
                 self.primary_stack  = data.get("primary_stack", DEFAULT_STACK)
                 self.external_ip    = data.get("external_ip", "")
@@ -1745,6 +1813,8 @@ class WatchdogState:
                     data.get("active_stack_runtime_last_failure_ts", 0.0) or 0.0
                 )
                 self.last_ping_failure_detail = data.get("last_ping_failure_detail", {}) or {}
+                self.openai_probe_summary = data.get("openai_probe_summary", {}) or {}
+                self.openai_probe_last_ts = float(data.get("openai_probe_last_ts", 0.0) or 0.0)
                 self.server_repo_drift = data.get("server_repo_drift", False)
                 self.server_repo_drift_detail = data.get("server_repo_drift_detail", "")
                 self.server_repo_drift_since = float(data.get("server_repo_drift_since", 0.0) or 0.0)
@@ -1829,6 +1899,7 @@ class WatchdogState:
                     self.primary_stack = DEFAULT_STACK
                     self.degraded_mode = False
                     self.is_first_run = True
+                self.active_stack_pin = _configured_active_stack_pin()
                 _refresh_backend_pool()
                 if self.dpi_enabled and not self.dpi_experimental_opt_in:
                     logger.warning("DPI bypass migrated to experimental-off default; disabling historical active state")
@@ -1840,6 +1911,61 @@ class WatchdogState:
 
 
 state = WatchdogState()
+
+
+def _configured_active_stack_pin() -> str:
+    if ACTIVE_STACK_PIN_RAW in ACTIVE_STACK_PIN_DISABLED:
+        return ""
+    if ACTIVE_STACK_PIN_RAW not in STACK_ORDER:
+        return ""
+    return ACTIVE_STACK_PIN_RAW
+
+
+def _active_stack_pin() -> str:
+    pinned = str(state.active_stack_pin or "").strip().lower()
+    if pinned in ACTIVE_STACK_PIN_DISABLED:
+        return ""
+    if pinned in STACK_ORDER:
+        return pinned
+    return _configured_active_stack_pin()
+
+
+def _pin_reason_allows_escape(reason: str) -> bool:
+    summary = state.active_stack_probe_summary or {}
+    runtime_status = str(summary.get("status") or "")
+    runtime_failed = runtime_status == "fail"
+    runtime_degraded = runtime_status in {"degraded", "fail"}
+    functional_triggered = bool(_functional_failover_trigger_reason())
+    ping_failed = bool(state.last_ping_failure_detail)
+    if reason == "hysteria2_socks_timeouts":
+        return True
+    if reason == "active_stack_runtime_probe":
+        return runtime_failed and state.active_stack_runtime_fail_streak >= ACTIVE_STACK_RUNTIME_FAILOVER_CONSECUTIVE_FAILURES
+    if reason.startswith("functional_"):
+        return functional_triggered and runtime_degraded
+    if reason == "ping_timeout":
+        return ping_failed and runtime_degraded and functional_triggered
+    if reason == "rotation_check_failed":
+        return runtime_failed
+    return False
+
+
+def _health_check_from_openai_probe() -> Optional[CheckResult]:
+    summary = state.openai_probe_summary or {}
+    if not summary:
+        return None
+    status = str(summary.get("status") or "")
+    detail = str(summary.get("detail") or status)
+    if status == "ok":
+        return CheckResult("openai_backend_egress", "ok", detail, weight=0)
+    if status == "backend_egress_limited":
+        return CheckResult("openai_backend_egress", "warn", detail, weight=0)
+    if status:
+        return CheckResult("openai_backend_egress", "warn", detail, weight=0)
+    return None
+
+
+state.active_stack_pin = _configured_active_stack_pin()
 
 
 def _refresh_backend_pool() -> None:
@@ -2139,7 +2265,7 @@ def _backend_runtime_env(backend: dict[str, Any]) -> dict[str, str]:
     return env
 
 
-async def _render_envsubst_template(src: Path, dest: Path, env: dict[str, str]) -> None:
+async def _render_envsubst_string(src: Path, env: dict[str, str]) -> str:
     proc = await asyncio.create_subprocess_exec(
         "envsubst",
         env={k: str(v) for k, v in env.items()},
@@ -2155,8 +2281,177 @@ async def _render_envsubst_template(src: Path, dest: Path, env: dict[str, str]) 
     unresolved = sorted(set(re.findall(r"\$\{[^}]+\}", rendered)))
     if unresolved:
         raise RuntimeError(f"template {src.name} has unresolved vars: {' '.join(unresolved)}")
+    return rendered
+
+
+async def _render_envsubst_template(src: Path, dest: Path, env: dict[str, str]) -> None:
+    rendered = await _render_envsubst_string(src, env)
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(rendered, encoding="utf-8")
+
+
+def _find_backend_for_export(backend_id: str) -> dict[str, Any]:
+    _refresh_backend_pool()
+    backend = dm_backend_by_id(state.backends, backend_id)
+    if not backend:
+        raise HTTPException(status_code=404, detail="backend not found")
+    if bool(backend.get("drain")):
+        raise HTTPException(status_code=409, detail="backend is in drain")
+    if str(backend.get("status") or "").lower() != "healthy":
+        raise HTTPException(status_code=409, detail="backend is not healthy")
+    return dict(backend)
+
+
+def _load_device_export_record(device_id: int) -> dict[str, Any]:
+    if not BOT_DB_PATH.exists():
+        raise HTTPException(status_code=503, detail="bot db is unavailable")
+    try:
+        import sqlite3 as _sqlite3
+        with _sqlite3.connect(f"file:{BOT_DB_PATH}?mode=ro", uri=True, timeout=5) as conn:
+            conn.row_factory = _sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT d.id, d.device_name, d.protocol, d.pending_approval, c.chat_id
+                FROM devices d
+                LEFT JOIN clients c ON c.id = d.client_id
+                WHERE d.id = ?
+                """,
+                (int(device_id),),
+            ).fetchone()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Не удалось прочитать устройство %s для direct export: %s", device_id, exc)
+        raise HTTPException(status_code=503, detail="bot db read failed")
+    if row is None:
+        raise HTTPException(status_code=404, detail="device not found")
+    record = dict(row)
+    if int(record.get("pending_approval") or 0):
+        raise HTTPException(status_code=409, detail="device is pending approval")
+    return record
+
+
+def _direct_export_label(device_name: str, stack: str, backend_id: str) -> str:
+    safe_device = re.sub(r"\s+", " ", str(device_name or "").strip()) or "device"
+    return f"vpn-{stack}-{backend_id}-{safe_device}"
+
+
+def _build_direct_share_uri(stack: str, env: dict[str, str], backend: dict[str, Any], device_name: str) -> str:
+    label = quote(_direct_export_label(device_name, stack, str(backend.get("id") or backend.get("ip") or "backend")))
+    if stack == "hysteria2":
+        params = {
+            "insecure": "1",
+            "obfs": "salamander",
+            "obfs-password": env.get("HYSTERIA2_OBFS_PASSWORD", ""),
+        }
+        return (
+            f"hysteria2://{quote(env.get('HYSTERIA2_AUTH', ''))}@"
+            f"{env.get('HYSTERIA2_SERVER', backend.get('ip', ''))}:443/?{urlencode(params)}#{label}"
+        )
+    if stack == "reality-xhttp":
+        params = {
+            "type": "xhttp",
+            "security": "reality",
+            "encryption": "none",
+            "sni": "cdn.jsdelivr.net",
+            "fp": "chrome",
+            "pbk": env.get("XRAY_XHTTP_PUBLIC_KEY", ""),
+            "sid": env.get("XRAY_XHTTP_SHORT_ID", ""),
+            "path": "/",
+            "mode": "packet-up",
+        }
+        return (
+            f"vless://{env.get('XRAY_XHTTP_UUID', '')}@{env.get('XRAY_SERVER', backend.get('ip', ''))}:2083"
+            f"?{urlencode(params)}#{label}"
+        )
+    if stack == "vless-reality-vision":
+        params = {
+            "type": "tcp",
+            "security": "reality",
+            "encryption": "none",
+            "flow": "xtls-rprx-vision",
+            "sni": "www.microsoft.com",
+            "fp": "chrome",
+            "pbk": env.get("XRAY_VISION_PUBLIC_KEY", ""),
+            "sid": env.get("XRAY_VISION_SHORT_ID", ""),
+        }
+        return (
+            f"vless://{env.get('XRAY_VISION_UUID', '')}@{backend.get('ip', '')}:443"
+            f"?{urlencode(params)}#{label}"
+        )
+    if stack == "trojan":
+        params = {
+            "security": "tls",
+            "sni": env.get("TROJAN_SERVER_NAME", backend.get("ip", "")),
+            "allowInsecure": "1",
+        }
+        return (
+            f"trojan://{quote(env.get('TROJAN_PASSWORD', ''))}@"
+            f"{env.get('TROJAN_SERVER', backend.get('ip', ''))}:{env.get('TROJAN_PORT', '8444')}"
+            f"?{urlencode(params)}#{label}"
+        )
+    if stack == "tuic":
+        params = {
+            "sni": env.get("TUIC_SERVER_NAME", backend.get("ip", "")),
+            "allow_insecure": "1",
+            "congestion_control": "bbr",
+            "udp_relay_mode": "native",
+            "alpn": "h3",
+        }
+        return (
+            f"tuic://{env.get('TUIC_UUID', '')}:{quote(env.get('TUIC_PASSWORD', ''))}@"
+            f"{env.get('TUIC_SERVER', backend.get('ip', ''))}:{env.get('TUIC_PORT', '8448')}"
+            f"?{urlencode(params)}#{label}"
+        )
+    return ""
+
+
+async def _build_direct_export_bundle(device_id: int, backend_id: str, stack: str, audience: str = "client") -> dict[str, Any]:
+    device = _load_device_export_record(device_id)
+    backend = _find_backend_for_export(backend_id)
+    env = _backend_runtime_env(backend)
+    stack_key = str(stack or "").strip().lower()
+    filename = ""
+    content = ""
+    content_type = ""
+    ext = ""
+    artifact_mode = "uri_only"
+    import_hint = "Импортируйте через share link в совместимое клиентское приложение."
+    if stack_key == "hysteria2":
+        content = _build_hysteria2_config(env, str(backend.get("ip") or ""))
+        ext = "yaml"
+        content_type = "application/x-yaml"
+        artifact_mode = "file_and_uri"
+        import_hint = "Можно импортировать YAML в совместимый Hysteria2-клиент или использовать share link."
+    elif stack_key in {"reality-xhttp", "vless-reality-vision", "tuic", "trojan"}:
+        import_hint = "Используйте share link: runtime JSON шаблон home-server не подходит как клиентский импортируемый файл."
+    else:
+        raise HTTPException(status_code=400, detail="unsupported direct export stack")
+    if artifact_mode == "file_and_uri":
+        filename = make_direct_export_filename(
+            device_name=str(device.get("device_name") or ""),
+            stack=stack_key,
+            backend_id=str(backend.get("id") or ""),
+            ext=ext,
+            export_date=datetime.now().date().isoformat(),
+        )
+    return {
+        "device_id": int(device["id"]),
+        "device_name": str(device.get("device_name") or ""),
+        "device_protocol": str(device.get("protocol") or ""),
+        "backend_id": str(backend.get("id") or ""),
+        "backend_ip": str(backend.get("ip") or ""),
+        "stack": stack_key,
+        "artifact_mode": artifact_mode,
+        "filename": filename,
+        "ext": ext,
+        "content_type": content_type,
+        "content": content,
+        "share_uri": _build_direct_share_uri(stack_key, env, backend, str(device.get("device_name") or "")),
+        "import_hint": import_hint,
+        "audience": str(audience or "client"),
+        "rendered_at": datetime.now().date().isoformat(),
+    }
 
 
 def _hysteria_backend_config_dir() -> Path:
@@ -3065,7 +3360,7 @@ COMPOSE_SELFHEAL_COOLDOWN_SECONDS = int(os.getenv("COMPOSE_SELFHEAL_COOLDOWN_SEC
 WATCHDOG_SOURCE_FILE = Path("/opt/vpn/home/watchdog/watchdog.py")
 WATCHDOG_RUNTIME_FILE = Path("/opt/vpn/watchdog/watchdog.py")
 NFTABLES_TEMPLATE_SOURCE_FILE = Path("/opt/vpn/home/nftables/nftables.conf")
-NFTABLES_GENERATOR_SOURCE_FILE = Path("/opt/vpn/scripts/generate-nftables.sh")
+NFTABLES_GENERATOR_SOURCE_FILE = Path("/opt/vpn/home/scripts/generate-nftables.sh")
 WATCHDOG_DRIFT_CONFIRM_SECONDS = int(os.getenv("WATCHDOG_DRIFT_CONFIRM_SECONDS", "300"))
 WATCHDOG_SELFHEAL_COOLDOWN_SECONDS = int(os.getenv("WATCHDOG_SELFHEAL_COOLDOWN_SECONDS", "1800"))
 SERVER_REPO_DIR = Path("/opt/vpn")
@@ -4915,6 +5210,17 @@ async def _health_quick_checks() -> list[CheckResult]:
     else:
         results.append(CheckResult("vpn_client_containers", "warn", "контейнеры не обнаружены", weight=3))
 
+    pinned_stack = _active_stack_pin()
+    if pinned_stack:
+        if state.active_stack == pinned_stack:
+            results.append(CheckResult("active_stack_pin", "ok", f"pinned to {pinned_stack}", weight=0))
+        else:
+            results.append(CheckResult("active_stack_pin", "warn", f"pin target {pinned_stack}, active {state.active_stack}", weight=0))
+
+    openai_check = _health_check_from_openai_probe()
+    if openai_check:
+        results.append(openai_check)
+
     return results
 
 
@@ -5974,6 +6280,91 @@ async def _probe_url_via_socks(socks_port: int, target: dict[str, Any], timeout:
     }
 
 
+async def _run_stack_runtime_probes_for_stack(
+    stack_name: str,
+    timeout: int = ACTIVE_STACK_RUNTIME_PROBE_TIMEOUT_SECONDS,
+    *,
+    update_state: bool = False,
+) -> dict[str, Any]:
+    plugin = plugins.get(stack_name)
+    now_ts = time.time()
+    if not plugin or plugin.meta.get("direct_mode"):
+        summary = {
+            "status": "disabled",
+            "stack": stack_name,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "reason": "no_socks_runtime_probe",
+            "targets": [],
+            "success_count": 0,
+            "target_count": 0,
+            "recent_socks_errors": 0,
+        }
+        if update_state:
+            state.active_stack_probe_summary = summary
+            state.active_stack_runtime_fail_streak = 0
+            state.active_stack_runtime_last_failure_ts = 0.0
+            state.save()
+        return summary
+
+    socks_port = _get_stack_socks_port(stack_name)
+    rc_socks, _, err_socks = await run_cmd(["nc", "-z", "127.0.0.1", str(socks_port)], timeout=3)
+    target_results: list[dict[str, Any]] = []
+    recent_socks_errors = 0
+
+    if rc_socks == 0:
+        for target in ACTIVE_STACK_RUNTIME_PROBE_TARGETS:
+            target_results.append(await _probe_url_via_socks(socks_port, target, timeout))
+    else:
+        target_results.append(
+            {
+                "id": "socks_port",
+                "url": f"socks5://127.0.0.1:{socks_port}",
+                "ok": False,
+                "http_code": "",
+                "detail": (err_socks or "SOCKS port not ready").strip()[:200],
+            }
+        )
+
+    if stack_name == "hysteria2":
+        recent_socks_errors = await _count_recent_hysteria2_socks_errors()
+
+    success_count = sum(1 for item in target_results if item.get("ok"))
+    if rc_socks != 0 or success_count == 0:
+        status = "fail"
+    elif success_count < len(target_results) or recent_socks_errors >= HYSTERIA2_SOCKS_ERROR_THRESHOLD:
+        status = "degraded"
+    else:
+        status = "ok"
+
+    summary = {
+        "status": status,
+        "stack": stack_name,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "socks_port": socks_port,
+        "targets": target_results,
+        "success_count": success_count,
+        "target_count": len(target_results),
+        "recent_socks_errors": recent_socks_errors,
+        "socks_error_window_seconds": HYSTERIA2_SOCKS_ERROR_WINDOW_SECONDS,
+        "socks_error_threshold": HYSTERIA2_SOCKS_ERROR_THRESHOLD,
+    }
+
+    if not update_state:
+        return summary
+
+    if status == "ok":
+        state.active_stack_runtime_fail_streak = 0
+        state.active_stack_runtime_last_failure_ts = 0.0
+    else:
+        state.active_stack_runtime_fail_streak += 1
+        state.active_stack_runtime_last_failure_ts = now_ts
+
+    summary["fail_streak"] = state.active_stack_runtime_fail_streak
+    state.active_stack_probe_summary = summary
+    state.save()
+    return summary
+
+
 async def _get_stack_runtime_context(stack_name: str, socks_port: int) -> dict[str, Any]:
     plugin = plugins.get(stack_name)
     tun_name = str(plugin.meta.get("tun_name", f"tun-{stack_name}")) if plugin else ""
@@ -6048,74 +6439,106 @@ async def _collect_ping_failure_detail(
 async def _run_active_stack_runtime_probes(
     timeout: int = ACTIVE_STACK_RUNTIME_PROBE_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
-    plugin = plugins.get(state.active_stack)
-    now_ts = time.time()
-    if not plugin or plugin.meta.get("direct_mode"):
+    summary = await _run_stack_runtime_probes_for_stack(
+        state.active_stack,
+        timeout=timeout,
+        update_state=True,
+    )
+    if (
+        state.active_stack == "hysteria2"
+        and int(summary.get("recent_socks_errors") or 0) >= HYSTERIA2_SOCKS_ERROR_THRESHOLD
+        and int(summary.get("success_count") or 0) >= int(summary.get("target_count") or 0)
+    ):
+        logger.warning(
+            "hysteria2 SOCKS errors reached threshold (%s) but shared runtime probes are still healthy",
+            summary.get("recent_socks_errors"),
+        )
+    return summary
+
+
+async def _refresh_openai_probe_summary(force: bool = False) -> dict[str, Any]:
+    if not OPENAI_EGRESS_PROBE_URL:
         summary = {
             "status": "disabled",
-            "stack": state.active_stack,
+            "url": "",
             "timestamp": datetime.now().isoformat(timespec="seconds"),
-            "reason": "no_socks_runtime_probe",
-            "targets": [],
-            "recent_socks_errors": 0,
+            "detail": "probe disabled",
         }
-        state.active_stack_probe_summary = summary
-        state.active_stack_runtime_fail_streak = 0
-        state.active_stack_runtime_last_failure_ts = 0.0
+        state.openai_probe_summary = summary
+        state.openai_probe_last_ts = time.time()
         state.save()
         return summary
 
-    socks_port = _get_stack_socks_port(state.active_stack)
-    rc_socks, _, err_socks = await run_cmd(["nc", "-z", "127.0.0.1", str(socks_port)], timeout=3)
-    target_results: list[dict[str, Any]] = []
-    recent_socks_errors = 0
+    now_ts = time.time()
+    if (
+        not force
+        and state.openai_probe_summary
+        and state.openai_probe_last_ts > 0
+        and now_ts - state.openai_probe_last_ts < OPENAI_EGRESS_PROBE_REFRESH_SECONDS
+    ):
+        return state.openai_probe_summary
 
-    if rc_socks == 0:
-        for target in ACTIVE_STACK_RUNTIME_PROBE_TARGETS:
-            target_results.append(await _probe_url_via_socks(socks_port, target, timeout))
-    else:
-        target_results.append(
+    stack_name = _active_stack_pin() or state.active_stack
+    socks_port = _get_stack_socks_port(stack_name)
+    summary: dict[str, Any] = {
+        "url": OPENAI_EGRESS_PROBE_URL,
+        "stack": stack_name,
+        "socks_port": socks_port,
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+    rc_socks, _, err_socks = await run_cmd(["nc", "-z", "127.0.0.1", str(socks_port)], timeout=3)
+    if rc_socks != 0:
+        summary.update(
             {
-                "id": "socks_port",
-                "url": f"socks5://127.0.0.1:{socks_port}",
-                "ok": False,
+                "status": "runtime_unavailable",
                 "http_code": "",
                 "detail": (err_socks or "SOCKS port not ready").strip()[:200],
             }
         )
-
-    if state.active_stack == "hysteria2":
-        recent_socks_errors = await _count_recent_hysteria2_socks_errors()
-
-    success_count = sum(1 for item in target_results if item.get("ok"))
-    if rc_socks != 0 or success_count == 0:
-        status = "fail"
-    elif success_count < len(target_results) or recent_socks_errors >= HYSTERIA2_SOCKS_ERROR_THRESHOLD:
-        status = "degraded"
     else:
-        status = "ok"
+        cmd = [
+            "curl", "-sS", "-I",
+            "--max-time", str(OPENAI_EGRESS_PROBE_TIMEOUT_SECONDS),
+            "--proxy", f"socks5h://127.0.0.1:{socks_port}",
+            OPENAI_EGRESS_PROBE_URL,
+        ]
+        rc, out, err = await run_cmd(cmd, timeout=OPENAI_EGRESS_PROBE_TIMEOUT_SECONDS + 5)
+        headers = out or ""
+        http_lines = [line.strip() for line in headers.splitlines() if line.strip().startswith("HTTP/")]
+        final_line = http_lines[-1] if http_lines else ""
+        parts = final_line.split()
+        http_code = parts[1] if len(parts) > 1 else ""
+        if rc != 0:
+            summary.update(
+                {
+                    "status": "transport_failed",
+                    "http_code": http_code,
+                    "detail": (err or headers or f"rc={rc}").strip()[:200],
+                }
+            )
+        else:
+            lower_headers = headers.lower()
+            if http_code == "403" and "cf-mitigated:" in lower_headers:
+                summary.update(
+                    {
+                        "status": "backend_egress_limited",
+                        "http_code": http_code,
+                        "detail": "chatgpt.com returns Cloudflare challenge on current backend egress",
+                    }
+                )
+            elif http_code in {"200", "301", "302", "307", "308"}:
+                summary.update({"status": "ok", "http_code": http_code, "detail": f"{http_code} via {stack_name}"})
+            else:
+                summary.update(
+                    {
+                        "status": "unexpected_http",
+                        "http_code": http_code,
+                        "detail": f"unexpected HTTP {http_code or 'n/a'}",
+                    }
+                )
 
-    if status == "ok":
-        state.active_stack_runtime_fail_streak = 0
-        state.active_stack_runtime_last_failure_ts = 0.0
-    else:
-        state.active_stack_runtime_fail_streak += 1
-        state.active_stack_runtime_last_failure_ts = now_ts
-
-    summary = {
-        "status": status,
-        "stack": state.active_stack,
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "socks_port": socks_port,
-        "targets": target_results,
-        "success_count": success_count,
-        "target_count": len(target_results),
-        "fail_streak": state.active_stack_runtime_fail_streak,
-        "recent_socks_errors": recent_socks_errors,
-        "socks_error_window_seconds": HYSTERIA2_SOCKS_ERROR_WINDOW_SECONDS,
-        "socks_error_threshold": HYSTERIA2_SOCKS_ERROR_THRESHOLD,
-    }
-    state.active_stack_probe_summary = summary
+    state.openai_probe_summary = summary
+    state.openai_probe_last_ts = now_ts
     state.save()
     return summary
 
@@ -6137,11 +6560,70 @@ def _active_stack_runtime_failover_reason(now_ts: Optional[float] = None) -> Opt
         return None
     if state.last_failover and summary_ts <= state.last_failover.timestamp():
         return None
-    if int(summary.get("recent_socks_errors") or 0) >= HYSTERIA2_SOCKS_ERROR_THRESHOLD:
+    success_count = int(summary.get("success_count") or 0)
+    target_count = int(summary.get("target_count") or 0)
+    control_plane_degraded = target_count > 0 and success_count < target_count
+    if (
+        int(summary.get("recent_socks_errors") or 0) >= HYSTERIA2_SOCKS_ERROR_THRESHOLD
+        and control_plane_degraded
+    ):
         return "hysteria2_socks_timeouts"
     if state.active_stack_runtime_fail_streak >= ACTIVE_STACK_RUNTIME_FAILOVER_CONSECUTIVE_FAILURES:
         return "active_stack_runtime_probe"
     return None
+
+
+def _functional_failover_evidence(reason: str) -> dict[str, str]:
+    if not reason.startswith("functional_"):
+        return {}
+    scenario_class = reason.removeprefix("functional_")
+    for scenario_id, evidence in (state.functional_evidence_store or {}).items():
+        if str(evidence.get("scenario_class") or "") != scenario_class:
+            continue
+        if str(evidence.get("status") or "") == "ok":
+            continue
+        targets = evidence.get("targets") or []
+        for target in targets:
+            probe_result = target.get("probe_result") or {}
+            if target.get("ok") or probe_result.get("ok"):
+                continue
+            return {
+                "scenario_id": str(evidence.get("id") or scenario_id),
+                "host": str(target.get("host") or target.get("url") or ""),
+                "http_code": str(probe_result.get("http_code") or ""),
+                "detail": str(probe_result.get("stderr") or target.get("detail") or "")[:200],
+            }
+        return {
+            "scenario_id": str(evidence.get("id") or scenario_id),
+            "host": "",
+            "http_code": "",
+            "detail": str(evidence.get("detail") or "")[:200],
+        }
+    return {}
+
+
+def _reason_detail_suffix(reason: str) -> str:
+    evidence = _functional_failover_evidence(reason)
+    if not evidence:
+        return ""
+    lines = [f"Сценарий: `{evidence['scenario_id']}`"]
+    if evidence.get("host"):
+        lines.append(f"Target: `{evidence['host']}`")
+    if evidence.get("http_code"):
+        lines.append(f"HTTP: `{evidence['http_code']}`")
+    if evidence.get("detail"):
+        lines.append(f"Detail: `{evidence['detail']}`")
+    return "\n" + "\n".join(lines)
+
+
+def _stack_cooldown_reason(stack_name: str, now_ts: float) -> str:
+    retry_cooldown_until = float(state.stack_retry_cooldowns.get(stack_name, 0.0) or 0.0)
+    if retry_cooldown_until > now_ts:
+        return f"retry cooldown ещё {retry_cooldown_until - now_ts:.0f}s"
+    functional_cooldown_until = float(state.functional_failover_stack_cooldowns.get(stack_name, 0.0) or 0.0)
+    if functional_cooldown_until > now_ts:
+        return f"functional cooldown ещё {functional_cooldown_until - now_ts:.0f}s"
+    return ""
 
 
 def _write_vpn_state_files(stack_name: str) -> None:
@@ -6474,7 +6956,11 @@ async def _do_switch(new_stack: str, reason: str) -> bool:
     ))
 
     logger.info(f"Стек переключён: {old_stack} → {new_stack}")
-    alert(f"🔄 VPN стек переключён: *{old_stack}* → *{new_stack}*\nПричина: {_format_reason_label(reason)}")
+    alert(
+        f"🔄 VPN стек переключён: *{old_stack}* → *{new_stack}*\n"
+        f"Причина: {_format_reason_label(reason)}"
+        f"{_reason_detail_suffix(reason)}"
+    )
     return True
 
 
@@ -6500,11 +6986,30 @@ async def _failover_impl(reason: str) -> None:
                 if expiry > now_ts
             }
         ordered = plugins.auto_names()
+        pinned_stack = _active_stack_pin()
+        if pinned_stack and pinned_stack in ordered:
+            if current != pinned_stack:
+                ordered = [pinned_stack] + [name for name in ordered if name != pinned_stack]
+            elif not _pin_reason_allows_escape(reason):
+                state.degraded_mode = True
+                state.save()
+                logger.warning(
+                    "Pinned active stack %s suppressed failover reason=%s summary=%s ping=%s",
+                    current,
+                    reason,
+                    state.active_stack_probe_summary,
+                    state.last_ping_failure_detail,
+                )
+                asyncio.create_task(run_cmd(["systemctl", "restart", "autossh-vpn"], timeout=15))
+                return
         try:
             cur_pos = ordered.index(current)
         except ValueError:
             cur_pos = len(ordered) - 1
-        candidates = ordered[:cur_pos] + ordered[cur_pos + 1:]
+        if pinned_stack and current != pinned_stack and pinned_stack in ordered:
+            candidates = [pinned_stack]
+        else:
+            candidates = ordered[:cur_pos] + ordered[cur_pos + 1:]
         skipped_on_cooldown: list[str] = []
         for candidate in candidates:
             plugin = plugins.get(candidate)
@@ -6577,6 +7082,12 @@ async def _do_rotation() -> None:
     """
     Make-before-break ротация текущего стека (анти-DPI).
     """
+    pinned_stack = _active_stack_pin()
+    if pinned_stack and state.active_stack == pinned_stack:
+        logger.info("Ротация пропущена: active stack %s закреплён pin-режимом", pinned_stack)
+        state.next_rotation = datetime.now() + timedelta(minutes=random.randint(15, 75))
+        state.save()
+        return
     async with _LOCK:
         state.rotation_in_progress = True
         try:
@@ -6660,13 +7171,31 @@ async def _full_reassessment() -> None:
     """
     async with _LOCK:
         logger.info("Фоновая переоценка стеков...")
+        pinned_stack = _active_stack_pin()
+        if pinned_stack and pinned_stack in plugins.auto_names():
+            if state.active_stack == pinned_stack:
+                logger.info("Переоценка пропущена: active stack %s закреплён pin-режимом", pinned_stack)
+                return
+            plugin = plugins.get(pinned_stack)
+            if plugin:
+                ok, mbps = await _test_stack_runtime(plugin, pinned_stack, timeout=10)
+                logger.info("Переоценка pinned стека %s: %s %.1f Mbps", pinned_stack, "OK" if ok else "FAIL", mbps)
+                if ok:
+                    await _do_switch(pinned_stack, "hourly_reassessment")
+                return
         best_stack: Optional[str] = None
         best_mbps = 0.0
+        now_ts = time.time()
 
         for name in [n for n in STACK_ORDER if n in plugins.auto_names()]:
             plugin = plugins.get(name)
             if not plugin:
                 continue
+            if name != state.active_stack:
+                cooldown_reason = _stack_cooldown_reason(name, now_ts)
+                if cooldown_reason:
+                    logger.warning("Переоценка: пропускаю стек %s: %s", name, cooldown_reason)
+                    continue
             ok, mbps = await _test_stack_runtime(plugin, name, timeout=10)
             logger.info(f"Переоценка {name}: {'OK' if ok else 'FAIL'} {mbps:.1f} Mbps")
             if ok and mbps > best_mbps:
@@ -6716,6 +7245,7 @@ async def decision_loop() -> None:
         try:
             await ensure_policy_routing_contract("decision-loop")
             ok, rtt = await ping_vps()
+            pinned_stack = _active_stack_pin()
 
             state.last_rtt = rtt if ok else 0.0
             state.ping_results.append(1 if ok else 0)
@@ -6750,12 +7280,20 @@ async def decision_loop() -> None:
 
                 functional_reason = _functional_failover_trigger_reason()
                 if functional_reason:
+                    evidence = _functional_failover_evidence(functional_reason)
                     functional_degrade_count += 1
                     logger.warning(
-                        "Functional degradation #%s on %s: %s",
+                        "Functional degradation #%s on %s: %s%s",
                         functional_degrade_count,
                         state.active_stack,
                         functional_reason,
+                        (
+                            f" (scenario={evidence.get('scenario_id')}, "
+                            f"host={evidence.get('host') or '-'}, "
+                            f"http={evidence.get('http_code') or '-'})"
+                            if evidence else
+                            ""
+                        ),
                     )
                     if functional_degrade_count >= FUNCTIONAL_FAILOVER_CONSECUTIVE_DEGRADES:
                         state.functional_failover_stack_cooldowns[state.active_stack] = (
@@ -6784,6 +7322,16 @@ async def decision_loop() -> None:
                             state.all_stacks_down_since = datetime.now()
                         await asyncio.sleep(20)
                         continue
+                    if pinned_stack and state.active_stack == pinned_stack and not _pin_reason_allows_escape("ping_timeout"):
+                        logger.warning(
+                            "Ping timeout observed on pinned stack %s, failover suppressed until runtime+functional evidence converges",
+                            pinned_stack,
+                        )
+                        state.degraded_mode = True
+                        state.save()
+                        asyncio.create_task(run_cmd(["systemctl", "restart", "autossh-vpn"], timeout=15))
+                        await asyncio.sleep(20)
+                        continue
                     logger.warning(
                         "Failover trigger ping_timeout on %s with detail=%s",
                         state.active_stack,
@@ -6795,6 +7343,7 @@ async def decision_loop() -> None:
             if (
                 not state.failover_in_progress
                 and not state.rotation_in_progress
+                and not (pinned_stack and state.active_stack == pinned_stack)
                 and datetime.now() >= state.next_rotation
             ):
                 asyncio.create_task(_do_rotation())
@@ -6841,6 +7390,7 @@ async def monitoring_loop() -> None:
     await check_watchdog_runtime_sync()
     await check_server_repo_sync()
     await _run_active_stack_runtime_probes()
+    await _refresh_openai_probe_summary(force=True)
     state.last_monitoring_tick = time.time()
     if _functional_mode() != FUNCTIONAL_MODE_OFF:
         async def _delayed_functional_warmup() -> None:
@@ -6869,6 +7419,7 @@ async def monitoring_loop() -> None:
                 await probe_vps_reachability()
                 await _refresh_backend_health()
                 await _run_active_stack_runtime_probes()
+                await _refresh_openai_probe_summary()
                 last_heartbeat = now
 
             # Каждые 5 мин: внешний IP, диск, small speedtest, блок. сайты, upload
@@ -7146,6 +7697,13 @@ class DecisionApplyBackendRequest(BaseModel):
     decision_source: str = "decision_api"
 
 
+class DirectConfigExportRequest(BaseModel):
+    device_id: int
+    backend_id: str
+    stack: str
+    audience: str = "client"
+
+
 class LanClientUpsertRequest(BaseModel):
     id: str = ""
     name: str
@@ -7241,6 +7799,10 @@ async def get_status(_: bool = Depends(_auth)):
         "responsiveness_summary": state.responsiveness_summary,
         "active_stack_probe_summary": state.active_stack_probe_summary,
         "last_ping_failure_detail": state.last_ping_failure_detail,
+        "active_stack_pin": _active_stack_pin(),
+        "openai_probe_summary": state.openai_probe_summary,
+        "server_repo_drift": bool(state.server_repo_drift),
+        "server_repo_drift_detail": str(state.server_repo_drift_detail or ""),
         "tier2_health": tier2_health,
         "deploy": _read_deploy_state(),
         "latency_catalog": _latency_catalog_status(),
@@ -7621,6 +8183,17 @@ async def post_decision_apply_backend(request: Request, req: DecisionApplyBacken
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@app.post("/config/direct-export")
+@limiter.limit("10/second")
+async def post_config_direct_export(request: Request, req: DirectConfigExportRequest, _: bool = Depends(_auth)):
+    return await _build_direct_export_bundle(
+        device_id=req.device_id,
+        backend_id=req.backend_id,
+        stack=req.stack,
+        audience=req.audience,
+    )
+
+
 @app.post("/balancer/switch")
 @limiter.limit("10/second")
 async def post_balancer_switch(request: Request, req: BalancerSwitchRequest, _: bool = Depends(_auth)):
@@ -7987,8 +8560,10 @@ async def _manual_reassessment() -> None:
             ok, mbps = await _test_stack_runtime(plugin, name, timeout=10)
             results.append((name, "ok" if ok else "fail", mbps))
 
+    pinned_stack = _active_stack_pin()
     best_stack: Optional[str] = None
     best_mbps = 0.0
+    pinned_result: Optional[tuple[str, str, float]] = None
     lines = []
 
     # Базовые линии
@@ -8011,6 +8586,8 @@ async def _manual_reassessment() -> None:
     for name, status, mbps in results:
         icon = "✅" if status == "ok" else ("⚪" if status == "disabled" else "❌")
         marker = " ← активный" if name == state.active_stack else ""
+        if pinned_stack and name == pinned_stack:
+            marker += " [PIN]"
         if status == "ok":
             pct = f"  ({round(mbps / base_mbps * 100)}%)" if base_mbps > 0 else ""
             speed = f"{mbps:.1f} Mbps{pct}"
@@ -8019,11 +8596,31 @@ async def _manual_reassessment() -> None:
         else:
             speed = "недоступен"
         lines.append(f"{icon} {name}: {speed}{marker}")
+        if pinned_stack and name == pinned_stack:
+            pinned_result = (name, status, mbps)
         if status == "ok" and mbps > best_mbps:
             best_mbps, best_stack = mbps, name
 
     report = "\n".join(lines)
-    if best_stack and best_stack != state.active_stack:
+    if pinned_stack:
+        if pinned_result and pinned_result[1] == "ok" and state.active_stack != pinned_stack:
+            async with _LOCK:
+                await _do_switch(pinned_stack, "manual_reassessment")
+            alert(
+                f"📊 *Тест завершён*\n\n{report}\n\n"
+                f"📌 Pin active: возвращаемся на `{pinned_stack}` ({pinned_result[2]:.1f} Mbps)"
+            )
+        elif pinned_result and pinned_result[1] == "ok":
+            alert(
+                f"📊 *Тест завершён*\n\n{report}\n\n"
+                f"📌 Pin active: текущий стек `{pinned_stack}` сохранён"
+            )
+        else:
+            alert(
+                f"📊 *Тест завершён*\n\n{report}\n\n"
+                f"⚠️ Pin active: `{pinned_stack}` сейчас недоступен, автоматическое переключение подавлено"
+            )
+    elif best_stack and best_stack != state.active_stack:
         async with _LOCK:
             await _do_switch(best_stack, "manual_reassessment")
         alert(
@@ -8473,11 +9070,13 @@ async def post_backends_add(request: Request, req: BackendRequest, _: bool = Dep
 @app.post("/vps/install")
 @limiter.limit("5/minute")
 async def post_vps_install(request: Request, req: VpsInstallRequest, _: bool = Depends(_auth)):
-    """Запустить установку нового VPS через add-vps.sh (background task)."""
+    """Запустить fully-ready установку нового backend VPS через add-vps.sh."""
     if not re.match(r'^(\d{1,3}\.){3}\d{1,3}$', req.ip):
         raise HTTPException(status_code=400, detail="Invalid IP address")
     if not (1 <= req.ssh_port <= 65535):
         raise HTTPException(status_code=400, detail="Invalid SSH port")
+    if any(str(item.get("ip") or "") == req.ip for item in state.vps_list):
+        raise HTTPException(status_code=409, detail="Backend уже добавлен")
     script = Path("/opt/vpn/add-vps.sh")
     if not script.exists():
         raise HTTPException(status_code=500, detail="add-vps.sh не найден")
@@ -8486,8 +9085,8 @@ async def post_vps_install(request: Request, req: VpsInstallRequest, _: bool = D
 
 
 async def _run_vps_install(ip: str, password: str, ssh_port: int) -> None:
-    """Запускает add-vps.sh, отправляет прогресс в Telegram."""
-    tg.enqueue(f"🚀 <b>Установка VPS {ip} началась...</b>\nЭто займёт 5–10 минут.")
+    """Запускает add-vps.sh и публикует прогресс fully-ready backend install."""
+    tg.enqueue(f"🚀 <b>Установка backend {ip}:{ssh_port} началась...</b>\nЭто займёт 5–10 минут.")
     last_error_lines: list[str] = []
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -8513,16 +9112,14 @@ async def _run_vps_install(ip: str, password: str, ssh_port: int) -> None:
 
         if proc.returncode == 0:
             tg.enqueue(
-                f"✅ <b>VPS {ip} установлен успешно!</b>\n\n"
-                f"⚠️ Осталось вручную настроить 3x-ui inbounds на VPS:\n"
-                f"1. Открыть панель 3x-ui\n"
-                f"2. Добавить inbounds: REALITY, gRPC, Hysteria2\n"
-                f"3. Скопировать UUID/ключи в плагины watchdog"
+                f"✅ <b>Backend {ip} установлен успешно!</b>\n\n"
+                f"Новый сервер готов к работе и зарегистрирован в backend pool.\n"
+                f"Проверьте его в меню серверов или через <code>/backends</code>."
             )
         else:
             summary = "\n".join(last_error_lines[-5:]) if last_error_lines else "Нет деталей"
             tg.enqueue(
-                f"❌ <b>Установка VPS {ip} провалилась</b> (код {proc.returncode})\n\n"
+                f"❌ <b>Установка backend {ip} провалилась</b> (код {proc.returncode})\n\n"
                 f"<code>{summary}</code>\n\n"
                 f"Подробности: <code>journalctl -u watchdog -n 50</code> на сервере"
             )

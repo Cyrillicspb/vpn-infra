@@ -1,41 +1,33 @@
 #!/bin/bash
 # =============================================================================
-# add-vps.sh — Добавление второго VPS в инфраструктуру
+# add-vps.sh — Добавление нового backend VPS в инфраструктуру
 #
-# Запуск: bash /opt/vpn/add-vps.sh <VPS2_IP> <VPS2_ROOT_PASSWORD> [SSH_PORT]
+# Запуск: bash /opt/vpn/add-vps.sh <IP> <ROOT_PASSWORD> [SSH_PORT]
 # Например: bash /opt/vpn/add-vps.sh 217.60.7.50 mypassword 22
 #
-# Что делает:
-#   1. Создаёт sysadmin на VPS2, копирует SSH-ключ
-#   2. Устанавливает пакеты, Docker, nftables, fail2ban
-#   3. Копирует VPS-файлы репозитория
-#   4. Генерирует новые REALITY ключи (xray x25519) для VPS2
-#   5. Создаёт .env для VPS2 (Hysteria2 — те же учётные, REALITY — новые ключи)
-#   6. Настраивает Hysteria2 + TLS сертификат (полностью автоматически)
-#   7. Запускает docker compose на VPS2
-#   8. Создаёт autossh-tier2-vps2 туннель (10.177.2.4/30)
-#   9. Создаёт client-конфиги плагинов для VPS2
-#  10. Регистрирует VPS2 в watchdog (/vps/add)
-#  11. Настраивает git-зеркало и healthcheck cron
-#
-# После скрипта — вручную: настроить 3x-ui inbounds на VPS2
-# (инструкции выводятся в конце)
+# Контракт:
+#   - принимает clean Ubuntu VPS с root+password bootstrap
+#   - подготавливает sysadmin + SSH key
+#   - устанавливает runtime /opt/vpn на новом backend
+#   - автоматически настраивает 3x-ui CDN inbound и standalone stacks
+#   - регистрирует backend в watchdog pool как fully-ready
+#   - только после успешного завершения закрывает root/password SSH
 # =============================================================================
 
 set -euo pipefail
 
-# ── Аргументы ─────────────────────────────────────────────────────────────────
-VPS2_IP="${1:-}"
-VPS2_ROOT_PASS="${2:-}"
-VPS2_SSH_PORT="${3:-22}"
+BACKEND_IP="${1:-}"
+BACKEND_ROOT_PASS="${2:-}"
+BACKEND_SSH_PORT="${3:-22}"
+BACKEND_TUNNEL_IP="${4:-10.177.2.2}"
+HOME_TUNNEL_IP="${5:-10.177.2.1}"
 
-if [[ -z "$VPS2_IP" || -z "$VPS2_ROOT_PASS" ]]; then
+if [[ -z "$BACKEND_IP" || -z "$BACKEND_ROOT_PASS" ]]; then
     echo "Использование: bash add-vps.sh <IP> <ROOT_PASSWORD> [SSH_PORT]"
     echo "Пример:        bash add-vps.sh 217.60.7.50 mypassword 22"
     exit 1
 fi
 
-# ── Цвета ─────────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
@@ -46,54 +38,66 @@ log_error() { echo -e "${RED}[✗]${NC}   $*" >&2; }
 log_step()  { echo ""; echo -e "${CYAN}${BOLD}━━━ $* ━━━${NC}"; }
 die()       { log_error "$*"; exit 1; }
 
-# ── Пути ──────────────────────────────────────────────────────────────────────
 REPO_DIR="/opt/vpn"
 ENV_FILE="$REPO_DIR/.env"
 SSH_KEY="/root/.ssh/vpn_id_ed25519"
+PUB_KEY="${SSH_KEY}.pub"
+REMOTE_DIR="/opt/vpn"
+REMOTE_ENV="${REMOTE_DIR}/.env"
+REMOTE_XRAY_SETUP="/tmp/xray-setup.sh"
 
 [[ -f "$ENV_FILE" ]] || die "Файл ${ENV_FILE} не найден. Запустите из /opt/vpn."
 [[ -f "$SSH_KEY"  ]] || die "SSH-ключ ${SSH_KEY} не найден."
+[[ -f "$PUB_KEY"  ]] || die "Публичный ключ ${PUB_KEY} не найден."
 
-set -o allexport; source "$ENV_FILE"; set +o allexport
+set -o allexport
+source "$ENV_FILE"
+set +o allexport
 
-# ── SSH-функции ───────────────────────────────────────────────────────────────
-vps2_exec() {
-    ssh -p "$VPS2_SSH_PORT" -i "$SSH_KEY" \
-        -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+backend_root_ssh() {
+    sshpass -p "$BACKEND_ROOT_PASS" ssh \
+        -p "$BACKEND_SSH_PORT" \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=15 \
+        "root@${BACKEND_IP}" "$@"
+}
+
+backend_root_scp() {
+    sshpass -p "$BACKEND_ROOT_PASS" scp \
+        -P "$BACKEND_SSH_PORT" \
+        -o StrictHostKeyChecking=no "$@"
+}
+
+backend_exec() {
+    ssh -p "$BACKEND_SSH_PORT" -i "$SSH_KEY" \
+        -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=15 \
         -o ServerAliveInterval=60 \
-        "sysadmin@${VPS2_IP}" "$@"
-}
-vps2_root_exec() {
-    ssh -p "$VPS2_SSH_PORT" -i "$SSH_KEY" \
-        -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
-        "root@${VPS2_IP}" "$@"
-}
-vps2_copy() {
-    scp -P "$VPS2_SSH_PORT" -i "$SSH_KEY" -o StrictHostKeyChecking=no "$@"
-}
-vps2_root_copy() {
-    sshpass -p "$VPS2_ROOT_PASS" scp \
-        -P "$VPS2_SSH_PORT" -o StrictHostKeyChecking=no "$@"
+        "sysadmin@${BACKEND_IP}" "$@"
 }
 
-# ── Шаг 1: Bootstrap VPS2 — sysadmin + SSH ключ ──────────────────────────────
-log_step "Шаг 1: Bootstrap VPS2 (sysadmin + SSH ключ)"
+backend_copy() {
+    scp -P "$BACKEND_SSH_PORT" -i "$SSH_KEY" \
+        -o StrictHostKeyChecking=no "$@"
+}
+
+run_remote_python() {
+    local script="$1"
+    backend_exec "python3 - <<'PY'
+$script
+PY"
+}
+
+log_step "Шаг 1: Bootstrap SSH-доступа"
 
 which sshpass &>/dev/null || apt-get install -y -qq sshpass
 
-# Проверяем, нет ли уже sysadmin с нашим ключом
-if ssh -p "$VPS2_SSH_PORT" -i "$SSH_KEY" \
-       -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \
-       "sysadmin@${VPS2_IP}" "echo ok" &>/dev/null; then
-    log_ok "SSH (sysadmin@${VPS2_IP}) уже работает"
+if ssh -p "$BACKEND_SSH_PORT" -i "$SSH_KEY" \
+    -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes \
+    "sysadmin@${BACKEND_IP}" "echo ok" &>/dev/null; then
+    log_ok "SSH (sysadmin@${BACKEND_IP}) уже работает"
 else
-    log_info "Создание sysadmin на VPS2..."
-
-    # Подключаемся как root, создаём sysadmin
-    sshpass -p "$VPS2_ROOT_PASS" ssh \
-        -p "$VPS2_SSH_PORT" \
-        -o StrictHostKeyChecking=no \
-        "root@${VPS2_IP}" bash << 'BOOTSTRAP'
+    backend_root_ssh bash <<'BOOTSTRAP'
 set -euo pipefail
 id sysadmin &>/dev/null || useradd -m -s /bin/bash -G sudo sysadmin
 echo 'sysadmin ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/sysadmin
@@ -103,193 +107,101 @@ chmod 700 /home/sysadmin/.ssh
 touch /home/sysadmin/.ssh/authorized_keys
 chmod 600 /home/sysadmin/.ssh/authorized_keys
 chown -R sysadmin:sysadmin /home/sysadmin/.ssh
-echo "Bootstrap OK"
 BOOTSTRAP
 
-    # Копируем SSH ключ
-    PUB_KEY=$(cat "${SSH_KEY}.pub")
-    sshpass -p "$VPS2_ROOT_PASS" ssh \
-        -p "$VPS2_SSH_PORT" \
-        -o StrictHostKeyChecking=no \
-        "root@${VPS2_IP}" \
-        "echo '${PUB_KEY}' >> /home/sysadmin/.ssh/authorized_keys && echo 'Key copied'"
-
-    # Финальная проверка
-    vps2_exec "echo ok" &>/dev/null \
-        || die "SSH к sysadmin@${VPS2_IP} не работает после копирования ключа"
-
+    backend_root_ssh "grep -qxF '$(cat "$PUB_KEY")' /home/sysadmin/.ssh/authorized_keys || echo '$(cat "$PUB_KEY")' >> /home/sysadmin/.ssh/authorized_keys"
+    backend_exec "echo ok" >/dev/null || die "SSH к sysadmin@${BACKEND_IP} не работает после bootstrap"
     log_ok "sysadmin создан, SSH-ключ скопирован"
 fi
 
-# ── Шаг 2: Системные пакеты ───────────────────────────────────────────────────
-log_step "Шаг 2: Системные пакеты на VPS2"
+log_step "Шаг 2: Базовые пакеты и Docker"
 
-vps2_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
-    sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq 2>/dev/null"
+backend_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+        curl wget git jq python3 net-tools nftables fail2ban dnsmasq \
+        wireguard-tools openssl gnupg2 ca-certificates"
 
-vps2_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    curl wget git jq wireguard-tools openssl gnupg2 ca-certificates \
-    python3 net-tools nftables fail2ban"
-
-log_ok "Пакеты установлены"
-
-# ── Шаг 3: IPv6 ───────────────────────────────────────────────────────────────
-log_step "Шаг 3: Отключение IPv6"
-
-vps2_exec "printf 'net.ipv6.conf.all.disable_ipv6 = 1\nnet.ipv6.conf.default.disable_ipv6 = 1\n' | \
-    sudo tee /etc/sysctl.d/99-disable-ipv6.conf > /dev/null && \
-    sudo sysctl -p /etc/sysctl.d/99-disable-ipv6.conf 2>/dev/null || true"
-
-log_ok "IPv6 отключён"
-
-# ── Шаг 4: Docker ────────────────────────────────────────────────────────────
-log_step "Шаг 4: Docker CE"
-
-if vps2_exec "command -v docker &>/dev/null && echo yes" 2>/dev/null | grep -q yes; then
-    log_info "Docker уже установлен"
-else
-    vps2_exec "curl -fsSL https://get.docker.com | sudo sh" \
-        || die "Не удалось установить Docker"
-    vps2_exec "sudo systemctl enable docker && sudo systemctl start docker"
+if ! backend_exec "command -v docker >/dev/null 2>&1"; then
+    backend_exec "curl -fsSL https://get.docker.com | sudo sh"
 fi
-
-vps2_exec "sudo mkdir -p /etc/docker && \
-    printf '{\"log-driver\":\"json-file\",\"log-opts\":{\"max-size\":\"10m\",\"max-file\":\"3\"},\"dns\":[\"8.8.8.8\",\"1.1.1.1\"],\"ipv6\":false}\n' | \
-    sudo tee /etc/docker/daemon.json > /dev/null && \
+backend_exec "sudo systemctl enable docker && sudo systemctl restart docker"
+backend_exec "sudo usermod -aG docker sysadmin 2>/dev/null || true"
+backend_exec "sudo mkdir -p /etc/docker && \
+    printf '{\"log-driver\":\"json-file\",\"log-opts\":{\"max-size\":\"10m\",\"max-file\":\"3\"},\"dns\":[\"8.8.8.8\",\"1.1.1.1\"],\"ipv6\":false}\n' | sudo tee /etc/docker/daemon.json >/dev/null && \
     sudo systemctl restart docker"
+log_ok "Docker и пакеты подготовлены"
 
-vps2_exec "sudo usermod -aG docker sysadmin 2>/dev/null || true"
-log_ok "Docker $(vps2_exec "sudo docker --version 2>/dev/null")"
+log_step "Шаг 3: Runtime /opt/vpn"
 
-# ── Шаг 5: nftables (rate limiting + WireGuard порт) ─────────────────────────
-log_step "Шаг 5: nftables на VPS2"
+backend_exec "sudo install -d -m 755 ${REMOTE_DIR} && sudo chown sysadmin:sysadmin ${REMOTE_DIR}"
+backend_exec "mkdir -p ${REMOTE_DIR}/scripts ${REMOTE_DIR}/nginx/mtls ${REMOTE_DIR}/nginx/ssl \
+    ${REMOTE_DIR}/nginx/conf.d ${REMOTE_DIR}/cloudflared ${REMOTE_DIR}/3x-ui/db \
+    ${REMOTE_DIR}/hysteria2 ${REMOTE_DIR}/xray ${REMOTE_DIR}/backups ${REMOTE_DIR}/vpn-repo.git"
+backend_copy -r "${REPO_DIR}/vps/." "sysadmin@${BACKEND_IP}:${REMOTE_DIR}/"
+log_ok "Файлы VPS runtime скопированы"
 
-vps2_exec "cat << 'NFTEOF' | sudo tee /etc/nftables-vps.conf > /dev/null
-#!/usr/sbin/nft -f
-flush ruleset
-table inet filter {
-    chain input {
-        type filter hook input priority filter; policy accept;
-        iifname \"lo\" accept
-        ct state established,related accept
-        tcp dport { 22, 443, 2053, 2083, 2087 } ct state new accept
-        tcp dport 443 limit rate 200/second burst 500 packets accept
-        tcp dport 443 drop
-        udp dport 443 limit rate 200/second burst 500 packets accept
-        udp dport 443 drop
-        icmp type echo-request limit rate 10/second accept
-        # SSH tun туннель (Tier-2) использует стандартный TCP 22 — отдельного порта не нужно
-    }
-    chain forward {
-        type filter hook forward priority filter; policy drop;
-        ct state established,related accept
-    }
+log_step "Шаг 4: Backend .env"
+
+tmp_env="$(mktemp /tmp/backend-env.XXXXXX)"
+cp "$ENV_FILE" "$tmp_env"
+python3 - "$tmp_env" "$BACKEND_IP" "$BACKEND_SSH_PORT" "$BACKEND_TUNNEL_IP" "$HOME_TUNNEL_IP" "${HOME_SERVER_IP:-}" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+backend_ip, ssh_port, tunnel_ip, home_tunnel_ip, home_server_ip = sys.argv[2:7]
+updates = {
+    "VPS_IP": backend_ip,
+    "VPS_SSH_PORT": ssh_port,
+    "VPS_TUNNEL_IP": tunnel_ip,
+    "HOME_TUNNEL_IP": home_tunnel_ip,
+    "HOME_SERVER_IP": home_server_ip,
+    "SSH_ADDITIONAL_PORT": "443",
 }
-NFTEOF"
+lines = []
+seen = set()
+for raw in path.read_text(encoding="utf-8").splitlines():
+    if "=" not in raw or raw.lstrip().startswith("#"):
+        lines.append(raw)
+        continue
+    key = raw.split("=", 1)[0]
+    if key in updates:
+        lines.append(f"{key}={updates[key]}")
+        seen.add(key)
+    else:
+        lines.append(raw)
+for key, value in updates.items():
+    if key not in seen:
+        lines.append(f"{key}={value}")
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+chmod 600 "$tmp_env"
+backend_copy "$tmp_env" "sysadmin@${BACKEND_IP}:${REMOTE_ENV}"
+rm -f "$tmp_env"
+backend_exec "chmod 600 ${REMOTE_ENV}"
+log_ok ".env backend подготовлен"
 
-vps2_exec "sudo systemctl enable nftables && sudo nft -f /etc/nftables-vps.conf || true"
-log_ok "nftables настроен"
+log_step "Шаг 5: Сертификаты и server configs"
 
-# ── Шаг 6: fail2ban ──────────────────────────────────────────────────────────
-log_step "Шаг 6: fail2ban"
-
-vps2_exec "printf '[DEFAULT]\nbantime = 3600\nfindtime = 600\nmaxretry = 5\nbackend = systemd\n\n[sshd]\nenabled = true\nport = ${VPS2_SSH_PORT}\n' | \
-    sudo tee /etc/fail2ban/jail.local > /dev/null"
-vps2_exec "sudo systemctl enable fail2ban && sudo systemctl restart fail2ban"
-log_ok "fail2ban настроен"
-
-# ── Шаг 7: Копирование файлов VPS ────────────────────────────────────────────
-log_step "Шаг 7: Копирование файлов VPS"
-
-vps2_exec "sudo mkdir -p /opt/vpn && sudo chown sysadmin:sysadmin /opt/vpn && \
-    mkdir -p /opt/vpn/scripts /opt/vpn/nginx/mtls /opt/vpn/nginx/ssl \
-             /opt/vpn/nginx/conf.d /opt/vpn/cloudflared /opt/vpn/3x-ui/db \
-             /opt/vpn/hysteria2 /opt/vpn/backups /opt/vpn/vpn-repo.git"
-
-vps2_copy -r "${REPO_DIR}/vps/." "sysadmin@${VPS2_IP}:/opt/vpn/"
-log_ok "Файлы скопированы"
-
-# ── Шаг 8: mTLS CA ───────────────────────────────────────────────────────────
-log_step "Шаг 8: mTLS CA и сертификаты"
-
-vps2_exec "[ -f /opt/vpn/nginx/mtls/ca.crt ] || ( \
-    openssl genrsa -out /opt/vpn/nginx/mtls/ca.key 4096 2>/dev/null && \
-    openssl req -new -x509 -days 3650 \
-        -key /opt/vpn/nginx/mtls/ca.key \
-        -out /opt/vpn/nginx/mtls/ca.crt \
-        -subj '/CN=VPN-CA2/O=VPNInfra/C=RU' 2>/dev/null && \
-    chmod 600 /opt/vpn/nginx/mtls/ca.key && echo 'CA создан' )"
-
-vps2_exec "[ -f /opt/vpn/nginx/ssl/server.crt ] || ( \
-    openssl genrsa -out /opt/vpn/nginx/ssl/server.key 2048 2>/dev/null && \
-    openssl req -new -key /opt/vpn/nginx/ssl/server.key \
-        -out /opt/vpn/nginx/ssl/server.csr \
-        -subj '/CN=vpn-server2/O=VPNInfra/C=RU' 2>/dev/null && \
-    openssl x509 -req -days 730 \
-        -in /opt/vpn/nginx/ssl/server.csr \
-        -CA /opt/vpn/nginx/mtls/ca.crt \
-        -CAkey /opt/vpn/nginx/mtls/ca.key -CAcreateserial \
-        -out /opt/vpn/nginx/ssl/server.crt 2>/dev/null && \
-    rm -f /opt/vpn/nginx/ssl/server.csr && \
-    chmod 600 /opt/vpn/nginx/ssl/server.key && echo 'Server cert создан' )"
-
-log_ok "mTLS CA и server cert готовы"
-
-# ── Шаг 9: Hysteria2 TLS сертификат ──────────────────────────────────────────
-log_step "Шаг 9: Hysteria2 TLS сертификат"
-
-vps2_exec "sudo openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
-    -keyout /opt/vpn/hysteria2/server.key \
-    -out /opt/vpn/hysteria2/server.crt \
-    -days 3650 -nodes \
-    -subj '/CN=${VPS2_IP}' \
-    -addext 'subjectAltName=IP:${VPS2_IP}' 2>/dev/null && \
-    sudo chmod 644 /opt/vpn/hysteria2/server.crt && \
-    sudo chmod 600 /opt/vpn/hysteria2/server.key"
-
-log_ok "Hysteria2 TLS сертификат создан"
-
-# ── Шаг 10: .env для VPS2 ────────────────────────────────────────────────────
-log_step "Шаг 10: Генерация .env для VPS2"
-
-VPS2_ENV_TMP=$(mktemp /tmp/vps2-env.XXXXXX)
-chmod 600 "$VPS2_ENV_TMP"
-
-# Те же токены/пароли что и у VPS1, VPS-специфичные поля — для VPS2
-cat > "$VPS2_ENV_TMP" << EOF
-# VPS2 .env — сгенерировано add-vps.sh
-TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
-TELEGRAM_ADMIN_CHAT_ID=${TELEGRAM_ADMIN_CHAT_ID:-}
-
-XRAY_UUID=${XRAY_UUID:-}
-XRAY_GRPC_UUID=${XRAY_GRPC_UUID:-}
-XRAY_PRIVATE_KEY=PENDING
-XRAY_PUBLIC_KEY=PENDING
-XRAY_GRPC_PRIVATE_KEY=PENDING
-XRAY_GRPC_PUBLIC_KEY=PENDING
-HYSTERIA2_AUTH=${HYSTERIA2_AUTH:-}
-HYSTERIA2_OBFS=${HYSTERIA2_OBFS:-}
-VPS_IP=${VPS2_IP}
-VPS_TUNNEL_IP=10.177.2.6
-HOME_TUNNEL_IP=10.177.2.5
-HOME_SERVER_IP=${HOME_SERVER_IP:-}
-WATCHDOG_API_TOKEN=${WATCHDOG_API_TOKEN:-}
-DOMAIN=
-CF_API_TOKEN=
-SSH_ADDITIONAL_PORT=443
-XHTTP_MS_PASSWORD=${XHTTP_MS_PASSWORD:-$(openssl rand -hex 16)}
-XHTTP_CDN_PASSWORD=${XHTTP_CDN_PASSWORD:-$(openssl rand -hex 16)}
-EOF
-
-vps2_copy "$VPS2_ENV_TMP" "sysadmin@${VPS2_IP}:/opt/vpn/.env"
-vps2_exec "chmod 600 /opt/vpn/.env"
-rm -f "$VPS2_ENV_TMP"
-log_ok ".env скопирован (REALITY ключи — PENDING, заполним после запуска 3x-ui)"
-
-# ── Шаг 11: Hysteria2 server.yaml ────────────────────────────────────────────
-log_step "Шаг 11: Hysteria2 server.yaml"
-
-vps2_exec "sudo tee /opt/vpn/hysteria2/server.yaml > /dev/null << 'HYEOF'
+backend_exec "sudo install -d -m 755 ${REMOTE_DIR}/nginx/mtls ${REMOTE_DIR}/nginx/ssl ${REMOTE_DIR}/hysteria2 ${REMOTE_DIR}/xray"
+backend_exec "[ -f ${REMOTE_DIR}/nginx/mtls/ca.crt ] || ( \
+    openssl genrsa -out ${REMOTE_DIR}/nginx/mtls/ca.key 4096 >/dev/null 2>&1 && \
+    openssl req -new -x509 -days 3650 -key ${REMOTE_DIR}/nginx/mtls/ca.key \
+        -out ${REMOTE_DIR}/nginx/mtls/ca.crt -subj '/CN=VPN-CA/O=VPNInfra/C=RU' >/dev/null 2>&1 && \
+    chmod 600 ${REMOTE_DIR}/nginx/mtls/ca.key )"
+backend_exec "[ -f ${REMOTE_DIR}/nginx/ssl/server.crt ] || ( \
+    openssl genrsa -out ${REMOTE_DIR}/nginx/ssl/server.key 2048 >/dev/null 2>&1 && \
+    openssl req -new -key ${REMOTE_DIR}/nginx/ssl/server.key -out ${REMOTE_DIR}/nginx/ssl/server.csr \
+        -subj '/CN=${BACKEND_IP}/O=VPNInfra/C=RU' >/dev/null 2>&1 && \
+    openssl x509 -req -days 730 -in ${REMOTE_DIR}/nginx/ssl/server.csr \
+        -CA ${REMOTE_DIR}/nginx/mtls/ca.crt -CAkey ${REMOTE_DIR}/nginx/mtls/ca.key -CAcreateserial \
+        -out ${REMOTE_DIR}/nginx/ssl/server.crt >/dev/null 2>&1 && \
+    rm -f ${REMOTE_DIR}/nginx/ssl/server.csr && chmod 600 ${REMOTE_DIR}/nginx/ssl/server.key )"
+backend_exec "sudo openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+    -keyout ${REMOTE_DIR}/hysteria2/server.key -out ${REMOTE_DIR}/hysteria2/server.crt \
+    -days 3650 -nodes -subj '/CN=${BACKEND_IP}' -addext 'subjectAltName=IP:${BACKEND_IP}' >/dev/null 2>&1 && \
+    sudo chmod 644 ${REMOTE_DIR}/hysteria2/server.crt && sudo chmod 600 ${REMOTE_DIR}/hysteria2/server.key"
+backend_exec "sudo tee ${REMOTE_DIR}/hysteria2/server.yaml >/dev/null <<HYEOF
 listen: :443
 
 tls:
@@ -299,11 +211,11 @@ tls:
 obfs:
   type: salamander
   salamander:
-    password: ${HYSTERIA2_OBFS}
+    password: ${HYSTERIA2_OBFS:-}
 
 auth:
   type: password
-  password: ${HYSTERIA2_AUTH}
+  password: ${HYSTERIA2_AUTH:-}
 
 bandwidth:
   up: 200 mbps
@@ -323,412 +235,120 @@ masquerade:
 log:
   level: warn
 HYEOF"
+backend_exec "bash ${REMOTE_DIR}/scripts/render-reality-vision-config.sh"
+backend_exec "bash ${REMOTE_DIR}/scripts/render-reality-xhttp-config.sh"
+log_ok "Сертификаты, Hysteria2 и standalone Xray configs подготовлены"
 
-log_ok "Hysteria2 server.yaml создан"
+log_step "Шаг 6: Docker Compose и 3x-ui setup"
 
-# ── Шаг 12: Docker Compose ───────────────────────────────────────────────────
-log_step "Шаг 12: Docker Compose на VPS2"
+backend_exec "cd ${REMOTE_DIR} && sudo docker compose pull 2>/dev/null || true"
+backend_exec "cd ${REMOTE_DIR} && sudo docker compose up -d --remove-orphans 2>/dev/null || sudo docker compose up -d 2>/dev/null || true"
+backend_exec "cd ${REMOTE_DIR} && sudo docker compose --profile extra-stacks up -d trojan-server tuic-server 2>/dev/null || true"
+sleep 15
+backend_exec "sudo docker inspect --format='{{.State.Status}}' 3x-ui 2>/dev/null | grep -q '^running$'" || die "3x-ui не запущен на backend"
+backend_copy "${REPO_DIR}/vps/scripts/xray-setup.sh" "sysadmin@${BACKEND_IP}:${REMOTE_XRAY_SETUP}"
+backend_exec "chmod +x ${REMOTE_XRAY_SETUP} && bash ${REMOTE_XRAY_SETUP} && rm -f ${REMOTE_XRAY_SETUP}"
+backend_exec "bash ${REMOTE_DIR}/scripts/render-reality-vision-config.sh"
+backend_exec "bash ${REMOTE_DIR}/scripts/render-reality-xhttp-config.sh"
+backend_exec "cd ${REMOTE_DIR} && sudo docker compose up -d xray-reality-vision xray-reality-xhttp hysteria2 2>/dev/null || true"
+log_ok "3x-ui CDN inbound и server-side stacks настроены автоматически"
 
-log_info "Загрузка образов (займёт несколько минут)..."
-vps2_exec "cd /opt/vpn && sudo docker compose pull --quiet 2>/dev/null || true"
+log_step "Шаг 7: Firewall, SSH tunnel и DNS"
 
-log_info "Запуск контейнеров..."
-vps2_exec "cd /opt/vpn && sudo docker compose up -d --remove-orphans 2>/dev/null || \
-    sudo docker compose up -d 2>/dev/null || true"
-
-log_info "Ожидание запуска 3x-ui (30 сек)..."
-sleep 30
-
-log_info "Статус контейнеров VPS2:"
-vps2_exec "cd /opt/vpn && sudo docker compose ps 2>/dev/null || true"
-
-log_ok "Docker Compose запущен"
-
-# ── Шаг 13: Генерация REALITY ключей через xray на VPS2 ──────────────────────
-log_step "Шаг 13: Генерация REALITY ключей для VPS2"
-
-log_info "Генерация ключей для reality (microsoft.com)..."
-XRAY_KEYS_MS=$(vps2_exec "sudo docker exec 3x-ui xray x25519 2>/dev/null" || echo "ERROR")
-
-log_info "Генерация ключей для reality-grpc (cdn.jsdelivr.net)..."
-XRAY_KEYS_CDN=$(vps2_exec "sudo docker exec 3x-ui xray x25519 2>/dev/null" || echo "ERROR")
-
-if echo "$XRAY_KEYS_MS" | grep -q "Private key:"; then
-    VPS2_XRAY_PRIVATE_KEY=$(echo "$XRAY_KEYS_MS" | grep "Private key:" | awk '{print $3}')
-    VPS2_XRAY_PUBLIC_KEY=$(echo "$XRAY_KEYS_MS" | grep "Public key:" | awk '{print $3}')
-    VPS2_XRAY_GRPC_PRIVATE_KEY=$(echo "$XRAY_KEYS_CDN" | grep "Private key:" | awk '{print $3}')
-    VPS2_XRAY_GRPC_PUBLIC_KEY=$(echo "$XRAY_KEYS_CDN" | grep "Public key:" | awk '{print $3}')
-
-    log_ok "REALITY ключи сгенерированы"
-    log_info "VPS2 Public key (reality):      ${VPS2_XRAY_PUBLIC_KEY}"
-    log_info "VPS2 Public key (reality-grpc): ${VPS2_XRAY_GRPC_PUBLIC_KEY}"
-
-    # Обновляем .env на VPS2
-    vps2_exec "sed -i 's|XRAY_PRIVATE_KEY=PENDING|XRAY_PRIVATE_KEY=${VPS2_XRAY_PRIVATE_KEY}|' /opt/vpn/.env && \
-        sed -i 's|XRAY_PUBLIC_KEY=PENDING|XRAY_PUBLIC_KEY=${VPS2_XRAY_PUBLIC_KEY}|' /opt/vpn/.env && \
-        sed -i 's|XRAY_GRPC_PRIVATE_KEY=PENDING|XRAY_GRPC_PRIVATE_KEY=${VPS2_XRAY_GRPC_PRIVATE_KEY}|' /opt/vpn/.env && \
-        sed -i 's|XRAY_GRPC_PUBLIC_KEY=PENDING|XRAY_GRPC_PUBLIC_KEY=${VPS2_XRAY_GRPC_PUBLIC_KEY}|' /opt/vpn/.env"
-    log_ok ".env VPS2 обновлён с REALITY ключами"
-else
-    log_warn "Не удалось сгенерировать REALITY ключи автоматически"
-    log_warn "Сгенерируйте вручную: docker exec 3x-ui xray x25519"
-    VPS2_XRAY_PUBLIC_KEY="PENDING"
-    VPS2_XRAY_GRPC_PUBLIC_KEY="PENDING"
-fi
-
-# ── Шаг 14: autossh-tier2-vps2 (SSH tun туннель к VPS2) ─────────────────────
-log_step "Шаг 14: SSH Tier-2 туннель к VPS2 (autossh -w, 10.177.2.4/30)"
-
-# Включаем PermitTunnel на VPS2
-vps2_exec "sudo sed -i '/^#*PermitTunnel/d' /etc/ssh/sshd_config && \
-    echo 'PermitTunnel yes' | sudo tee -a /etc/ssh/sshd_config > /dev/null && \
-    sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null"
-log_ok "PermitTunnel yes добавлен на VPS2"
-
-# Скрипт подключения для VPS2 (использует tun1, чтобы не конфликтовать с tun0 для VPS1)
-cat > /opt/vpn/scripts/tier2-vps2-connect.sh << 'CONNEOF'
-#!/bin/bash
-# SSH Tier-2 tunnel к VPS2: tun1 (home 10.177.2.5 ↔ VPS2 10.177.2.6)
-exec autossh -M 0 \
-    -o StrictHostKeyChecking=no \
-    -o ServerAliveInterval=10 \
-    -o ServerAliveCountMax=3 \
-    -o ExitOnForwardFailure=yes \
-    -w 1:0 \
-    -i /root/.ssh/vpn_id_ed25519 \
-    -p "${VPS2_SSH_PORT:-22}" \
-    "sysadmin@${VPS2_IP}" \
-    'sudo ip addr replace 10.177.2.6/30 dev tun0 2>/dev/null; sudo ip link set tun0 up; sleep infinity'
-CONNEOF
-chmod +x /opt/vpn/scripts/tier2-vps2-connect.sh
-
-# Скрипт настройки локального tun1
-cat > /opt/vpn/scripts/tier2-vps2-up-local.sh << 'UPEOF'
-#!/bin/bash
-for i in $(seq 15); do
-    sleep 1
-    ip link show tun1 &>/dev/null && break
-done
-ip addr replace 10.177.2.5/30 dev tun1 2>/dev/null || true
-ip link set tun1 up 2>/dev/null || true
-UPEOF
-chmod +x /opt/vpn/scripts/tier2-vps2-up-local.sh
-
-# Сохраняем VPS2 параметры для EnvironmentFile
-echo "VPS2_IP=${VPS2_IP}" >> /opt/vpn/.env
-echo "VPS2_SSH_PORT=${VPS2_SSH_PORT}" >> /opt/vpn/.env
-
-# Systemd unit для VPS2
-cat > /etc/systemd/system/autossh-tier2-vps2.service << UNITEOF
-[Unit]
-Description=SSH Tier-2 Tunnel to VPS2 (10.177.2.4/30)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-Environment=AUTOSSH_GATETIME=0
-EnvironmentFile=/opt/vpn/.env
-ExecStart=/opt/vpn/scripts/tier2-vps2-connect.sh
-ExecStartPost=/opt/vpn/scripts/tier2-vps2-up-local.sh
-ExecStop=/bin/bash -c 'ip link set tun1 down 2>/dev/null; true'
-Restart=always
-RestartSec=10
-RestartPreventExitStatus=255
-
-[Install]
-WantedBy=multi-user.target
-UNITEOF
-
-systemctl daemon-reload
-systemctl enable autossh-tier2-vps2
-systemctl restart autossh-tier2-vps2
-
-# Тест туннеля
-sleep 12
-if ping -c 2 -W 3 10.177.2.6 &>/dev/null; then
-    log_ok "Туннель autossh-tier2-vps2 работает! ping 10.177.2.6 ОК"
-else
-    log_warn "Ping 10.177.2.6 не прошёл. Проверьте: systemctl status autossh-tier2-vps2"
-fi
-
-# Добавляем маршрут через tun1 для DNS VPS2
-ip route replace 10.177.2.6/32 dev tun1 2>/dev/null || true
-
-# ── Шаг 15: dnsmasq VPS2 DNS ─────────────────────────────────────────────────
-log_step "Шаг 15: dnsmasq DNS для VPS2 (10.177.2.6)"
-
-vps2_exec "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dnsmasq && \
-    sudo bash -c 'cat > /etc/dnsmasq.conf << DNSEOF
-listen-address=127.0.0.1,10.177.2.6
+backend_exec "sudo bash -lc 'cat > /etc/nftables-vps.conf <<NFTEOF
+#!/usr/sbin/nft -f
+flush ruleset
+table inet filter {
+  chain input {
+    type filter hook input priority filter; policy accept;
+    iifname \"lo\" accept
+    ct state established,related accept
+    tcp dport { 22, 2053, 2083, 443, 8444, 8448, 8022 } ct state new accept
+    udp dport { 443, 8448 } ct state new accept
+    icmp type echo-request limit rate 10/second accept
+  }
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+    ct state established,related accept
+  }
+}
+NFTEOF
+systemctl enable nftables >/dev/null 2>&1 || true
+nft -f /etc/nftables-vps.conf || true'"
+backend_exec "printf '[DEFAULT]\nbantime = 3600\nfindtime = 600\nmaxretry = 5\nbackend = systemd\n\n[sshd]\nenabled = true\nport = ${BACKEND_SSH_PORT}\n' | sudo tee /etc/fail2ban/jail.local >/dev/null && sudo systemctl enable fail2ban && sudo systemctl restart fail2ban"
+backend_exec "sudo sed -i '/^#*PermitTunnel/d' /etc/ssh/sshd_config && echo 'PermitTunnel yes' | sudo tee -a /etc/ssh/sshd_config >/dev/null && sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null"
+backend_exec "sudo bash -lc 'cat > /etc/dnsmasq.conf <<DNSEOF
+listen-address=127.0.0.1,${BACKEND_TUNNEL_IP}
 bind-interfaces
 no-resolv
 server=1.1.1.1
 server=8.8.8.8
 cache-size=1000
-DNSEOF' && \
-    sudo systemctl enable dnsmasq && sudo systemctl restart dnsmasq"
+DNSEOF
+systemctl enable dnsmasq >/dev/null 2>&1
+systemctl restart dnsmasq'"
+log_ok "PermitTunnel, dnsmasq и базовый firewall настроены"
 
-log_ok "dnsmasq настроен на VPS2 (слушает 10.177.2.6:53)"
+log_step "Шаг 8: Git mirror и healthcheck"
 
-# ── Шаг 16: Сохранение VPS2 переменных в home .env ───────────────────────────
-log_step "Шаг 16: Сохранение VPS2 переменных в /opt/vpn/.env"
-
-env_set() {
-    local key="$1" val="$2"
-    # Используем grep+delete+append вместо sed — безопасно для значений с |, /, &, \
-    # || true: grep возвращает 1 на пустом файле или если строка не найдена — это нормально
-    { grep -v "^${key}=" "$ENV_FILE" || true; } > "${ENV_FILE}.tmp"
-    mv "${ENV_FILE}.tmp" "$ENV_FILE"
-    echo "${key}=${val}" >> "$ENV_FILE"
-}
-
-env_set "VPS2_IP"                   "$VPS2_IP"
-env_set "VPS2_TUNNEL_IP"            "10.177.2.6"
-env_set "VPS2_HOME_TUNNEL_IP"       "10.177.2.5"
-env_set "VPS2_SSH_PORT"             "$VPS2_SSH_PORT"
-env_set "VPS2_XRAY_UUID"            "${XRAY_UUID:-}"
-env_set "VPS2_XRAY_GRPC_UUID"       "${XRAY_GRPC_UUID:-}"
-env_set "VPS2_XRAY_PRIVATE_KEY"     "${VPS2_XRAY_PRIVATE_KEY:-PENDING}"
-env_set "VPS2_XRAY_PUBLIC_KEY"      "${VPS2_XRAY_PUBLIC_KEY:-PENDING}"
-env_set "VPS2_XRAY_GRPC_PRIVATE_KEY" "${VPS2_XRAY_GRPC_PRIVATE_KEY:-PENDING}"
-env_set "VPS2_XRAY_GRPC_PUBLIC_KEY"  "${VPS2_XRAY_GRPC_PUBLIC_KEY:-PENDING}"
-env_set "VPS2_HYSTERIA2_AUTH"       "${HYSTERIA2_AUTH:-}"
-env_set "VPS2_HYSTERIA2_OBFS"       "${HYSTERIA2_OBFS:-}"
-env_set "VPS2_WG_PUBLIC_KEY"        "$VPS2_WG_PUBLIC"
-env_set "HOME_WG2_PUBLIC_KEY"       "$HOME_WG2_PUBLIC"
-
-log_ok "VPS2 переменные сохранены в .env"
-
-# ── Шаг 17: Plugin client configs для VPS2 ───────────────────────────────────
-log_step "Шаг 17: Plugin client configs для VPS2"
-
-PLUGINS_DIR="${REPO_DIR}/watchdog/plugins"
-
-# hysteria2 — тот же пароль, просто другой сервер
-cat > "${PLUGINS_DIR}/hysteria2/client-vps2.yaml" << EOF
-# Hysteria2 client config для VPS2 (${VPS2_IP})
-server: "${VPS2_IP}:443"
-tls:
-  insecure: true
-auth: "${HYSTERIA2_AUTH:-}"
-obfs:
-  type: salamander
-  salamander:
-    password: "${HYSTERIA2_OBFS:-}"
-quic:
-  keepAlivePeriod: 20s
-bandwidth:
-  up: 50 mbps
-  down: 200 mbps
-socks5:
-  listen: 127.0.0.1:1083
-log:
-  level: warn
-EOF
-
-# reality — xray config для VPS2
-cat > "${REPO_DIR}/xray/config-reality-vps2.json" << EOF
-{
-  "log": { "loglevel": "warning" },
-  "inbounds": [{
-    "listen": "127.0.0.1", "port": 1080,
-    "protocol": "socks",
-    "settings": { "auth": "noauth", "udp": true },
-    "tag": "socks-in"
-  }],
-  "outbounds": [{
-    "protocol": "vless",
-    "settings": {
-      "vnext": [{
-        "address": "${VPS2_IP}",
-        "port": 2087,
-        "users": [{ "id": "${XRAY_UUID:-}", "encryption": "none", "flow": "" }]
-      }]
-    },
-    "streamSettings": {
-      "network": "splithttp",
-      "security": "reality",
-      "realitySettings": {
-        "serverName": "microsoft.com",
-        "fingerprint": "chrome",
-        "publicKey": "${VPS2_XRAY_PUBLIC_KEY:-PENDING}",
-        "shortId": ""
-      },
-      "splithttpSettings": {
-        "path": "/", "host": "microsoft.com",
-        "maxUploadSize": 1000000,
-        "maxConcurrentUploads": 10,
-        "password": "${XHTTP_MS_PASSWORD:-}"
-      }
-    },
-    "tag": "vless-xhttp-out"
-  },
-  { "protocol": "freedom", "tag": "direct" },
-  { "protocol": "blackhole", "tag": "block" }
-  ],
-  "routing": {
-    "domainStrategy": "IPIfNonMatch",
-    "rules": [{ "type": "field", "ip": ["geoip:private"], "outboundTag": "direct" }]
-  }
-}
-EOF
-
-# reality-grpc — xray config для VPS2
-cat > "${REPO_DIR}/xray/config-grpc-vps2.json" << EOF
-{
-  "log": { "loglevel": "warning" },
-  "inbounds": [{
-    "listen": "127.0.0.1", "port": 1081,
-    "protocol": "socks",
-    "settings": { "auth": "noauth", "udp": true },
-    "tag": "socks-grpc-in"
-  }],
-  "outbounds": [{
-    "protocol": "vless",
-    "settings": {
-      "vnext": [{
-        "address": "${VPS2_IP}",
-        "port": 2083,
-        "users": [{ "id": "${XRAY_GRPC_UUID:-}", "encryption": "none", "flow": "" }]
-      }]
-    },
-    "streamSettings": {
-      "network": "splithttp",
-      "security": "reality",
-      "realitySettings": {
-        "serverName": "cdn.jsdelivr.net",
-        "fingerprint": "chrome",
-        "publicKey": "${VPS2_XRAY_GRPC_PUBLIC_KEY:-PENDING}",
-        "shortId": ""
-      },
-      "splithttpSettings": {
-        "path": "/", "host": "cdn.jsdelivr.net",
-        "maxUploadSize": 1000000,
-        "maxConcurrentUploads": 10,
-        "password": "${XHTTP_CDN_PASSWORD:-}"
-      }
-    },
-    "tag": "vless-xhttp-cdn-out"
-  },
-  { "protocol": "freedom", "tag": "direct" },
-  { "protocol": "blackhole", "tag": "block" }
-  ],
-  "routing": {
-    "domainStrategy": "IPIfNonMatch",
-    "rules": [{ "type": "field", "ip": ["geoip:private"], "outboundTag": "direct" }]
-  }
-}
-EOF
-
-log_ok "Client configs для VPS2 созданы"
-log_info "  Файлы: xray/config-reality-vps2.json, xray/config-grpc-vps2.json"
-log_info "         watchdog/plugins/hysteria2/client-vps2.yaml"
-
-# ── Шаг 18: Регистрация VPS2 в watchdog ──────────────────────────────────────
-log_step "Шаг 18: Регистрация VPS2 в watchdog"
-
-if [[ -n "${WATCHDOG_API_TOKEN:-}" ]]; then
-    RESP=$(curl -sf -X POST http://localhost:8080/vps/add \
-        -H "Authorization: Bearer ${WATCHDOG_API_TOKEN}" \
-        -H "Content-Type: application/json" \
-        -d "{\"ip\":\"${VPS2_IP}\",\"ssh_port\":${VPS2_SSH_PORT},\"tunnel_ip\":\"10.177.2.6\"}" \
-        2>/dev/null || echo '{"error":"watchdog недоступен"}')
-    log_info "Watchdog ответ: ${RESP}"
-    if echo "$RESP" | grep -q '"status"'; then
-        log_ok "VPS2 зарегистрирован в watchdog"
-    else
-        log_warn "Watchdog API не ответил. Добавьте VPS2 через бот: /vps add ${VPS2_IP}"
-    fi
-else
-    log_warn "WATCHDOG_API_TOKEN не задан. Добавьте VPS2 через бот: /vps add ${VPS2_IP}"
-fi
-
-# ── Шаг 19: Git-зеркало и healthcheck cron на VPS2 ───────────────────────────
-log_step "Шаг 19: Git-зеркало и healthcheck cron"
-
-vps2_exec "git -C /opt/vpn/vpn-repo.git init --bare 2>/dev/null || true && \
-    git -C /opt/vpn/vpn-repo.git remote add origin \
-        https://github.com/Cyrillicspb/vpn-infra.git 2>/dev/null || \
-    git -C /opt/vpn/vpn-repo.git remote set-url origin \
-        https://github.com/Cyrillicspb/vpn-infra.git 2>/dev/null || true"
-
-vps2_exec "git -C /opt/vpn/vpn-repo.git fetch --all 2>/dev/null || true"
-
-vps2_exec "cat << 'CRONEOF' | sudo tee /etc/cron.d/vpn-mirror > /dev/null
+backend_exec "sudo install -d -m 755 ${REMOTE_DIR}/vpn-repo.git && sudo chown -R sysadmin:sysadmin ${REMOTE_DIR}/vpn-repo.git && git -C ${REMOTE_DIR}/vpn-repo.git init --bare >/dev/null 2>&1 || true"
+backend_exec "git -C ${REMOTE_DIR}/vpn-repo.git remote add origin https://github.com/Cyrillicspb/vpn-infra.git 2>/dev/null || git -C ${REMOTE_DIR}/vpn-repo.git remote set-url origin https://github.com/Cyrillicspb/vpn-infra.git"
+backend_exec "git -C ${REMOTE_DIR}/vpn-repo.git fetch --all >/dev/null 2>&1 || true"
+backend_exec "cat <<'CRONEOF' | sudo tee /etc/cron.d/vpn-mirror >/dev/null
 SHELL=/bin/bash
 */30 * * * * sysadmin git -C /opt/vpn/vpn-repo.git fetch --all >> /var/log/vpn-mirror.log 2>&1
 CRONEOF"
-
-vps2_exec "cat << 'HCEOF' | sudo tee /etc/cron.d/vps-healthcheck > /dev/null
+backend_exec "cat <<'HCEOF' | sudo tee /etc/cron.d/vps-healthcheck >/dev/null
 SHELL=/bin/bash
 */5 * * * * sysadmin bash /opt/vpn/scripts/vps-healthcheck.sh >> /var/log/vps-healthcheck.log 2>&1
 HCEOF"
+backend_exec "sudo chmod 644 /etc/cron.d/vpn-mirror /etc/cron.d/vps-healthcheck 2>/dev/null || true"
+log_ok "Git mirror и cron настроены"
 
-vps2_exec "sudo chmod 644 /etc/cron.d/vpn-mirror /etc/cron.d/vps-healthcheck 2>/dev/null || true"
-log_ok "Git-зеркало и healthcheck cron настроены"
+log_step "Шаг 9: Регистрация backend в watchdog pool"
 
-# ── Финал: закрыть root SSH только после успешного завершения ────────────────
-log_info "Финализация SSH-доступа на VPS2..."
-vps2_exec "sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config; \
-    grep -q '^PermitRootLogin' /etc/ssh/sshd_config \
-        || echo 'PermitRootLogin no' | sudo tee -a /etc/ssh/sshd_config; \
-    sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config; \
-    grep -q '^PasswordAuthentication' /etc/ssh/sshd_config \
-        || echo 'PasswordAuthentication no' | sudo tee -a /etc/ssh/sshd_config; \
+if [[ -n "${WATCHDOG_API_TOKEN:-}" ]]; then
+    register_status="$(curl -sS -o /tmp/backend-register.json -w '%{http_code}' \
+        -X POST http://localhost:8080/backends/add \
+        -H "Authorization: Bearer ${WATCHDOG_API_TOKEN}" \
+        -H 'Content-Type: application/json' \
+        -d "{\"ip\":\"${BACKEND_IP}\",\"ssh_port\":${BACKEND_SSH_PORT},\"tunnel_ip\":\"${BACKEND_TUNNEL_IP}\",\"weight\":100}" || true)"
+    register_body="$(cat /tmp/backend-register.json 2>/dev/null || true)"
+    rm -f /tmp/backend-register.json
+    if [[ "$register_status" == "200" ]]; then
+        log_ok "Backend зарегистрирован в watchdog pool"
+    elif [[ "$register_status" == "409" ]]; then
+        log_warn "Backend уже был зарегистрирован: ${register_body}"
+    else
+        die "Не удалось зарегистрировать backend через watchdog API: HTTP ${register_status} ${register_body}"
+    fi
+else
+    die "WATCHDOG_API_TOKEN не задан в ${ENV_FILE}"
+fi
+
+log_step "Шаг 10: Финализация SSH-доступа на backend"
+
+backend_exec "sudo sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config; \
+    grep -q '^PermitRootLogin' /etc/ssh/sshd_config || echo 'PermitRootLogin no' | sudo tee -a /etc/ssh/sshd_config >/dev/null; \
+    sudo sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config; \
+    grep -q '^PasswordAuthentication' /etc/ssh/sshd_config || echo 'PasswordAuthentication no' | sudo tee -a /etc/ssh/sshd_config >/dev/null; \
+    grep -q '^Port 8022$' /etc/ssh/sshd_config || echo 'Port 8022' | sudo tee -a /etc/ssh/sshd_config >/dev/null; \
     sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true"
 log_ok "root SSH закрыт, password auth отключён"
 
-# ── Финальный отчёт ───────────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}${BOLD}║           VPS2 добавлен! Что работает:                       ║${NC}"
+echo -e "${GREEN}${BOLD}║        Backend VPS установлен и готов к работе              ║${NC}"
 echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "  ${GREEN}✓${NC} Docker + все сервисы запущены"
-echo -e "  ${GREEN}✓${NC} Hysteria2 (UDP 443) — те же auth/obfs что у VPS1"
-echo -e "  ${GREEN}✓${NC} autossh-tier2-vps2 туннель: 10.177.2.5 ↔ 10.177.2.6"
-echo -e "  ${GREEN}✓${NC} dnsmasq DNS на 10.177.2.6:53"
-echo -e "  ${GREEN}✓${NC} Client configs для VPS2 созданы"
+echo -e "  ${GREEN}✓${NC} sysadmin + SSH key настроены"
+echo -e "  ${GREEN}✓${NC} Docker Compose и server-side stacks запущены"
+echo -e "  ${GREEN}✓${NC} 3x-ui CDN inbound настроен автоматически"
+echo -e "  ${GREEN}✓${NC} standalone reality-xhttp / reality-vision / hysteria2 готовы"
+echo -e "  ${GREEN}✓${NC} backend зарегистрирован в watchdog pool"
+echo -e "  ${GREEN}✓${NC} root SSH закрыт после успешной установки"
 echo ""
-echo -e "${YELLOW}${BOLD}⚠ ТРЕБУЕТСЯ ВРУЧНУЮ: настройка 3x-ui inbounds${NC}"
-echo ""
-echo "  1. Откройте 3x-ui на VPS2:"
-echo "     http://${VPS2_IP}:2053"
-echo "     Логин: admin / admin"
-echo ""
-echo "  2. Добавьте inbound VLESS+REALITY (XHTTP) на порту 2087:"
-echo "     - Protocol:   VLESS"
-echo "     - Port:       2087"
-echo "     - UUID:       ${XRAY_UUID:-<см. .env XRAY_UUID>}"
-echo "     - Network:    SplitHTTP"
-echo "     - Security:   Reality"
-echo "     - ServerName: microsoft.com"
-if [[ "${VPS2_XRAY_PRIVATE_KEY:-PENDING}" != "PENDING" ]]; then
-echo "     - PrivateKey: ${VPS2_XRAY_PRIVATE_KEY}"
-echo "     - PublicKey:  ${VPS2_XRAY_PUBLIC_KEY}"
-fi
-echo ""
-echo "  3. Добавьте inbound VLESS+REALITY (XHTTP) на порту 2083:"
-echo "     - Protocol:   VLESS"
-echo "     - Port:       2083"
-echo "     - UUID:       ${XRAY_GRPC_UUID:-<см. .env XRAY_GRPC_UUID>}"
-echo "     - Network:    SplitHTTP"
-echo "     - Security:   Reality"
-echo "     - ServerName: cdn.jsdelivr.net"
-if [[ "${VPS2_XRAY_GRPC_PRIVATE_KEY:-PENDING}" != "PENDING" ]]; then
-echo "     - PrivateKey: ${VPS2_XRAY_GRPC_PRIVATE_KEY}"
-echo "     - PublicKey:  ${VPS2_XRAY_GRPC_PUBLIC_KEY}"
-fi
-echo ""
-echo -e "${CYAN}${BOLD}Переключение на VPS2 через бот:${NC}"
-echo "  /vps list           — список VPS"
-echo "  /vps add ${VPS2_IP}  — если не зарегистрирован"
-echo ""
-echo -e "${CYAN}${BOLD}Или запустите migrate-vps для полного переключения:${NC}"
-echo "  /migrate-vps ${VPS2_IP}"
-echo ""
-echo -e "${BLUE}VPS2 данные сохранены в /opt/vpn/.env (VPS2_* переменные)${NC}"
-echo -e "${BLUE}autossh-tier2-vps2: /etc/systemd/system/autossh-tier2-vps2.service${NC}"
+echo -e "${BLUE}Backend:${NC} ${BACKEND_IP}:${BACKEND_SSH_PORT}"
+echo -e "${BLUE}Tier-2 endpoint:${NC} ${BACKEND_TUNNEL_IP}"
+echo -e "${BLUE}Watchdog API:${NC} backend visible via /backends and bot menu"
 echo ""

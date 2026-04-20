@@ -18,6 +18,7 @@ handlers/admin.py — Все команды администратора
 from __future__ import annotations
 
 import asyncio
+import html
 import io
 import json
 import logging
@@ -43,6 +44,7 @@ from aiogram.types import (
 
 from config import config
 from database import Database
+from services.config_builder import make_qr_filename, make_wireguard_conf_filename
 from handlers.keyboards import (
     admin_backend_prefs_kb,
     admin_functional_menu,
@@ -71,6 +73,8 @@ from handlers.keyboards import (
     admin_vps_actions_kb,
     admin_vps_list_kb,
     admin_vps_menu,
+    backend_export_backends_kb,
+    backend_export_stacks_kb,
     back_to_admin_menu,
     client_main_menu,
     confirm_kb,
@@ -1019,13 +1023,76 @@ def _admin_device_summary(device: dict, handshake_text: str = "неизвест�
     )
 
 
+def _healthy_export_backends(payload: dict) -> list[dict]:
+    rows = list(payload.get("backends") or [])
+    return [
+        item for item in rows
+        if str(item.get("status") or "").lower() == "healthy" and not bool(item.get("drain"))
+    ]
+
+
+def _direct_stack_label(stack: str) -> str:
+    labels = {
+        "hysteria2": "Hysteria2",
+        "reality-xhttp": "REALITY XHTTP",
+        "vless-reality-vision": "REALITY Vision",
+        "tuic": "TUIC",
+        "trojan": "Trojan",
+    }
+    return labels.get(stack, stack)
+
+
+async def _send_admin_direct_backend_export(
+    bot: Bot,
+    target_chat_id: str,
+    device: dict,
+    backend_id: str,
+    stack: str,
+) -> None:
+    from services.config_builder import make_direct_export_filename
+
+    bundle = await _wc().export_direct_config(device["id"], backend_id, stack, audience="admin")
+    await bot.send_message(
+        target_chat_id,
+        "⚠️ Direct backend конфиг содержит секреты. Пересылайте его только владельцу устройства по доверенному каналу.",
+    )
+    if str(bundle.get("artifact_mode") or "") == "file_and_uri":
+        filename = str(bundle.get("filename") or "").strip() or make_direct_export_filename(
+            device_name=device["device_name"],
+            stack=str(bundle.get("stack") or stack),
+            backend_id=str(bundle.get("backend_id") or backend_id),
+            ext=str(bundle.get("ext") or "txt"),
+            export_date=str(bundle.get("rendered_at") or date.today().isoformat()),
+        )
+        await bot.send_document(
+            target_chat_id,
+            BufferedInputFile(str(bundle.get("content") or "").encode("utf-8"), filename=filename),
+            caption=(
+                f"Direct backend: `{device['device_name']}`\n"
+                f"Backend: `{bundle.get('backend_id', backend_id)}` → `{bundle.get('backend_ip', '?')}`\n"
+                f"Stack: `{_direct_stack_label(str(bundle.get('stack') or stack))}` · {bundle.get('rendered_at', date.today().isoformat())}"
+            ),
+        )
+    share_uri = str(bundle.get("share_uri") or "").strip()
+    if share_uri:
+        await bot.send_message(
+            target_chat_id,
+            "Share link для импорта:\n"
+            f"<code>{html.escape(share_uri)}</code>",
+            parse_mode="HTML",
+        )
+    import_hint = str(bundle.get("import_hint") or "").strip()
+    if import_hint:
+        await bot.send_message(target_chat_id, import_hint)
+
+
 async def _send_admin_device_config(
     bot: Bot,
     target_chat_id: str,
     db: Database,
     device: dict,
 ) -> str:
-    from services.config_builder import ConfigBuilder
+    from services.config_builder import ConfigBuilder, make_qr_filename, make_wireguard_conf_filename
 
     builder = ConfigBuilder()
     excludes, server_routes = await _device_policy_lists(db, device["id"])
@@ -1059,11 +1126,13 @@ async def _send_admin_device_config(
     if qr_bytes:
         await bot.send_photo(
             target_chat_id,
-            BufferedInputFile(qr_bytes, filename="qr.png"),
+            BufferedInputFile(
+                qr_bytes,
+                filename=make_qr_filename(device["device_name"], "home", device.get("protocol", "awg")),
+            ),
             caption=f"QR-код `{device['device_name']}`",
         )
 
-    from services.config_builder import make_wireguard_conf_filename
     filename = make_wireguard_conf_filename(device["device_name"], device.get("protocol", "awg"))
     await bot.send_document(
         target_chat_id,
@@ -1883,21 +1952,31 @@ async def cmd_invite(message: Message, state: FSMContext, bot: Bot, **kw):
         await message.answer(f"<code>{bootstrap_code}</code>", parse_mode="HTML")
         # AWG конфиг + QR
         await message.answer_document(
-            BufferedInputFile(awg_conf.encode(), filename="vpn-bootstrap-awg.conf"),
+            BufferedInputFile(
+                awg_conf.encode(),
+                filename=make_wireguard_conf_filename("bootstrap-awg", "awg"),
+            ),
             caption="📄 AmneziaWG конфиг (рекомендуется)",
         )
         if awg_qr:
-            await message.answer_photo(BufferedInputFile(awg_qr, filename="awg-qr.png"),
-                                        caption="QR для AmneziaWG")
+            await message.answer_photo(
+                BufferedInputFile(awg_qr, filename=make_qr_filename("bootstrap-awg", "home", "awg")),
+                caption="QR для AmneziaWG",
+            )
         # WG конфиг + QR
         await message.answer_document(
-            BufferedInputFile(wg_conf.encode(), filename="vpn-bootstrap-wg.conf"),
+            BufferedInputFile(
+                wg_conf.encode(),
+                filename=make_wireguard_conf_filename("bootstrap-wg", "wg"),
+            ),
             caption="📄 WireGuard конфиг (запасной)",
         )
         await message.answer(_WIREGUARD_AUTOCONNECT_HINT)
         if wg_qr:
-            await message.answer_photo(BufferedInputFile(wg_qr, filename="wg-qr.png"),
-                                        caption="QR для WireGuard")
+            await message.answer_photo(
+                BufferedInputFile(wg_qr, filename=make_qr_filename("bootstrap-wg", "home", "wg")),
+                caption="QR для WireGuard",
+            )
         return
 
     except Exception as e:
@@ -3857,16 +3936,26 @@ async def cb_adm_invite(cb: CallbackQuery, bot: Bot, **kw):
         )
         await cb.message.answer(f"<code>{bootstrap_code}</code>", parse_mode="HTML")
         await cb.message.answer_document(
-            BufferedInputFile(awg_conf.encode(), filename="vpn-bootstrap-awg.conf"),
+            BufferedInputFile(
+                awg_conf.encode(),
+                filename=make_wireguard_conf_filename("bootstrap-awg", "awg"),
+            ),
             caption="📄 AmneziaWG (рекомендуется)")
         if awg_qr:
-            await cb.message.answer_photo(BufferedInputFile(awg_qr, filename="awg-qr.png"))
+            await cb.message.answer_photo(
+                BufferedInputFile(awg_qr, filename=make_qr_filename("bootstrap-awg", "home", "awg"))
+            )
         await cb.message.answer_document(
-            BufferedInputFile(wg_conf.encode(), filename="vpn-bootstrap-wg.conf"),
+            BufferedInputFile(
+                wg_conf.encode(),
+                filename=make_wireguard_conf_filename("bootstrap-wg", "wg"),
+            ),
             caption="📄 WireGuard (запасной)")
         await cb.message.answer(_WIREGUARD_AUTOCONNECT_HINT)
         if wg_qr:
-            await cb.message.answer_photo(BufferedInputFile(wg_qr, filename="wg-qr.png"))
+            await cb.message.answer_photo(
+                BufferedInputFile(wg_qr, filename=make_qr_filename("bootstrap-wg", "home", "wg"))
+            )
         return
     except Exception as e:
         await _cleanup_bootstrap_peers(wdc, awg_pubkey, wg_pubkey)
@@ -4835,6 +4924,121 @@ async def cb_adm_client_device_getconf(cb: CallbackQuery, **kw):
         )
 
 
+@router.callback_query(F.data.startswith("adm:cl_dev_direct:"))
+async def cb_adm_client_device_direct(cb: CallbackQuery, **kw):
+    db: Database = kw.get("db")
+    if not await _ensure_admin_callback(cb, db=db):
+        return
+    await cb.answer()
+    device_id = int(cb.data[len("adm:cl_dev_direct:"):])
+    device = await db.get_device_with_client(device_id)
+    if not device:
+        await _edit_or_answer(cb, "Устройство не найдено.", admin_clients_menu())
+        return
+    if device.get("pending_approval"):
+        await _edit_or_answer(
+            cb,
+            "⏳ Устройство ещё ожидает одобрения. Direct export недоступен.",
+            admin_client_device_actions_kb(str(device.get("chat_id") or ""), device_id),
+        )
+        return
+    try:
+        backends_payload = await _wc().get_backends()
+        backends = _healthy_export_backends(backends_payload)
+    except Exception as exc:
+        await _edit_or_answer(cb, f"❌ Не удалось получить backend pool: {exc}", admin_clients_menu())
+        return
+    if not backends:
+        await _edit_or_answer(
+            cb,
+            "Нет доступных healthy backend для direct export.",
+            admin_client_device_actions_kb(str(device.get("chat_id") or ""), device_id),
+        )
+        return
+    await _edit_or_answer(
+        cb,
+        f"<blockquote>Меню → Клиенты → {device['device_name']} → Direct backend</blockquote>\n\n"
+        f"Выберите backend:",
+        backend_export_backends_kb(
+            device_id,
+            backends,
+            "adm:cl_dev_directb:",
+            f"adm:cl_dev:{device_id}",
+            "adm:menu",
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:cl_dev_directb:"))
+async def cb_adm_client_device_direct_backend(cb: CallbackQuery, **kw):
+    db: Database = kw.get("db")
+    if not await _ensure_admin_callback(cb, db=db):
+        return
+    await cb.answer()
+    parts = cb.data.split(":")
+    if len(parts) < 4:
+        await _edit_or_answer(cb, "Некорректный backend.", admin_clients_menu())
+        return
+    device_id = int(parts[2])
+    backend_id = parts[3]
+    device = await db.get_device_with_client(device_id)
+    if not device:
+        await _edit_or_answer(cb, "Устройство не найдено.", admin_clients_menu())
+        return
+    await _edit_or_answer(
+        cb,
+        f"<blockquote>Меню → Клиенты → {device['device_name']} → Direct backend → {backend_id}</blockquote>\n\n"
+        f"Выберите стек:",
+        backend_export_stacks_kb(
+            device_id,
+            backend_id,
+            "adm:cl_dev_directs:",
+            f"adm:cl_dev_direct:{device_id}",
+            "adm:menu",
+        ),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:cl_dev_directs:"))
+async def cb_adm_client_device_direct_stack(cb: CallbackQuery, **kw):
+    db: Database = kw.get("db")
+    if not await _ensure_admin_callback(cb, db=db):
+        return
+    await cb.answer("Готовлю direct backend export...")
+    parts = cb.data.split(":")
+    if len(parts) < 5:
+        await _edit_or_answer(cb, "Некорректный direct export запрос.", admin_clients_menu())
+        return
+    device_id = int(parts[2])
+    backend_id = parts[3]
+    stack = parts[4]
+    device = await db.get_device_with_client(device_id)
+    if not device:
+        await _edit_or_answer(cb, "Устройство не найдено.", admin_clients_menu())
+        return
+    try:
+        bot: Bot = kw.get("bot")
+        await _send_admin_direct_backend_export(bot, str(cb.from_user.id), device, backend_id, stack)
+        text, _ = await _render_admin_client_device_card(device)
+        await _edit_or_answer(
+            cb,
+            text + f"\n\n🌐 Direct backend export отправлен в этот чат.\nBackend: <code>{backend_id}</code>\nStack: <code>{stack}</code>",
+            admin_client_device_actions_kb(str(device["chat_id"]), device_id),
+        )
+    except Exception as exc:
+        await _edit_or_answer(
+            cb,
+            f"❌ Не удалось собрать direct backend export: <code>{html.escape(str(exc))}</code>",
+            backend_export_stacks_kb(
+                device_id,
+                backend_id,
+                "adm:cl_dev_directs:",
+                f"adm:cl_dev_direct:{device_id}",
+                "adm:menu",
+            ),
+        )
+
+
 @router.callback_query(F.data.startswith("adm:cl_dev_refresh:"))
 async def cb_adm_client_device_refresh(cb: CallbackQuery, **kw):
     db: Database = kw.get("db")
@@ -5152,8 +5356,8 @@ async def cb_adm_vps_add(cb: CallbackQuery, state: FSMContext, **kw):
         cb,
         state,
         AdminFSM.vps_install_ip,
-        "🖥️ *Установка нового VPS*\n\n"
-        "Введите *IP-адрес* свежеустановленного сервера Ubuntu:",
+        "🖥️ *Установка нового backend VPS*\n\n"
+        "Введите *IP-адрес* чистого сервера Ubuntu:",
         "adm:vps_list",
         home_cb="adm:menu",
         parse_mode="Markdown",
@@ -5184,7 +5388,7 @@ async def fsm_vps_install_port(message: Message, state: FSMContext, **kw):
         "⚠️ *Введите root пароль.*\n"
         "Сообщение будет немедленно удалено из чата после получения.\n\n"
         "Пароль используется однократно для первичной настройки SSH-ключей "
-        "и после установки root-доступ будет закрыт.",
+        "и после успешной установки root-доступ будет закрыт.",
         parse_mode="Markdown",
     )
     await state.set_state(AdminFSM.vps_install_pass)
@@ -5207,8 +5411,8 @@ async def fsm_vps_install_pass(message: Message, state: FSMContext, **kw):
         pass
 
     await message.answer(
-        f"🚀 Запускаю установку VPS `{ip}:{port}`...\n\n"
-        f"Прогресс будет приходить сюда. Установка занимает *5–10 минут*.",
+        f"🚀 Запускаю установку backend `{ip}:{port}`...\n\n"
+        f"Прогресс будет приходить сюда. После завершения сервер должен быть полностью готов. Установка занимает *5–10 минут*.",
         parse_mode="Markdown",
     )
     try:
@@ -5685,9 +5889,8 @@ async def cb_adm_broadcast_configs(cb: CallbackQuery, **kw):
                     f"📋 Конфиг <b>{device['device_name']}</b> обновлён\n"
                     f"⚠️ Приватный ключ — не пересылайте!"
                 )
-                from datetime import date as _date
-                _fname = f"vpn-{device['device_name']}.conf" if device.get("is_router") \
-                    else f"{device['device_name']}_{_date.today()}.conf"
+                from services.config_builder import make_qr_filename, make_wireguard_conf_filename
+                _fname = make_wireguard_conf_filename(device["device_name"], device.get("protocol", "awg"))
                 await bot.send_document(
                     chat_id,
                     BufferedInputFile(conf_text.encode(), filename=_fname),
@@ -5695,7 +5898,13 @@ async def cb_adm_broadcast_configs(cb: CallbackQuery, **kw):
                     parse_mode="HTML",
                 )
                 if qr_bytes:
-                    await bot.send_photo(chat_id, BufferedInputFile(qr_bytes, filename="qr.png"))
+                    await bot.send_photo(
+                        chat_id,
+                        BufferedInputFile(
+                            qr_bytes,
+                            filename=make_qr_filename(device["device_name"], "home", device.get("protocol", "awg")),
+                        ),
+                    )
                 await db.update_config_version(device["id"], version)
                 sent += 1
                 await _asyncio.sleep(0.3)  # rate limit Telegram
