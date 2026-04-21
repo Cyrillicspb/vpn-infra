@@ -76,6 +76,7 @@ DNSMASQ_LATENCY = Path("/etc/dnsmasq.d/vpn-latency-sensitive.conf")
 WATCHDOG_STATE  = Path("/opt/vpn/watchdog/state.json")
 MANUAL_VPN      = ROUTES_DIR / "manual-vpn.txt"
 MANUAL_DIRECT   = ROUTES_DIR / "manual-direct.txt"
+MANUAL_DIRECT_IPS = ROUTES_DIR / "manual-direct-ips.txt"
 LATENCY_DIRECT  = ROUTES_DIR / "latency-sensitive-direct.txt"
 LATENCY_LEARNED = ROUTES_DIR / "latency-learned.txt"
 LATENCY_CATALOG = ROUTES_DIR / "latency-catalog.json"
@@ -886,6 +887,67 @@ def load_manual_domains(path: Path) -> set[str]:
     return domains
 
 
+def load_manual_direct_ips(path: Path) -> set[ipaddress.IPv4Network]:
+    """CIDRs/IPs that must never appear in blocked_static — always route direct."""
+    networks: set[ipaddress.IPv4Network] = set()
+    if not path.exists():
+        return networks
+    for line in path.read_text().splitlines():
+        line = line.split("#")[0].strip()
+        if not line:
+            continue
+        net = _parse_network(line)
+        if net:
+            networks.add(net)
+    if networks:
+        log.info("[manual-direct-ips] %s CIDR для исключения из blocked_static", len(networks))
+    return networks
+
+
+def _subtract_networks(
+    base: set[ipaddress.IPv4Network],
+    excl: set[ipaddress.IPv4Network],
+) -> set[ipaddress.IPv4Network]:
+    """Remove all IPs covered by excl from base, splitting supernets as needed."""
+    if not excl:
+        return base
+    result: set[ipaddress.IPv4Network] = set()
+    collapsed_excl = list(ipaddress.collapse_addresses(excl))
+    for net in base:
+        remaining = [net]
+        for ex in collapsed_excl:
+            if not net.overlaps(ex):
+                continue
+            new_remaining: list[ipaddress.IPv4Network] = []
+            for n in remaining:
+                if not n.overlaps(ex):
+                    new_remaining.append(n)
+                elif n.subnet_of(ex):
+                    pass  # fully excluded — drop
+                else:
+                    # n contains or partially overlaps ex — split into halves recursively
+                    new_remaining.extend(_split_excluding(n, ex))
+            remaining = new_remaining
+        result.update(remaining)
+    return result
+
+
+def _split_excluding(
+    network: ipaddress.IPv4Network,
+    exclude: ipaddress.IPv4Network,
+) -> list[ipaddress.IPv4Network]:
+    """Split network into parts that don't overlap with exclude."""
+    if not network.overlaps(exclude):
+        return [network]
+    if network.subnet_of(exclude):
+        return []
+    halves = list(network.subnets())
+    result: list[ipaddress.IPv4Network] = []
+    for half in halves:
+        result.extend(_split_excluding(half, exclude))
+    return result
+
+
 def _canonicalize_latency_catalog(raw: dict) -> dict[str, dict]:
     services: dict[str, dict] = {}
     raw_services = raw.get("services") if isinstance(raw, dict) else {}
@@ -1552,6 +1614,18 @@ def main() -> None:
     latency_direct_domains = build_latency_sensitive_domains(
         manual_direct_domains=manual_direct_domains
     )
+
+    # Исключаем вручную заданные IP/CIDR из blocked_static (российские сервисы и др.)
+    direct_excl = load_manual_direct_ips(MANUAL_DIRECT_IPS)
+    if direct_excl:
+        before = len(all_networks)
+        all_networks = _subtract_networks(all_networks, direct_excl)
+        cidr_networks = _subtract_networks(cidr_networks, direct_excl)
+        log.info(
+            "[manual-direct-ips] blocked_static: %s → %s сетей после вычитания",
+            before,
+            len(all_networks),
+        )
 
     if not all_networks:
         log.error("Нет данных для обновления!")

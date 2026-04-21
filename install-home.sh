@@ -105,8 +105,18 @@ ensure_bot_manual_route_permissions() {
     mkdir -p /etc/vpn-routes
     [[ -f /etc/vpn-routes/manual-vpn.txt ]] || touch /etc/vpn-routes/manual-vpn.txt
     [[ -f /etc/vpn-routes/manual-direct.txt ]] || touch /etc/vpn-routes/manual-direct.txt
-    chown 999:999 /etc/vpn-routes/manual-vpn.txt /etc/vpn-routes/manual-direct.txt 2>/dev/null || true
-    chmod 664 /etc/vpn-routes/manual-vpn.txt /etc/vpn-routes/manual-direct.txt 2>/dev/null || true
+    if [[ ! -f /etc/vpn-routes/manual-direct-ips.txt ]]; then
+        REPO_DIRECT_IPS="$(dirname "$0")/home/routes/manual-direct-ips.txt"
+        if [[ -f "$REPO_DIRECT_IPS" ]]; then
+            cp "$REPO_DIRECT_IPS" /etc/vpn-routes/manual-direct-ips.txt
+        else
+            touch /etc/vpn-routes/manual-direct-ips.txt
+        fi
+    fi
+    chown 999:999 /etc/vpn-routes/manual-vpn.txt /etc/vpn-routes/manual-direct.txt \
+                  /etc/vpn-routes/manual-direct-ips.txt 2>/dev/null || true
+    chmod 664 /etc/vpn-routes/manual-vpn.txt /etc/vpn-routes/manual-direct.txt \
+              /etc/vpn-routes/manual-direct-ips.txt 2>/dev/null || true
 }
 
 # ── Шаг 9: apt update + upgrade ──────────────────────────────────────────────
