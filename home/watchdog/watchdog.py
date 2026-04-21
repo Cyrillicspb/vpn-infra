@@ -193,6 +193,7 @@ FUNCTIONAL_FAILOVER_STACK_RETRY_COOLDOWN_SECONDS = int(
 STACK_RETRY_COOLDOWN_SECONDS = int(
     os.getenv("STACK_RETRY_COOLDOWN_SECONDS", "900")
 )
+STACK_RETRY_COOLDOWN_MAX_MULT = int(os.getenv("STACK_RETRY_COOLDOWN_MAX_MULT", "8"))
 LATENCY_SENSITIVE_DIRECT_EXCLUDED_DOMAINS = frozenset({
     "www.googleapis.com",
     "googleapis.com",
@@ -1623,6 +1624,7 @@ class WatchdogState:
         self.functional_fail_counters: dict[str, int] = {}
         self.functional_failover_stack_cooldowns: dict[str, float] = {}
         self.stack_retry_cooldowns: dict[str, float] = {}
+        self.stack_consecutive_fails: dict[str, int] = {}
         self.functional_evidence_store: dict[str, dict[str, Any]] = {}
         self.latency_learning_last_apply_ts: float = 0.0
         self.latency_catalog_alert_last_ts: float = 0.0
@@ -1720,6 +1722,7 @@ class WatchdogState:
             "functional_fail_counters": self.functional_fail_counters,
             "functional_failover_stack_cooldowns": self.functional_failover_stack_cooldowns,
             "stack_retry_cooldowns": self.stack_retry_cooldowns,
+            "stack_consecutive_fails": self.stack_consecutive_fails,
             "functional_evidence_store": self.functional_evidence_store,
             "latency_learning_last_apply_ts": self.latency_learning_last_apply_ts,
             "latency_catalog_alert_last_ts": self.latency_catalog_alert_last_ts,
@@ -1857,6 +1860,10 @@ class WatchdogState:
                 self.stack_retry_cooldowns = {
                     str(k): float(v)
                     for k, v in (data.get("stack_retry_cooldowns", {}) or {}).items()
+                }
+                self.stack_consecutive_fails = {
+                    str(k): int(v)
+                    for k, v in (data.get("stack_consecutive_fails", {}) or {}).items()
                 }
                 self.functional_evidence_store = data.get("functional_evidence_store", {}) or {}
                 self.latency_learning_last_apply_ts = float(data.get("latency_learning_last_apply_ts", 0.0) or 0.0)
@@ -6997,7 +7004,15 @@ async def _failover_impl(reason: str) -> None:
         now_ts = time.time()
         is_functional_failover = reason.startswith("functional_")
         if _reason_sets_stack_retry_cooldown(reason) and current:
-            state.stack_retry_cooldowns[current] = now_ts + STACK_RETRY_COOLDOWN_SECONDS
+            state.stack_consecutive_fails[current] = state.stack_consecutive_fails.get(current, 0) + 1
+            fails = state.stack_consecutive_fails[current]
+            backoff_mult = min(2 ** (fails - 1), STACK_RETRY_COOLDOWN_MAX_MULT)
+            cooldown_secs = STACK_RETRY_COOLDOWN_SECONDS * backoff_mult
+            state.stack_retry_cooldowns[current] = now_ts + cooldown_secs
+            logger.info(
+                "Stack %s retry cooldown: %.0fs (consecutive_fail=%d, backoff_mult=%d)",
+                current, cooldown_secs, fails, backoff_mult,
+            )
         if state.functional_failover_stack_cooldowns:
             state.functional_failover_stack_cooldowns = {
                 stack: expiry
@@ -7077,6 +7092,24 @@ async def _failover_impl(reason: str) -> None:
             )
             asyncio.create_task(run_cmd(["systemctl", "restart", "autossh-vpn"], timeout=15))
             return
+        if skipped_on_cooldown:
+            # Emergency bypass: все кандидаты в cooldown, но нет работающей альтернативы.
+            # Пробуем стек с наименьшим оставшимся cooldown немедленно, не ждём 5 мин.
+            emergency_candidate = min(
+                skipped_on_cooldown,
+                key=lambda c: state.stack_retry_cooldowns.get(c, 0.0),
+            )
+            emergency_plugin = plugins.get(emergency_candidate)
+            if emergency_plugin:
+                remaining = max(0.0, state.stack_retry_cooldowns.get(emergency_candidate, 0.0) - now_ts)
+                logger.warning(
+                    "Emergency failover %s: все кандидаты в cooldown, пробую %s (cooldown ещё %.0fs)",
+                    reason, emergency_candidate, remaining,
+                )
+                ok, mbps = await _test_stack_runtime(emergency_plugin, emergency_candidate, timeout=10)
+                if ok:
+                    await _do_switch(emergency_candidate, reason)
+                    return
         now = datetime.now()
         if state.all_stacks_down_since is None:
             state.all_stacks_down_since = now
@@ -7449,6 +7482,17 @@ async def monitoring_loop() -> None:
                 state.last_monitoring_tick = time.time()
                 await _refresh_openai_probe_summary()
                 state.last_monitoring_tick = time.time()
+                # Сбрасываем счётчик ошибок для активного стека, если он стабилен > cooldown
+                if (
+                    state.stack_consecutive_fails.get(state.active_stack, 0) > 0
+                    and state.last_failover is not None
+                    and (time.time() - state.last_failover.timestamp()) > STACK_RETRY_COOLDOWN_SECONDS
+                ):
+                    state.stack_consecutive_fails.pop(state.active_stack, None)
+                    logger.info(
+                        "Stack %s consecutive fail counter reset (stable for >%.0fs)",
+                        state.active_stack, STACK_RETRY_COOLDOWN_SECONDS,
+                    )
                 last_heartbeat = now
 
             # Каждые 5 мин: внешний IP, диск, small speedtest, блок. сайты, upload
