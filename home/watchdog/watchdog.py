@@ -6987,6 +6987,16 @@ async def _do_switch(new_stack: str, reason: str) -> bool:
         timeout=15,
     ))
 
+    # После failover стек выбран по resilience (стабильность), а не по скорости.
+    # Запускаем переоценку через 90 сек, чтобы найти более быстрый работающий стек
+    # (например hysteria2), не дожидаясь 1-часового reassessment.
+    async def _post_failover_reassessment() -> None:
+        await asyncio.sleep(90)
+        logger.info("Post-failover reassessment: ищем оптимальный стек после %s→%s", old_stack, new_stack)
+        await _full_reassessment()
+
+    asyncio.create_task(_post_failover_reassessment(), name=f"post-failover-{new_stack}")
+
     logger.info(f"Стек переключён: {old_stack} → {new_stack}")
     alert(
         f"🔄 VPN стек переключён: *{old_stack}* → *{new_stack}*\n"
@@ -7181,8 +7191,10 @@ async def _do_rotation() -> None:
                 logger.warning(f"Ротация {current} не удалась")
         finally:
             state.rotation_in_progress = False
-        # Планируем следующую ротацию
-        state.next_rotation = datetime.now() + timedelta(minutes=random.randint(15, 75))
+            # Планируем следующую ротацию при любом выходе (включая rotation_check_failed failover).
+            # Без этого next_rotation остаётся в прошлом → decision loop немедленно
+            # запускает новую ротацию → бесконечный цикл переключений.
+            state.next_rotation = datetime.now() + timedelta(minutes=random.randint(15, 75))
 
 
 async def _first_run_assessment() -> None:
@@ -7239,8 +7251,17 @@ async def _full_reassessment() -> None:
             if plugin:
                 ok, mbps = await _test_stack_runtime(plugin, pinned_stack, timeout=10)
                 logger.info("Переоценка pinned стека %s: %s %.1f Mbps", pinned_stack, "OK" if ok else "FAIL", mbps)
-                if ok:
+                # Требуем реальный throughput (> fallback 0.1): возврат pinned-стека
+                # только по control-plane при сломанном data-plane ведёт к шторму
+                # rotation_check_failed сразу после переключения.
+                if ok and mbps > 0.1:
                     await _do_switch(pinned_stack, "hourly_reassessment")
+                elif ok:
+                    logger.warning(
+                        "Переоценка: pinned стек %s прошёл control plane, но нет throughput "
+                        "(fallback 0.1 Mbps) — возврат отложен до восстановления data plane",
+                        pinned_stack,
+                    )
                 return
         best_stack: Optional[str] = None
         best_mbps = 0.0
